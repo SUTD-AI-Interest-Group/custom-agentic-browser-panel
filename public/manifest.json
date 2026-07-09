@@ -1,0 +1,19 @@
+{
+  "manifest_version": 3,
+  "name": "Agent Chat",
+  "version": "0.1.0",
+  "description": "A model-agnostic AI agent chat side panel that can (with your permission) see and work with your tabs.",
+  "minimum_chrome_version": "116",
+  "permissions": ["sidePanel", "storage", "scripting", "tabs", "alarms", "activeTab"],
+  "host_permissions": ["<all_urls>"],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "action": {
+    "default_title": "Open Agent Chat"
+  },
+  "side_panel": {
+    "default_path": "sidepanel.html"
+  }
+}
