@@ -105,12 +105,39 @@ after 30+ minutes of user inactivity. The Memory panel (moon icon) is a
 read-only window into the memory store and the last dream; individual memories
 can be forgotten there.
 
+## Skills
+
+Skills are reusable instruction bundles — single-file `SKILL.md` records (a
+YAML-ish frontmatter block plus a Markdown body) stored in their own IndexedDB
+database, independent of the memory/conversation stores (`src/data/skills.ts`).
+
+- **Invoke by name**: type `/name` in the composer (e.g. `/summarizing-pages`) —
+  a `/` menu opens and autocompletes matching skills as you type, arrow keys +
+  Enter to pick one, mirroring the `@`-mention tab picker above.
+- **Autonomous loading**: an always-present catalog (name + description of
+  every model-invocable skill) is appended to the system prompt every turn.
+  When a request matches one, the agent calls `ReadSkill` to load its full body
+  before proceeding, or `ListAllSkills` to see the complete current list.
+- **Skills Library**: the archival-box icon in the top bar, left of the
+  settings gear, opens a masonry grid of skill cards with an inline editor —
+  create, edit, or delete custom skills, and export the current draft as
+  `SKILL.md` text (copied to your clipboard) or import one from a `.md` file.
+  Built-in skills are read-only in the Library; duplicate one to customize it.
+- **`/create-skill`** is a built-in meta-skill (`src/data/builtinSkills.ts`)
+  that interviews you — task, triggers, inputs, output, strictness — then
+  saves the result with `SaveSkill`.
+- **Approval policy**: `SaveSkill` mutates the store and always shows the
+  human-in-the-loop permission card. `ReadSkill` and `ListAllSkills` only read
+  your own local skills — as benign as `SearchMemory` — so they auto-approve
+  without a card.
+
 ## Architecture
 
 ```
 public/manifest.json        MV3 manifest (sidePanel, scripting, tabs, storage)
 src/background.ts           Service worker: side panel behavior + dream alarm
 src/ui/                     React UI: Onboarding, Chat, Memory, Settings, Markdown
+src/ui/SkillsLibrary.tsx    Skills Library masonry UI + editor
 src/tools/tools.ts          Tool registry + approval gate
 src/agent/agent.ts          One agent turn: streamText → UI part stream
 src/agent/provider.ts       Config → AI SDK model (createOpenAICompatible)
@@ -118,6 +145,8 @@ src/agent/dream.ts          Dream cycle: episodes + memories → memory ops
 src/data/settings.ts        Provider/model/system-prompt storage (chrome.storage)
 src/data/memory.ts          IndexedDB: episodes journal + long-term memories
 src/data/conversations.ts   IndexedDB: saved chat history
+src/data/skills.ts          IndexedDB: skills store + SKILL.md parse/serialize
+src/data/builtinSkills.ts   /create-skill meta-skill + example seeds
 src/platform/tabs.ts        Tab listing + page-content extraction
 src/platform/capture.ts     Region screenshots: snipe overlay + crop
 src/platform/domImage.ts    DOM element → PNG (copy/attach a component)
@@ -131,7 +160,8 @@ src/platform/time.ts        Relative-time formatting
   `createAgentTools()` in `src/tools/tools.ts`. Route anything that mutates a page
   through the same `requestApproval` gate; write-actions can use
   `chrome.scripting.executeScript` with args, like `extractPageContent` does.
-- **Skills**: store named prompt/tool bundles in settings and merge them into
-  the `system` string and `tools` object passed to `runAgentTurn`.
 - **Cross-tab orchestration**: `src/background.ts` is intentionally minimal and
   is the place for work that must outlive the side panel.
+
+Skills (named, reusable instruction bundles) were on this list and are now
+implemented — see [Skills](#skills) above.
