@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import type { ModelMessage } from 'ai'
 import Markdown from './Markdown'
-import { runAgentTurn, type UIMessage, type UIPart } from '../agent/agent'
+import { runAgentTurn, type MessageSource, type UIMessage, type UIPart } from '../agent/agent'
 import { captureRegion, type CapturedImage } from '../platform/capture'
 import { copyElementAsPng } from '../platform/domImage'
 import { getConversation, renameConversation, saveConversation } from '../data/conversations'
@@ -96,6 +96,56 @@ function hostOf(url: string): string {
   } catch {
     return ''
   }
+}
+
+// ---- Source favicons -----------------------------------------------------
+// The pages an assistant reply drew on, shown as a favicon avatar bar beside
+// the copy actions. Only real web pages count: tabs attached to the user's
+// turn (stored on the message) plus pages the model read via ViewCurrentTab /
+// ViewOpenedTabs (derived from the reply's tool parts).
+
+const MAX_VISIBLE_SOURCES = 3
+
+const isHttpUrl = (url: string): boolean => /^https?:\/\//i.test(url)
+
+// Chrome's built-in, on-device favicon cache — keeps visited URLs local rather
+// than shipping them to a third-party favicon service. Needs the "favicon"
+// manifest permission.
+function faviconUrl(pageUrl: string, size = 32): string {
+  const u = new URL(chrome.runtime.getURL('/_favicon/'))
+  u.searchParams.set('pageUrl', pageUrl)
+  u.searchParams.set('size', String(size))
+  return u.toString()
+}
+
+/**
+ * The de-duplicated web sources behind one assistant reply: pages attached to
+ * the preceding user turn (message.sources) plus pages the model read via its
+ * tools this turn (from tool parts). Keyed by URL, first title wins, encounter
+ * order preserved. Non-http(s), errored and denied results are dropped.
+ */
+function deriveSources(message: UIMessage): MessageSource[] {
+  const collected: MessageSource[] = [...(message.sources ?? [])]
+  for (const part of message.parts) {
+    if (part.type !== 'tool' || part.state !== 'done') continue
+    const output = part.output as any
+    if (!output || typeof output !== 'object' || output.denied) continue
+    if (part.toolName === 'ViewCurrentTab' && !output.error) {
+      collected.push({ title: output.title ?? '', url: output.url ?? '' })
+    } else if (part.toolName === 'ViewOpenedTabs' && Array.isArray(output.contents)) {
+      for (const c of output.contents) {
+        if (c && !c.error) collected.push({ title: c.title ?? '', url: c.url ?? '' })
+      }
+    }
+  }
+  const seen = new Set<string>()
+  const sources: MessageSource[] = []
+  for (const s of collected) {
+    if (!isHttpUrl(s.url) || seen.has(s.url)) continue
+    seen.add(s.url)
+    sources.push({ title: s.title || hostOf(s.url) || s.url, url: s.url })
+  }
+  return sources
 }
 
 // Where does an "@" start a mention? At the start of input or after
@@ -547,8 +597,16 @@ export default function Chat({
       historyRef.current.push({ role: 'user', content: modelText })
     }
 
+    // Tabs attached to this turn become sources on the reply's favicon bar.
+    // Pages the model reads via its tools are merged in later, at render time.
+    const attachedSources: MessageSource[] = syncedTabs
+      .filter((c) => !c.error && isHttpUrl(c.url))
+      .map((c) => ({ title: c.title, url: c.url }))
     const assistantId = uid()
-    setMessages((m) => [...m, { id: assistantId, role: 'assistant', parts: [] }])
+    setMessages((m) => [
+      ...m,
+      { id: assistantId, role: 'assistant', parts: [], sources: attachedSources },
+    ])
     const updateAssistant = (parts: UIPart[]) =>
       setMessages((m) => m.map((msg) => (msg.id === assistantId ? { ...msg, parts } : msg)))
 
@@ -1033,8 +1091,11 @@ function MessageToolbar({
     setTimeout(() => setCopyState('idle'), 1500)
   }
 
+  const sources = deriveSources(message)
+
   return (
     <div className="msg-toolbar">
+      <div className="msg-toolbar-actions">
       <button
         className={`msg-tool-btn ${imageState}`}
         data-tooltip={imageState === 'error' ? "Couldn't copy image" : 'Copy response as image'}
@@ -1066,6 +1127,8 @@ function MessageToolbar({
           </svg>
         )}
       </button>
+      </div>
+      <SourceBar sources={sources} />
     </div>
   )
 }
@@ -1075,6 +1138,90 @@ function CheckIcon() {
     <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
       <path d="M3.5 8.5l3 3 6-6.5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
     </svg>
+  )
+}
+
+// The favicon avatar bar shown beside the copy actions: up to
+// MAX_VISIBLE_SOURCES overlapping page icons, then a "+N" chip. Hovering an
+// avatar reveals a card (favicon, title, url); hovering the chip reveals a
+// stacked list of the remaining sources. Each opens the page in a new tab.
+function SourceBar({ sources }: { sources: MessageSource[] }) {
+  if (sources.length === 0) return null
+  const visible = sources.slice(0, MAX_VISIBLE_SOURCES)
+  const overflow = sources.slice(MAX_VISIBLE_SOURCES)
+  return (
+    <div className="source-bar" role="list" aria-label="Sources for this reply">
+      {visible.map((s) => (
+        <div className="source-avatar" role="listitem" key={s.url}>
+          <a
+            className="source-favicon"
+            href={s.url}
+            target="_blank"
+            rel="noreferrer"
+            aria-label={`Open ${s.title}`}
+          >
+            <Favicon source={s} />
+          </a>
+          <a
+            className="source-popover source-card-link"
+            href={s.url}
+            target="_blank"
+            rel="noreferrer"
+            tabIndex={-1}
+          >
+            <SourceCard source={s} />
+          </a>
+        </div>
+      ))}
+      {overflow.length > 0 && (
+        <div className="source-avatar source-more">
+          <button
+            type="button"
+            className="source-more-chip"
+            aria-label={`${overflow.length} more source${overflow.length > 1 ? 's' : ''}`}
+          >
+            +{overflow.length}
+          </button>
+          <div className="source-popover source-popover-list">
+            {overflow.map((s) => (
+              <a
+                className="source-card-link"
+                href={s.url}
+                target="_blank"
+                rel="noreferrer"
+                key={s.url}
+              >
+                <SourceCard source={s} />
+              </a>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// A page favicon from Chrome's on-device cache, falling back to a neutral dot
+// when no icon is cached or the image fails to load.
+function Favicon({ source }: { source: MessageSource }) {
+  const [failed, setFailed] = useState(false)
+  if (failed) return <span className="source-favicon-fallback" aria-hidden />
+  return <img src={faviconUrl(source.url)} alt="" onError={() => setFailed(true)} />
+}
+
+// Popover body: favicon, page title, and url — shared by the single-source
+// hover card and each row of the overflow list.
+function SourceCard({ source }: { source: MessageSource }) {
+  return (
+    <>
+      <span className="source-card-icon">
+        <Favicon source={source} />
+      </span>
+      <span className="source-card-text">
+        <span className="source-card-title">{source.title}</span>
+        <span className="source-card-url">{source.url}</span>
+      </span>
+    </>
   )
 }
 

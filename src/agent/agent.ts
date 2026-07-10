@@ -21,6 +21,17 @@ export type UIPart =
       errorText?: string
     }
 
+/**
+ * A webpage the assistant drew on for a reply, shown as a favicon source.
+ * Tool-read pages are derived from an assistant message's tool parts at render
+ * time; pages attached to the preceding user turn (synced tabs) are stored on
+ * the assistant message's `sources` because they live only in model-facing text.
+ */
+export interface MessageSource {
+  title: string
+  url: string
+}
+
 // One rendered message in the transcript: a role plus ordered parts (streamed
 // text interleaved with tool invocations), and any attached screenshots.
 export interface UIMessage {
@@ -29,6 +40,12 @@ export interface UIMessage {
   parts: UIPart[]
   /** Screenshot data URLs attached to a user message. */
   images?: string[]
+  /**
+   * Pages attached to the preceding user turn (auto current tab, @mentions,
+   * @all) that this reply drew on. Merged with tool-read pages for the source
+   * bar. Absent on user messages and turns with no attached tabs.
+   */
+  sources?: MessageSource[]
 }
 
 export interface AgentTurnResult {

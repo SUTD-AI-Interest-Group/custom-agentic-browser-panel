@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "description": "A model-agnostic AI agent chat side panel that can (with your permission) see and work with your tabs.",
   "minimum_chrome_version": "116",
-  "permissions": ["sidePanel", "storage", "scripting", "tabs", "alarms", "activeTab", "clipboardWrite"],
+  "permissions": ["sidePanel", "storage", "scripting", "tabs", "alarms", "activeTab", "clipboardWrite", "favicon"],
   "optional_permissions": ["history", "bookmarks", "topSites", "downloads"],
   "host_permissions": ["<all_urls>"],
   "background": {

@@ -264,7 +264,16 @@ body {
 .msg-toolbar {
   display: flex;
   align-items: center;
+  gap: 8px;
+}
+
+/* The copy-as-image / copy-as-markdown group, flush left; the source favicon
+   bar (when present) sits just to its right. */
+.msg-toolbar-actions {
+  display: flex;
+  align-items: center;
   gap: 4px;
+  flex-shrink: 0;
 }
 
 .msg-tool-btn {
@@ -340,6 +349,185 @@ body {
 .msg-tool-btn[data-tooltip]:hover::before,
 .msg-tool-btn[data-tooltip]:focus-visible::before {
   opacity: 1;
+}
+
+/* ---- Source favicons ----
+   Beside the copy actions on a finished reply: a stacked row of favicon avatars
+   for the pages the model drew on, an overflow "+N" chip, and hover cards. */
+.source-bar {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+
+.source-avatar {
+  position: relative;
+  width: 24px;
+  height: 24px;
+  margin-right: -7px; /* overlap into a stacked-avatar row */
+  flex-shrink: 0;
+}
+
+.source-avatar:last-child {
+  margin-right: 0;
+}
+
+/* Lift the hovered/focused avatar (and its card) above its neighbours. */
+.source-avatar:hover,
+.source-avatar:focus-within {
+  z-index: 5;
+}
+
+.source-favicon,
+.source-more-chip {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 1.5px solid var(--surface);
+  border-radius: 50%;
+  background: var(--pill-bg);
+  color: var(--text-muted);
+  overflow: hidden;
+  cursor: pointer;
+  box-sizing: border-box;
+}
+
+.source-favicon img {
+  display: block;
+  width: 16px;
+  height: 16px;
+  border-radius: 3px;
+}
+
+.source-favicon-fallback {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--text-muted);
+}
+
+.source-more-chip {
+  font-size: 10.5px;
+  font-weight: 600;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.source-more-chip:hover,
+.source-favicon:hover {
+  color: var(--text);
+}
+
+/* Hover/focus card, anchored above the avatar row. Hidden until its avatar is
+   hovered or focused; a transparent bridge spans the gap so the pointer can
+   travel from the avatar onto the (clickable) card without it dismissing. */
+.source-popover {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 0;
+  width: max-content;
+  max-width: 240px;
+  padding: 8px 10px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.14);
+  opacity: 0;
+  transform: translateY(3px);
+  pointer-events: none;
+  transition: opacity 0.12s ease, transform 0.12s ease;
+  z-index: 30;
+}
+
+.source-popover::before {
+  content: '';
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  height: 8px;
+}
+
+.source-avatar:hover .source-popover,
+.source-avatar:focus-within .source-popover {
+  opacity: 1;
+  transform: translateY(0);
+  pointer-events: auto;
+}
+
+.source-popover-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 4px;
+  max-height: 240px;
+  overflow-y: auto;
+}
+
+.source-card-link {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border-radius: 8px;
+  text-decoration: none;
+  color: inherit;
+}
+
+.source-popover-list .source-card-link {
+  padding: 6px;
+}
+
+.source-popover-list .source-card-link:hover {
+  background: var(--pill-bg);
+}
+
+.source-card-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+}
+
+.source-card-icon img {
+  width: 16px;
+  height: 16px;
+  border-radius: 3px;
+}
+
+.source-card-icon .source-favicon-fallback {
+  width: 8px;
+  height: 8px;
+}
+
+.source-card-text {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.source-card-title {
+  max-width: 200px;
+  overflow: hidden;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.source-card-url {
+  max-width: 200px;
+  overflow: hidden;
+  font-size: 11px;
+  color: var(--text-muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .markdown > :first-child {
