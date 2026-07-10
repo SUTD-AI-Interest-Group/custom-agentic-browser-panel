@@ -11,6 +11,7 @@ import { getSelectedProvider, type Settings } from '../data/settings'
 import { getActiveTab, listOpenTabs, readTabContent, type TabContent, type TabSummary } from '../platform/tabs'
 import { createAgentTools, type ApprovalRequest } from '../tools/tools'
 import { grantedCapabilities, type BrowsingCapability } from '../platform/permissions'
+import { getSkill, listSkillMetas } from '../data/skills'
 
 // Which browsing-insight tool each capability exposes — used to tell the model,
 // each turn, exactly which are usable so it never calls a disabled one.
@@ -70,6 +71,11 @@ const MAX_ALL_TABS = 25
 
 // Cap how much highlighted text we forward as context.
 const SELECTION_MAX = 4000
+
+// Reading/listing skills only touches the user's own local skill store — as
+// benign as SearchMemory — so these route through the approval gate (invariant)
+// but are auto-approved. SaveSkill is NOT here: it mutates and shows the card.
+const AUTO_APPROVED_TOOLS = new Set(['ReadSkill', 'ListAllSkills'])
 
 // Deictic references to the page/tab the user is currently viewing — "what
 // about this?", "summarize this page", "what's here". Liberal by design: a
@@ -272,6 +278,7 @@ export default function Chat({
   }, [messages, approval])
 
   function requestApproval(request: ApprovalRequest): Promise<boolean> {
+    if (AUTO_APPROVED_TOOLS.has(request.toolName)) return Promise.resolve(true)
     if (sessionAllowed.current.has(request.toolName)) return Promise.resolve(true)
     if (turnAllowed.current.has(request.toolName)) return Promise.resolve(true)
     return new Promise<boolean>((resolve) => {
@@ -378,6 +385,11 @@ export default function Chat({
 
   async function send() {
     const text = input.trim()
+    // A leading "/skill-name" token explicitly invokes that skill for this turn:
+    // its full instructions are injected into the system prompt below.
+    const slashMatch = text.match(/^\/([a-z0-9-]+)(?:\s|$)/)
+    const invokedSkill = slashMatch ? await getSkill(slashMatch[1]) : null
+    const activeSkill = invokedSkill && invokedSkill.userInvocable ? invokedSkill : null
     const images = attachments
     // Mentions only count if their token survived editing.
     const activeMentions = mentions.filter((m) => text.includes(m.token))
@@ -503,9 +515,23 @@ export default function Chat({
         settings.tabAccess === 'active-tab'
           ? '\n\nThe user has restricted your tab visibility to the tab they are currently on; ViewOpenedTabs is unavailable.'
           : ''
+      // Level-1 progressive disclosure: name+description of every model-invocable
+      // skill, so the agent knows what it can load via ReadSkill.
+      const skillMetas = await listSkillMetas({ modelInvocableOnly: true }).catch(() => [])
+      const skillsCatalog =
+        skillMetas.length > 0
+          ? `\n\n## Skills\nThese skills are available. When a request matches one, call ReadSkill with its name to load its full instructions before proceeding.\n${skillMetas
+              .map((s) => `- ${s.name}: ${s.description}`)
+              .join('\n')}`
+          : ''
+      // Level-2: an explicitly invoked skill's body is injected directly (the
+      // user asked for it, so no ReadSkill round-trip is needed).
+      const activeSkills = activeSkill
+        ? `\n\n## Active skill: ${activeSkill.name}\nThe user invoked this skill. Follow these instructions for this task:\n\n${activeSkill.body}`
+        : ''
       const { parts, responseMessages } = await runAgentTurn({
         model: createModel(selected.provider, selected.modelId),
-        system: `${settings.systemPrompt}${accessNote}${browsingInsightsNote(granted)}${memoryContext ? `\n\n${memoryContext}` : ''}`,
+        system: `${settings.systemPrompt}${accessNote}${browsingInsightsNote(granted)}${memoryContext ? `\n\n${memoryContext}` : ''}${skillsCatalog}${activeSkills}`,
         history: [...historyRef.current],
         tools: createAgentTools(requestApproval, settings.tabAccess, granted),
         abortSignal: controller.signal,
@@ -527,6 +553,7 @@ export default function Chat({
       if (syncedTabs.length > 0)
         notes.push(`[synced tabs: ${syncedTabs.map((t) => t.title).join(', ')}]`)
       if (useMemory) notes.push('[asked to recall from memory]')
+      if (activeSkill) notes.push(`[invoked skill: ${activeSkill.name}]`)
       if (useAll) notes.push('[shared all open tabs]')
       if (activeSelection) notes.push('[shared a page selection]')
       const journalUserText = [text, ...notes].filter(Boolean).join('\n')
@@ -576,8 +603,8 @@ export default function Chat({
             <div className="empty-title">How can I help?</div>
             <div className="empty-hint">
               The tab you're on is attached to your first message. @mention another tab to share
-              it, type @memory to have me draw on what I remember, or snip a screenshot with the
-              camera.
+              it, type @memory to have me draw on what I remember, type / to run one of your
+              skills, or snip a screenshot with the camera.
             </div>
           </div>
         )}
@@ -965,6 +992,12 @@ function ToolPill({ part }: { part: Extract<UIPart, { type: 'tool' }> }) {
   else if (part.toolName === 'SaveMemory') label = 'Saved a memory'
   else if (part.toolName === 'SearchMemory')
     label = `Recalled ${output?.memories?.length ?? 0} memor${(output?.memories?.length ?? 0) === 1 ? 'y' : 'ies'}`
+  else if (part.toolName === 'ListAllSkills')
+    label = `Listed ${output?.skills?.length ?? 0} skill${(output?.skills?.length ?? 0) === 1 ? '' : 's'}`
+  else if (part.toolName === 'ReadSkill')
+    label = output?.error ? 'Skill not found' : `Loaded skill · ${output?.name ?? ''}`
+  else if (part.toolName === 'SaveSkill')
+    label = output?.saved ? `Saved skill · ${output?.name ?? ''}` : 'Skill not saved'
   else label = part.toolName
 
   return (
