@@ -65,6 +65,9 @@ the chat:
 - **ViewOpenedTabs** — lists all open tabs; optionally reads specific tabs by id.
 - **SaveMemory** — saves a durable fact/preference/project to long-term memory.
 - **SearchMemory** — keyword-searches long-term memory for older context.
+- **InspectPage** — reads the active tab as a numbered list of interactive elements.
+- **RequestPageControl** — asks once to control the tab for a task, then the agent acts.
+- **ControlPage** — performs one action (click / type / select / scroll / highlight / navigate / press).
 
 ## Screenshots
 
@@ -84,6 +87,55 @@ Allow / Allow this chat / Deny, so the AI SDK's multi-step agent loop
 (`streamText` + `stopWhen: stepCountIs(n)`) needs no special handling. Page
 content is extracted via `chrome.scripting.executeScript` function injection —
 there is no persistent content script.
+
+## Page control
+
+Beyond reading pages, the agent can act on one: click, type, select, scroll,
+highlight, navigate, or press a key — the "browser-use" capability, built
+entirely on the manifest's existing `scripting`/`tabs`/`activeTab`
+permissions (no `chrome.debugger`, no extra host permissions).
+
+- **Indexed-DOM registry** (`src/platform/domIndex.ts`) — `InspectPage` and
+  `RequestPageControl` inject a walker that finds visible interactive
+  elements (links, buttons, inputs, ARIA-interactive roles), stamps each with
+  a `data-agent-idx` attribute so a later, separate injection can re-find it
+  (`chrome.scripting` calls share no JS state, only the DOM), and returns a
+  numbered registry. `ControlPage` addresses elements by that `[index]`, and
+  every action re-snapshots the page afterward so the model always sees the
+  current state.
+- **Adaptive perception** — every model gets the indexed registry as a
+  compact text list (`[index]<tag role=...> "name" = "value"`); that's the
+  primary channel regardless of model. For vision-capable models, a
+  set-of-marks screenshot (the same registry drawn as numbered boxes over a
+  fresh tab capture, `src/platform/marks.ts`) is captured too and delivered
+  as a `user`-role image message injected by `streamText`'s `prepareStep`
+  right before the model's next step (`src/agent/agent.ts`) — an
+  OpenAI-compatible tool result cannot carry image content, so the image
+  can't ride along on the tool's own response. Whether a model can actually
+  read images is decided by a cheap runtime probe (`src/agent/vision.ts`): a
+  tiny canvas image with a random code is sent once per provider+model, and
+  the model is judged vision-capable only if it echoes the code back; the
+  result is cached in `chrome.storage.local` so the probe runs at most once
+  per model. Non-vision models, and models where the probe fails, rely on
+  the text registry alone.
+- **Per-task session grant** (`src/tools/pageControl.ts`) —
+  `RequestPageControl` shows one approval card naming the page and the
+  agent's stated plan; approving opens a `ControlSession` scoped to that tab
+  and origin with a budget of `MAX_SESSION_ACTIONS` (20) `ControlPage` calls,
+  after which the session closes and the agent must ask again. Within a
+  granted session, individual steps still run through
+  `isPointOfNoReturn()` — form submits, cross-origin navigation, an Enter
+  keypress, or a field flagged sensitive (passwords, payment inputs) — each
+  of which pops its own one-shot confirmation card (no "Allow this chat")
+  before it executes. The chat's Stop control aborts the turn and always
+  tears the session down.
+- **On-page presence overlay** (`src/platform/presence.ts`) — while a
+  session is open the page gets a translucent tint with a spotlight cutout
+  and a small cursor that glides to each element before it's acted on and
+  pulses on click, so the user can watch the agent work. It's hidden for the
+  instant a set-of-marks screenshot is taken (so the tint doesn't pollute
+  what the model sees) and always restored afterward, and is fully removed
+  when the session ends.
 
 ## Memory & dreaming
 
@@ -139,9 +191,11 @@ src/background.ts           Service worker: side panel behavior + dream alarm
 src/ui/                     React UI: Onboarding, Chat, Memory, Settings, Markdown
 src/ui/SkillsLibrary.tsx    Skills Library masonry UI + editor
 src/tools/tools.ts          Tool registry + approval gate
+src/tools/pageControl.ts    Control session, point-of-no-return rules, action dispatch
 src/agent/agent.ts          One agent turn: streamText → UI part stream
 src/agent/provider.ts       Config → AI SDK model (createOpenAICompatible)
 src/agent/dream.ts          Dream cycle: episodes + memories → memory ops
+src/agent/vision.ts         Runtime probe: does this model actually read images?
 src/data/settings.ts        Provider/model/system-prompt storage (chrome.storage)
 src/data/memory.ts          IndexedDB: episodes journal + long-term memories
 src/data/conversations.ts   IndexedDB: saved chat history
@@ -150,18 +204,23 @@ src/data/builtinSkills.ts   /create-skill meta-skill + example seeds
 src/platform/tabs.ts        Tab listing + page-content extraction
 src/platform/capture.ts     Region screenshots: snipe overlay + crop
 src/platform/domImage.ts    DOM element → PNG (copy/attach a component)
+src/platform/domIndex.ts    Indexed-DOM registry (data-agent-idx) for page control
+src/platform/pageActions.ts Real DOM mutations: click/type/select/scroll/press/navigate
+src/platform/presence.ts    On-page overlay: tint + gliding cursor + spotlight
+src/platform/marks.ts       Set-of-marks screenshot (numbered boxes over a tab capture)
 src/platform/panelPort.ts   Side-panel ↔ background messaging port
 src/platform/time.ts        Relative-time formatting
 ```
 
 ## Extending (planned surfaces)
 
-- **More tools** (form autofill, page control): add an entry in
+- **More tools** (form autofill, richer control actions): add an entry in
   `createAgentTools()` in `src/tools/tools.ts`. Route anything that mutates a page
   through the same `requestApproval` gate; write-actions can use
   `chrome.scripting.executeScript` with args, like `extractPageContent` does.
 - **Cross-tab orchestration**: `src/background.ts` is intentionally minimal and
   is the place for work that must outlive the side panel.
 
-Skills (named, reusable instruction bundles) were on this list and are now
-implemented — see [Skills](#skills) above.
+Skills (named, reusable instruction bundles) and page control (act on the
+active tab, not just read it) were on this list and are now implemented —
+see [Skills](#skills) and [Page control](#page-control) above.
