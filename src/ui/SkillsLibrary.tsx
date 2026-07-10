@@ -44,7 +44,7 @@ export default function SkillsLibrary({ onClose }: { onClose: () => void }) {
       <div className="skills-header">
         <h2>Skills</h2>
         <div className="skills-header-actions">
-          <button className="btn primary sm" onClick={() => setEditor({ kind: 'new' })}>
+          <button className="btn primary small" onClick={() => setEditor({ kind: 'new' })}>
             New skill
           </button>
           <button className="icon-btn" title="Close" onClick={onClose}>
@@ -248,11 +248,11 @@ function SkillEditor({ mode, onBack }: { mode: EditorMode; onBack: () => void })
       {notice && <div className="skill-notice">{notice}</div>}
 
       <div className="skill-editor-actions">
-        <button className="btn ghost sm" onClick={exportMd}>
+        <button className="btn ghost small" onClick={exportMd}>
           Export .md
         </button>
         {!readOnly && (
-          <label className="btn ghost sm">
+          <label className="btn ghost small">
             Import .md
             <input
               type="file"
@@ -268,16 +268,16 @@ function SkillEditor({ mode, onBack }: { mode: EditorMode; onBack: () => void })
         )}
         <span className="spacer" />
         {mode.kind === 'edit' && (
-          <button className="btn ghost sm danger" onClick={() => void remove()}>
+          <button className="btn ghost small danger" onClick={() => void remove()}>
             Delete
           </button>
         )}
         {readOnly ? (
-          <button className="btn primary sm" onClick={() => void duplicate()}>
+          <button className="btn primary small" onClick={() => void duplicate()}>
             Duplicate to customize
           </button>
         ) : (
-          <button className="btn primary sm" onClick={() => void save()}>
+          <button className="btn primary small" onClick={() => void save()}>
             Save
           </button>
         )}

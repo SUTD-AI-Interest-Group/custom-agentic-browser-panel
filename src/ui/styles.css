@@ -1245,6 +1245,13 @@ body {
   gap: 6px;
 }
 
+.skills .hint,
+.skill-editor .hint {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin: 0 0 12px;
+}
+
 .skills-grid {
   column-count: 2;
   column-gap: 10px;
@@ -1347,7 +1354,7 @@ body {
   opacity: 0.7;
 }
 
-.field-row {
+.skill-editor .field-row {
   display: flex;
   flex-wrap: wrap;
   gap: 14px;
@@ -1380,11 +1387,6 @@ body {
 
 .skill-editor-actions .spacer {
   flex: 1;
-}
-
-.btn.sm {
-  padding: 5px 10px;
-  font-size: 12px;
 }
 
 .btn.ghost.danger:hover {
