@@ -12,6 +12,26 @@ import { getActiveTab, listOpenTabs, readTabContent, type TabContent, type TabSu
 import { createAgentTools, type ApprovalRequest } from '../tools/tools'
 import { grantedCapabilities, type BrowsingCapability } from '../platform/permissions'
 
+// Which browsing-insight tool each capability exposes — used to tell the model,
+// each turn, exactly which are usable so it never calls a disabled one.
+const BROWSING_TOOL_NAMES: Record<BrowsingCapability, string> = {
+  history: 'GetBrowsingHistory',
+  bookmarks: 'GetBookmarks',
+  topSites: 'GetTopSites',
+  downloads: 'GetDownloads',
+}
+
+/** System-prompt suffix naming the browsing-insight tools available this turn. */
+function browsingInsightsNote(granted: Set<BrowsingCapability>): string {
+  const available = (Object.keys(BROWSING_TOOL_NAMES) as BrowsingCapability[])
+    .filter((cap) => granted.has(cap))
+    .map((cap) => BROWSING_TOOL_NAMES[cap])
+  if (available.length === 0) {
+    return '\n\nThe browsing-insight tools (history, bookmarks, top sites, downloads) are currently turned off; do not offer to use them.'
+  }
+  return `\n\nBrowsing-insight tools available this turn: ${available.join(', ')}.`
+}
+
 interface PendingApproval extends ApprovalRequest {
   resolve: (approved: boolean) => void
 }
@@ -485,7 +505,7 @@ export default function Chat({
           : ''
       const { parts, responseMessages } = await runAgentTurn({
         model: createModel(selected.provider, selected.modelId),
-        system: `${settings.systemPrompt}${accessNote}${memoryContext ? `\n\n${memoryContext}` : ''}`,
+        system: `${settings.systemPrompt}${accessNote}${browsingInsightsNote(granted)}${memoryContext ? `\n\n${memoryContext}` : ''}`,
         history: [...historyRef.current],
         tools: createAgentTools(requestApproval, settings.tabAccess, granted),
         abortSignal: controller.signal,
