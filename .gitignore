@@ -1,3 +1,7 @@
 node_modules/
 dist/
 *.local
+
+# Claude Code: per-user settings and isolated worktrees stay out of the repo
+.claude/settings.local.json
+.claude/worktrees/
