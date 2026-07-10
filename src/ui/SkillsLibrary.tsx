@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import {
   accentColor,
   deleteSkill,
+  getSkill,
   listSkills,
   parseSkillMarkdown,
   saveSkill,
@@ -105,8 +106,20 @@ function SkillEditor({ mode, onBack }: { mode: EditorMode; onBack: () => void })
       setNotice(err)
       return
     }
+    const originalName = mode.kind === 'edit' ? mode.skill.name : null
+    const renaming = originalName !== null && originalName !== name
+    // A rename must not collide with a different existing skill, and must
+    // remove the old record rather than leaving an orphaned duplicate.
+    if (renaming) {
+      const clash = await getSkill(name)
+      if (clash) {
+        setNotice(`A skill named “${name}” already exists.`)
+        return
+      }
+    }
     try {
       await saveSkill({ name, description, body, icon: icon || undefined, userInvocable, modelInvocable })
+      if (renaming && originalName) await deleteSkill(originalName)
       onBack()
     } catch (e) {
       setNotice(e instanceof Error ? e.message : String(e))
@@ -114,10 +127,16 @@ function SkillEditor({ mode, onBack }: { mode: EditorMode; onBack: () => void })
   }
 
   async function duplicate() {
+    // Find a free "-copy" name so duplicating twice never overwrites the first copy.
+    let candidate = `${name}-copy`
+    let n = 2
+    while (await getSkill(candidate)) {
+      candidate = `${name}-copy-${n}`
+      n++
+    }
     try {
-      // Save a customizable copy; validateSkill runs inside saveSkill.
       await saveSkill({
-        name: `${name}-copy`,
+        name: candidate,
         description,
         body,
         icon: icon || undefined,

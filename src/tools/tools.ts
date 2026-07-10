@@ -262,7 +262,7 @@ export function createAgentTools(
           reason: 'To see which skills are available',
         })
         if (!approved) return DENIED
-        const skills = await listSkillMetas()
+        const skills = await listSkillMetas({ modelInvocableOnly: true })
         return { skills }
       },
     }),
@@ -282,6 +282,8 @@ export function createAgentTools(
         if (!approved) return DENIED
         const skill = await getSkill(name)
         if (!skill) return { error: `No skill named "${name}". Use ListAllSkills to see valid names.` }
+        if (!skill.modelInvocable)
+          return { error: `The "${name}" skill can only be run when the user types /${name}; it cannot be auto-loaded.` }
         return { name: skill.name, description: skill.description, body: skill.body }
       },
     }),
@@ -298,8 +300,16 @@ export function createAgentTools(
           .describe('Third-person sentence stating what the skill does and when to use it, with trigger keywords'),
         body: z.string().describe('The Markdown instruction body the assistant follows when the skill runs'),
         icon: z.string().optional().describe('A single emoji to represent the skill in the Library'),
+        userInvocable: z
+          .boolean()
+          .optional()
+          .describe('Whether the user can run it by typing /name (default true)'),
+        modelInvocable: z
+          .boolean()
+          .optional()
+          .describe('Whether you may auto-load it via ReadSkill when relevant (default true). Set false for user-only actions.'),
       }),
-      execute: async ({ name, description, body, icon }) => {
+      execute: async ({ name, description, body, icon, userInvocable, modelInvocable }) => {
         const approved = await requestApproval({
           toolName: 'SaveSkill',
           summary: `Save skill “${name}”`,
@@ -307,7 +317,7 @@ export function createAgentTools(
         })
         if (!approved) return DENIED
         try {
-          const saved = await saveSkill({ name, description, body, icon })
+          const saved = await saveSkill({ name, description, body, icon, userInvocable, modelInvocable })
           return { saved: true, name: saved.name }
         } catch (err) {
           // Validation / built-in-overwrite failures come back as text so the

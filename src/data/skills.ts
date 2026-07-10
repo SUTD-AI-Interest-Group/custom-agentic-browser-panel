@@ -117,6 +117,7 @@ export function validateSkill(input: { name: string; description: string; body: 
   if (nameErr) return nameErr
   if (!input.description.trim()) return 'Description is required.'
   if (input.description.length > 1024) return 'Description must be 1024 characters or fewer.'
+  if (/[\r\n]/.test(input.description)) return 'Description must be a single line.'
   if (!input.body.trim()) return 'Instructions cannot be empty.'
   return null
 }
