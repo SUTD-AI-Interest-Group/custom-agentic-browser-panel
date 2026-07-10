@@ -102,7 +102,7 @@ function hostOf(url: string): string {
 // The pages an assistant reply drew on, shown as a favicon avatar bar beside
 // the copy actions. Only real web pages count: tabs attached to the user's
 // turn (stored on the message) plus pages the model read via ViewCurrentTab /
-// ViewOpenedTabs (derived from the reply's tool parts).
+// ViewOpenedTabs / GetActiveTabDOM / GetAllDOM (derived from the reply's tool parts).
 
 const MAX_VISIBLE_SOURCES = 3
 
@@ -130,11 +130,15 @@ function deriveSources(message: UIMessage): MessageSource[] {
     if (part.type !== 'tool' || part.state !== 'done') continue
     const output = part.output as any
     if (!output || typeof output !== 'object' || output.denied) continue
-    if (part.toolName === 'ViewCurrentTab' && !output.error) {
+    if ((part.toolName === 'ViewCurrentTab' || part.toolName === 'GetActiveTabDOM') && !output.error) {
       collected.push({ title: output.title ?? '', url: output.url ?? '' })
     } else if (part.toolName === 'ViewOpenedTabs' && Array.isArray(output.contents)) {
       for (const c of output.contents) {
         if (c && !c.error) collected.push({ title: c.title ?? '', url: c.url ?? '' })
+      }
+    } else if (part.toolName === 'GetAllDOM' && Array.isArray(output.doms)) {
+      for (const d of output.doms) {
+        if (d && !d.error) collected.push({ title: d.title ?? '', url: d.url ?? '' })
       }
     }
   }
@@ -624,7 +628,7 @@ export default function Chat({
       const granted = await grantedCapabilities().catch(() => new Set<BrowsingCapability>())
       const accessNote =
         settings.tabAccess === 'active-tab'
-          ? '\n\nThe user has restricted your tab visibility to the tab they are currently on; ViewOpenedTabs is unavailable.'
+          ? '\n\nThe user has restricted your tab visibility to the tab they are currently on; ViewOpenedTabs and GetAllDOM are unavailable.'
           : ''
       // Level-1 progressive disclosure: name+description of every model-invocable
       // skill, so the agent knows what it can load via ReadSkill.
@@ -1237,6 +1241,20 @@ function ToolPill({ part }: { part: Extract<UIPart, { type: 'tool' }> }) {
     label = output?.contents
       ? `Read ${output.contents.length} tab${output.contents.length > 1 ? 's' : ''}`
       : `Listed ${output?.tabs?.length ?? 0} open tabs`
+  else if (part.toolName === 'GetActiveTabDOM')
+    label = output?.error ? 'Could not read tab DOM' : `Read current tab DOM · ${output?.title ?? ''}`
+  else if (part.toolName === 'GetAllDOM')
+    label = output?.doms
+      ? `Read DOM of ${output.doms.length} tab${output.doms.length > 1 ? 's' : ''}`
+      : `Listed ${output?.tabs?.length ?? 0} open tabs`
+  else if (part.toolName === 'NavigateTab')
+    label = output?.error
+      ? 'Navigation failed'
+      : output?.action === 'activate'
+        ? `Switched to tab · ${output?.title ?? ''}`
+        : output?.action === 'open'
+          ? `Opened new tab · ${output?.title || output?.url || ''}`
+          : `Navigated to · ${output?.title || output?.url || ''}`
   else if (part.toolName === 'SaveMemory') label = 'Saved a memory'
   else if (part.toolName === 'SearchMemory')
     label = `Recalled ${output?.memories?.length ?? 0} memor${(output?.memories?.length ?? 0) === 1 ? 'y' : 'ies'}`

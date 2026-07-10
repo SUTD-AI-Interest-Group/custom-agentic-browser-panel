@@ -3,7 +3,7 @@ import { z } from 'zod'
 import { saveMemory, searchMemories } from '../data/memory'
 import { getSkill, listSkillMetas, saveSkill } from '../data/skills'
 import type { TabAccess } from '../data/settings'
-import { getActiveTab, listOpenTabs, readTabContent } from '../platform/tabs'
+import { getActiveTab, listOpenTabs, navigateTab, readTabContent, readTabDom } from '../platform/tabs'
 import { getBrowsingHistory, getBookmarks, getTopSites, getDownloads } from '../platform/browsingData'
 import type { BrowsingCapability } from '../platform/permissions'
 
@@ -34,6 +34,10 @@ const DENIED = {
   denied: true,
   message: 'The user denied permission for this tool call.',
 }
+
+// DOM is denser than plain text, so these caps run larger than the 25k text cap.
+const MAX_DOM_CHARS = 40_000 // single active tab (GetActiveTabDOM)
+const MAX_DOM_CHARS_PER_TAB = 15_000 // per tab in GetAllDOM, to bound aggregate size
 
 export function createAgentTools(
   requestApproval: ApprovalGate,
@@ -90,6 +94,93 @@ export function createAgentTools(
         if (!reading) return { tabs }
         const contents = await Promise.all(tabIds.map((id) => readTabContent(id)))
         return { tabs, contents }
+      },
+    }),
+
+    GetActiveTabDOM: tool({
+      description:
+        'Read the DOM (cleaned HTML structure) of the tab the user is currently viewing — tags, attributes, links, form fields. Unlike ViewCurrentTab, which returns visible text, this exposes the page skeleton so you can locate elements or understand structure. Asks the user for permission first.',
+      inputSchema: z.object({
+        reason: z
+          .string()
+          .describe('Short reason shown to the user, e.g. "To find the login form on this page"'),
+      }),
+      execute: async ({ reason }) => {
+        const approved = await requestApproval({
+          toolName: 'GetActiveTabDOM',
+          summary: 'Read the DOM/HTML structure of the tab you are on',
+          reason,
+        })
+        if (!approved) return DENIED
+        const tab = await getActiveTab()
+        if (tab?.id === undefined) return { error: 'No active tab found.' }
+        return await readTabDom(tab.id, MAX_DOM_CHARS)
+      },
+    }),
+
+    GetAllDOM: tool({
+      description:
+        'List all open tabs (titles, URLs, tab ids). Optionally pass tabIds to also read the cleaned DOM (HTML structure) of specific tabs. Use to inspect the structure of tabs other than the current one. Asks the user for permission first. Read only the tabs you need — each DOM is large.',
+      inputSchema: z.object({
+        reason: z
+          .string()
+          .describe('Short reason shown to the user, e.g. "To read the structure of your open form tabs"'),
+        tabIds: z
+          .array(z.number())
+          .optional()
+          .describe(
+            'Tab ids (from a previous listing) whose cleaned DOM should be read. Omit to only list tabs.',
+          ),
+      }),
+      execute: async ({ reason, tabIds }) => {
+        const reading = tabIds && tabIds.length > 0
+        const approved = await requestApproval({
+          toolName: 'GetAllDOM',
+          summary: reading
+            ? `Read the DOM of ${tabIds.length} open tab${tabIds.length > 1 ? 's' : ''}`
+            : 'See the list of your open tabs',
+          reason,
+        })
+        if (!approved) return DENIED
+        const tabs = await listOpenTabs()
+        if (!reading) return { tabs }
+        const doms = await Promise.all(tabIds.map((id) => readTabDom(id, MAX_DOM_CHARS_PER_TAB)))
+        return { tabs, doms }
+      },
+    }),
+
+    NavigateTab: tool({
+      description:
+        "Drive the user's tabs: switch to an existing tab, load a URL in a tab, or open a new tab. Use when the user asks you to go to a page, switch tabs, or open something. Asks the user for permission first.",
+      inputSchema: z
+        .object({
+          reason: z
+            .string()
+            .describe('Short reason shown to the user, e.g. "To open the API documentation"'),
+          action: z
+            .enum(['activate', 'goto', 'open'])
+            .describe(
+              'activate: focus an existing tab by tabId; goto: load a url in a tab (the active tab if tabId omitted); open: open a new tab at a url',
+            ),
+          tabId: z
+            .number()
+            .optional()
+            .describe('Target tab id. Required for activate; optional for goto (defaults to the active tab).'),
+          url: z.string().optional().describe('Destination URL. Required for goto and open.'),
+        })
+        .refine((v) => (v.action === 'activate' ? v.tabId !== undefined : !!v.url), {
+          message: 'activate requires tabId; goto and open require url.',
+        }),
+      execute: async ({ reason, action, tabId, url }) => {
+        const summary =
+          action === 'activate'
+            ? `Switch to tab #${tabId}`
+            : action === 'open'
+              ? `Open a new tab at ${url}`
+              : `Navigate ${tabId !== undefined ? `tab #${tabId}` : 'the current tab'} to ${url}`
+        const approved = await requestApproval({ toolName: 'NavigateTab', summary, reason })
+        if (!approved) return DENIED
+        return { action, ...(await navigateTab(action, { tabId, url })) }
       },
     }),
 
@@ -330,7 +421,10 @@ export function createAgentTools(
 
   // Honor the tab-visibility preference chosen in onboarding: in active-tab
   // mode the model never even sees a tool that could enumerate other tabs.
-  if (tabAccess !== 'all-tabs') delete tools.ViewOpenedTabs
+  if (tabAccess !== 'all-tabs') {
+    delete tools.ViewOpenedTabs
+    delete tools.GetAllDOM
+  }
 
   // Browsing-data tools are hidden unless the user has granted the matching
   // optional permission — the model never sees a capability that is off.
