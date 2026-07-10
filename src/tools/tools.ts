@@ -34,6 +34,8 @@ export interface ApprovalRequest {
   summary: string
   /** The model's stated reason, shown to the user. */
   reason: string
+  /** When true, the card must NOT offer "Allow this chat" — the action must be confirmed every time (point-of-no-return page actions). */
+  once?: boolean
 }
 
 export type ApprovalGate = (request: ApprovalRequest) => Promise<boolean>
@@ -54,7 +56,7 @@ function pointOfNoReturnSummary(spec: ControlSpec, el?: { name: string }): strin
 /** Human-in-the-loop gate for page control, implemented by the chat UI. */
 export interface PageControlGate {
   /** Show the session card with the plan; resolve true if the user allows. */
-  requestSession(input: { plan: string; host: string; tabId: number }): Promise<boolean>
+  requestSession(input: { plan: string; host: string; origin: string; tabId: number }): Promise<boolean>
   /** The currently open session, or null. */
   session(): ControlSession | null
   /** Close the session and tear down any on-page overlay. */
@@ -167,7 +169,14 @@ export function createAgentTools(
             return tab.url ?? 'this page'
           }
         })()
-        const granted = await pageControl.requestSession({ plan, host, tabId: tab.id })
+        const origin = (() => {
+          try {
+            return new URL(tab.url ?? '').origin
+          } catch {
+            return ''
+          }
+        })()
+        const granted = await pageControl.requestSession({ plan, host, origin, tabId: tab.id })
         if (!granted) return DENIED
         try {
           const snap = await snapshotPage(tab.id)
@@ -217,6 +226,7 @@ export function createAgentTools(
             toolName: 'ControlPage',
             summary: pointOfNoReturnSummary(spec, el),
             reason: 'This step changes state or leaves the page.',
+            once: true,
           })
           if (!approved) return DENIED
         }

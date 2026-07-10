@@ -16,6 +16,8 @@ export interface IndexedElement {
   rect: { x: number; y: number; width: number; height: number }
   /** Password/payment-like field — forces an approval card even in a session. */
   sensitive: boolean
+  /** Absolute URL for anchor elements. */
+  href?: string
 }
 
 /** A full read of the current page: the registry plus a compact text form. */
@@ -92,6 +94,7 @@ function buildInteractiveIndex(attr: string, maxElements: number) {
     value?: string
     rect: { x: number; y: number; width: number; height: number }
     sensitive: boolean
+    href?: string
   }> = []
   const all = Array.from(document.querySelectorAll('*'))
   let index = 0
@@ -120,6 +123,7 @@ function buildInteractiveIndex(attr: string, maxElements: number) {
       value: input.value ? String(input.value).slice(0, 80) : undefined,
       rect: { x: r.left, y: r.top, width: r.width, height: r.height },
       sensitive,
+      href: el.tagName === 'A' ? (el as HTMLAnchorElement).href : undefined,
     })
     index++
   }

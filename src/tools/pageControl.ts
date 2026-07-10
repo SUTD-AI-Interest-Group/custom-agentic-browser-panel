@@ -73,6 +73,7 @@ export function isPointOfNoReturn(
   }
   if (spec.action === 'press' && /enter/i.test(spec.keys ?? '')) return true
   if (spec.action === 'click' && el) {
+    if (el.href && hostOf(el.href) !== sessionOrigin) return true
     if (el.type === 'submit' || el.type === 'image') return true
     if (/submit|sign in|log ?in|pay|checkout|place order|continue/i.test(el.name)) return true
   }

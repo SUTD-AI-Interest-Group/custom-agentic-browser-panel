@@ -10,7 +10,7 @@ import { createModel, generateChatTitle } from '../agent/provider'
 import { getSelectedProvider, type Settings } from '../data/settings'
 import { getActiveTab, listOpenTabs, readTabContent, type TabContent, type TabSummary } from '../platform/tabs'
 import { createAgentTools, type ApprovalRequest, type PageControlGate } from '../tools/tools'
-import type { ControlSession } from '../tools/pageControl'
+import { MAX_SESSION_ACTIONS, type ControlSession } from '../tools/pageControl'
 import { clearIndex } from '../platform/domIndex'
 import { grantedCapabilities, type BrowsingCapability } from '../platform/permissions'
 import { getSkill, listSkillMetas, listSkills } from '../data/skills'
@@ -351,12 +351,25 @@ export default function Chat({
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight })
   }, [messages, approval])
 
+  // Tear down any open session: clear the ref, hide the session card, and
+  // strip the on-page index stamps. Shared by endSession and by the start of
+  // requestSession, which must close out a stale session before opening a
+  // new one (otherwise the old tab keeps its data-agent-idx stamps).
+  function teardownSession() {
+    const s = pageSessionRef.current
+    pageSessionRef.current = null
+    setSessionPlan(null)
+    if (s) void clearIndex(s.tabId)
+  }
+
   // Real page-control gate: RequestPageControl suspends on a session card
   // (reusing the approval-card machinery, branched to the session variant via
   // sessionPlan); ControlPage reads/mutates the ref-backed session directly.
   const pageControl: PageControlGate = {
-    requestSession: ({ plan, host, tabId }) =>
+    requestSession: ({ plan, host, origin, tabId }) =>
       new Promise<boolean>((resolve) => {
+        // Close out any previously-open session before offering a new one.
+        if (pageSessionRef.current) teardownSession()
         // Reuse the approval card machinery, but branch the UI to a session card.
         setSessionPlan({ plan, host })
         approvalRef.current = {
@@ -368,16 +381,10 @@ export default function Chat({
             if (approved) {
               pageSessionRef.current = {
                 tabId,
-                origin: (() => {
-                  try {
-                    return new URL(currentTab?.url ?? '').origin
-                  } catch {
-                    return ''
-                  }
-                })(),
+                origin,
                 plan,
                 actionsUsed: 0,
-                maxActions: 20,
+                maxActions: MAX_SESSION_ACTIONS,
                 active: true,
               }
             }
@@ -387,12 +394,7 @@ export default function Chat({
         setApproval(approvalRef.current)
       }),
     session: () => pageSessionRef.current,
-    endSession: () => {
-      const s = pageSessionRef.current
-      pageSessionRef.current = null
-      setSessionPlan(null)
-      if (s) void clearIndex(s.tabId)
-    },
+    endSession: teardownSession,
   }
 
   function requestApproval(request: ApprovalRequest): Promise<boolean> {
@@ -1364,7 +1366,7 @@ function ApprovalCard({
         <button className="btn ghost" onClick={onDeny}>
           Deny
         </button>
-        {!isSession && (
+        {!isSession && !approval.once && (
           <button className="btn ghost" onClick={onAllowSession}>
             Allow this chat
           </button>
