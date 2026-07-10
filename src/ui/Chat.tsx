@@ -10,6 +10,8 @@ import { createModel, generateChatTitle } from '../agent/provider'
 import { getSelectedProvider, type Settings } from '../data/settings'
 import { getActiveTab, listOpenTabs, readTabContent, type TabContent, type TabSummary } from '../platform/tabs'
 import { createAgentTools, type ApprovalRequest, type PageControlGate } from '../tools/tools'
+import type { ControlSession } from '../tools/pageControl'
+import { clearIndex } from '../platform/domIndex'
 import { grantedCapabilities, type BrowsingCapability } from '../platform/permissions'
 import { getSkill, listSkillMetas, listSkills } from '../data/skills'
 
@@ -231,6 +233,9 @@ export default function Chat({
   // Tools pre-authorized for the current turn only (e.g. SearchMemory when the
   // user typed @memory — the mention itself is their consent).
   const turnAllowed = useRef<Set<string>>(new Set())
+  // The open page-control session (RequestPageControl → ControlPage), if any.
+  const pageSessionRef = useRef<ControlSession | null>(null)
+  const [sessionPlan, setSessionPlan] = useState<{ plan: string; host: string } | null>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
 
@@ -346,12 +351,48 @@ export default function Chat({
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight })
   }, [messages, approval])
 
-  // Stubbed until Task 4 wires the real session gate. Denies control sessions
-  // so only read-only tools work for now.
+  // Real page-control gate: RequestPageControl suspends on a session card
+  // (reusing the approval-card machinery, branched to the session variant via
+  // sessionPlan); ControlPage reads/mutates the ref-backed session directly.
   const pageControl: PageControlGate = {
-    requestSession: async () => false,
-    session: () => null,
-    endSession: () => {},
+    requestSession: ({ plan, host, tabId }) =>
+      new Promise<boolean>((resolve) => {
+        // Reuse the approval card machinery, but branch the UI to a session card.
+        setSessionPlan({ plan, host })
+        approvalRef.current = {
+          toolName: 'RequestPageControl',
+          summary: `Control ${host}`,
+          reason: plan,
+          resolve: (approved: boolean) => {
+            setSessionPlan(null)
+            if (approved) {
+              pageSessionRef.current = {
+                tabId,
+                origin: (() => {
+                  try {
+                    return new URL(currentTab?.url ?? '').origin
+                  } catch {
+                    return ''
+                  }
+                })(),
+                plan,
+                actionsUsed: 0,
+                maxActions: 20,
+                active: true,
+              }
+            }
+            resolve(approved)
+          },
+        }
+        setApproval(approvalRef.current)
+      }),
+    session: () => pageSessionRef.current,
+    endSession: () => {
+      const s = pageSessionRef.current
+      pageSessionRef.current = null
+      setSessionPlan(null)
+      if (s) void clearIndex(s.tabId)
+    },
   }
 
   function requestApproval(request: ApprovalRequest): Promise<boolean> {
@@ -699,6 +740,7 @@ export default function Chat({
     } finally {
       settleApproval(false)
       turnAllowed.current = new Set()
+      pageControl.endSession()
       abortRef.current = null
       setStreaming(false)
       setTurnSeq((n) => n + 1)
@@ -737,6 +779,7 @@ export default function Chat({
         {approval && (
           <ApprovalCard
             approval={approval}
+            sessionPlan={sessionPlan}
             onDeny={() => settleApproval(false)}
             onAllow={() => settleApproval(true)}
             onAllowSession={() => settleApproval(true, true)}
@@ -1233,6 +1276,19 @@ function SourceCard({ source }: { source: MessageSource }) {
   )
 }
 
+function controlActionLabel(input: any, output: any): string {
+  if (output?.denied) return 'Action denied'
+  const a = input?.action
+  if (a === 'type') return `Typed into element ${input.index}`
+  if (a === 'click') return `Clicked element ${input.index}`
+  if (a === 'select') return `Selected an option`
+  if (a === 'scroll') return input.direction === 'toElement' ? 'Scrolled to an element' : `Scrolled ${input.direction}`
+  if (a === 'highlight') return 'Highlighted an element'
+  if (a === 'navigate') return `Navigated the page`
+  if (a === 'press') return `Pressed ${input.keys}`
+  return 'Page action'
+}
+
 function ToolPill({ part }: { part: Extract<UIPart, { type: 'tool' }> }) {
   const output = part.output as any
   const denied = output && typeof output === 'object' && output.denied
@@ -1254,6 +1310,10 @@ function ToolPill({ part }: { part: Extract<UIPart, { type: 'tool' }> }) {
     label = output?.error ? 'Skill not found' : `Loaded skill · ${output?.name ?? ''}`
   else if (part.toolName === 'SaveSkill')
     label = output?.saved ? `Saved skill · ${output?.name ?? ''}` : 'Skill not saved'
+  else if (part.toolName === 'InspectPage') label = 'Read the page elements'
+  else if (part.toolName === 'RequestPageControl')
+    label = output?.started ? 'Started controlling the page' : 'Asked to control the page'
+  else if (part.toolName === 'ControlPage') label = controlActionLabel(part.input, output)
   else label = part.toolName
 
   return (
@@ -1276,32 +1336,39 @@ function ToolPill({ part }: { part: Extract<UIPart, { type: 'tool' }> }) {
 
 function ApprovalCard({
   approval,
+  sessionPlan,
   onDeny,
   onAllow,
   onAllowSession,
 }: {
   approval: PendingApproval
+  sessionPlan?: { plan: string; host: string } | null
   onDeny: () => void
   onAllow: () => void
   onAllowSession: () => void
 }) {
+  const isSession = !!sessionPlan
   return (
-    <div className="approval-card">
+    <div className={`approval-card ${isSession ? 'session' : ''}`}>
       <div className="approval-header">
         <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
           <rect x="2.5" y="6" width="9" height="6" rx="1.2" stroke="currentColor" strokeWidth="1.3" />
           <path d="M4.5 6V4.5a2.5 2.5 0 0 1 5 0V6" stroke="currentColor" strokeWidth="1.3" />
         </svg>
-        <span>{approval.summary}</span>
+        <span>{isSession ? `Let the agent control ${sessionPlan!.host}?` : approval.summary}</span>
       </div>
-      {approval.reason && <div className="approval-reason">{approval.reason}</div>}
+      {(isSession ? sessionPlan!.plan : approval.reason) && (
+        <div className="approval-reason">{isSession ? sessionPlan!.plan : approval.reason}</div>
+      )}
       <div className="approval-actions">
         <button className="btn ghost" onClick={onDeny}>
           Deny
         </button>
-        <button className="btn ghost" onClick={onAllowSession}>
-          Allow this chat
-        </button>
+        {!isSession && (
+          <button className="btn ghost" onClick={onAllowSession}>
+            Allow this chat
+          </button>
+        )}
         <button className="btn primary" onClick={onAllow}>
           Allow
         </button>

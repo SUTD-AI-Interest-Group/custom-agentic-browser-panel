@@ -640,6 +640,10 @@ body {
   box-shadow: 0 2px 10px rgba(0, 0, 0, 0.04);
 }
 
+.approval-card.session {
+  border-color: #7ab8ff;
+}
+
 .approval-header {
   display: flex;
   align-items: center;

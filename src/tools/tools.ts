@@ -7,6 +7,13 @@ import { getActiveTab, listOpenTabs, readTabContent } from '../platform/tabs'
 import { getBrowsingHistory, getBookmarks, getTopSites, getDownloads } from '../platform/browsingData'
 import type { BrowsingCapability } from '../platform/permissions'
 import { snapshotPage } from '../platform/domIndex'
+import {
+  isPointOfNoReturn,
+  runControlStep,
+  MAX_SESSION_ACTIONS,
+  type ControlSession,
+  type ControlSpec,
+} from './pageControl'
 
 // ---------------------------------------------------------------------------
 // Human-in-the-loop approval gate
@@ -36,14 +43,12 @@ const DENIED = {
   message: 'The user denied permission for this tool call.',
 }
 
-/** A per-task grant to control one tab. Origin-fenced and action-budgeted. */
-export interface ControlSession {
-  tabId: number
-  origin: string
-  plan: string
-  actionsUsed: number
-  maxActions: number
-  active: boolean
+function pointOfNoReturnSummary(spec: ControlSpec, el?: { name: string }): string {
+  if (spec.action === 'navigate') return `Navigate to ${spec.url}`
+  if (spec.action === 'press') return `Press ${spec.keys}`
+  if (spec.action === 'click') return `Click “${el?.name || `element ${spec.index}`}”`
+  if (spec.action === 'type') return `Enter text into a sensitive field`
+  return `Perform ${spec.action}`
 }
 
 /** Human-in-the-loop gate for page control, implemented by the chat UI. */
@@ -127,7 +132,7 @@ export function createAgentTools(
         const tab = await getActiveTab()
         if (tab?.id === undefined) return { error: 'No active tab found.' }
         const open = pageControl.session()
-        if (!open || !open.active) {
+        if (!open || !open.active || open.tabId !== tab.id) {
           const approved = await requestApproval({
             toolName: 'InspectPage',
             summary: 'Read the interactive elements on this page',
@@ -141,6 +146,83 @@ export function createAgentTools(
         } catch (err) {
           return { error: `Cannot read this page (${err instanceof Error ? err.message : String(err)}).` }
         }
+      },
+    }),
+
+    RequestPageControl: tool({
+      description:
+        'Ask the user for permission to control the active tab to carry out a task (fill a form, click through a flow, navigate). State a concise plan. On approval you get a page-control session and the first element list; then use ControlPage for each step and InspectPage to re-read. Point-of-no-return steps (submitting, cross-site navigation, passwords/payments) still ask each time.',
+      inputSchema: z.object({
+        plan: z
+          .string()
+          .describe('One or two sentences: what you will do on the page and where you will stop.'),
+      }),
+      execute: async ({ plan }) => {
+        const tab = await getActiveTab()
+        if (tab?.id === undefined) return { error: 'No active tab found.' }
+        const host = (() => {
+          try {
+            return new URL(tab.url ?? '').host
+          } catch {
+            return tab.url ?? 'this page'
+          }
+        })()
+        const granted = await pageControl.requestSession({ plan, host, tabId: tab.id })
+        if (!granted) return DENIED
+        try {
+          const snap = await snapshotPage(tab.id)
+          return { started: true, url: snap.url, title: snap.title, elements: snap.text }
+        } catch (err) {
+          pageControl.endSession()
+          return { error: `Cannot control this page (${err instanceof Error ? err.message : String(err)}).` }
+        }
+      },
+    }),
+
+    ControlPage: tool({
+      description:
+        'Perform ONE action on the active tab within an open page-control session: click, type, select, scroll, highlight, navigate, or press a key. Target elements by their [index] from InspectPage/RequestPageControl. Returns the refreshed element list.',
+      inputSchema: z.object({
+        action: z.enum(['click', 'type', 'select', 'scroll', 'highlight', 'navigate', 'press']),
+        index: z.number().optional().describe('Target element index from the list.'),
+        text: z.string().optional().describe('Text to type (action=type).'),
+        value: z.string().optional().describe('Option value or label (action=select).'),
+        url: z.string().optional().describe('URL to open (action=navigate).'),
+        keys: z.string().optional().describe('Key to press: Enter, Tab, or Escape (action=press).'),
+        direction: z.enum(['up', 'down', 'toElement']).optional().describe('Scroll direction (action=scroll).'),
+        label: z.string().optional().describe('Callout text to show on the page (action=highlight).'),
+        clear: z.boolean().optional().describe('Replace existing text instead of appending (action=type).'),
+        sensitive: z.boolean().optional().describe('Set true if this step is risky; forces a confirm.'),
+      }),
+      execute: async (spec: ControlSpec) => {
+        const session = pageControl.session()
+        if (!session || !session.active)
+          return { error: 'No page-control session is open. Call RequestPageControl first.' }
+        if (session.actionsUsed >= session.maxActions) {
+          pageControl.endSession()
+          return { error: `Action budget of ${MAX_SESSION_ACTIONS} reached. Ask the user to continue if more is needed.` }
+        }
+        const tab = await getActiveTab()
+        if (tab?.id === undefined || tab.id !== session.tabId)
+          return { error: 'The controlled tab is no longer active.' }
+        let snap
+        try {
+          snap = await snapshotPage(tab.id)
+        } catch (err) {
+          return { error: `Cannot read this page (${err instanceof Error ? err.message : String(err)}).` }
+        }
+        const el = spec.index !== undefined ? snap.elements[spec.index] : undefined
+        if (isPointOfNoReturn(spec, el, session.origin)) {
+          const approved = await requestApproval({
+            toolName: 'ControlPage',
+            summary: pointOfNoReturnSummary(spec, el),
+            reason: 'This step changes state or leaves the page.',
+          })
+          if (!approved) return DENIED
+        }
+        session.actionsUsed += 1
+        const { registry, ok, message, urlChanged } = await runControlStep({ tabId: tab.id, spec, snapshot: snap })
+        return { ok, message, urlChanged, elements: registry, actionsLeft: session.maxActions - session.actionsUsed }
       },
     }),
 
