@@ -1,0 +1,17 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "f=$(jq -r '.tool_input.file_path // .tool_response.filePath // empty' 2>/dev/null); case \"$f\" in *.ts|*.tsx) out=$(cd \"${CLAUDE_PROJECT_DIR:-.}\" && npx tsc --noEmit 2>&1) || jq -n --arg o \"$out\" '{hookSpecificOutput:{hookEventName:\"PostToolUse\",additionalContext:(\"tsc --noEmit failed after your edit:\\n\"+$o)}}' ;; esac",
+            "timeout": 60,
+            "statusMessage": "Type-checking (tsc --noEmit)..."
+          }
+        ]
+      }
+    ]
+  }
+}
