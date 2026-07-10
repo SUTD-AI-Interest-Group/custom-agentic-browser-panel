@@ -7,6 +7,7 @@ import { getActiveTab, listOpenTabs, readTabContent } from '../platform/tabs'
 import { getBrowsingHistory, getBookmarks, getTopSites, getDownloads } from '../platform/browsingData'
 import type { BrowsingCapability } from '../platform/permissions'
 import { snapshotPage } from '../platform/domIndex'
+import { mountPresence, focusOn, pulse } from '../platform/presence'
 import {
   isPointOfNoReturn,
   runControlStep,
@@ -178,6 +179,7 @@ export function createAgentTools(
         })()
         const granted = await pageControl.requestSession({ plan, host, origin, tabId: tab.id })
         if (!granted) return DENIED
+        await mountPresence(tab.id)
         try {
           const snap = await snapshotPage(tab.id)
           return { started: true, url: snap.url, title: snap.title, elements: snap.text }
@@ -231,7 +233,13 @@ export function createAgentTools(
           if (!approved) return DENIED
         }
         session.actionsUsed += 1
-        const { registry, ok, message, urlChanged } = await runControlStep({ tabId: tab.id, spec, snapshot: snap })
+        const { registry, ok, message, urlChanged } = await runControlStep({
+          tabId: tab.id,
+          spec,
+          snapshot: snap,
+          beforeAct: (index) => (index === undefined ? Promise.resolve() : focusOn(tab.id!, index, spec.label)),
+          afterAct: () => pulse(tab.id!),
+        })
         return { ok, message, urlChanged, elements: registry, actionsLeft: session.maxActions - session.actionsUsed }
       },
     }),

@@ -12,6 +12,7 @@ import { getActiveTab, listOpenTabs, readTabContent, type TabContent, type TabSu
 import { createAgentTools, type ApprovalRequest, type PageControlGate } from '../tools/tools'
 import { MAX_SESSION_ACTIONS, type ControlSession } from '../tools/pageControl'
 import { clearIndex } from '../platform/domIndex'
+import { unmountPresence } from '../platform/presence'
 import { grantedCapabilities, type BrowsingCapability } from '../platform/permissions'
 import { getSkill, listSkillMetas, listSkills } from '../data/skills'
 
@@ -359,7 +360,10 @@ export default function Chat({
     const s = pageSessionRef.current
     pageSessionRef.current = null
     setSessionPlan(null)
-    if (s) void clearIndex(s.tabId)
+    if (s) {
+      void clearIndex(s.tabId)
+      void unmountPresence(s.tabId)
+    }
   }
 
   // Real page-control gate: RequestPageControl suspends on a session card
