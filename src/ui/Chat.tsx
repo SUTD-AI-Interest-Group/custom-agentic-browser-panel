@@ -9,7 +9,7 @@ import { appendToEpisode, getMemoryContext } from '../data/memory'
 import { createModel, generateChatTitle } from '../agent/provider'
 import { getSelectedProvider, type Settings } from '../data/settings'
 import { getActiveTab, listOpenTabs, readTabContent, type TabContent, type TabSummary } from '../platform/tabs'
-import { createAgentTools, type ApprovalRequest } from '../tools/tools'
+import { createAgentTools, type ApprovalRequest, type PageControlGate } from '../tools/tools'
 import { grantedCapabilities, type BrowsingCapability } from '../platform/permissions'
 import { getSkill, listSkillMetas, listSkills } from '../data/skills'
 
@@ -346,6 +346,14 @@ export default function Chat({
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight })
   }, [messages, approval])
 
+  // Stubbed until Task 4 wires the real session gate. Denies control sessions
+  // so only read-only tools work for now.
+  const pageControl: PageControlGate = {
+    requestSession: async () => false,
+    session: () => null,
+    endSession: () => {},
+  }
+
   function requestApproval(request: ApprovalRequest): Promise<boolean> {
     if (AUTO_APPROVED_TOOLS.has(request.toolName)) return Promise.resolve(true)
     if (sessionAllowed.current.has(request.toolName)) return Promise.resolve(true)
@@ -644,7 +652,7 @@ export default function Chat({
         model: createModel(selected.provider, selected.modelId),
         system: `${settings.systemPrompt}${accessNote}${browsingInsightsNote(granted)}${memoryContext ? `\n\n${memoryContext}` : ''}${skillsCatalog}${activeSkills}`,
         history: [...historyRef.current],
-        tools: createAgentTools(requestApproval, settings.tabAccess, granted),
+        tools: createAgentTools(requestApproval, settings.tabAccess, granted, pageControl),
         abortSignal: controller.signal,
         onUpdate: updateAssistant,
       })

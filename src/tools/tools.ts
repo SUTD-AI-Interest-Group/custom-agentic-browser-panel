@@ -6,6 +6,7 @@ import type { TabAccess } from '../data/settings'
 import { getActiveTab, listOpenTabs, readTabContent } from '../platform/tabs'
 import { getBrowsingHistory, getBookmarks, getTopSites, getDownloads } from '../platform/browsingData'
 import type { BrowsingCapability } from '../platform/permissions'
+import { snapshotPage } from '../platform/domIndex'
 
 // ---------------------------------------------------------------------------
 // Human-in-the-loop approval gate
@@ -35,10 +36,31 @@ const DENIED = {
   message: 'The user denied permission for this tool call.',
 }
 
+/** A per-task grant to control one tab. Origin-fenced and action-budgeted. */
+export interface ControlSession {
+  tabId: number
+  origin: string
+  plan: string
+  actionsUsed: number
+  maxActions: number
+  active: boolean
+}
+
+/** Human-in-the-loop gate for page control, implemented by the chat UI. */
+export interface PageControlGate {
+  /** Show the session card with the plan; resolve true if the user allows. */
+  requestSession(input: { plan: string; host: string; tabId: number }): Promise<boolean>
+  /** The currently open session, or null. */
+  session(): ControlSession | null
+  /** Close the session and tear down any on-page overlay. */
+  endSession(): void
+}
+
 export function createAgentTools(
   requestApproval: ApprovalGate,
   tabAccess: TabAccess,
   granted: Set<BrowsingCapability>,
+  pageControl: PageControlGate,
 ): ToolSet {
   const tools: ToolSet = {
     ViewCurrentTab: tool({
@@ -90,6 +112,35 @@ export function createAgentTools(
         if (!reading) return { tabs }
         const contents = await Promise.all(tabIds.map((id) => readTabContent(id)))
         return { tabs, contents }
+      },
+    }),
+
+    InspectPage: tool({
+      description:
+        'Read the active tab as a numbered list of interactive elements (buttons, links, inputs) the agent can act on, each with an [index]. Use before controlling a page, or to re-read after it changes. Asks permission unless a page-control session is already open.',
+      inputSchema: z.object({
+        reason: z
+          .string()
+          .describe('Short reason shown to the user, e.g. "To find the search box"'),
+      }),
+      execute: async ({ reason }) => {
+        const tab = await getActiveTab()
+        if (tab?.id === undefined) return { error: 'No active tab found.' }
+        const open = pageControl.session()
+        if (!open || !open.active) {
+          const approved = await requestApproval({
+            toolName: 'InspectPage',
+            summary: 'Read the interactive elements on this page',
+            reason,
+          })
+          if (!approved) return DENIED
+        }
+        try {
+          const snap = await snapshotPage(tab.id)
+          return { url: snap.url, title: snap.title, elements: snap.text }
+        } catch (err) {
+          return { error: `Cannot read this page (${err instanceof Error ? err.message : String(err)}).` }
+        }
       },
     }),
 

@@ -54,7 +54,7 @@ export interface AgentTurnResult {
   responseMessages: ModelMessage[]
 }
 
-const MAX_STEPS = 10
+const MAX_STEPS = 24
 
 export async function runAgentTurn(options: {
   model: LanguageModel
