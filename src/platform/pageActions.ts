@@ -11,10 +11,6 @@ export interface ActionResult {
   urlChanged?: boolean
 }
 
-function findByIdx(attr: string, index: number): Element | null {
-  return document.querySelector(`[${attr}="${index}"]`)
-}
-
 function injClick(attr: string, index: number) {
   const el = document.querySelector(`[${attr}="${index}"]`) as HTMLElement | null
   if (!el) return { ok: false, message: `element ${index} is no longer on the page` }
@@ -31,8 +27,7 @@ function injType(attr: string, index: number, text: string, clear: boolean) {
   el.scrollIntoView({ block: 'center', behavior: 'instant' as ScrollBehavior })
   ;(el as HTMLElement).focus()
   if ((el as HTMLElement).isContentEditable) {
-    if (clear) el.textContent = ''
-    el.textContent = (el.textContent ?? '') + text
+    el.textContent = clear ? text : (el.textContent ?? '') + text
     el.dispatchEvent(new InputEvent('input', { bubbles: true }))
     return { ok: true, message: `typed into element ${index}` }
   }
