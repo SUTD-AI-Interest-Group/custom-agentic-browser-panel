@@ -2,12 +2,14 @@ import { tool, type ToolSet } from 'ai'
 import { z } from 'zod'
 import { saveMemory, searchMemories } from '../data/memory'
 import { getSkill, listSkillMetas, saveSkill } from '../data/skills'
-import type { TabAccess } from '../data/settings'
+import type { ProviderConfig, TabAccess } from '../data/settings'
 import { getActiveTab, listOpenTabs, readTabContent } from '../platform/tabs'
 import { getBrowsingHistory, getBookmarks, getTopSites, getDownloads } from '../platform/browsingData'
 import type { BrowsingCapability } from '../platform/permissions'
-import { snapshotPage } from '../platform/domIndex'
-import { mountPresence, focusOn, pulse } from '../platform/presence'
+import { snapshotPage, type PageSnapshot } from '../platform/domIndex'
+import { mountPresence, focusOn, pulse, setPresenceHidden } from '../platform/presence'
+import { ensureVisionCapability } from '../agent/vision'
+import { captureWithMarks } from '../platform/marks'
 import {
   isPointOfNoReturn,
   runControlStep,
@@ -64,11 +66,40 @@ export interface PageControlGate {
   endSession(): void
 }
 
+// Build a tool return that carries the text registry, plus (for vision
+// models) the set-of-marks screenshot as image content via the AI SDK
+// tool-result channel. The presence overlay is hidden for the shot so the
+// tint doesn't pollute what the model sees, and is always restored — on the
+// success path and on any capture failure.
+async function lookResult(
+  tab: chrome.tabs.Tab,
+  snap: PageSnapshot,
+  base: Record<string, unknown>,
+  selected: { provider: ProviderConfig; modelId: string } | null,
+) {
+  const value = { ...base, url: snap.url, title: snap.title, elements: snap.text }
+  if (!selected || tab.id === undefined || tab.windowId === undefined) return value
+  const vision = await ensureVisionCapability(selected.provider, selected.modelId).catch(() => false)
+  if (!vision) return value
+  try {
+    await setPresenceHidden(tab.id, true)
+    const dataUrl = await captureWithMarks(tab.id, tab.windowId, snap.elements, snap.dpr)
+    await setPresenceHidden(tab.id, false)
+    // Attach the image so a vision model sees the numbered marks. The tool()
+    // wrapper's toModelOutput reads __marks to build the image content part.
+    return { ...value, __marks: dataUrl }
+  } catch {
+    await setPresenceHidden(tab.id, false).catch(() => {})
+    return value
+  }
+}
+
 export function createAgentTools(
   requestApproval: ApprovalGate,
   tabAccess: TabAccess,
   granted: Set<BrowsingCapability>,
   pageControl: PageControlGate,
+  selected: { provider: ProviderConfig; modelId: string } | null,
 ): ToolSet {
   const tools: ToolSet = {
     ViewCurrentTab: tool({
@@ -145,10 +176,18 @@ export function createAgentTools(
         }
         try {
           const snap = await snapshotPage(tab.id)
-          return { url: snap.url, title: snap.title, elements: snap.text }
+          return await lookResult(tab, snap, {}, selected)
         } catch (err) {
           return { error: `Cannot read this page (${err instanceof Error ? err.message : String(err)}).` }
         }
+      },
+      toModelOutput: (output: any) => {
+        const parts: any[] = [{ type: 'text', text: JSON.stringify({ ...output, __marks: undefined }) }]
+        if (output?.__marks) {
+          const base64 = String(output.__marks).replace(/^data:[^,]+,/, '')
+          parts.push({ type: 'media', mediaType: 'image/png', data: base64 })
+        }
+        return { type: 'content', value: parts }
       },
     }),
 
@@ -182,11 +221,19 @@ export function createAgentTools(
         await mountPresence(tab.id)
         try {
           const snap = await snapshotPage(tab.id)
-          return { started: true, url: snap.url, title: snap.title, elements: snap.text }
+          return await lookResult(tab, snap, { started: true }, selected)
         } catch (err) {
           pageControl.endSession()
           return { error: `Cannot control this page (${err instanceof Error ? err.message : String(err)}).` }
         }
+      },
+      toModelOutput: (output: any) => {
+        const parts: any[] = [{ type: 'text', text: JSON.stringify({ ...output, __marks: undefined }) }]
+        if (output?.__marks) {
+          const base64 = String(output.__marks).replace(/^data:[^,]+,/, '')
+          parts.push({ type: 'media', mediaType: 'image/png', data: base64 })
+        }
+        return { type: 'content', value: parts }
       },
     }),
 

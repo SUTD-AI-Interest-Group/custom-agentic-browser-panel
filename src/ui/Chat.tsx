@@ -699,7 +699,7 @@ export default function Chat({
         model: createModel(selected.provider, selected.modelId),
         system: `${settings.systemPrompt}${accessNote}${browsingInsightsNote(granted)}${memoryContext ? `\n\n${memoryContext}` : ''}${skillsCatalog}${activeSkills}`,
         history: [...historyRef.current],
-        tools: createAgentTools(requestApproval, settings.tabAccess, granted, pageControl),
+        tools: createAgentTools(requestApproval, settings.tabAccess, granted, pageControl, selected),
         abortSignal: controller.signal,
         onUpdate: updateAssistant,
       })
