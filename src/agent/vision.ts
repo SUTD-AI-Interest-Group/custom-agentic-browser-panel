@@ -50,6 +50,7 @@ export async function ensureVisionCapability(
           ],
         },
       ],
+      abortSignal: AbortSignal.timeout(20_000),
     })
     capable = text.toUpperCase().includes(code)
   } catch {

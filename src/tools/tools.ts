@@ -88,6 +88,11 @@ async function lookResult(
   if (!vision) return value
   try {
     await setPresenceHidden(tab.id, true)
+    const [live] = await chrome.tabs.query({ active: true, windowId: tab.windowId })
+    if (live?.id !== tab.id) {
+      await setPresenceHidden(tab.id, false).catch(() => {})
+      return value
+    }
     const dataUrl = await captureWithMarks(tab.id, tab.windowId, snap.elements, snap.dpr)
     await setPresenceHidden(tab.id, false)
     imageQueue.push(dataUrl)
@@ -251,6 +256,19 @@ export function createAgentTools(
         const tab = await getActiveTab()
         if (tab?.id === undefined || tab.id !== session.tabId)
           return { error: 'The controlled tab is no longer active.' }
+        const liveOrigin = (() => {
+          try {
+            return new URL(tab.url ?? '').origin
+          } catch {
+            return ''
+          }
+        })()
+        if (liveOrigin !== session.origin) {
+          pageControl.endSession()
+          return {
+            error: `The page is now on a different site (${liveOrigin || 'unknown'}); page control ended for safety. Call RequestPageControl again to continue.`,
+          }
+        }
         let snap
         try {
           snap = await snapshotPage(tab.id)
