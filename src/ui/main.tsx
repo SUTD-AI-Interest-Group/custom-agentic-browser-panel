@@ -1,6 +1,6 @@
 import React from 'react'
 import { createRoot } from 'react-dom/client'
-import { connectPanelPort } from '../lib/panelPort'
+import { connectPanelPort } from '../platform/panelPort'
 import App from './App'
 import './styles.css'
 

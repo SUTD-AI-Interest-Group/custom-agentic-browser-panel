@@ -1,10 +1,10 @@
 import { useState } from 'react'
-import { testModel, type TestResult } from '../lib/provider'
+import { testModel, type TestResult } from '../agent/provider'
 import {
   type ProviderConfig,
   type Settings,
   type TabAccess,
-} from '../lib/settings'
+} from '../data/settings'
 
 // First-run wizard: configure a model endpoint, prove it works with a live
 // test call, and choose how much tab visibility the agent gets. Completes by

@@ -1,8 +1,8 @@
 import { tool, type ToolSet } from 'ai'
 import { z } from 'zod'
-import { saveMemory, searchMemories } from './memory'
-import type { TabAccess } from './settings'
-import { getActiveTab, listOpenTabs, readTabContent } from './tabs'
+import { saveMemory, searchMemories } from '../data/memory'
+import type { TabAccess } from '../data/settings'
+import { getActiveTab, listOpenTabs, readTabContent } from '../platform/tabs'
 
 // ---------------------------------------------------------------------------
 // Human-in-the-loop approval gate

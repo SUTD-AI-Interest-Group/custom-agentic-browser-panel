@@ -11,7 +11,7 @@
 
 import { generateText } from 'ai'
 import { createModel } from './provider'
-import { getSelectedProvider, loadSettings } from './settings'
+import { getSelectedProvider, loadSettings } from '../data/settings'
 import {
   deleteMemory,
   listMemories,
@@ -23,7 +23,7 @@ import {
   type EpisodeRecord,
   type MemoryKind,
   type MemoryRecord,
-} from './memory'
+} from '../data/memory'
 
 export interface DreamState {
   lastDreamAt: number | null

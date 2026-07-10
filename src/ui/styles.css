@@ -66,6 +66,7 @@ body {
 
 .topbar-title-wrap {
   position: relative;
+  flex: 1 1 auto;
   min-width: 0;
 }
 
@@ -249,8 +250,96 @@ body {
 .msg-assistant {
   display: flex;
   flex-direction: column;
+  gap: 6px;
+  word-break: break-word;
+}
+
+.msg-assistant-body {
+  display: flex;
+  flex-direction: column;
   gap: 8px;
   word-break: break-word;
+}
+
+.msg-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.msg-tool-btn {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.msg-tool-btn:hover {
+  background: var(--pill-bg);
+  color: var(--text);
+}
+
+.msg-tool-btn.done {
+  color: var(--accent);
+}
+
+.msg-tool-btn.error {
+  color: var(--danger);
+}
+
+/* Hover/focus tooltip popover, anchored above each toolbar button. Grows
+   rightward from the button's left edge so long labels never clip off the
+   narrow side panel's left edge. */
+.msg-tool-btn[data-tooltip]::after {
+  content: attr(data-tooltip);
+  position: absolute;
+  bottom: calc(100% + 7px);
+  left: 0;
+  padding: 4px 8px;
+  border-radius: 6px;
+  background: var(--text);
+  color: var(--surface);
+  font-size: 11px;
+  line-height: 1.35;
+  white-space: nowrap;
+  pointer-events: none;
+  opacity: 0;
+  transform: translateY(2px);
+  transition: opacity 0.12s ease, transform 0.12s ease;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.18);
+  z-index: 20;
+}
+
+.msg-tool-btn[data-tooltip]::before {
+  content: '';
+  position: absolute;
+  bottom: calc(100% + 2px);
+  left: 13px;
+  transform: translateX(-50%);
+  border: 5px solid transparent;
+  border-top-color: var(--text);
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.12s ease;
+  z-index: 20;
+}
+
+.msg-tool-btn[data-tooltip]:hover::after,
+.msg-tool-btn[data-tooltip]:focus-visible::after {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.msg-tool-btn[data-tooltip]:hover::before,
+.msg-tool-btn[data-tooltip]:focus-visible::before {
+  opacity: 1;
 }
 
 .markdown > :first-child {

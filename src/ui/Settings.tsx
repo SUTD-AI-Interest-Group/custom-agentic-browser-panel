@@ -3,7 +3,7 @@ import {
   DEFAULT_SYSTEM_PROMPT,
   type ProviderConfig,
   type Settings,
-} from '../lib/settings'
+} from '../data/settings'
 import MemoryView from './Memory'
 
 // Common OpenAI-compatible endpoints, offered as one-click starting points.

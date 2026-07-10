@@ -5,7 +5,7 @@
 // has to coordinate schema versions with the other.
 
 import type { ModelMessage } from 'ai'
-import type { UIMessage } from './agent'
+import type { UIMessage } from '../agent/agent'
 
 export interface StoredConversation {
   id: string

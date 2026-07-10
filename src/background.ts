@@ -3,7 +3,7 @@
 // memory-consolidation cycle, which runs on an hourly alarm and only fires
 // when the user has been idle for a while (see dream.ts).
 
-import { dreamIfDue } from './lib/dream'
+import { dreamIfDue } from './agent/dream'
 
 chrome.sidePanel
   .setPanelBehavior({ openPanelOnActionClick: true })

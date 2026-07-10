@@ -1,14 +1,15 @@
 import { useEffect, useRef, useState } from 'react'
 import type { ModelMessage } from 'ai'
 import Markdown from './Markdown'
-import { runAgentTurn, type UIMessage, type UIPart } from '../lib/agent'
-import { captureRegion, type CapturedImage } from '../lib/capture'
-import { getConversation, renameConversation, saveConversation } from '../lib/conversations'
-import { appendToEpisode, getMemoryContext } from '../lib/memory'
-import { createModel, generateChatTitle } from '../lib/provider'
-import { getSelectedProvider, type Settings } from '../lib/settings'
-import { getActiveTab, listOpenTabs, readTabContent, type TabContent, type TabSummary } from '../lib/tabs'
-import { createAgentTools, type ApprovalRequest } from '../lib/tools'
+import { runAgentTurn, type UIMessage, type UIPart } from '../agent/agent'
+import { captureRegion, type CapturedImage } from '../platform/capture'
+import { copyElementAsPng } from '../platform/domImage'
+import { getConversation, renameConversation, saveConversation } from '../data/conversations'
+import { appendToEpisode, getMemoryContext } from '../data/memory'
+import { createModel, generateChatTitle } from '../agent/provider'
+import { getSelectedProvider, type Settings } from '../data/settings'
+import { getActiveTab, listOpenTabs, readTabContent, type TabContent, type TabSummary } from '../platform/tabs'
+import { createAgentTools, type ApprovalRequest } from '../tools/tools'
 
 interface PendingApproval extends ApprovalRequest {
   resolve: (approved: boolean) => void
@@ -48,6 +49,16 @@ const MAX_ALL_TABS = 25
 
 // Cap how much highlighted text we forward as context.
 const SELECTION_MAX = 4000
+
+// Deictic references to the page/tab the user is currently viewing — "what
+// about this?", "summarize this page", "what's here". Liberal by design: a
+// false positive only re-attaches the current tab once (see sharedTabsRef).
+const DEICTIC_RE =
+  /\b(this|these|here)\b|\b(current|the)\s+(page|tab|site|website|article|post|blog|story|video|content|doc|document|pdf)\b/i
+
+// Identity of a shared tab for de-duplication: the tab plus its URL, so
+// navigating the same tab to a new page counts as a different page.
+const tabKey = (tabId: number, url: string) => `${tabId}::${url}`
 
 const uid = () => crypto.randomUUID()
 
@@ -115,6 +126,10 @@ export default function Chat({
   // the journal aligned with the chat it came from.
   const episodeIdRef = useRef(conversationId)
   const abortRef = useRef<AbortController | null>(null)
+  // Tabs whose content has already been injected into this conversation, keyed
+  // by id+url. Lets a deictic reference re-share the current tab only after the
+  // user navigates to a different page. Resets when the chat remounts.
+  const sharedTabsRef = useRef<Set<string>>(new Set())
   const approvalRef = useRef<PendingApproval | null>(null)
   const sessionAllowed = useRef<Set<string>>(new Set())
   // Tools pre-authorized for the current turn only (e.g. SearchMemory when the
@@ -352,6 +367,17 @@ export default function Chat({
     const isFirstMessage = messages.length === 0
     // Attach the tab the user is on to the first message of a fresh chat.
     const includeCurrentTab = isFirstMessage && !tabDismissed && currentTab !== null
+    // Later in a chat, a deictic reference ("what about this?", "summarize this
+    // page") pulls in the tab the user is now viewing — but only when it isn't
+    // already in context, i.e. after they switched to or navigated to a
+    // different page since it was last shared.
+    const currentTabKey = currentTab ? tabKey(currentTab.tabId, currentTab.url) : null
+    const includeDeicticTab =
+      !includeCurrentTab &&
+      currentTab !== null &&
+      currentTabKey !== null &&
+      DEICTIC_RE.test(text) &&
+      !sharedTabsRef.current.has(currentTabKey)
     // Highlighted text the user chose to share (consumed once sent).
     const activeSelection =
       selection && selection.text !== dismissedSelection ? selection.text : null
@@ -379,10 +405,11 @@ export default function Chat({
     ])
 
     // Sync shared tab contents into the model-facing message: any @mentioned
-    // tabs plus the auto-attached current tab, de-duplicated by id.
+    // tabs, plus the current tab when auto-attached (first message) or pulled in
+    // by a deictic reference, de-duplicated by id.
     const tabIds: number[] = []
     for (const m of activeMentions) if (!tabIds.includes(m.tabId)) tabIds.push(m.tabId)
-    if (includeCurrentTab && currentTab && !tabIds.includes(currentTab.tabId))
+    if ((includeCurrentTab || includeDeicticTab) && currentTab && !tabIds.includes(currentTab.tabId))
       tabIds.push(currentTab.tabId)
     let allTabsOmitted = 0
     if (useAll) {
@@ -395,6 +422,12 @@ export default function Chat({
     let syncedTabs: TabContent[] = []
     if (tabIds.length > 0) {
       syncedTabs = await Promise.all(tabIds.map((id) => readTabContent(id)))
+      // Remember which tabs are now in context (successful reads only), keyed by
+      // id+url, so a later "this page" re-injects the current tab only once the
+      // user has moved to a different page.
+      syncedTabs.forEach((c, i) => {
+        if (!c.error) sharedTabsRef.current.add(tabKey(tabIds[i], c.url))
+      })
       const blocks = syncedTabs.map(
         (c) =>
           `<tab title=${JSON.stringify(c.title)} url=${JSON.stringify(c.url)}>\n${
@@ -526,8 +559,12 @@ export default function Chat({
             </div>
           </div>
         )}
-        {messages.map((msg) => (
-          <MessageView key={msg.id} message={msg} />
+        {messages.map((msg, i) => (
+          <MessageView
+            key={msg.id}
+            message={msg}
+            streaming={streaming && i === messages.length - 1}
+          />
         ))}
         {approval && (
           <ApprovalCard
@@ -769,7 +806,9 @@ export default function Chat({
   )
 }
 
-function MessageView({ message }: { message: UIMessage }) {
+function MessageView({ message, streaming }: { message: UIMessage; streaming: boolean }) {
+  const bodyRef = useRef<HTMLDivElement>(null)
+
   if (message.role === 'user') {
     const text = message.parts.map((p) => (p.type === 'text' ? p.text : '')).join('')
     return (
@@ -785,17 +824,107 @@ function MessageView({ message }: { message: UIMessage }) {
       </div>
     )
   }
+
   return (
     <div className="msg-assistant">
-      {message.parts.map((part, i) =>
-        part.type === 'text' ? (
-          <Markdown key={i} text={part.text} />
-        ) : (
-          <ToolPill key={part.toolCallId} part={part} />
-        ),
+      <div className="msg-assistant-body" ref={bodyRef}>
+        {message.parts.map((part, i) =>
+          part.type === 'text' ? (
+            <Markdown key={i} text={part.text} />
+          ) : (
+            <ToolPill key={part.toolCallId} part={part} />
+          ),
+        )}
+        {message.parts.length === 0 && <div className="thinking-dot" />}
+      </div>
+      {message.parts.length > 0 && !streaming && (
+        <MessageToolbar message={message} targetRef={bodyRef} />
       )}
-      {message.parts.length === 0 && <div className="thinking-dot" />}
     </div>
+  )
+}
+
+// Actions on a completed assistant message: copy the rendered message as a PNG
+// image, or copy its text as markdown.
+function MessageToolbar({
+  message,
+  targetRef,
+}: {
+  message: UIMessage
+  targetRef: React.RefObject<HTMLDivElement>
+}) {
+  const [imageState, setImageState] = useState<'idle' | 'done' | 'error'>('idle')
+  const [copyState, setCopyState] = useState<'idle' | 'done' | 'error'>('idle')
+
+  async function copyImage() {
+    const el = targetRef.current
+    if (!el) return
+    try {
+      await copyElementAsPng(el)
+      setImageState('done')
+    } catch {
+      setImageState('error')
+    }
+    setTimeout(() => setImageState('idle'), 1500)
+  }
+
+  async function copyMarkdown() {
+    const markdown = message.parts
+      .map((p) => (p.type === 'text' ? p.text : ''))
+      .filter(Boolean)
+      .join('\n\n')
+      .trim()
+    try {
+      await navigator.clipboard.writeText(markdown)
+      setCopyState('done')
+    } catch {
+      setCopyState('error')
+    }
+    setTimeout(() => setCopyState('idle'), 1500)
+  }
+
+  return (
+    <div className="msg-toolbar">
+      <button
+        className={`msg-tool-btn ${imageState}`}
+        data-tooltip={imageState === 'error' ? "Couldn't copy image" : 'Copy response as image'}
+        aria-label={imageState === 'error' ? "Couldn't copy image" : 'Copy response as image'}
+        onClick={() => void copyImage()}
+      >
+        {imageState === 'done' ? (
+          <CheckIcon />
+        ) : (
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+            <rect x="2.5" y="3.5" width="11" height="9" rx="1.5" stroke="currentColor" strokeWidth="1.3" />
+            <circle cx="5.8" cy="6.5" r="1.1" stroke="currentColor" strokeWidth="1.1" />
+            <path d="M3 11.5l3-2.6 2.2 1.8 2.4-2.4 2.4 2.2" stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round" />
+          </svg>
+        )}
+      </button>
+      <button
+        className={`msg-tool-btn ${copyState}`}
+        data-tooltip={copyState === 'error' ? "Couldn't copy text" : 'Copy response as Markdown'}
+        aria-label={copyState === 'error' ? "Couldn't copy text" : 'Copy response as Markdown'}
+        onClick={() => void copyMarkdown()}
+      >
+        {copyState === 'done' ? (
+          <CheckIcon />
+        ) : (
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+            <rect x="5" y="5" width="8.5" height="8.5" rx="1.5" stroke="currentColor" strokeWidth="1.3" />
+            <path d="M11 5V3.5A1.5 1.5 0 0 0 9.5 2H3.5A1.5 1.5 0 0 0 2 3.5v6A1.5 1.5 0 0 0 3.5 11H5" stroke="currentColor" strokeWidth="1.3" />
+          </svg>
+        )}
+      </button>
+    </div>
+  )
+}
+
+function CheckIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+      <path d="M3.5 8.5l3 3 6-6.5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
   )
 }
 

@@ -1,6 +1,6 @@
 import { createOpenAICompatible } from '@ai-sdk/openai-compatible'
 import { generateText, type LanguageModel } from 'ai'
-import type { ProviderConfig } from './settings'
+import type { ProviderConfig } from '../data/settings'
 
 // Any endpoint that speaks the OpenAI chat-completions protocol works here,
 // which covers virtually every provider (including local runtimes like

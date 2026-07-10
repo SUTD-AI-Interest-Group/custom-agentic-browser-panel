@@ -69,7 +69,7 @@ the chat:
 ## Screenshots
 
 The camera button beside Send starts an Arc/Dia-style capture on the active
-tab (`src/lib/capture.ts`): the page tints and the cursor becomes a sniper —
+tab (`src/platform/capture.ts`): the page tints and the cursor becomes a sniper —
 hovering auto-snaps to the component under the cursor (the snapped area lights
 up), clicking captures it, click-hold-drag captures an arbitrary area, Esc
 cancels. The selection overlay removes itself before
@@ -87,7 +87,7 @@ there is no persistent content script.
 
 ## Memory & dreaming
 
-The extension has a two-tier memory housed in IndexedDB (`src/lib/memory.ts`):
+The extension has a two-tier memory housed in IndexedDB (`src/data/memory.ts`):
 
 - **Episodes** — a raw journal of every conversation, appended turn by turn
   from `Chat.tsx`. Never shown to the model during normal chat.
@@ -95,7 +95,7 @@ The extension has a two-tier memory housed in IndexedDB (`src/lib/memory.ts`):
   `project` / `summary`). The top memories are injected into the system prompt
   each turn, and the model can `SaveMemory` / `SearchMemory` on demand.
 
-Episodes become memories through **dreaming** (`src/lib/dream.ts`): the model
+Episodes become memories through **dreaming** (`src/agent/dream.ts`): the model
 re-reads unconsolidated episodes alongside its current memories and emits JSON
 operations — add, update (merge duplicates), delete (forget stale entries) —
 plus a compact day summary. Dreaming is fully automatic — no user action
@@ -110,21 +110,25 @@ can be forgotten there.
 ```
 public/manifest.json        MV3 manifest (sidePanel, scripting, tabs, storage)
 src/background.ts           Service worker: side panel behavior + dream alarm
-src/lib/settings.ts         Provider/model/system-prompt storage (chrome.storage)
-src/lib/provider.ts         Config → AI SDK model (createOpenAICompatible)
-src/lib/tabs.ts             Tab listing + page-content extraction
-src/lib/tools.ts            Tool registry + approval gate
-src/lib/agent.ts            One agent turn: streamText → UI part stream
-src/lib/memory.ts           IndexedDB: episodes journal + long-term memories
-src/lib/dream.ts            Dream cycle: episodes + memories → memory ops
-src/lib/capture.ts          Region screenshots: snipe overlay + crop
-src/sidepanel/              React UI: Onboarding, Chat, Memory, Settings
+src/ui/                     React UI: Onboarding, Chat, Memory, Settings, Markdown
+src/tools/tools.ts          Tool registry + approval gate
+src/agent/agent.ts          One agent turn: streamText → UI part stream
+src/agent/provider.ts       Config → AI SDK model (createOpenAICompatible)
+src/agent/dream.ts          Dream cycle: episodes + memories → memory ops
+src/data/settings.ts        Provider/model/system-prompt storage (chrome.storage)
+src/data/memory.ts          IndexedDB: episodes journal + long-term memories
+src/data/conversations.ts   IndexedDB: saved chat history
+src/platform/tabs.ts        Tab listing + page-content extraction
+src/platform/capture.ts     Region screenshots: snipe overlay + crop
+src/platform/domImage.ts    DOM element → PNG (copy/attach a component)
+src/platform/panelPort.ts   Side-panel ↔ background messaging port
+src/platform/time.ts        Relative-time formatting
 ```
 
 ## Extending (planned surfaces)
 
 - **More tools** (form autofill, page control): add an entry in
-  `createAgentTools()` in `src/lib/tools.ts`. Route anything that mutates a page
+  `createAgentTools()` in `src/tools/tools.ts`. Route anything that mutates a page
   through the same `requestApproval` gate; write-actions can use
   `chrome.scripting.executeScript` with args, like `extractPageContent` does.
 - **Skills**: store named prompt/tool bundles in settings and merge them into

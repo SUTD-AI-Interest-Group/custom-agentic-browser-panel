@@ -1,11 +1,11 @@
 import { useEffect, useState } from 'react'
-import { getDreamState } from '../lib/dream'
+import { getDreamState } from '../agent/dream'
 import {
   deleteMemory,
   listMemories,
   listUnconsolidatedEpisodes,
   type MemoryRecord,
-} from '../lib/memory'
+} from '../data/memory'
 
 // Memory panel: a read-only window into what the assistant remembers and when
 // it last "dreamed". Dreaming itself is fully automatic — it runs from the
