@@ -695,13 +695,19 @@ export default function Chat({
       const activeSkills = activeSkill
         ? `\n\n## Active skill: ${activeSkill.name}\nThe user invoked this skill. Follow these instructions for this task:\n\n${activeSkill.body}`
         : ''
+      // Marked screenshots from InspectPage/RequestPageControl land here; the
+      // turn loop's prepareStep drains it and injects them as user image
+      // messages, since the OpenAI-compatible adapter can't carry images in a
+      // tool result. Fresh per turn — nothing should linger past it.
+      const imageQueue: string[] = []
       const { parts, responseMessages } = await runAgentTurn({
         model: createModel(selected.provider, selected.modelId),
         system: `${settings.systemPrompt}${accessNote}${browsingInsightsNote(granted)}${memoryContext ? `\n\n${memoryContext}` : ''}${skillsCatalog}${activeSkills}`,
         history: [...historyRef.current],
-        tools: createAgentTools(requestApproval, settings.tabAccess, granted, pageControl, selected),
+        tools: createAgentTools(requestApproval, settings.tabAccess, granted, pageControl, selected, imageQueue),
         abortSignal: controller.signal,
         onUpdate: updateAssistant,
+        imageQueue,
       })
       updateAssistant(parts)
       historyRef.current.push(...responseMessages)

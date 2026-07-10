@@ -66,16 +66,21 @@ export interface PageControlGate {
   endSession(): void
 }
 
-// Build a tool return that carries the text registry, plus (for vision
-// models) the set-of-marks screenshot as image content via the AI SDK
-// tool-result channel. The presence overlay is hidden for the shot so the
-// tint doesn't pollute what the model sees, and is always restored — on the
-// success path and on any capture failure.
+// Build a tool return that carries the text registry only. For vision models,
+// the set-of-marks screenshot is captured and pushed onto imageQueue instead
+// of being attached to the tool result: the OpenAI-compatible adapter
+// serializes a tool result's `media` part to plain text, so the model never
+// sees it that way. The turn loop (runAgentTurn's prepareStep) drains the
+// queue and injects the image as a `user` message before the next step. The
+// presence overlay is hidden for the shot so the tint doesn't pollute what
+// the model sees, and is always restored — on the success path and on any
+// capture failure.
 async function lookResult(
   tab: chrome.tabs.Tab,
   snap: PageSnapshot,
   base: Record<string, unknown>,
   selected: { provider: ProviderConfig; modelId: string } | null,
+  imageQueue: string[],
 ) {
   const value = { ...base, url: snap.url, title: snap.title, elements: snap.text }
   if (!selected || tab.id === undefined || tab.windowId === undefined) return value
@@ -85,13 +90,11 @@ async function lookResult(
     await setPresenceHidden(tab.id, true)
     const dataUrl = await captureWithMarks(tab.id, tab.windowId, snap.elements, snap.dpr)
     await setPresenceHidden(tab.id, false)
-    // Attach the image so a vision model sees the numbered marks. The tool()
-    // wrapper's toModelOutput reads __marks to build the image content part.
-    return { ...value, __marks: dataUrl }
+    imageQueue.push(dataUrl)
   } catch {
     await setPresenceHidden(tab.id, false).catch(() => {})
-    return value
   }
+  return value
 }
 
 export function createAgentTools(
@@ -100,6 +103,7 @@ export function createAgentTools(
   granted: Set<BrowsingCapability>,
   pageControl: PageControlGate,
   selected: { provider: ProviderConfig; modelId: string } | null,
+  imageQueue: string[],
 ): ToolSet {
   const tools: ToolSet = {
     ViewCurrentTab: tool({
@@ -176,18 +180,10 @@ export function createAgentTools(
         }
         try {
           const snap = await snapshotPage(tab.id)
-          return await lookResult(tab, snap, {}, selected)
+          return await lookResult(tab, snap, {}, selected, imageQueue)
         } catch (err) {
           return { error: `Cannot read this page (${err instanceof Error ? err.message : String(err)}).` }
         }
-      },
-      toModelOutput: (output: any) => {
-        const parts: any[] = [{ type: 'text', text: JSON.stringify({ ...output, __marks: undefined }) }]
-        if (output?.__marks) {
-          const base64 = String(output.__marks).replace(/^data:[^,]+,/, '')
-          parts.push({ type: 'media', mediaType: 'image/png', data: base64 })
-        }
-        return { type: 'content', value: parts }
       },
     }),
 
@@ -221,19 +217,11 @@ export function createAgentTools(
         await mountPresence(tab.id)
         try {
           const snap = await snapshotPage(tab.id)
-          return await lookResult(tab, snap, { started: true }, selected)
+          return await lookResult(tab, snap, { started: true }, selected, imageQueue)
         } catch (err) {
           pageControl.endSession()
           return { error: `Cannot control this page (${err instanceof Error ? err.message : String(err)}).` }
         }
-      },
-      toModelOutput: (output: any) => {
-        const parts: any[] = [{ type: 'text', text: JSON.stringify({ ...output, __marks: undefined }) }]
-        if (output?.__marks) {
-          const base64 = String(output.__marks).replace(/^data:[^,]+,/, '')
-          parts.push({ type: 'media', mediaType: 'image/png', data: base64 })
-        }
-        return { type: 'content', value: parts }
       },
     }),
 
