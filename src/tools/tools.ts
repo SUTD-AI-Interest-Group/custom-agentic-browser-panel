@@ -1,6 +1,7 @@
 import { tool, type ToolSet } from 'ai'
 import { z } from 'zod'
 import { saveMemory, searchMemories } from '../data/memory'
+import { getSkill, listSkillMetas, saveSkill } from '../data/skills'
 import type { TabAccess } from '../data/settings'
 import { getActiveTab, listOpenTabs, readTabContent } from '../platform/tabs'
 import { getBrowsingHistory, getBookmarks, getTopSites, getDownloads } from '../platform/browsingData'
@@ -247,6 +248,72 @@ export function createAgentTools(
         if (!approved) return DENIED
         const downloads = await getDownloads({ query, state, maxResults })
         return { downloads }
+      },
+    }),
+
+    ListAllSkills: tool({
+      description:
+        'List all skills available to you (name + description). The most relevant skills are already summarized in your system prompt; use this to see the full current list before loading one with ReadSkill.',
+      inputSchema: z.object({}),
+      execute: async () => {
+        const approved = await requestApproval({
+          toolName: 'ListAllSkills',
+          summary: 'List your saved skills',
+          reason: 'To see which skills are available',
+        })
+        if (!approved) return DENIED
+        const skills = await listSkillMetas()
+        return { skills }
+      },
+    }),
+
+    ReadSkill: tool({
+      description:
+        "Load the full instructions for a skill by name, then follow them for the current task. Use when the user invokes a skill or when a request matches a skill listed in your system prompt. Returns the skill's instruction body.",
+      inputSchema: z.object({
+        name: z.string().describe('The exact skill name to load, e.g. "summarizing-pages"'),
+      }),
+      execute: async ({ name }) => {
+        const approved = await requestApproval({
+          toolName: 'ReadSkill',
+          summary: `Load the “${name}” skill`,
+          reason: "To follow this skill's instructions",
+        })
+        if (!approved) return DENIED
+        const skill = await getSkill(name)
+        if (!skill) return { error: `No skill named "${name}". Use ListAllSkills to see valid names.` }
+        return { name: skill.name, description: skill.description, body: skill.body }
+      },
+    }),
+
+    SaveSkill: tool({
+      description:
+        "Create or update a skill in the user's local Skills Library. Use when the user has agreed on a skill to save (for example during /create-skill). Upserts by name; an existing custom skill with the same name is overwritten. Asks the user for permission first. Built-in skills cannot be overwritten.",
+      inputSchema: z.object({
+        name: z
+          .string()
+          .describe('Skill slug: lowercase letters, numbers and single hyphens, ≤64 chars (e.g. "drafting-replies")'),
+        description: z
+          .string()
+          .describe('Third-person sentence stating what the skill does and when to use it, with trigger keywords'),
+        body: z.string().describe('The Markdown instruction body the assistant follows when the skill runs'),
+        icon: z.string().optional().describe('A single emoji to represent the skill in the Library'),
+      }),
+      execute: async ({ name, description, body, icon }) => {
+        const approved = await requestApproval({
+          toolName: 'SaveSkill',
+          summary: `Save skill “${name}”`,
+          reason: description,
+        })
+        if (!approved) return DENIED
+        try {
+          const saved = await saveSkill({ name, description, body, icon })
+          return { saved: true, name: saved.name }
+        } catch (err) {
+          // Validation / built-in-overwrite failures come back as text so the
+          // model can correct the name and retry rather than treating it as denial.
+          return { error: err instanceof Error ? err.message : String(err) }
+        }
       },
     }),
   }
