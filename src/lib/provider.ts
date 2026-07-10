@@ -22,6 +22,36 @@ export interface TestResult {
   latencyMs: number
 }
 
+/**
+ * Names a chat from its opening message via a quick side-call to the same
+ * model. Returns null (and never throws) if the model is unavailable or slow,
+ * so the caller can simply leave the chat titled "New chat".
+ */
+export async function generateChatTitle(
+  model: LanguageModel,
+  firstMessage: string,
+): Promise<string | null> {
+  try {
+    const { text } = await generateText({
+      model,
+      prompt:
+        'Write a concise title (3–6 words, Title Case, no quotes, no trailing punctuation) for a ' +
+        'chat that begins with this message. Reply with the title only.\n\n' +
+        `Message: ${firstMessage.slice(0, 500)}`,
+      abortSignal: AbortSignal.timeout(20_000),
+    })
+    const title = text
+      .trim()
+      .split('\n')[0]
+      .replace(/^["'“”]+|["'“”.]+$/g, '')
+      .trim()
+      .slice(0, 60)
+    return title || null
+  } catch {
+    return null
+  }
+}
+
 /** Fires one tiny completion at the endpoint to prove the config works. */
 export async function testModel(config: ProviderConfig, modelId: string): Promise<TestResult> {
   const started = Date.now()

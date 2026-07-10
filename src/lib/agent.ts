@@ -21,6 +21,16 @@ export type UIPart =
       errorText?: string
     }
 
+// One rendered message in the transcript: a role plus ordered parts (streamed
+// text interleaved with tool invocations), and any attached screenshots.
+export interface UIMessage {
+  id: string
+  role: 'user' | 'assistant'
+  parts: UIPart[]
+  /** Screenshot data URLs attached to a user message. */
+  images?: string[]
+}
+
 export interface AgentTurnResult {
   parts: UIPart[]
   /** Messages to append to the model-facing history. */

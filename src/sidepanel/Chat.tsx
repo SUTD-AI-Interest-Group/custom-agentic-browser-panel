@@ -1,28 +1,23 @@
 import { useEffect, useRef, useState } from 'react'
 import type { ModelMessage } from 'ai'
 import Markdown from './Markdown'
-import { runAgentTurn, type UIPart } from '../lib/agent'
+import { runAgentTurn, type UIMessage, type UIPart } from '../lib/agent'
 import { captureRegion, type CapturedImage } from '../lib/capture'
+import { getConversation, renameConversation, saveConversation } from '../lib/conversations'
 import { appendToEpisode, getMemoryContext } from '../lib/memory'
-import { createModel } from '../lib/provider'
+import { createModel, generateChatTitle } from '../lib/provider'
 import { getSelectedProvider, type Settings } from '../lib/settings'
 import { getActiveTab, listOpenTabs, readTabContent, type TabContent, type TabSummary } from '../lib/tabs'
 import { createAgentTools, type ApprovalRequest } from '../lib/tools'
-
-interface UIMessage {
-  id: string
-  role: 'user' | 'assistant'
-  parts: UIPart[]
-  /** Screenshot data URLs attached to a user message. */
-  images?: string[]
-}
 
 interface PendingApproval extends ApprovalRequest {
   resolve: (approved: boolean) => void
 }
 
 interface CurrentTabInfo {
+  tabId: number
   title: string
+  url: string
   favIconUrl?: string
 }
 
@@ -35,7 +30,35 @@ interface TabMention {
   token: string
 }
 
+// Entries offered in the "@" popover: open tabs, plus special items — "memory"
+// (draw on long-term memory) and "all" (attach every open tab).
+type MentionCandidate = { kind: 'tab'; tab: TabSummary } | { kind: 'memory' } | { kind: 'all' }
+
+// The literal token that marks a message as memory-directed. Its presence in
+// the sent text (typed or inserted from the popover) is the user's request to
+// recall — the agent's SearchMemory tool is auto-approved for that turn.
+const MEMORY_TOKEN = '@memory'
+const MEMORY_TOKEN_RE = /(^|\s)@memory\b/i
+
+// @all attaches the content of every open tab. Only offered when the user has
+// granted all-tabs visibility, mirroring the ViewOpenedTabs gate.
+const ALL_TOKEN = '@all'
+const ALL_TOKEN_RE = /(^|\s)@all\b/i
+const MAX_ALL_TABS = 25
+
+// Cap how much highlighted text we forward as context.
+const SELECTION_MAX = 4000
+
 const uid = () => crypto.randomUUID()
+
+// The bare host of a URL (medium.com), or '' for unscriptable/blank URLs.
+function hostOf(url: string): string {
+  try {
+    return new URL(url).hostname.replace(/^www\./, '')
+  } catch {
+    return ''
+  }
+}
 
 // Where does an "@" start a mention? At the start of input or after
 // whitespace, with the query running up to the caret on the same line.
@@ -50,13 +73,17 @@ function detectMention(value: string, caret: number): { start: number; query: st
 }
 
 export default function Chat({
+  conversationId,
   settings,
   onUpdateSettings,
   onOpenSettings,
+  onConversationsChanged,
 }: {
+  conversationId: string
   settings: Settings
   onUpdateSettings: (next: Settings) => void
   onOpenSettings: () => void
+  onConversationsChanged: () => void
 }) {
   const [messages, setMessages] = useState<UIMessage[]>([])
   const [input, setInput] = useState('')
@@ -68,20 +95,61 @@ export default function Chat({
   const [captureError, setCaptureError] = useState<string | null>(null)
   const [mentions, setMentions] = useState<TabMention[]>([])
   const [mentionQuery, setMentionQuery] = useState<{ start: number; query: string } | null>(null)
-  const [mentionCandidates, setMentionCandidates] = useState<TabSummary[]>([])
+  const [mentionCandidates, setMentionCandidates] = useState<MentionCandidate[]>([])
   const [mentionIndex, setMentionIndex] = useState(0)
+  // The active tab is attached to the first message of a fresh chat so the user
+  // can start talking about the page right away; they can dismiss it.
+  const [tabDismissed, setTabDismissed] = useState(false)
+  // Text the user has highlighted on the active tab, offered as removable
+  // context. `dismissedSelection` holds the last selection they removed or sent
+  // so it isn't re-attached until they highlight something different.
+  const [selection, setSelection] = useState<{ text: string; tabId: number } | null>(null)
+  const [dismissedSelection, setDismissedSelection] = useState('')
+
+  // Bumped when a turn finishes, to trigger persistence of the transcript.
+  const [turnSeq, setTurnSeq] = useState(0)
 
   const historyRef = useRef<ModelMessage[]>([])
   // One episode per conversation: the raw journal that nightly "dreaming"
-  // later distills into long-term memories.
-  const episodeIdRef = useRef(uid())
+  // later distills into long-term memories. Sharing the conversation id keeps
+  // the journal aligned with the chat it came from.
+  const episodeIdRef = useRef(conversationId)
   const abortRef = useRef<AbortController | null>(null)
   const approvalRef = useRef<PendingApproval | null>(null)
   const sessionAllowed = useRef<Set<string>>(new Set())
+  // Tools pre-authorized for the current turn only (e.g. SearchMemory when the
+  // user typed @memory — the mention itself is their consent).
+  const turnAllowed = useRef<Set<string>>(new Set())
   const scrollRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
 
   const selected = getSelectedProvider(settings)
+
+  // Restore a persisted conversation on mount. Chat is keyed by conversationId
+  // in App, so this runs once per chat and never mid-conversation.
+  useEffect(() => {
+    let cancelled = false
+    void getConversation(conversationId).then((c) => {
+      if (cancelled || !c) return
+      setMessages(c.messages)
+      historyRef.current = c.history
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [conversationId])
+
+  // Persist after each finished turn (not on restore or mid-stream), then let
+  // App refresh its history list.
+  useEffect(() => {
+    if (turnSeq === 0) return
+    void saveConversation({ id: conversationId, messages, history: historyRef.current }).then(
+      onConversationsChanged,
+    )
+    // Persist is driven solely by turnSeq; messages is read fresh from the
+    // render that bumped it.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [turnSeq])
 
   // Passive context pill (Dia-style): shows which tab the agent would see if
   // granted access. Purely informational — access still goes through tools.
@@ -89,8 +157,13 @@ export default function Chat({
     let cancelled = false
     const refresh = async () => {
       const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true })
-      if (!cancelled && tab) {
-        setCurrentTab({ title: tab.title ?? '(untitled)', favIconUrl: tab.favIconUrl })
+      if (!cancelled && tab && tab.id !== undefined) {
+        setCurrentTab({
+          tabId: tab.id,
+          title: tab.title ?? '(untitled)',
+          url: tab.url ?? '',
+          favIconUrl: tab.favIconUrl,
+        })
       }
     }
     void refresh()
@@ -107,12 +180,64 @@ export default function Chat({
     }
   }, [])
 
+  // Watch the active tab for a text selection and surface it as removable
+  // context. Reading requires injecting into the page, so we only poll while
+  // the panel is visible and refresh eagerly when the user returns to it.
+  useEffect(() => {
+    let cancelled = false
+    const readSelection = async () => {
+      if (document.visibilityState !== 'visible') return
+      const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true })
+      if (cancelled || !tab || tab.id === undefined) return
+      const tabId = tab.id
+      try {
+        const [res] = await chrome.scripting.executeScript({
+          target: { tabId },
+          func: () => window.getSelection()?.toString() ?? '',
+        })
+        const text = (res?.result ?? '').trim()
+        if (cancelled) return
+        setSelection((prev) =>
+          text
+            ? prev?.text === text && prev.tabId === tabId
+              ? prev
+              : { text, tabId }
+            : prev === null
+              ? prev
+              : null,
+        )
+        // Once the highlight is gone, forget what was dismissed so re-selecting
+        // (even the same text) offers it again.
+        if (!text) setDismissedSelection('')
+      } catch {
+        // chrome:// pages, the Web Store, and PDFs cannot be scripted.
+        if (!cancelled) {
+          setSelection((prev) => (prev === null ? prev : null))
+          setDismissedSelection('')
+        }
+      }
+    }
+    void readSelection()
+    const interval = setInterval(() => void readSelection(), 1000)
+    const onFocus = () => void readSelection()
+    const onActivated = () => void readSelection()
+    window.addEventListener('focus', onFocus)
+    chrome.tabs.onActivated.addListener(onActivated)
+    return () => {
+      cancelled = true
+      clearInterval(interval)
+      window.removeEventListener('focus', onFocus)
+      chrome.tabs.onActivated.removeListener(onActivated)
+    }
+  }, [])
+
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight })
   }, [messages, approval])
 
   function requestApproval(request: ApprovalRequest): Promise<boolean> {
     if (sessionAllowed.current.has(request.toolName)) return Promise.resolve(true)
+    if (turnAllowed.current.has(request.toolName)) return Promise.resolve(true)
     return new Promise<boolean>((resolve) => {
       const pending = { ...request, resolve }
       approvalRef.current = pending
@@ -173,7 +298,12 @@ export default function Chat({
     const filtered = q
       ? tabs.filter((t) => t.title.toLowerCase().includes(q) || t.url.toLowerCase().includes(q))
       : tabs
-    setMentionCandidates(filtered.slice(0, 8))
+    const candidates: MentionCandidate[] = []
+    // Offer the specials whenever the query is a prefix of their word (incl. empty).
+    if ('memory'.startsWith(q)) candidates.push({ kind: 'memory' })
+    if (settings.tabAccess === 'all-tabs' && 'all'.startsWith(q)) candidates.push({ kind: 'all' })
+    candidates.push(...filtered.slice(0, 8).map((t): MentionCandidate => ({ kind: 'tab', tab: t })))
+    setMentionCandidates(candidates)
     setMentionIndex(0)
   }
 
@@ -184,16 +314,24 @@ export default function Chat({
     if (m) void refreshMentionCandidates(m)
   }
 
-  function selectMention(tab: TabSummary) {
+  function selectMention(candidate: MentionCandidate) {
     if (!mentionQuery) return
-    const token = `@${tab.title.trim().slice(0, 48)}`
+    const token =
+      candidate.kind === 'memory'
+        ? MEMORY_TOKEN
+        : candidate.kind === 'all'
+          ? ALL_TOKEN
+          : `@${candidate.tab.title.trim().slice(0, 48)}`
     const caret = inputRef.current?.selectionStart ?? input.length
     const next = `${input.slice(0, mentionQuery.start)}${token} ${input.slice(caret)}`
     setInput(next)
-    setMentions((arr) => [
-      ...arr.filter((x) => x.tabId !== tab.tabId),
-      { tabId: tab.tabId, title: tab.title, url: tab.url, token },
-    ])
+    if (candidate.kind === 'tab') {
+      const tab = candidate.tab
+      setMentions((arr) => [
+        ...arr.filter((x) => x.tabId !== tab.tabId),
+        { tabId: tab.tabId, title: tab.title, url: tab.url, token },
+      ])
+    }
     setMentionQuery(null)
     const pos = mentionQuery.start + token.length + 1
     requestAnimationFrame(() => {
@@ -207,31 +345,75 @@ export default function Chat({
     const images = attachments
     // Mentions only count if their token survived editing.
     const activeMentions = mentions.filter((m) => text.includes(m.token))
+    // A surviving @memory token directs the agent to consult long-term memory.
+    const useMemory = MEMORY_TOKEN_RE.test(text)
+    // @all attaches every open tab (only honored in all-tabs visibility mode).
+    const useAll = settings.tabAccess === 'all-tabs' && ALL_TOKEN_RE.test(text)
+    const isFirstMessage = messages.length === 0
+    // Attach the tab the user is on to the first message of a fresh chat.
+    const includeCurrentTab = isFirstMessage && !tabDismissed && currentTab !== null
+    // Highlighted text the user chose to share (consumed once sent).
+    const activeSelection =
+      selection && selection.text !== dismissedSelection ? selection.text : null
     if ((!text && images.length === 0) || streaming || !selected) return
     setInput('')
     setAttachments([])
     setMentions([])
     setMentionQuery(null)
+    if (activeSelection) setDismissedSelection(activeSelection)
     setCaptureError(null)
     if (inputRef.current) inputRef.current.style.height = 'auto'
+
+    // Name the chat from its opening message — fired concurrently with the turn
+    // and applied whenever it resolves, so the title fills in on its own.
+    if (isFirstMessage && text && selected) {
+      const titleModel = createModel(selected.provider, selected.modelId)
+      void generateChatTitle(titleModel, text)
+        .then((t) => (t ? renameConversation(conversationId, t).then(onConversationsChanged) : undefined))
+        .catch(() => {})
+    }
 
     setMessages((m) => [
       ...m,
       { id: uid(), role: 'user', parts: [{ type: 'text', text }], images: images.map((i) => i.dataUrl) },
     ])
 
-    // Sync @mentioned tab contents into the model-facing message.
+    // Sync shared tab contents into the model-facing message: any @mentioned
+    // tabs plus the auto-attached current tab, de-duplicated by id.
+    const tabIds: number[] = []
+    for (const m of activeMentions) if (!tabIds.includes(m.tabId)) tabIds.push(m.tabId)
+    if (includeCurrentTab && currentTab && !tabIds.includes(currentTab.tabId))
+      tabIds.push(currentTab.tabId)
+    let allTabsOmitted = 0
+    if (useAll) {
+      const open = await listOpenTabs()
+      allTabsOmitted = Math.max(0, open.length - MAX_ALL_TABS)
+      for (const t of open.slice(0, MAX_ALL_TABS)) if (!tabIds.includes(t.tabId)) tabIds.push(t.tabId)
+    }
+
     let modelText = text
     let syncedTabs: TabContent[] = []
-    if (activeMentions.length > 0) {
-      syncedTabs = await Promise.all(activeMentions.map((m) => readTabContent(m.tabId)))
+    if (tabIds.length > 0) {
+      syncedTabs = await Promise.all(tabIds.map((id) => readTabContent(id)))
       const blocks = syncedTabs.map(
         (c) =>
           `<tab title=${JSON.stringify(c.title)} url=${JSON.stringify(c.url)}>\n${
             c.error ? `(could not read this tab: ${c.error})` : c.text
           }${c.truncated ? '\n[content truncated]' : ''}\n</tab>`,
       )
-      modelText = `${text}\n\n[Current content of the tab${activeMentions.length > 1 ? 's' : ''} the user @mentioned, synced at send time:]\n${blocks.join('\n\n')}`
+      const omit =
+        allTabsOmitted > 0
+          ? `\n\n[Note: ${allTabsOmitted} more open tab${allTabsOmitted > 1 ? 's were' : ' was'} omitted to keep this message manageable.]`
+          : ''
+      modelText = `${text}\n\n[Current content of the tab${syncedTabs.length > 1 ? 's' : ''} shared with you, synced at send time:]\n${blocks.join('\n\n')}${omit}`
+    }
+    if (activeSelection) {
+      const snippet = activeSelection.slice(0, SELECTION_MAX)
+      const more = activeSelection.length > SELECTION_MAX ? '\n…[selection truncated]' : ''
+      modelText = `${modelText}\n\n[The user highlighted this text on the current page and shared it as context:]\n"""\n${snippet}${more}\n"""`
+    }
+    if (useMemory) {
+      modelText = `${modelText}\n\n[The user invoked @memory — before answering, use the SearchMemory tool to recall relevant long-term memories (pick query terms from their message, or recall broadly if it is general) and ground your reply in what you find.]`
     }
 
     if (images.length > 0) {
@@ -253,6 +435,9 @@ export default function Chat({
 
     const controller = new AbortController()
     abortRef.current = controller
+    // @memory is the user's consent to recall, so skip the SearchMemory card
+    // for this turn only (it reads local memory — no page or network access).
+    turnAllowed.current = useMemory ? new Set(['SearchMemory']) : new Set()
     setStreaming(true)
     const turnStartedAt = Date.now()
     try {
@@ -286,6 +471,9 @@ export default function Chat({
         notes.push(`[attached ${images.length} screenshot${images.length > 1 ? 's' : ''}]`)
       if (syncedTabs.length > 0)
         notes.push(`[synced tabs: ${syncedTabs.map((t) => t.title).join(', ')}]`)
+      if (useMemory) notes.push('[asked to recall from memory]')
+      if (useAll) notes.push('[shared all open tabs]')
+      if (activeSelection) notes.push('[shared a page selection]')
       const journalUserText = [text, ...notes].filter(Boolean).join('\n')
       void appendToEpisode(episodeIdRef.current, [
         { role: 'user', text: journalUserText, at: turnStartedAt },
@@ -309,8 +497,10 @@ export default function Chat({
       }
     } finally {
       settleApproval(false)
+      turnAllowed.current = new Set()
       abortRef.current = null
       setStreaming(false)
+      setTurnSeq((n) => n + 1)
     }
   }
 
@@ -330,8 +520,9 @@ export default function Chat({
           <div className="empty-state">
             <div className="empty-title">How can I help?</div>
             <div className="empty-hint">
-              Ask about anything — @mention a tab to share its content, snip a screenshot with
-              the camera, or let me ask permission to read pages myself.
+              The tab you're on is attached to your first message. @mention another tab to share
+              it, type @memory to have me draw on what I remember, or snip a screenshot with the
+              camera.
             </div>
           </div>
         )}
@@ -349,31 +540,101 @@ export default function Chat({
       </div>
 
       <div className="composer-area">
-        {currentTab && (
-          <div className="context-pill" title="The agent can ask to view this tab">
-            {currentTab.favIconUrl ? (
-              <img src={currentTab.favIconUrl} alt="" />
-            ) : (
-              <span className="context-dot" />
-            )}
-            <span className="context-title">{currentTab.title}</span>
+        {currentTab &&
+          (messages.length === 0 && !tabDismissed ? (
+            <div
+              className="context-pill attached"
+              title={`This page is attached to your first message — ${currentTab.title}`}
+            >
+              {currentTab.favIconUrl ? (
+                <img src={currentTab.favIconUrl} alt="" />
+              ) : (
+                <span className="context-dot" />
+              )}
+              <span className="context-title">{hostOf(currentTab.url) || currentTab.title}</span>
+              <button
+                className="context-remove"
+                title="Don't share this page"
+                onClick={() => setTabDismissed(true)}
+              >
+                <svg width="8" height="8" viewBox="0 0 8 8" fill="none">
+                  <path
+                    d="M1.5 1.5l5 5M6.5 1.5l-5 5"
+                    stroke="currentColor"
+                    strokeWidth="1.4"
+                    strokeLinecap="round"
+                  />
+                </svg>
+              </button>
+            </div>
+          ) : (
+            <div className="context-pill" title={`The agent can ask to view this tab — ${currentTab.title}`}>
+              {currentTab.favIconUrl ? (
+                <img src={currentTab.favIconUrl} alt="" />
+              ) : (
+                <span className="context-dot" />
+              )}
+              <span className="context-title">{hostOf(currentTab.url) || currentTab.title}</span>
+            </div>
+          ))}
+        {selection && selection.text !== dismissedSelection && (
+          <div className="selection-chip" title="Highlighted text shared as context">
+            <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+              <path
+                d="M3 2.5h6M3 6h6M3 9.5h4"
+                stroke="currentColor"
+                strokeWidth="1.2"
+                strokeLinecap="round"
+              />
+            </svg>
+            <span className="selection-text">{selection.text}</span>
+            <button
+              className="context-remove"
+              title="Don't share this selection"
+              onClick={() => setDismissedSelection(selection.text)}
+            >
+              <svg width="8" height="8" viewBox="0 0 8 8" fill="none">
+                <path
+                  d="M1.5 1.5l5 5M6.5 1.5l-5 5"
+                  stroke="currentColor"
+                  strokeWidth="1.4"
+                  strokeLinecap="round"
+                />
+              </svg>
+            </button>
           </div>
         )}
         {captureError && <div className="capture-error">{captureError}</div>}
         {mentionQuery && mentionCandidates.length > 0 && (
           <div className="mention-popover">
-            {mentionCandidates.map((t, i) => (
+            {mentionCandidates.map((c, i) => (
               <button
-                key={t.tabId}
-                className={`mention-item ${i === mentionIndex ? 'active' : ''}`}
+                key={c.kind === 'tab' ? c.tab.tabId : c.kind}
+                className={`mention-item ${i === mentionIndex ? 'active' : ''} ${
+                  c.kind !== 'tab' ? c.kind : ''
+                }`}
                 onMouseDown={(e) => {
                   e.preventDefault()
-                  selectMention(t)
+                  selectMention(c)
                 }}
                 onMouseEnter={() => setMentionIndex(i)}
               >
-                <span className="mention-title">{t.title}</span>
-                <span className="mention-url">{t.url}</span>
+                {c.kind === 'memory' ? (
+                  <>
+                    <span className="mention-title">Memory</span>
+                    <span className="mention-url">Have me recall from long-term memory</span>
+                  </>
+                ) : c.kind === 'all' ? (
+                  <>
+                    <span className="mention-title">All tabs</span>
+                    <span className="mention-url">Attach every open tab as context</span>
+                  </>
+                ) : (
+                  <>
+                    <span className="mention-title">{c.tab.title}</span>
+                    <span className="mention-url">{c.tab.url}</span>
+                  </>
+                )}
               </button>
             ))}
           </div>

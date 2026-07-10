@@ -15,5 +15,14 @@
   },
   "side_panel": {
     "default_path": "sidepanel.html"
+  },
+  "commands": {
+    "toggle-panel": {
+      "suggested_key": {
+        "default": "Ctrl+E",
+        "mac": "Command+E"
+      },
+      "description": "Toggle the Agent Chat side panel"
+    }
   }
 }

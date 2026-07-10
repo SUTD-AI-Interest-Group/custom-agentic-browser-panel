@@ -1,9 +1,10 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import {
   DEFAULT_SYSTEM_PROMPT,
   type ProviderConfig,
   type Settings,
 } from '../lib/settings'
+import MemoryView from './Memory'
 
 // Common OpenAI-compatible endpoints, offered as one-click starting points.
 // Anything not listed still works via "Custom".
@@ -165,6 +166,8 @@ export default function SettingsView({
         </div>
       </label>
 
+      <ShortcutSection />
+
       <h2>System prompt</h2>
       <textarea
         className="system-prompt"
@@ -179,11 +182,60 @@ export default function SettingsView({
         Reset to default
       </button>
 
+      <details className="settings-section">
+        <summary>Memory &amp; dreaming</summary>
+        <MemoryView />
+      </details>
+
       <div className="settings-footer">
         <button className="btn primary" onClick={save}>
           Save
         </button>
       </div>
     </div>
+  )
+}
+
+// Chrome owns browser-global shortcuts: an extension can read its current
+// binding but cannot set it, so rebinding delegates to Chrome's shortcuts page.
+// We refresh on window focus to reflect a change made there without a reload.
+function ShortcutSection() {
+  const [shortcut, setShortcut] = useState<string | null>(null)
+  const [loaded, setLoaded] = useState(false)
+
+  useEffect(() => {
+    const refresh = () =>
+      chrome.commands
+        .getAll()
+        .then((cmds) => {
+          const c = cmds.find((x) => x.name === 'toggle-panel')
+          setShortcut(c?.shortcut ? c.shortcut : null)
+          setLoaded(true)
+        })
+        .catch(() => setLoaded(true))
+    refresh()
+    window.addEventListener('focus', refresh)
+    return () => window.removeEventListener('focus', refresh)
+  }, [])
+
+  return (
+    <>
+      <h2>Keyboard shortcut</h2>
+      <p className="hint">
+        Toggle this side panel from anywhere in the browser (default Ctrl/Cmd + E). Chrome
+        manages global shortcuts, so rebinding opens Chrome's shortcuts page; your choice is
+        saved there.
+      </p>
+      <div className="shortcut-row">
+        <span className="shortcut-label">Toggle sidebar</span>
+        <kbd className="shortcut-key">{loaded ? shortcut ?? 'Not set' : '…'}</kbd>
+        <button
+          className="btn ghost small"
+          onClick={() => void chrome.tabs.create({ url: 'chrome://extensions/shortcuts' })}
+        >
+          Change shortcut ↗
+        </button>
+      </div>
+    </>
   )
 }
