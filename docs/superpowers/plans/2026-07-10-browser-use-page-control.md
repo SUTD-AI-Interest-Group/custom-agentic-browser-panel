@@ -22,6 +22,37 @@
 
 ---
 
+## Integration refresh (post-concurrency — READ FIRST)
+
+This plan was written against an earlier `main`. Two features ("browsing-data", "agent skills") have since landed, so the **shared integration files differ from the task snippets below**. Execution happens on branch `worktree-browser-use-page-control` (worktree `.claude/worktrees/browser-use-page-control`), off local HEAD `611049a`.
+
+**New-file modules are UNAFFECTED** — implement them verbatim from the task bodies: `src/platform/domIndex.ts` (Task 1), `src/platform/pageActions.ts` (Task 3), `src/tools/pageControl.ts` (Task 4), `src/platform/presence.ts` (Task 5), `src/platform/marks.ts` + `src/agent/vision.ts` (Task 6). Only the integration points below drifted; these facts are authoritative (open the real files — line numbers are approximate):
+
+**`src/tools/tools.ts`** — current signature is **3 params, 11 tools already registered** (ViewCurrentTab, ViewOpenedTabs, SaveMemory, SearchMemory, GetBrowsingHistory, GetBookmarks, GetTopSites, GetDownloads, ListAllSkills, ReadSkill, SaveSkill):
+```ts
+export function createAgentTools(
+  requestApproval: ApprovalGate,
+  tabAccess: TabAccess,
+  granted: Set<BrowsingCapability>,
+): ToolSet
+```
+Evolve it by **APPENDING** params (never reorder the existing three; the task snippets showing `(requestApproval, pageControl, tabAccess)` are superseded by this):
+- After Task 2: `(requestApproval, tabAccess, granted, pageControl: PageControlGate)`
+- After Task 6: `(requestApproval, tabAccess, granted, pageControl: PageControlGate, selected: { provider: ProviderConfig; modelId: string } | null)`
+
+Add `InspectPage` / `RequestPageControl` / `ControlPage` as **new entries in the existing `tools` object**, alongside the 11 current tools. `DENIED` and the `requestApproval` pattern are unchanged.
+
+**`src/ui/Chat.tsx`** (now ~1303 lines) — the approval machinery is UNCHANGED, just shifted:
+- Call site (~line 647): `tools: createAgentTools(requestApproval, settings.tabAccess, granted),` → append `pageControl` (Task 2), then `selected` (Task 6): `createAgentTools(requestApproval, settings.tabAccess, granted, pageControl, selected)`.
+- `selected` already exists at ~line 237 (`const selected = getSelectedProvider(settings)`) — use it directly; do NOT recompute.
+- Approval refs (`approvalRef`, `sessionAllowed`, `turnAllowed`) ~229–237; `requestApproval` ~349; `settleApproval` ~360; `stop()` ~369; `send()` `finally` block ~692; `<ApprovalCard>` render ~730; `ApprovalCard` def ~1269; `ToolPill` ~1228. (Task bodies cite the old ~253/~488/~531/~966/~931 anchors — use these instead.)
+
+**`src/agent/agent.ts`** — `MAX_STEPS = 10` is at **line 57** (task body says 40). Change to `24`.
+
+**Commits:** targeted `git add <path>` per task (the tree is clean; do not `git add -A`). No `Co-Authored-By`/"Generated with" trailer.
+
+---
+
 ### Task 1: Element registry — DOM indexer (`src/platform/domIndex.ts`)
 
 Builds the perception substrate: an injected function that walks the DOM, filters to visible interactive elements, stamps each with `data-agent-idx`, and returns a structured registry the model can read. Also the cleanup injection and the text serializer.
