@@ -11,7 +11,7 @@ import { getSelectedProvider, type Settings } from '../data/settings'
 import { getActiveTab, listOpenTabs, readTabContent, type TabContent, type TabSummary } from '../platform/tabs'
 import { createAgentTools, type ApprovalRequest } from '../tools/tools'
 import { grantedCapabilities, type BrowsingCapability } from '../platform/permissions'
-import { getSkill, listSkillMetas } from '../data/skills'
+import { getSkill, listSkillMetas, listSkills } from '../data/skills'
 
 // Which browsing-insight tool each capability exposes — used to tell the model,
 // each turn, exactly which are usable so it never calls a disabled one.
@@ -110,17 +110,33 @@ function detectMention(value: string, caret: number): { start: number; query: st
   return { start: at, query }
 }
 
+// Composer "/" menu: like @mentions but anchored to the start of the message.
+// A leading "/skill-name" token invokes that skill (parsed on send in `send`);
+// this popover just autocompletes the name.
+type SlashCandidate =
+  | { kind: 'skill'; name: string; description: string }
+  | { kind: 'browse' }
+
+// Active only while the caret is still inside a leading "/token" (no space yet).
+function detectSlash(value: string, caret: number): { query: string } | null {
+  const before = value.slice(0, caret)
+  const m = before.match(/^\/([a-z0-9-]*)$/)
+  return m ? { query: m[1] } : null
+}
+
 export default function Chat({
   conversationId,
   settings,
   onUpdateSettings,
   onOpenSettings,
+  onOpenSkills,
   onConversationsChanged,
 }: {
   conversationId: string
   settings: Settings
   onUpdateSettings: (next: Settings) => void
   onOpenSettings: () => void
+  onOpenSkills: () => void
   onConversationsChanged: () => void
 }) {
   const [messages, setMessages] = useState<UIMessage[]>([])
@@ -135,6 +151,9 @@ export default function Chat({
   const [mentionQuery, setMentionQuery] = useState<{ start: number; query: string } | null>(null)
   const [mentionCandidates, setMentionCandidates] = useState<MentionCandidate[]>([])
   const [mentionIndex, setMentionIndex] = useState(0)
+  const [slashQuery, setSlashQuery] = useState<{ query: string } | null>(null)
+  const [slashCandidates, setSlashCandidates] = useState<SlashCandidate[]>([])
+  const [slashIndex, setSlashIndex] = useState(0)
   // The active tab is attached to the first message of a fresh chat so the user
   // can start talking about the page right away; they can dismiss it.
   const [tabDismissed, setTabDismissed] = useState(false)
@@ -350,11 +369,44 @@ export default function Chat({
     setMentionIndex(0)
   }
 
+  async function refreshSlashCandidates(s: { query: string }) {
+    const all = await listSkills().catch(() => [])
+    const q = s.query.trim().toLowerCase()
+    const matched = all
+      .filter((sk) => sk.userInvocable)
+      .filter((sk) => !q || sk.name.includes(q) || sk.description.toLowerCase().includes(q))
+      .slice(0, 8)
+      .map((sk): SlashCandidate => ({ kind: 'skill', name: sk.name, description: sk.description }))
+    setSlashCandidates([...matched, { kind: 'browse' }])
+    setSlashIndex(0)
+  }
+
+  function selectSlash(c: SlashCandidate) {
+    if (c.kind === 'browse') {
+      setSlashQuery(null)
+      onOpenSkills()
+      return
+    }
+    // Replace the leading "/query" token with "/name ", keeping any arguments.
+    const rest = input.replace(/^\/[a-z0-9-]*/, '').replace(/^\s+/, '')
+    const next = `/${c.name} ${rest}`
+    setInput(next)
+    setSlashQuery(null)
+    const pos = c.name.length + 2
+    requestAnimationFrame(() => {
+      inputRef.current?.focus()
+      inputRef.current?.setSelectionRange(pos, pos)
+    })
+  }
+
   function handleInputChange(value: string, caret: number) {
     setInput(value)
     const m = detectMention(value, caret)
     setMentionQuery(m)
     if (m) void refreshMentionCandidates(m)
+    const s = detectSlash(value, caret)
+    setSlashQuery(s)
+    if (s) void refreshSlashCandidates(s)
   }
 
   function selectMention(candidate: MentionCandidate) {
@@ -419,6 +471,7 @@ export default function Chat({
     setAttachments([])
     setMentions([])
     setMentionQuery(null)
+    setSlashQuery(null)
     if (activeSelection) setDismissedSelection(activeSelection)
     setCaptureError(null)
     if (inputRef.current) inputRef.current.style.height = 'auto'
@@ -691,6 +744,33 @@ export default function Chat({
           </div>
         )}
         {captureError && <div className="capture-error">{captureError}</div>}
+        {slashQuery && slashCandidates.length > 0 && (
+          <div className="mention-popover">
+            {slashCandidates.map((c, i) => (
+              <button
+                key={c.kind === 'skill' ? c.name : 'browse'}
+                className={`mention-item ${i === slashIndex ? 'active' : ''} ${c.kind === 'skill' ? 'skill' : 'browse'}`}
+                onMouseDown={(e) => {
+                  e.preventDefault()
+                  selectSlash(c)
+                }}
+                onMouseEnter={() => setSlashIndex(i)}
+              >
+                {c.kind === 'skill' ? (
+                  <>
+                    <span className="mention-title">/{c.name}</span>
+                    <span className="mention-url">{c.description}</span>
+                  </>
+                ) : (
+                  <>
+                    <span className="mention-title">Browse skills…</span>
+                    <span className="mention-url">Open the Skills Library</span>
+                  </>
+                )}
+              </button>
+            ))}
+          </div>
+        )}
         {mentionQuery && mentionCandidates.length > 0 && (
           <div className="mention-popover">
             {mentionCandidates.map((c, i) => (
@@ -756,6 +836,24 @@ export default function Chat({
               e.target.style.height = `${Math.min(e.target.scrollHeight, 160)}px`
             }}
             onKeyDown={(e) => {
+              if (slashQuery && slashCandidates.length > 0) {
+                if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+                  e.preventDefault()
+                  const delta = e.key === 'ArrowDown' ? 1 : -1
+                  setSlashIndex((i) => (i + delta + slashCandidates.length) % slashCandidates.length)
+                  return
+                }
+                if (e.key === 'Enter' || e.key === 'Tab') {
+                  e.preventDefault()
+                  selectSlash(slashCandidates[slashIndex])
+                  return
+                }
+                if (e.key === 'Escape') {
+                  e.preventDefault()
+                  setSlashQuery(null)
+                  return
+                }
+              }
               if (mentionQuery && mentionCandidates.length > 0) {
                 if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
                   e.preventDefault()
@@ -781,7 +879,10 @@ export default function Chat({
                 void send()
               }
             }}
-            onBlur={() => setTimeout(() => setMentionQuery(null), 150)}
+            onBlur={() => setTimeout(() => {
+              setMentionQuery(null)
+              setSlashQuery(null)
+            }, 150)}
           />
           <div className="composer-row">
             {modelOptions.length > 0 ? (

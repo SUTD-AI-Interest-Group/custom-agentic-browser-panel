@@ -149,6 +149,7 @@ export default function App() {
           settings={settings}
           onUpdateSettings={updateSettings}
           onOpenSettings={() => setShowSettings(true)}
+          onOpenSkills={() => setShowSettings(false)}
           onConversationsChanged={refreshConversations}
         />
       </div>
