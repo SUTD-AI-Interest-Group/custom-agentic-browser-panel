@@ -3,6 +3,8 @@ import { z } from 'zod'
 import { saveMemory, searchMemories } from '../data/memory'
 import type { TabAccess } from '../data/settings'
 import { getActiveTab, listOpenTabs, readTabContent } from '../platform/tabs'
+import { getBrowsingHistory, getBookmarks, getTopSites, getDownloads } from '../platform/browsingData'
+import type { BrowsingCapability } from '../platform/permissions'
 
 // ---------------------------------------------------------------------------
 // Human-in-the-loop approval gate
@@ -32,7 +34,11 @@ const DENIED = {
   message: 'The user denied permission for this tool call.',
 }
 
-export function createAgentTools(requestApproval: ApprovalGate, tabAccess: TabAccess): ToolSet {
+export function createAgentTools(
+  requestApproval: ApprovalGate,
+  tabAccess: TabAccess,
+  granted: Set<BrowsingCapability>,
+): ToolSet {
   const tools: ToolSet = {
     ViewCurrentTab: tool({
       description:
@@ -141,11 +147,120 @@ export function createAgentTools(requestApproval: ApprovalGate, tabAccess: TabAc
         }
       },
     }),
+
+    GetBrowsingHistory: tool({
+      description:
+        "Search the user's own browser history for pages they visited. Asks the user for permission first. Use to enrich a request when the user refers to something they read or visited earlier but did not share — e.g. \"that article I read last week\".",
+      inputSchema: z.object({
+        reason: z
+          .string()
+          .describe('Short reason shown to the user, e.g. "To find the article you read about X"'),
+        query: z
+          .string()
+          .optional()
+          .describe('Free-text terms to match page title/URL. Omit to list recent history.'),
+        sinceDays: z.number().optional().describe('How many days back to search (default 7).'),
+        maxResults: z.number().optional().describe('Max entries to return (default 50, max 200).'),
+      }),
+      execute: async ({ reason, query, sinceDays, maxResults }) => {
+        const approved = await requestApproval({
+          toolName: 'GetBrowsingHistory',
+          summary: query
+            ? `Search your browsing history for “${query}”`
+            : 'Look through your recent browsing history',
+          reason,
+        })
+        if (!approved) return DENIED
+        const history = await getBrowsingHistory({ query, sinceDays, maxResults })
+        return { history }
+      },
+    }),
+
+    GetBookmarks: tool({
+      description:
+        "Search or list the user's bookmarks. Asks the user for permission first. Use when the user refers to a page they bookmarked or saved, or asks what they have bookmarked.",
+      inputSchema: z.object({
+        reason: z
+          .string()
+          .describe('Short reason shown to the user, e.g. "To find the docs you bookmarked"'),
+        query: z
+          .string()
+          .optional()
+          .describe('Terms to match bookmark title/URL. Omit to list recent bookmarks.'),
+        maxResults: z.number().optional().describe('Max bookmarks to return (default 50, max 200).'),
+      }),
+      execute: async ({ reason, query, maxResults }) => {
+        const approved = await requestApproval({
+          toolName: 'GetBookmarks',
+          summary: query ? `Search your bookmarks for “${query}”` : 'List your recent bookmarks',
+          reason,
+        })
+        if (!approved) return DENIED
+        const bookmarks = await getBookmarks({ query, maxResults })
+        return { bookmarks }
+      },
+    }),
+
+    GetTopSites: tool({
+      description:
+        "List the user's most-visited sites (their new-tab top sites). Asks the user for permission first. Use when the user asks about the sites they use most, or you need their frequent destinations to tailor an answer.",
+      inputSchema: z.object({
+        reason: z
+          .string()
+          .describe('Short reason shown to the user, e.g. "To see which sites you use most"'),
+      }),
+      execute: async ({ reason }) => {
+        const approved = await requestApproval({
+          toolName: 'GetTopSites',
+          summary: 'See your most-visited sites',
+          reason,
+        })
+        if (!approved) return DENIED
+        const sites = await getTopSites()
+        return { sites }
+      },
+    }),
+
+    GetDownloads: tool({
+      description:
+        "Search the user's download history. Asks the user for permission first. Use when the user refers to a file they downloaded — e.g. \"the PDF I downloaded yesterday\" — or asks what they have downloaded.",
+      inputSchema: z.object({
+        reason: z
+          .string()
+          .describe('Short reason shown to the user, e.g. "To find the file you downloaded"'),
+        query: z
+          .string()
+          .optional()
+          .describe('Terms to match filename or URL. Omit to list recent downloads.'),
+        state: z
+          .enum(['complete', 'in_progress', 'interrupted'])
+          .optional()
+          .describe('Filter by download state.'),
+        maxResults: z.number().optional().describe('Max downloads to return (default 25, max 100).'),
+      }),
+      execute: async ({ reason, query, state, maxResults }) => {
+        const approved = await requestApproval({
+          toolName: 'GetDownloads',
+          summary: 'Look through your downloads',
+          reason,
+        })
+        if (!approved) return DENIED
+        const downloads = await getDownloads({ query, state, maxResults })
+        return { downloads }
+      },
+    }),
   }
 
   // Honor the tab-visibility preference chosen in onboarding: in active-tab
   // mode the model never even sees a tool that could enumerate other tabs.
   if (tabAccess !== 'all-tabs') delete tools.ViewOpenedTabs
+
+  // Browsing-data tools are hidden unless the user has granted the matching
+  // optional permission — the model never sees a capability that is off.
+  if (!granted.has('history')) delete tools.GetBrowsingHistory
+  if (!granted.has('bookmarks')) delete tools.GetBookmarks
+  if (!granted.has('topSites')) delete tools.GetTopSites
+  if (!granted.has('downloads')) delete tools.GetDownloads
 
   return tools
 }

@@ -10,6 +10,7 @@ import { createModel, generateChatTitle } from '../agent/provider'
 import { getSelectedProvider, type Settings } from '../data/settings'
 import { getActiveTab, listOpenTabs, readTabContent, type TabContent, type TabSummary } from '../platform/tabs'
 import { createAgentTools, type ApprovalRequest } from '../tools/tools'
+import { grantedCapabilities, type BrowsingCapability } from '../platform/permissions'
 
 interface PendingApproval extends ApprovalRequest {
   resolve: (approved: boolean) => void
@@ -477,6 +478,7 @@ export default function Chat({
       // Recalled memories are injected fresh each turn so mid-conversation
       // saves (SaveMemory) are visible on the very next turn.
       const memoryContext = await getMemoryContext().catch(() => '')
+      const granted = await grantedCapabilities().catch(() => new Set<BrowsingCapability>())
       const accessNote =
         settings.tabAccess === 'active-tab'
           ? '\n\nThe user has restricted your tab visibility to the tab they are currently on; ViewOpenedTabs is unavailable.'
@@ -485,7 +487,7 @@ export default function Chat({
         model: createModel(selected.provider, selected.modelId),
         system: `${settings.systemPrompt}${accessNote}${memoryContext ? `\n\n${memoryContext}` : ''}`,
         history: [...historyRef.current],
-        tools: createAgentTools(requestApproval, settings.tabAccess),
+        tools: createAgentTools(requestApproval, settings.tabAccess, granted),
         abortSignal: controller.signal,
         onUpdate: updateAssistant,
       })
