@@ -5,6 +5,13 @@ import {
   type Settings,
 } from '../data/settings'
 import MemoryView from './Memory'
+import {
+  BROWSING_CAPABILITIES,
+  type BrowsingCapability,
+  grantedCapabilities,
+  requestCapabilities,
+  removeCapabilities,
+} from '../platform/permissions'
 
 // Common OpenAI-compatible endpoints, offered as one-click starting points.
 // Anything not listed still works via "Custom".
@@ -166,6 +173,8 @@ export default function SettingsView({
         </div>
       </label>
 
+      <BrowsingInsightsSection />
+
       <ShortcutSection />
 
       <h2>System prompt</h2>
@@ -236,6 +245,76 @@ function ShortcutSection() {
           Change shortcut ↗
         </button>
       </div>
+    </>
+  )
+}
+
+// Browsing-data capabilities are Chrome optional permissions, not part of
+// Settings — so this section acts immediately (grant/revoke on toggle), not on
+// Save, and reads its state live from chrome.permissions. It stays in sync when
+// the user grants/revokes elsewhere (e.g. chrome://extensions).
+const CAPABILITY_LABELS: Record<BrowsingCapability, string> = {
+  history: 'Browsing history',
+  bookmarks: 'Bookmarks',
+  topSites: 'Top sites',
+  downloads: 'Downloads',
+}
+
+function BrowsingInsightsSection() {
+  const [granted, setGranted] = useState<Set<BrowsingCapability>>(new Set())
+
+  useEffect(() => {
+    const refresh = () => grantedCapabilities().then(setGranted).catch(() => {})
+    refresh()
+    chrome.permissions.onAdded.addListener(refresh)
+    chrome.permissions.onRemoved.addListener(refresh)
+    return () => {
+      // @types/chrome 0.0.280 omits removeListener from these permission
+      // events, though Chrome provides it at runtime.
+      type PermEvent = { removeListener(cb: () => void): void }
+      ;(chrome.permissions.onAdded as unknown as PermEvent).removeListener(refresh)
+      ;(chrome.permissions.onRemoved as unknown as PermEvent).removeListener(refresh)
+    }
+  }, [])
+
+  // request/remove must be called from this click handler (the user gesture).
+  // We re-read afterward so a denied prompt reverts the checkbox from state.
+  async function toggle(caps: BrowsingCapability[], on: boolean) {
+    if (on) await requestCapabilities(caps)
+    else await removeCapabilities(caps)
+    setGranted(await grantedCapabilities())
+  }
+
+  const allOn = BROWSING_CAPABILITIES.every((c) => granted.has(c))
+  const missing = BROWSING_CAPABILITIES.filter((c) => !granted.has(c))
+
+  return (
+    <>
+      <h2>Browsing insights</h2>
+      <p className="hint">
+        Let the agent look up your history, bookmarks, top sites and downloads to enrich answers.
+        Each lookup still asks for permission. Granting happens here and can be revoked anytime.
+      </p>
+      <label className="toggle-row master">
+        <div className="access-title">Enable all browsing insights</div>
+        <input
+          type="checkbox"
+          checked={allOn}
+          onChange={(e) =>
+            void toggle(e.target.checked ? missing : BROWSING_CAPABILITIES, e.target.checked)
+          }
+        />
+      </label>
+      {BROWSING_CAPABILITIES.map((cap) => (
+        <label className="toggle-row" key={cap}>
+          <div className="access-desc">{CAPABILITY_LABELS[cap]}</div>
+          <input
+            type="checkbox"
+            checked={granted.has(cap)}
+            onChange={(e) => void toggle([cap], e.target.checked)}
+          />
+        </label>
+      ))}
     </>
   )
 }
