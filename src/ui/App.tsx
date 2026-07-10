@@ -1,15 +1,18 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { listConversations, type ConversationSummary } from '../data/conversations'
 import { dreamIfDue } from '../agent/dream'
+import { seedBuiltinSkills } from '../data/builtinSkills'
 import { loadSettings, saveSettings, type Settings } from '../data/settings'
 import { relativeTime } from '../platform/time'
 import Chat from './Chat'
 import Onboarding from './Onboarding'
 import SettingsView from './Settings'
+import SkillsLibrary from './SkillsLibrary'
 
 export default function App() {
   const [settings, setSettings] = useState<Settings | null>(null)
   const [showSettings, setShowSettings] = useState(false)
+  const [showSkills, setShowSkills] = useState(false)
   // A conversation id keys the Chat: changing it loads a different chat, while
   // toggling settings leaves it untouched so the transcript is never lost.
   const [conversationId, setConversationId] = useState<string>(() => crypto.randomUUID())
@@ -25,6 +28,7 @@ export default function App() {
 
   useEffect(() => {
     loadSettings().then(setSettings)
+    void seedBuiltinSkills().catch(() => {})
     // Dreaming is fully automatic: besides the background alarm, check on
     // panel open too (covers browsers that were closed overnight). dreamIfDue
     // is self-guarding — it only runs when consolidation is actually due and
@@ -51,12 +55,14 @@ export default function App() {
   function newChat() {
     setConversationId(crypto.randomUUID())
     setShowSettings(false)
+    setShowSkills(false)
     setMenuOpen(false)
   }
 
   function openConversation(id: string) {
     if (id !== conversationId) setConversationId(id)
     setShowSettings(false)
+    setShowSkills(false)
     setMenuOpen(false)
   }
 
@@ -121,9 +127,26 @@ export default function App() {
             </svg>
           </button>
           <button
+            className={`icon-btn ${showSkills ? 'active' : ''}`}
+            title="Skills library"
+            onClick={() => {
+              setShowSkills((s) => !s)
+              setShowSettings(false)
+            }}
+          >
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+              <rect x="2" y="3" width="12" height="3" rx="1" stroke="currentColor" strokeWidth="1.4" />
+              <path d="M3 6v6a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1V6" stroke="currentColor" strokeWidth="1.4" />
+              <path d="M6.5 8.5h3" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
+            </svg>
+          </button>
+          <button
             className={`icon-btn ${showSettings ? 'active' : ''}`}
             title="Settings"
-            onClick={() => setShowSettings((s) => !s)}
+            onClick={() => {
+              setShowSettings((s) => !s)
+              setShowSkills(false)
+            }}
           >
             <svg
               width="16"
@@ -142,14 +165,17 @@ export default function App() {
         </div>
       </header>
 
-      <div className={`view-host ${showSettings ? 'is-hidden' : ''}`}>
+      <div className={`view-host ${showSettings || showSkills ? 'is-hidden' : ''}`}>
         <Chat
           key={conversationId}
           conversationId={conversationId}
           settings={settings}
           onUpdateSettings={updateSettings}
           onOpenSettings={() => setShowSettings(true)}
-          onOpenSkills={() => setShowSettings(false)}
+          onOpenSkills={() => {
+            setShowSkills(true)
+            setShowSettings(false)
+          }}
           onConversationsChanged={refreshConversations}
         />
       </div>
@@ -162,6 +188,7 @@ export default function App() {
           }}
         />
       )}
+      {showSkills && <SkillsLibrary onClose={() => setShowSkills(false)} />}
     </div>
   )
 }
