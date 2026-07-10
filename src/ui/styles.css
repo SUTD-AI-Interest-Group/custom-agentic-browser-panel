@@ -970,6 +970,59 @@ body {
   display: block;
 }
 
+/* ---- Image carousel (runs of image URLs in an assistant reply) ---- */
+
+.img-carousel {
+  display: flex;
+  gap: 8px;
+  margin: 6px 0;
+  padding-bottom: 8px;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  scroll-snap-type: x proximity;
+  -webkit-overflow-scrolling: touch;
+}
+
+.img-carousel-item {
+  position: relative;
+  flex: 0 0 auto;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--pill-bg);
+  overflow: hidden;
+  cursor: pointer;
+  line-height: 0;
+  scroll-snap-align: start;
+}
+
+.img-carousel-item img {
+  max-height: 180px;
+  width: auto;
+  display: block;
+}
+
+.img-carousel-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  background: rgba(0, 0, 0, 0.45);
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+
+.img-carousel-item:hover .img-carousel-overlay,
+.img-carousel-item:focus-visible .img-carousel-overlay {
+  opacity: 1;
+}
+
+.img-carousel-item:disabled {
+  cursor: default;
+}
+
 /* ---- Settings ---- */
 
 .settings {
