@@ -95,8 +95,12 @@ function buildInteractiveIndex(attr: string, maxElements: number) {
   }> = []
   const all = Array.from(document.querySelectorAll('*'))
   let index = 0
+  let truncated = false
   for (const el of all) {
-    if (out.length >= maxElements) break
+    if (out.length >= maxElements) {
+      truncated = true
+      break
+    }
     if (!isInteractive(el) || !isVisible(el)) continue
     const r = el.getBoundingClientRect()
     const input = el as HTMLInputElement
@@ -104,7 +108,7 @@ function buildInteractiveIndex(attr: string, maxElements: number) {
     const nameId = `${el.getAttribute('name') ?? ''} ${el.id ?? ''}`
     const sensitive =
       type === 'password' ||
-      /^cc-|^cc-number|cc-csc/i.test(el.getAttribute('autocomplete') ?? '') ||
+      /^cc-/i.test(el.getAttribute('autocomplete') ?? '') ||
       SENSITIVE_RE.test(nameId)
     el.setAttribute(attr, String(index))
     out.push({
@@ -125,7 +129,7 @@ function buildInteractiveIndex(attr: string, maxElements: number) {
     origin: location.origin,
     dpr: window.devicePixelRatio || 1,
     elements: out,
-    total: index,
+    truncated,
   }
 }
 
@@ -162,7 +166,7 @@ export async function snapshotPage(tabId: number): Promise<PageSnapshot> {
   const raw = res?.result
   if (!raw) throw new Error('Could not read the page.')
   const elements = raw.elements as IndexedElement[]
-  const truncated = raw.total >= MAX_ELEMENTS
+  const truncated = raw.truncated
   return {
     url: raw.url,
     title: raw.title,
