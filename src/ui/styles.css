@@ -996,6 +996,122 @@ body {
   cursor: default;
 }
 
+.tools-menu-wrap {
+  position: relative;
+  display: inline-flex;
+}
+
+.tools-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.tools-btn:hover,
+.tools-btn[aria-expanded='true'] {
+  background: var(--pill-bg);
+  color: var(--text);
+}
+
+.tools-popover {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  right: 0;
+  width: 268px;
+  max-height: 340px;
+  overflow-y: auto;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.1);
+  padding: 8px 10px 10px;
+  z-index: 20;
+}
+
+.tools-popover-head {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+  padding: 2px 2px 4px;
+}
+
+.tools-group-title {
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+  font-weight: 600;
+  margin: 10px 2px 2px;
+}
+
+.tools-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 6px 2px;
+  cursor: pointer;
+}
+
+.tools-item + .tools-item {
+  border-top: 1px solid var(--border);
+}
+
+.tools-item-label {
+  font-size: 12.5px;
+  color: var(--text);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.tools-badge {
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  font-weight: 600;
+  color: #16a34a;
+  border: 1px solid #16a34a;
+  border-radius: 5px;
+  padding: 0 4px;
+  line-height: 1.6;
+}
+
+.tools-item input {
+  accent-color: var(--accent);
+  width: 16px;
+  height: 16px;
+  flex: none;
+  cursor: pointer;
+}
+
+.tools-popover-foot {
+  display: block;
+  width: 100%;
+  text-align: left;
+  margin-top: 8px;
+  padding: 8px 2px 2px;
+  border: none;
+  border-top: 1px solid var(--border);
+  background: none;
+  color: var(--accent);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.tools-popover-foot:hover {
+  text-decoration: underline;
+}
+
 /* ---- Screenshot attachments ---- */
 
 .attachment-row {

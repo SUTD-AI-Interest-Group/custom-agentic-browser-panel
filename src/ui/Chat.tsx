@@ -9,7 +9,14 @@ import { copyElementAsPng } from '../platform/domImage'
 import { getConversation, renameConversation, saveConversation } from '../data/conversations'
 import { appendToEpisode, getMemoryContext } from '../data/memory'
 import { createModel, generateChatTitle } from '../agent/provider'
-import { getSelectedProvider, toolPolicy, type Settings } from '../data/settings'
+import {
+  getSelectedProvider,
+  toolPolicy,
+  TOOL_CATALOG,
+  GROUP_ORDER,
+  GROUP_LABELS,
+  type Settings,
+} from '../data/settings'
 import { getActiveTab, listOpenTabs, readTabContent, type TabContent, type TabSummary } from '../platform/tabs'
 import { createAgentTools, type ApprovalRequest, type PageControlGate } from '../tools/tools'
 import { MAX_SESSION_ACTIONS, type ControlSession } from '../tools/pageControl'
@@ -238,6 +245,8 @@ export default function Chat({
   // Open tabs resolved for @all, so the composer can preview each attached page
   // as its own pill. Populated only while @all is active (see effect below).
   const [allTabs, setAllTabs] = useState<TabSummary[]>([])
+  const [toolsOpen, setToolsOpen] = useState(false)
+  const toolsMenuRef = useRef<HTMLDivElement>(null)
 
   // Bumped when a turn finishes, to trigger persistence of the transcript.
   const [turnSeq, setTurnSeq] = useState(0)
@@ -290,6 +299,25 @@ export default function Chat({
     // render that bumped it.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [turnSeq])
+
+  // Close the tools menu on outside-click or Esc; only listen while open.
+  useEffect(() => {
+    if (!toolsOpen) return
+    function onDown(e: MouseEvent) {
+      if (toolsMenuRef.current && !toolsMenuRef.current.contains(e.target as Node)) {
+        setToolsOpen(false)
+      }
+    }
+    function onKey(e: KeyboardEvent) {
+      if (e.key === 'Escape') setToolsOpen(false)
+    }
+    document.addEventListener('mousedown', onDown)
+    document.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('mousedown', onDown)
+      document.removeEventListener('keydown', onKey)
+    }
+  }, [toolsOpen])
 
   // Passive context pill (Dia-style): shows which tab the agent would see if
   // granted access. Purely informational — access still goes through tools.
@@ -499,6 +527,16 @@ export default function Chat({
     } finally {
       setCapturing(false)
     }
+  }
+
+  // Quick-menu tool switch. Off → 'never' (hidden from the agent). On → delete the
+  // override so the tool reverts to its catalog default (ask, or always for the
+  // skills tools), which preserves an Always tool instead of downgrading it to ask.
+  function toggleTool(name: string, on: boolean) {
+    const next = { ...(settings.toolPolicies ?? {}) }
+    if (on) delete next[name]
+    else next[name] = 'never'
+    onUpdateSettings({ ...settings, toolPolicies: next })
   }
 
   // ---- @mention tabs -------------------------------------------------------
@@ -1114,6 +1152,67 @@ export default function Chat({
               </button>
             )}
             <div className="composer-btns">
+              <div className="tools-menu-wrap" ref={toolsMenuRef}>
+                <button
+                  className="tools-btn"
+                  title="Tools & permissions"
+                  aria-haspopup="menu"
+                  aria-expanded={toolsOpen}
+                  onClick={() => setToolsOpen((o) => !o)}
+                >
+                  <svg width="15" height="15" viewBox="0 0 16 16" fill="none">
+                    <path
+                      d="M2.5 5h4.5M11.5 5h2M2.5 11h2M9 11h4.5"
+                      stroke="currentColor"
+                      strokeWidth="1.3"
+                      strokeLinecap="round"
+                    />
+                    <circle cx="9" cy="5" r="1.7" stroke="currentColor" strokeWidth="1.3" />
+                    <circle cx="6.5" cy="11" r="1.7" stroke="currentColor" strokeWidth="1.3" />
+                  </svg>
+                </button>
+                {toolsOpen && (
+                  <div className="tools-popover" role="dialog" aria-label="Tools">
+                    <div className="tools-popover-head">Tools</div>
+                    {GROUP_ORDER.map((group) => {
+                      const tools = TOOL_CATALOG.filter((t) => t.group === group)
+                      if (tools.length === 0) return null
+                      return (
+                        <div className="tools-group" key={group}>
+                          <div className="tools-group-title">{GROUP_LABELS[group]}</div>
+                          {tools.map((t) => {
+                            const policy = toolPolicy(settings, t.name)
+                            return (
+                              <label className="tools-item" key={t.name}>
+                                <span className="tools-item-label">
+                                  {t.label}
+                                  {policy === 'always' && (
+                                    <span className="tools-badge" aria-hidden="true">auto</span>
+                                  )}
+                                </span>
+                                <input
+                                  type="checkbox"
+                                  checked={policy !== 'never'}
+                                  onChange={(e) => toggleTool(t.name, e.target.checked)}
+                                />
+                              </label>
+                            )
+                          })}
+                        </div>
+                      )
+                    })}
+                    <button
+                      className="tools-popover-foot"
+                      onClick={() => {
+                        setToolsOpen(false)
+                        onOpenSettings()
+                      }}
+                    >
+                      Open full permissions →
+                    </button>
+                  </div>
+                )}
+              </div>
               <button
                 className="cam-btn"
                 title="Screenshot part of the page"
