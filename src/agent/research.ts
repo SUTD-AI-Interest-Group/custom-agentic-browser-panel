@@ -22,6 +22,7 @@ export async function runResearch(opts: {
   const model = createModel(opts.provider, opts.modelId)
   const tools = createResearchTools({ selected: { provider: opts.provider, modelId: opts.modelId } })
   const sources: ResearchSource[] = []
+  const seenSteps = new Set<string>()
   const result = await runAgentTurn({
     model,
     system: RESEARCH_SYSTEM,
@@ -30,7 +31,12 @@ export async function runResearch(opts: {
     abortSignal: opts.signal,
     onUpdate: (parts) => {
       const last = parts[parts.length - 1]
-      if (last?.type === 'tool') opts.onStep(`${last.toolName}: ${JSON.stringify(last.input).slice(0, 120)}`)
+      // The last part stays 'tool' across several onUpdate emissions (running ->
+      // done/error), so gate on toolCallId to log each call once, not per emission.
+      if (last?.type === 'tool' && !seenSteps.has(last.toolCallId)) {
+        seenSteps.add(last.toolCallId)
+        opts.onStep(`${last.toolName}: ${JSON.stringify(last.input).slice(0, 120)}`)
+      }
       // Collect sources from successful FetchUrl results.
       for (const p of parts) {
         if (p.type === 'tool' && p.toolName === 'FetchUrl' && p.state === 'done' && p.output && typeof p.output === 'object') {

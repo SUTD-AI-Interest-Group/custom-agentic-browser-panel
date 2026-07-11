@@ -22,8 +22,8 @@ export function createResearchTools(deps: {
         query: z.string().describe('Search query'),
         maxResults: z.number().optional().describe('Default 8, max 20'),
       }),
-      execute: async ({ query, maxResults = 8 }) => {
-        const r = await searchDuckDuckGo(query, maxResults)
+      execute: async ({ query, maxResults = 8 }, { abortSignal }) => {
+        const r = await searchDuckDuckGo(query, maxResults, abortSignal)
         if ('error' in r) return r
         return r.results.length ? { results: r.results } : { results: [], note: 'No results parsed; try a different query.' }
       },
@@ -32,7 +32,7 @@ export function createResearchTools(deps: {
     FetchUrl: tool({
       description: 'Fetch a public web page and return its readable text (for reading a search result).',
       inputSchema: z.object({ url: z.string().describe('http(s) URL to read') }),
-      execute: async ({ url }) => fetchReadable(url),
+      execute: async ({ url }, { abortSignal }) => fetchReadable(url, abortSignal),
     }),
 
     ExtractDataText: tool({

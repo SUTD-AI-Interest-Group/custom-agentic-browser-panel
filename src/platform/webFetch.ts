@@ -74,6 +74,7 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 export async function searchDuckDuckGo(
   query: string,
   maxResults = 8,
+  signal?: AbortSignal,
 ): Promise<{ results: ReturnType<typeof parseDuckDuckGoLite> } | { error: string }> {
   const url = `https://lite.duckduckgo.com/lite/?q=${encodeURIComponent(query)}`
   for (let attempt = 0; attempt < 3; attempt++) {
@@ -82,7 +83,7 @@ export async function searchDuckDuckGo(
         method: 'GET',
         credentials: 'omit',
         headers: { 'User-Agent': 'Mozilla/5.0' },
-        signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+        signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(FETCH_TIMEOUT_MS)]) : AbortSignal.timeout(FETCH_TIMEOUT_MS),
       })
       if (res.status === 202 || res.status === 429) { await sleep(400 * (attempt + 1)); continue }
       if (!res.ok) return { error: `search failed: HTTP ${res.status}` }
@@ -99,11 +100,16 @@ export async function searchDuckDuckGo(
 /** Fetch a public page and return its readable text. SSRF-guarded, credentials omitted, timed, size-capped. Never throws. */
 export async function fetchReadable(
   url: string,
+  signal?: AbortSignal,
 ): Promise<{ url: string; title: string; text: string } | { error: string }> {
   const guard = isFetchableUrl(url)
   if (!guard.ok) return { error: `refused to fetch (${guard.reason})` }
   try {
-    const res = await fetch(url, { credentials: 'omit', redirect: 'follow', signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) })
+    const res = await fetch(url, {
+      credentials: 'omit',
+      redirect: 'follow',
+      signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(FETCH_TIMEOUT_MS)]) : AbortSignal.timeout(FETCH_TIMEOUT_MS),
+    })
     if (!res.ok) return { error: `fetch failed: HTTP ${res.status}` }
     const ct = res.headers.get('content-type') ?? ''
     if (!/text\/html|text\/plain|application\/xhtml/i.test(ct)) return { error: `unsupported content-type: ${ct}` }
