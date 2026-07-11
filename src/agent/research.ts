@@ -1,10 +1,20 @@
+import { generateText, type LanguageModel } from 'ai'
 import { runAgentTurn, type UIPart } from './agent'
 import { createModel } from './provider'
-import { getObserver } from './observability'
-import { createResearchTools } from '../tools/research'
-import type { ModelMessage } from 'ai'
+import { getObserver, type Trace } from './observability'
+import { extractStructured } from './extract'
+import {
+  createNotebook,
+  summarizeNotebook,
+  openGaps,
+  isFullyCovered,
+  type NotebookHandle,
+  type ResearchNotebook,
+  type ResearchPlan,
+} from './notebook'
+import { createResearchTools, type RenderBroker } from '../tools/research'
 import type { ObservabilityConfig, ProviderConfig } from '../data/settings'
-import type { ResearchSource, ResearchStep } from '../data/researchTasks'
+import type { ResearchSource, ResearchStep, ResearchVerification } from '../data/researchTasks'
 
 /** Compact one-line stringify for a step summary. */
 function compact(value: unknown): string {
@@ -40,21 +50,20 @@ function stepDetail(p: Extract<UIPart, { type: 'tool' }>): string {
   return `${input}\n\n${result}`
 }
 
-const RESEARCH_SYSTEM = `You are a research agent running in the background. Answer the user's question by:
-1. Planning sub-questions. 2. WebSearch for each. 3. FetchUrl the most relevant results and read them.
-4. Optionally ExtractDataText for structured facts. 5. Synthesize a well-structured Markdown report.
-Cite every claim inline as [n] and end with a "Sources" list of [n] Title — URL for each URL you actually read.
-Be efficient: at most ~8 searches and ~12 fetches. If a source fails, move on.
-A long task may span multiple step budgets: if you are told you are near the step limit and are not done, call Checkpoint to hand off; the task resumes automatically with a fresh budget.`
+// The research loop is a phased state machine over a structured notebook:
+//   Scope&Plan → (Gather → Reflect)* → Synthesize → Verify.
+// Each gather round starts FRESH (question + notebook summary + current focus)
+// rather than growing one ever-larger message history — the notebook is the
+// long-horizon memory, which keeps context bounded on big topics.
+const MAX_GATHER_ROUNDS = 5
 
-// Headless (no user to click Continue), so instead of prompting, the research
-// loop auto-continues up to this many extra cycles when the model checkpoints or
-// hits the step budget, then forces a final report on the last cycle.
-const RESEARCH_MAX_AUTO_CONTINUES = 5
-const FINAL_CYCLE_NUDGE =
-  'This is your FINAL research cycle — stop searching and write your complete, cited Markdown report now from what you have gathered. Do NOT call Checkpoint.'
+const GATHER_SYSTEM = `You are the GATHER phase of a background research agent. Your job THIS round is to close the open sub-questions you are given — nothing else.
+- Use WebSearch to find sources, then FetchUrl to read the most relevant ones (FetchUrl auto-renders JS/paywalled/PDF pages when needed).
+- For every substantive fact you will rely on, call Notebook.write with the claim, the exact source URL you read it from, and a short verbatim quote. This is how findings are recorded — text you type outside a Notebook.write is NOT saved.
+- Prefer primary/official/reference sources. If a source fails, move on.
+- Be efficient: a handful of searches and fetches. When you have covered the focus sub-questions, stop — do NOT write the report here (a later phase does that).`
 
-/** Run one background research task to completion. Headless: no tabs, no user data. */
+/** Run one background research task to completion. Headless: no user, no user data. */
 export async function runResearch(opts: {
   taskId: string
   question: string
@@ -64,12 +73,16 @@ export async function runResearch(opts: {
   conversationId?: string
   /** Observability config forwarded from the SW (offscreen has no chrome.storage). */
   observability?: ObservabilityConfig
-  onSteps: (steps: ResearchStep[]) => void
+  /** Escalate a hard URL to a real controlled tab via the SW broker (Phase 4). */
+  renderBroker?: RenderBroker
+  /** Emits the live step log + notebook snapshot for the sheet. */
+  onUpdate: (steps: ResearchStep[], notebook: ResearchNotebook) => void
   signal: AbortSignal
-}): Promise<{ report: string; sources: ResearchSource[] }> {
+}): Promise<{ report: string; sources: ResearchSource[]; notebook: ResearchNotebook; verification?: ResearchVerification }> {
   const model = createModel(opts.provider, opts.modelId)
-  // Observability: one research-task trace, tagged and (when known) attached to
-  // the launching chat's session. Steps become generations; tools become spans.
+  const selected = { provider: opts.provider, modelId: opts.modelId }
+
+  // Observability: one research-task trace; phases become generations, tools spans.
   const observer = getObserver(opts.observability)
   const trace = observer.enabled
     ? observer.startTrace({
@@ -80,14 +93,26 @@ export async function runResearch(opts: {
         metadata: { taskId: opts.taskId },
       })
     : undefined
-  const sources: ResearchSource[] = []
-  // Grows across cycles so a continued research task sees its own prior work
-  // (and its Checkpoint hand-off) instead of restarting.
-  const history: ModelMessage[] = [{ role: 'user', content: opts.question }]
 
-  // One ResearchStep per tool call (main's expandable-steps model). priorSteps
-  // accumulates completed cycles' steps so an auto-continue doesn't erase them.
-  const priorSteps: ResearchStep[] = []
+  // ---- Live step log + notebook, emitted to the sheet on meaningful change. ----
+  const allSteps: ResearchStep[] = []
+  let lastSig = ''
+  const emit = () => {
+    const nb = notebook.get()
+    const sig =
+      allSteps.map((s) => `${s.tool}:${s.status}`).join('|') +
+      `#${nb.findings.length}/${nb.sources.length}/${nb.images.length}/${Object.keys(nb.coverage).length}`
+    if (sig === lastSig) return
+    lastSig = sig
+    opts.onUpdate([...allSteps], nb)
+  }
+  const pushStep = (step: ResearchStep) => {
+    allSteps.push(step)
+    emit()
+  }
+
+  const notebook: NotebookHandle = createNotebook(undefined, emit)
+
   const stepsOf = (parts: UIPart[]): ResearchStep[] =>
     parts
       .filter((p): p is Extract<UIPart, { type: 'tool' }> => p.type === 'tool')
@@ -98,58 +123,222 @@ export async function runResearch(opts: {
         status: p.state === 'done' ? 'done' : p.state === 'error' ? 'error' : 'running',
       }))
 
-  let lastSig = ''
-  const onUpdate = (parts: UIPart[]) => {
-    const steps = [...priorSteps, ...stepsOf(parts)]
-    // Emit only when a step appears or flips status (running -> done/error), so
-    // the sheet updates without a storage write on every stream chunk.
-    const sig = steps.map((s) => `${s.tool}:${s.status}`).join('|')
-    if (sig !== lastSig) {
-      lastSig = sig
-      opts.onSteps(steps)
-    }
-    // Collect sources from successful FetchUrl results.
-    for (const p of parts) {
-      if (p.type === 'tool' && p.toolName === 'FetchUrl' && p.state === 'done' && p.output && typeof p.output === 'object') {
-        const o = p.output as { url?: string; title?: string; error?: string }
-        if (o.url && !o.error && !sources.some((s) => s.url === o.url)) sources.push({ url: o.url, title: o.title ?? o.url })
-      }
-    }
-  }
-
-  // The report is the model's final synthesized text; the last non-empty cycle
-  // (a natural completion, or the forced final cycle) wins.
-  let report = ''
   try {
-    for (let cycle = 0; ; cycle++) {
-      const finalCycle = cycle >= RESEARCH_MAX_AUTO_CONTINUES
+    // ---- Phase 1: Scope & Plan ------------------------------------------------
+    const plan = await planResearch(opts.question, model, opts.signal, trace)
+    notebook.setPlan(plan)
+    pushStep({
+      tool: 'Plan',
+      summary: `Planned ${plan.subQuestions.length} sub-question${plan.subQuestions.length === 1 ? '' : 's'}`,
+      detail: `Sub-questions:\n${plan.subQuestions.map((q, i) => `  ${i + 1}. ${q}`).join('\n')}\n\nOutline: ${plan.outline.join(' · ')}`,
+      status: 'done',
+    })
+
+    // ---- Phase 2: Gather ↔ Reflect loop --------------------------------------
+    for (let round = 0; round < MAX_GATHER_ROUNDS; round++) {
+      if (opts.signal.aborted) break
+      const gaps = openGaps(notebook.get())
+      if (gaps.length === 0) break
+
+      const focus = gaps.slice(0, 3) // deepen a few at a time
+      const tools = createResearchTools({ selected, trace, notebook, renderBroker: opts.renderBroker })
+      const roundStart = allSteps.length
+      const onTurnUpdate = (parts: UIPart[]) => {
+        allSteps.length = roundStart // this round's steps replace, not append
+        allSteps.push(...stepsOf(parts))
+        emit()
+      }
+      const gatherPrompt =
+        `Research question: ${opts.question}\n\n` +
+        `Focus THIS round on these open sub-questions:\n${focus.map((q, i) => `  ${i + 1}. ${q}`).join('\n')}\n\n` +
+        `What is already known (do not re-fetch these):\n${summarizeNotebook(notebook.get())}`
+
       const result = await runAgentTurn({
         model,
-        system: RESEARCH_SYSTEM,
-        history: [...history],
-        // Fresh tools per cycle, instrumented with this task's trace so every
-        // cycle's tool calls become spans under the one research-task trace.
-        tools: createResearchTools({ selected: { provider: opts.provider, modelId: opts.modelId }, trace }),
+        system: GATHER_SYSTEM,
+        history: [{ role: 'user', content: gatherPrompt }],
+        tools,
         abortSignal: opts.signal,
-        onUpdate,
+        onUpdate: onTurnUpdate,
         trace,
-        // On the last allowed cycle, force a report instead of another checkpoint.
-        wrapUpNudge: finalCycle ? FINAL_CYCLE_NUDGE : undefined,
       })
-      history.push(...result.responseMessages)
-      const text = result.parts.filter((p) => p.type === 'text').map((p) => (p as { text: string }).text).join('')
-      if (text.trim()) report = text
-      // Carry this cycle's steps forward so the next cycle's steps append to them.
-      priorSteps.push(...stepsOf(result.parts))
-      // Stop when the model finished, or we've exhausted the auto-continue budget.
-      if (finalCycle || result.stop.reason === 'completed') break
+      // Freeze this round's steps at their final state.
+      allSteps.length = roundStart
+      allSteps.push(...stepsOf(result.parts))
+      emit()
+
+      if (opts.signal.aborted) break
+
+      // Reflect: assess coverage of the focus sub-questions; may end the loop.
+      const reflection = await reflect(opts.question, focus, notebook.get(), model, opts.signal, trace)
+      for (const a of reflection.assessments) {
+        notebook.setCoverage(a.subQuestion, { supported: a.supported, gap: a.gap })
+      }
+      const covered = notebook.get().plan.subQuestions.filter((q) => notebook.get().coverage[q]?.supported).length
+      pushStep({
+        tool: 'Reflect',
+        summary: `Coverage: ${covered}/${notebook.get().plan.subQuestions.length} sub-questions`,
+        detail: reflection.assessments
+          .map((a) => `${a.supported ? '✓' : '·'} ${a.subQuestion}${a.gap ? ` — gap: ${a.gap}` : ''}`)
+          .join('\n'),
+        status: 'done',
+      })
+      if (reflection.done || isFullyCovered(notebook.get())) break
     }
+
+    // ---- Phase 3: Synthesize --------------------------------------------------
+    pushStep({ tool: 'Synthesize', summary: 'Writing the report…', detail: '', status: 'running' })
+    const draft = await synthesize(opts.question, notebook.get(), model, opts.signal, trace)
+    // Mark the synthesize step done.
+    const synthStep = allSteps[allSteps.length - 1]
+    if (synthStep && synthStep.tool === 'Synthesize') {
+      synthStep.status = 'done'
+      synthStep.summary = 'Report drafted'
+    }
+    lastSig = '' // force a re-emit after the in-place status flip
+    emit()
+
+    // ---- Phase 4: Verify (implemented in Phase 2 of the build) ---------------
+    const { report, verification } = await verifyReport(draft, notebook, model, opts.signal, trace, pushStep, emit)
+
+    const nb = notebook.get()
+    const sources: ResearchSource[] = nb.sources.map((s) => ({ title: s.title, url: s.url }))
+    trace?.end({ output: report, metadata: { sources: sources.length, findings: nb.findings.length } })
+    await observer.flush()
+    return { report, sources, notebook: nb, verification }
   } catch (err) {
     trace?.end({ metadata: { error: err instanceof Error ? err.message : String(err) } })
     await observer.flush()
     throw err
   }
-  trace?.end({ output: report, metadata: { sources: sources.length } })
-  await observer.flush()
-  return { report, sources }
+}
+
+// ---------------------------------------------------------------------------
+// Phase helpers. Plan/Reflect are structured (extractStructured) so they work
+// against any OpenAI-compatible endpoint; Synthesize/Verify use free-text
+// generation. All are trace-recorded when observability is on.
+// ---------------------------------------------------------------------------
+
+const PLAN_SCHEMA = {
+  type: 'object',
+  properties: {
+    subQuestions: { type: 'array', items: { type: 'string' }, description: '3–6 concrete sub-questions that together answer the question' },
+    outline: { type: 'array', items: { type: 'string' }, description: 'Section headings for the final report, in order' },
+    searches: { type: 'number', description: 'Rough number of web searches this will take' },
+    fetches: { type: 'number', description: 'Rough number of pages to read' },
+  },
+  required: ['subQuestions', 'outline'],
+} as const
+
+async function planResearch(
+  question: string,
+  model: LanguageModel,
+  signal: AbortSignal,
+  trace?: Trace,
+): Promise<ResearchPlan> {
+  const prompt = `Break this research question into a concrete plan.\n\nQuestion: ${question}\n\nReturn 3–6 focused sub-questions whose answers together fully address it, plus an ordered outline of the final report's sections, plus a rough effort estimate.`
+  try {
+    const out = (await extractStructured(model, prompt, PLAN_SCHEMA as Record<string, unknown>, signal, trace)) as {
+      subQuestions?: string[]
+      outline?: string[]
+      searches?: number
+      fetches?: number
+    }
+    const subQuestions = (out.subQuestions ?? []).filter(Boolean)
+    return {
+      subQuestions: subQuestions.length ? subQuestions : [question],
+      outline: (out.outline ?? []).filter(Boolean),
+      effortBudget: { searches: out.searches ?? 6, fetches: out.fetches ?? 10 },
+    }
+  } catch {
+    // No structured-output support / parse failure — fall back to a 1-question plan.
+    return { subQuestions: [question], outline: [], effortBudget: { searches: 6, fetches: 10 } }
+  }
+}
+
+interface Reflection {
+  assessments: { subQuestion: string; supported: boolean; gap?: string }[]
+  done: boolean
+  nextFocus?: string
+}
+
+const REFLECT_SCHEMA = {
+  type: 'object',
+  properties: {
+    assessments: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          subQuestion: { type: 'string' },
+          supported: { type: 'boolean', description: 'Is this sub-question now well supported by the findings?' },
+          gap: { type: 'string', description: 'If not supported, what is still missing' },
+        },
+        required: ['subQuestion', 'supported'],
+      },
+    },
+    done: { type: 'boolean', description: 'True if the whole question is sufficiently researched and gathering should stop' },
+  },
+  required: ['assessments', 'done'],
+} as const
+
+async function reflect(
+  question: string,
+  focus: string[],
+  nb: ResearchNotebook,
+  model: LanguageModel,
+  signal: AbortSignal,
+  trace?: Trace,
+): Promise<Reflection> {
+  const prompt =
+    `Research question: ${question}\n\n` +
+    `Assess coverage of these sub-questions given what has been gathered:\n${focus.map((q) => `- ${q}`).join('\n')}\n\n` +
+    `Gathered so far:\n${summarizeNotebook(nb)}\n\n` +
+    `For each sub-question say whether it is now well supported; if not, name the specific gap. Then say whether the overall research is done.`
+  try {
+    const out = (await extractStructured(model, prompt, REFLECT_SCHEMA as Record<string, unknown>, signal, trace)) as Reflection
+    return { assessments: out.assessments ?? [], done: !!out.done }
+  } catch {
+    // Can't assess — mark the focus supported so the loop makes progress and ends.
+    return { assessments: focus.map((subQuestion) => ({ subQuestion, supported: true })), done: false }
+  }
+}
+
+async function synthesize(
+  question: string,
+  nb: ResearchNotebook,
+  model: LanguageModel,
+  signal: AbortSignal,
+  trace?: Trace,
+): Promise<string> {
+  const gen = trace?.generation({ name: 'synthesize', model: (model as { modelId?: string }).modelId, input: question })
+  const outline = nb.plan.outline.join(' · ')
+  const prompt =
+    `Write the final research report answering: ${question}\n\n` +
+    `Use ONLY the findings and sources below. Cite each claim inline as [n] where n is the source number, and end with a "Sources" section listing "[n] Title — URL" for every source you cite.\n` +
+    (outline ? `Follow this section outline: ${outline}\n` : '') +
+    `\n${summarizeNotebook(nb, { maxFindings: 200 })}\n\n` +
+    `Write a thorough, well-structured Markdown report. Do not invent facts or citations beyond the findings above.`
+  try {
+    const { text, usage } = await generateText({ model, prompt, abortSignal: signal })
+    gen?.end({ output: text, usage })
+    return text
+  } catch (err) {
+    gen?.end({ level: 'ERROR', statusMessage: err instanceof Error ? err.message : String(err) })
+    throw err
+  }
+}
+
+// Placeholder verify — replaced with real grounding + adversarial passes in the
+// next build phase. For now it returns the draft unchanged with no summary.
+async function verifyReport(
+  draft: string,
+  _notebook: NotebookHandle,
+  _model: LanguageModel,
+  _signal: AbortSignal,
+  _trace: unknown,
+  _pushStep: (s: ResearchStep) => void,
+  _emit: () => void,
+): Promise<{ report: string; verification?: ResearchVerification }> {
+  return { report: draft }
 }

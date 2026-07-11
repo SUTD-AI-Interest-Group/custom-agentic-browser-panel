@@ -1,5 +1,6 @@
 /** Persisted research-task state + the SW↔offscreen↔panel message protocol. Runs in SW/panel only (never offscreen). */
 import type { ObservabilityConfig, ProviderConfig } from './settings'
+import type { ResearchNotebook } from '../agent/notebook'
 
 export type ResearchStatus = 'running' | 'done' | 'error' | 'cancelled'
 
@@ -31,6 +32,21 @@ export interface ResearchTask {
    *  report card only surface in that chat (legacy tasks lack it and, being
    *  unmatched, surface in none). */
   conversationId?: string
+  /** The structured research notebook (plan, sources, findings, images,
+   *  coverage). Drives the sheet's plan/coverage view and the report card's
+   *  verification/attribution. Absent on legacy tasks. */
+  notebook?: ResearchNotebook
+  /** Set on completion: the verification pass summary shown on the report card. */
+  verification?: ResearchVerification
+}
+
+/** The Verify phase's summary: how many cited claims held up. */
+export interface ResearchVerification {
+  checked: number
+  confirmed: number
+  hedged: number
+  removed: number
+  notes?: string[]
 }
 
 /** SW↔offscreen↔panel message protocol: panel sends `ensureAndStart`/`cancel`; offscreen sends `start`, `update`, `done`, `error`. */
@@ -47,10 +63,30 @@ export type ResearchMsg =
       /** Observability config forwarded from the SW (offscreen has no chrome.storage). */
       observability?: ObservabilityConfig
     }
-  | { type: 'research.update'; taskId: string; steps: ResearchStep[] }
-  | { type: 'research.done'; taskId: string; report: string; sources: ResearchSource[] }
+  | { type: 'research.update'; taskId: string; steps: ResearchStep[]; notebook?: ResearchNotebook }
+  | {
+      type: 'research.done'
+      taskId: string
+      report: string
+      sources: ResearchSource[]
+      notebook?: ResearchNotebook
+      verification?: ResearchVerification
+    }
   | { type: 'research.error'; taskId: string; error: string }
   | { type: 'research.cancel'; taskId: string }
+  // Hybrid-escalation broker (offscreen → SW → offscreen): render a hard page in
+  // an isolated controlled tab and return its text/screenshot. See background.ts.
+  | { type: 'research.renderPage'; taskId: string; requestId: string; url: string; want: 'text' | 'screenshot' | 'both' }
+  | {
+      type: 'research.renderResult'
+      taskId: string
+      requestId: string
+      text?: string
+      title?: string
+      finalUrl?: string
+      screenshotDataUrl?: string
+      error?: string
+    }
 
 const KEY = 'researchTasks'
 

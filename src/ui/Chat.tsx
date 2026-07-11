@@ -2172,6 +2172,23 @@ function ResearchSheet({
           </button>
         </div>
         <div className="research-sheet__body">
+          {task.notebook && task.notebook.plan.subQuestions.length > 0 && (
+            <div className="research-sheet__plan">
+              <div className="research-sheet__plan-title">Plan</div>
+              <ul className="research-sheet__plan-list">
+                {task.notebook.plan.subQuestions.map((q, i) => {
+                  const c = task.notebook!.coverage[q]
+                  const state = !c ? 'pending' : c.supported ? 'done' : 'gap'
+                  return (
+                    <li key={i} className={`research-plan__item ${state}`} title={c?.gap || undefined}>
+                      <span className="research-plan__mark" aria-hidden />
+                      <span className="research-plan__text">{q}</span>
+                    </li>
+                  )
+                })}
+              </ul>
+            </div>
+          )}
           <ul className="research-sheet__steps">
             {task.steps.map((step, i) => {
               const open = expanded.has(i)

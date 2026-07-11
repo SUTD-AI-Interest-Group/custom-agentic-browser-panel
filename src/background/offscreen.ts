@@ -17,13 +17,21 @@ chrome.runtime.onMessage.addListener((msg: ResearchMsg) => {
       conversationId: msg.conversationId,
       observability: msg.observability,
       signal: ctrl.signal,
-      onSteps: (steps) => chrome.runtime.sendMessage({ type: 'research.update', taskId: msg.taskId, steps } satisfies ResearchMsg),
+      onUpdate: (steps, notebook) =>
+        chrome.runtime.sendMessage({ type: 'research.update', taskId: msg.taskId, steps, notebook } satisfies ResearchMsg),
     })
-      .then(({ report, sources }) => {
+      .then(({ report, sources, notebook, verification }) => {
         // The SW already persisted status:'cancelled' when research.cancel fired;
         // a late resolve/reject here must not overwrite that with done/error.
         if (ctrl.signal.aborted) return
-        chrome.runtime.sendMessage({ type: 'research.done', taskId: msg.taskId, report, sources } satisfies ResearchMsg)
+        chrome.runtime.sendMessage({
+          type: 'research.done',
+          taskId: msg.taskId,
+          report,
+          sources,
+          notebook,
+          verification,
+        } satisfies ResearchMsg)
       })
       .catch((err) => {
         if (ctrl.signal.aborted) return

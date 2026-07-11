@@ -1254,6 +1254,65 @@ body {
   }
 }
 
+/* ---- Research plan + coverage (sheet) ---- */
+.research-sheet__plan {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-bottom: 12px;
+  margin-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.research-sheet__plan-title {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.research-sheet__plan-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.research-plan__item {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  font-size: 12.5px;
+  line-height: 1.4;
+  color: var(--text);
+}
+
+.research-plan__mark {
+  flex: 0 0 auto;
+  width: 9px;
+  height: 9px;
+  margin-top: 4px;
+  border-radius: 50%;
+  border: 1.5px solid var(--border);
+}
+
+.research-plan__item.done .research-plan__mark {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.research-plan__item.gap .research-plan__mark {
+  border-color: #d19a2a;
+  background: repeating-linear-gradient(45deg, transparent, transparent 1px, #d19a2a 1px, #d19a2a 2px);
+}
+
+.research-plan__item.pending {
+  color: var(--text-muted);
+}
+
 .research-sheet__sources {
   display: flex;
   flex-direction: column;

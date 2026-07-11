@@ -167,12 +167,15 @@ chrome.runtime.onMessage.addListener((msg: ResearchMsg) => {
         await applyUpdate(msg.taskId, { status: 'error', error: err instanceof Error ? err.message : String(err) })
       }
     } else if (msg?.type === 'research.update') {
-      // The offscreen host sends the full derived step list (with live results);
-      // replace rather than append.
-      await applyUpdate(msg.taskId, { steps: msg.steps })
+      // The offscreen host sends the full derived step list (with live results)
+      // and, when it changes, the structured notebook (plan/coverage drive the
+      // sheet). Replace rather than append.
+      await applyUpdate(msg.taskId, msg.notebook ? { steps: msg.steps, notebook: msg.notebook } : { steps: msg.steps })
     } else if (msg?.type === 'research.done') {
       const t = await applyUpdate(msg.taskId, (cur) =>
-        cur.status === 'cancelled' ? {} : { status: 'done', report: msg.report, sources: msg.sources },
+        cur.status === 'cancelled'
+          ? {}
+          : { status: 'done', report: msg.report, sources: msg.sources, notebook: msg.notebook, verification: msg.verification },
       )
       if (t && t.status === 'done') {
         try {
