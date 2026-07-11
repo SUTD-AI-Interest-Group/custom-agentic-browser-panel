@@ -47,10 +47,8 @@ export interface ToolCatalogEntry {
  * default-policy map derive from one list.
  */
 export const TOOL_CATALOG: ToolCatalogEntry[] = [
-  { name: 'ViewCurrentTab', group: 'reading', label: 'Read the current tab' },
+  { name: 'ReadPage', group: 'reading', label: 'Read the current tab (text / DOM / elements)' },
   { name: 'ViewOpenedTabs', group: 'reading', label: 'List / read other open tabs' },
-  { name: 'InspectPage', group: 'reading', label: 'Inspect interactive elements' },
-  { name: 'GetActiveTabDOM', group: 'reading', label: "Read the current tab's DOM" },
   { name: 'GetAllDOM', group: 'reading', label: "Read other tabs' DOM" },
   { name: 'ExtractData', group: 'reading', label: 'Extract structured data from this page' },
   { name: 'StartResearch', group: 'reading', label: 'Run background web research' },

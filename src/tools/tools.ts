@@ -130,23 +130,54 @@ export function createAgentTools(
   conversationId: string,
 ): ToolSet {
   const tools: ToolSet = {
-    ViewCurrentTab: tool({
+    ReadPage: tool({
       description:
-        'Read the webpage in the tab the user is currently viewing: title, URL, selected text and full visible text. Asks the user for permission first. Use when the user refers to "this page/tab" or content they are looking at.',
+        'Read the tab the user is currently viewing. mode="text": title, URL, selected text and full visible text. mode="dom": the cleaned HTML structure (tags, attributes, links, form fields) when you need page structure rather than visible text. mode="elements": a numbered list of interactive elements (buttons, links, inputs) each with an [index] — use before controlling a page, or to re-read after it changes. Asks the user for permission first (except mode="elements" while a page-control session already owns this tab).',
       inputSchema: z.object({
+        mode: z
+          .enum(['text', 'dom', 'elements'])
+          .describe('text = visible text; dom = HTML structure; elements = indexed interactive elements'),
         reason: z
           .string()
           .describe('Short reason shown to the user, e.g. "To summarize this article"'),
       }),
-      execute: async ({ reason }) => {
+      execute: async ({ mode, reason }) => {
+        const tab = await getActiveTab()
+        if (tab?.id === undefined) return { error: 'No active tab found.' }
+        if (mode === 'elements') {
+          const open = pageControl.session()
+          if (!open || !open.active || open.tabId !== tab.id) {
+            const approved = await requestApproval({
+              toolName: 'ReadPage',
+              summary: 'Read the interactive elements on this page',
+              reason,
+            })
+            if (!approved) return DENIED
+          }
+          // Ambient presence: the agent is looking at this page. Idempotent, so
+          // it never disturbs an already-mounted session (and warms the overlay
+          // before a likely RequestPageControl). lookResult hides it for the shot.
+          await mountPresence(tab.id)
+          // Mid-session re-read: if a session is controlling this tab, keep the
+          // tinted "active control" look after a navigation may have wiped it.
+          if (open && open.active && open.tabId === tab.id) await setTint(tab.id, true)
+          try {
+            const snap = await snapshotPage(tab.id)
+            return await lookResult(tab, snap, {}, selected, imageQueue)
+          } catch (err) {
+            return { error: `Cannot read this page (${err instanceof Error ? err.message : String(err)}).` }
+          }
+        }
         const approved = await requestApproval({
-          toolName: 'ViewCurrentTab',
-          summary: 'View the tab you are currently on',
+          toolName: 'ReadPage',
+          summary:
+            mode === 'dom'
+              ? 'Read the DOM/HTML structure of the tab you are on'
+              : 'View the tab you are currently on',
           reason,
         })
         if (!approved) return DENIED
-        const tab = await getActiveTab()
-        if (tab?.id === undefined) return { error: 'No active tab found.' }
+        if (mode === 'dom') return await readTabDom(tab.id, MAX_DOM_CHARS)
         return await readTabContent(tab.id)
       },
     }),
@@ -179,43 +210,6 @@ export function createAgentTools(
         if (!reading) return { tabs }
         const contents = await Promise.all(tabIds.map((id) => readTabContent(id)))
         return { tabs, contents }
-      },
-    }),
-
-    InspectPage: tool({
-      description:
-        'Read the active tab as a numbered list of interactive elements (buttons, links, inputs) the agent can act on, each with an [index]. Use before controlling a page, or to re-read after it changes. Asks permission unless a page-control session is already open.',
-      inputSchema: z.object({
-        reason: z
-          .string()
-          .describe('Short reason shown to the user, e.g. "To find the search box"'),
-      }),
-      execute: async ({ reason }) => {
-        const tab = await getActiveTab()
-        if (tab?.id === undefined) return { error: 'No active tab found.' }
-        const open = pageControl.session()
-        if (!open || !open.active || open.tabId !== tab.id) {
-          const approved = await requestApproval({
-            toolName: 'InspectPage',
-            summary: 'Read the interactive elements on this page',
-            reason,
-          })
-          if (!approved) return DENIED
-        }
-        // Ambient presence: the agent is looking at this page. Idempotent, so it
-        // never disturbs an already-mounted session (and warms the overlay
-        // before a likely RequestPageControl). lookResult hides it for the shot.
-        await mountPresence(tab.id)
-        // Mid-session re-read: if a session is controlling this tab, keep the
-        // tinted "active control" look. A navigation may have wiped the overlay,
-        // so the mount above re-created it in the ambient (untinted) state.
-        if (open && open.active && open.tabId === tab.id) await setTint(tab.id, true)
-        try {
-          const snap = await snapshotPage(tab.id)
-          return await lookResult(tab, snap, {}, selected, imageQueue)
-        } catch (err) {
-          return { error: `Cannot read this page (${err instanceof Error ? err.message : String(err)}).` }
-        }
       },
     }),
 
@@ -438,27 +432,6 @@ export function createAgentTools(
           filled,
           note: `Filled ${filled.length} field(s) from profile. Profile memories available: ${profile.length}. Submit is a separate, confirmed step.`,
         }
-      },
-    }),
-
-    GetActiveTabDOM: tool({
-      description:
-        'Read the DOM (cleaned HTML structure) of the tab the user is currently viewing — tags, attributes, links, form fields. Unlike ViewCurrentTab, which returns visible text, this exposes the page skeleton so you can locate elements or understand structure. Asks the user for permission first.',
-      inputSchema: z.object({
-        reason: z
-          .string()
-          .describe('Short reason shown to the user, e.g. "To find the login form on this page"'),
-      }),
-      execute: async ({ reason }) => {
-        const approved = await requestApproval({
-          toolName: 'GetActiveTabDOM',
-          summary: 'Read the DOM/HTML structure of the tab you are on',
-          reason,
-        })
-        if (!approved) return DENIED
-        const tab = await getActiveTab()
-        if (tab?.id === undefined) return { error: 'No active tab found.' }
-        return await readTabDom(tab.id, MAX_DOM_CHARS)
       },
     }),
 
