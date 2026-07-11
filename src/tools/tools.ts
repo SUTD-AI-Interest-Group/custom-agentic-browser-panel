@@ -13,6 +13,7 @@ import { captureWithMarks } from '../platform/marks'
 import { createModel } from '../agent/provider'
 import { extractStructured } from '../agent/extract'
 import { createStartResearchTool } from './research'
+import { buildCatalog, searchCatalog, partitionToolNames, type CatalogEntry } from './toolDiscovery'
 import {
   isPointOfNoReturn,
   runControlStep,
@@ -128,10 +129,16 @@ export function createAgentTools(
   policyFor: (name: string) => ToolPolicy,
   /** The open conversation, tagged onto any background research launched this turn. */
   conversationId: string,
+  /** Per-turn mutable set of loaded tool names; GetTool adds to it, the turn loop reads it. */
+  activeNames: Set<string>,
 ): ToolSet {
   const BROWSING_SOURCES = ['history', 'bookmarks', 'topSites', 'downloads'] as const
   const grantedSources = BROWSING_SOURCES.filter((s) => granted.has(s))
   const sourcesLabel = grantedSources.length ? grantedSources.join(', ') : 'none currently enabled'
+
+  // Assigned after all filtering below, so the catalog and GetTool only ever
+  // surface tools that survive tabAccess / permission / policy gating.
+  let catalog: CatalogEntry[] = []
 
   const tools: ToolSet = {
     ReadPage: tool({
@@ -183,6 +190,34 @@ export function createAgentTools(
         if (!approved) return DENIED
         if (mode === 'dom') return await readTabDom(tab.id, MAX_DOM_CHARS)
         return await readTabContent(tab.id)
+      },
+    }),
+
+    ToolSearch: tool({
+      description:
+        "List the tools available to you (name + description), optionally filtered by a query. Tools are not loaded until you select them. After finding what you need, call GetTool with their names to load them. Use this when the user's request needs a capability beyond reading the current page.",
+      inputSchema: z.object({
+        query: z
+          .string()
+          .optional()
+          .describe('Optional keywords to filter the list (matches name + description). Omit to list all.'),
+      }),
+      execute: async ({ query }) => ({ tools: searchCatalog(catalog, query) }),
+    }),
+
+    GetTool: tool({
+      description:
+        'Load one or more tools by name so you can call them for the rest of this turn. Get names from ToolSearch. Loading a tool does not run it — you still call it afterward, and it still asks the user for permission when it runs.',
+      inputSchema: z.object({
+        names: z.array(z.string()).min(1).describe('Exact tool names to load, from ToolSearch.'),
+      }),
+      execute: async ({ names }) => {
+        const { valid, unknown } = partitionToolNames(names, catalog)
+        valid.forEach((n) => activeNames.add(n))
+        if (unknown.length > 0) {
+          return { loaded: valid, error: `Unknown tool name(s): ${unknown.join(', ')}. Call ToolSearch to see valid names.` }
+        }
+        return { loaded: valid, note: 'These tools are now available to call.' }
       },
     }),
 
@@ -247,6 +282,10 @@ export function createAgentTools(
         })()
         const granted = await pageControl.requestSession({ plan, host, origin, tabId: tab.id })
         if (!granted) return DENIED
+        // Load the control cluster so the model can act without a second GetTool
+        // round-trip once a session is open.
+        activeNames.add('ControlPage')
+        activeNames.add('AutofillForm')
         await mountPresence(tab.id)
         // Entering active control: turn the soft dark tint on (ambient shows the
         // frame only). The spotlight/cursor come alive on the first ControlPage.
@@ -726,6 +765,10 @@ export function createAgentTools(
   for (const name of Object.keys(tools)) {
     if (policyFor(name) === 'never') delete tools[name]
   }
+
+  // Catalog is derived AFTER every deletion above, so ToolSearch/GetTool can
+  // never surface or load a tool the user disabled or lacks permission for.
+  catalog = buildCatalog(tools)
 
   return tools
 }

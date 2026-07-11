@@ -997,6 +997,7 @@ export default function Chat({
             imageQueue,
             (name) => toolPolicy(settings, name),
             conversationId,
+            new Set<string>(),
           ),
           abortSignal: controller.signal,
           onUpdate: patch(assistantId, base),

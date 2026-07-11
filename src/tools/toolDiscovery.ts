@@ -18,11 +18,17 @@ export const ALWAYS_ON: readonly string[] = ['ToolSearch', 'GetTool', 'ReadPage'
 /** The disclosure meta-tools themselves — excluded from the searchable catalog. */
 export const META_NAMES: Set<string> = new Set(['ToolSearch', 'GetTool'])
 
-/** Build the searchable catalog from an already-filtered ToolSet: name + description, minus meta-tools. */
-export function buildCatalog(tools: Record<string, { description?: string }>): CatalogEntry[] {
+/**
+ * Build the searchable catalog from an already-filtered ToolSet: name +
+ * description, minus meta-tools. `description` is typed loosely because AI SDK
+ * v7 allows a tool description to be a string OR a `(options) => string`
+ * function; only static string descriptions are catalogued (dynamic ones — none
+ * in this app — collapse to an empty string).
+ */
+export function buildCatalog(tools: Record<string, { description?: unknown }>): CatalogEntry[] {
   return Object.entries(tools)
     .filter(([name]) => !META_NAMES.has(name))
-    .map(([name, t]) => ({ name, description: t.description ?? '' }))
+    .map(([name, t]) => ({ name, description: typeof t.description === 'string' ? t.description : '' }))
 }
 
 /** Case-insensitive substring match over name + description. Empty/omitted query returns the whole catalog. */

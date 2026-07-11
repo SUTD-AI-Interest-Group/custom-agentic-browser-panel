@@ -30,6 +30,9 @@ describe('buildCatalog', () => {
   it('tolerates a missing description', () => {
     expect(buildCatalog({ Foo: {} })).toEqual([{ name: 'Foo', description: '' }])
   })
+  it('collapses a non-string (v7 dynamic) description to empty', () => {
+    expect(buildCatalog({ Dyn: { description: () => 'computed' } })).toEqual([{ name: 'Dyn', description: '' }])
+  })
 })
 
 describe('searchCatalog', () => {
