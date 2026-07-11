@@ -49,6 +49,14 @@ function browsingInsightsNote(granted: Set<BrowsingCapability>): string {
 const MATH_FORMATTING_NOTE =
   '\n\nWhen your answer includes mathematical notation, write it in LaTeX: `$…$` for inline math and `$$…$$` on their own lines for display math (these render in the panel). Prefer LaTeX commands over Unicode symbols (e.g. `\\alpha`, `\\leq`, `\\times`). Escape a literal dollar sign as `\\$`.'
 
+// Progressive tool disclosure. Appended to every system prompt as machinery
+// (independent of the user's editable settings.systemPrompt) so the protocol
+// reaches every install — including ones whose stored prompt predates it. Only
+// ReadPage + the ToolSearch/GetTool meta-tools are active by default; everything
+// else is loaded on demand (see src/tools/toolDiscovery.ts).
+const TOOL_DISCLOSURE_NOTE =
+  '\n\nYour tools load on demand. ReadPage is always available — read the current tab with mode "text" (visible text), "dom" (HTML structure), or "elements" (numbered interactive elements, used before controlling a page). For anything else, call ToolSearch to list the available tools (optionally with a query), then GetTool with the names you need; loaded tools stay available for the rest of this turn. Loading a tool does not run it, and tools still ask the user for permission when they run. Capabilities to load when needed: ReadTabs (other open tabs), RequestPageControl/ControlPage/AutofillForm (control a page — click, type, fill), NavigateTab (switch/open/load a tab), ExtractData (structured JSON from the page), SaveMemory/SearchMemory (long-term memory), QueryBrowserData (history/bookmarks/top sites/downloads — only enabled sources), ListAllSkills/ReadSkill/SaveSkill (skills), StartResearch (background web research). If the message needs no tools, just answer.'
+
 interface PendingApproval extends ApprovalRequest {
   resolve: (approved: boolean) => void
 }
@@ -965,7 +973,21 @@ export default function Chat({
     const activeSkills = ctx.activeSkill
       ? `\n\n## Active skill: ${ctx.activeSkill.name}\nThe user invoked this skill. Follow these instructions for this task:\n\n${ctx.activeSkill.body}`
       : ''
-    const system = `${settings.systemPrompt}${accessNote}${browsingInsightsNote(granted)}${MATH_FORMATTING_NOTE}${memoryContext ? `\n\n${memoryContext}` : ''}${skillsCatalog}${activeSkills}`
+    const system = `${settings.systemPrompt}${TOOL_DISCLOSURE_NOTE}${accessNote}${browsingInsightsNote(granted)}${MATH_FORMATTING_NOTE}${memoryContext ? `\n\n${memoryContext}` : ''}${skillsCatalog}${activeSkills}`
+
+    // Progressive disclosure: the tools the model may call beyond the always-on
+    // core (ToolSearch, GetTool, ReadPage). Built once for the chain and shared
+    // across auto-continue cycles, so tools the model loads via GetTool stay
+    // available. Seeded from context to skip a discovery round-trip: any
+    // pre-authorized tool (e.g. @memory → SearchMemory, via turnAllowed) and, if
+    // a page-control session is already open, the control cluster.
+    const activeNames = new Set<string>(turnAllowed.current)
+    const openSession = pageControl.session()
+    if (openSession && openSession.active) {
+      activeNames.add('RequestPageControl')
+      activeNames.add('ControlPage')
+      activeNames.add('AutofillForm')
+    }
 
     // Patch one assistant bubble: its parts are `base` (prior cycles, in merge
     // mode) followed by this cycle's streamed parts.
@@ -997,11 +1019,12 @@ export default function Chat({
             imageQueue,
             (name) => toolPolicy(settings, name),
             conversationId,
-            new Set<string>(),
+            activeNames,
           ),
           abortSignal: controller.signal,
           onUpdate: patch(assistantId, base),
           imageQueue,
+          activeNames,
         })
         patch(assistantId, base)(result.parts)
         historyRef.current.push(...result.responseMessages)
