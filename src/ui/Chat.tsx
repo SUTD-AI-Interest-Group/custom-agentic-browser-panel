@@ -1293,7 +1293,7 @@ function MessageView({ message, streaming }: { message: UIMessage; streaming: bo
       <div className="msg-assistant-body" ref={bodyRef}>
         {message.parts.map((part, i) =>
           part.type === 'text' ? (
-            <AssistantText key={i} text={part.text} />
+            <AssistantText key={i} text={part.text} streaming={streaming} />
           ) : (
             <ToolPill key={part.toolCallId} part={part} />
           ),
@@ -1309,7 +1309,7 @@ function MessageView({ message, streaming }: { message: UIMessage; streaming: bo
 
 // Renders one assistant text part as ordered blocks: image runs → carousel,
 // standalone links → cards, standalone JSON → collapsible tree, else markdown.
-function AssistantText({ text }: { text: string }) {
+function AssistantText({ text, streaming }: { text: string; streaming: boolean }) {
   const blocks = useMemo(() => splitBlocks(text), [text])
   return (
     <>
@@ -1317,7 +1317,7 @@ function AssistantText({ text }: { text: string }) {
         if (b.type === 'images') return <ImageCarousel key={i} urls={b.urls} />
         if (b.type === 'links') return <LinkCardStack key={i} links={b.links} />
         if (b.type === 'json') return <JsonTree key={i} value={b.value} />
-        return <Markdown key={i} text={b.text} />
+        return <Markdown key={i} text={b.text} streaming={streaming} />
       })}
     </>
   )

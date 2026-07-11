@@ -13,7 +13,6 @@ export function enhanceCodeBlocks(root: HTMLElement): void {
     pre.setAttribute('data-enhanced', '1')
     const code = pre.querySelector('code')
     const lang = languageOf(code)
-    if (code) void highlightCode(code, lang).catch(() => {})
 
     const wrap = document.createElement('div')
     wrap.className = 'code-block'
@@ -97,6 +96,15 @@ export async function highlightCode(code: HTMLElement, lang: string): Promise<vo
     : hljs.highlightAuto(code.textContent ?? '')
   code.innerHTML = result.value
   code.classList.add('hljs')
+}
+
+/** Highlight every not-yet-highlighted code block under `root`. Called only
+ *  once a message has finished streaming (highlighting is O(n) per call and
+ *  re-running it on every streamed token would be O(n^2)). */
+export function highlightAll(root: HTMLElement): void {
+  root.querySelectorAll<HTMLElement>('pre code:not([data-highlighted])').forEach((code) => {
+    void highlightCode(code, languageOf(code)).catch(() => {})
+  })
 }
 
 /** Wrap each not-yet-wrapped <table> in a horizontal-scroll container so a wide
