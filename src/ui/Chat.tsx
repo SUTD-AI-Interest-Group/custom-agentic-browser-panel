@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import type { ModelMessage } from 'ai'
 import Markdown from './Markdown'
 import ImageCarousel from './ImageCarousel'
+import LinkCardStack from './LinkCard'
 import { splitBlocks } from './blocks'
 import { runAgentTurn, type MessageSource, type UIMessage, type UIPart } from '../agent/agent'
 import { captureRegion, type CapturedImage } from '../platform/capture'
@@ -144,7 +145,7 @@ const isHttpUrl = (url: string): boolean => /^https?:\/\//i.test(url)
 // Chrome's built-in, on-device favicon cache — keeps visited URLs local rather
 // than shipping them to a third-party favicon service. Needs the "favicon"
 // manifest permission.
-function faviconUrl(pageUrl: string, size = 32): string {
+export function faviconUrl(pageUrl: string, size = 32): string {
   const u = new URL(chrome.runtime.getURL('/_favicon/'))
   u.searchParams.set('pageUrl', pageUrl)
   u.searchParams.set('size', String(size))
@@ -1314,8 +1315,9 @@ function AssistantText({ text }: { text: string }) {
     <>
       {blocks.map((b, i) => {
         if (b.type === 'images') return <ImageCarousel key={i} urls={b.urls} />
+        if (b.type === 'links') return <LinkCardStack key={i} links={b.links} />
         if (b.type === 'markdown') return <Markdown key={i} text={b.text} />
-        return <Markdown key={i} text={b.raw} />
+        return <Markdown key={i} text={b.raw} /> // json → markdown until Task 7
       })}
     </>
   )
