@@ -13,7 +13,7 @@ export function enhanceCodeBlocks(root: HTMLElement): void {
     pre.setAttribute('data-enhanced', '1')
     const code = pre.querySelector('code')
     const lang = languageOf(code)
-    if (code) void highlightCode(code, lang)
+    if (code) void highlightCode(code, lang).catch(() => {})
 
     const wrap = document.createElement('div')
     wrap.className = 'code-block'
@@ -90,11 +90,23 @@ async function loadHljs() {
 /** Highlight one code element with the lazily-loaded engine. Idempotent. */
 export async function highlightCode(code: HTMLElement, lang: string): Promise<void> {
   if (code.dataset.highlighted) return
-  const hljs = await loadHljs()
   code.dataset.highlighted = '1'
+  const hljs = await loadHljs()
   const result = hljs.getLanguage(lang)
     ? hljs.highlight(code.textContent ?? '', { language: lang })
     : hljs.highlightAuto(code.textContent ?? '')
   code.innerHTML = result.value
   code.classList.add('hljs')
+}
+
+/** Wrap each not-yet-wrapped <table> in a horizontal-scroll container so a wide
+ *  table scrolls within its own bubble instead of stretching the message. */
+export function wrapTables(root: HTMLElement): void {
+  root.querySelectorAll<HTMLTableElement>('table:not([data-wrapped])').forEach((table) => {
+    table.setAttribute('data-wrapped', '1')
+    const scroll = document.createElement('div')
+    scroll.className = 'table-scroll'
+    table.replaceWith(scroll)
+    scroll.append(table)
+  })
 }

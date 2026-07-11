@@ -4,7 +4,7 @@ import markedKatex from 'marked-katex-extension'
 import DOMPurify from 'dompurify'
 import 'katex/dist/katex.min.css'
 import { normalizeMathDelimiters } from './mathDelimiters'
-import { enhanceCodeBlocks } from './codeEnhance'
+import { enhanceCodeBlocks, wrapTables } from './codeEnhance'
 
 // Configure the KaTeX extension once at module load (marked.use mutates the
 // shared marked instance; Markdown is the only consumer of marked). Options
@@ -30,7 +30,10 @@ export default function Markdown({ text }: { text: string }) {
     })
   }, [text])
   useEffect(() => {
-    if (ref.current) enhanceCodeBlocks(ref.current)
+    if (ref.current) {
+      enhanceCodeBlocks(ref.current)
+      wrapTables(ref.current)
+    }
   }, [html])
   return <div className="markdown" ref={ref} dangerouslySetInnerHTML={{ __html: html }} />
 }

@@ -2173,3 +2173,9 @@ body {
 .json-number { color: #c86; }
 .json-boolean, .json-null { color: #a6a; }
 .json-brace { opacity: 0.7; }
+
+.table-scroll { overflow-x: auto; margin: 8px 0; border: 1px solid var(--border); border-radius: 10px; }
+.markdown .table-scroll table { margin: 0; border: none; border-collapse: collapse; width: 100%; }
+.markdown .table-scroll th, .markdown .table-scroll td { padding: 6px 10px; border-bottom: 1px solid var(--border); text-align: left; white-space: nowrap; }
+.markdown .table-scroll thead th { position: sticky; top: 0; background: var(--pill-bg); font-weight: 600; }
+.markdown .table-scroll tbody tr:nth-child(even) { background: color-mix(in srgb, var(--pill-bg) 50%, transparent); }
