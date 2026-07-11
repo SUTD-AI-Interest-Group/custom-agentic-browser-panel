@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import type { ModelMessage } from 'ai'
 import Markdown from './Markdown'
 import ImageCarousel from './ImageCarousel'
-import { splitImageBlocks } from './imageBlocks'
+import { splitBlocks } from './blocks'
 import { runAgentTurn, type MessageSource, type UIMessage, type UIPart } from '../agent/agent'
 import { captureRegion, type CapturedImage } from '../platform/capture'
 import { copyElementAsPng } from '../platform/domImage'
@@ -1305,19 +1305,18 @@ function MessageView({ message, streaming }: { message: UIMessage; streaming: bo
   )
 }
 
-// Renders one assistant text part. Runs of grouped image URLs become a
-// side-scrollable download carousel; everything else renders as markdown.
+// Renders one assistant text part as ordered blocks: image runs → carousel,
+// standalone links → cards, standalone JSON → tree, else markdown. (Link/JSON
+// components are wired in later tasks; until then they render as markdown.)
 function AssistantText({ text }: { text: string }) {
-  const segments = useMemo(() => splitImageBlocks(text), [text])
+  const blocks = useMemo(() => splitBlocks(text), [text])
   return (
     <>
-      {segments.map((seg, i) =>
-        seg.type === 'images' ? (
-          <ImageCarousel key={i} urls={seg.urls} />
-        ) : (
-          <Markdown key={i} text={seg.text} />
-        ),
-      )}
+      {blocks.map((b, i) => {
+        if (b.type === 'images') return <ImageCarousel key={i} urls={b.urls} />
+        if (b.type === 'markdown') return <Markdown key={i} text={b.text} />
+        return <Markdown key={i} text={b.raw} />
+      })}
     </>
   )
 }
