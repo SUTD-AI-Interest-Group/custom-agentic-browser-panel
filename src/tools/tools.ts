@@ -10,6 +10,8 @@ import { snapshotPage, type PageSnapshot } from '../platform/domIndex'
 import { mountPresence, focusOn, pulse, setPresenceHidden } from '../platform/presence'
 import { ensureVisionCapability } from '../agent/vision'
 import { captureWithMarks } from '../platform/marks'
+import { createModel } from '../agent/provider'
+import { extractStructured } from '../agent/extract'
 import {
   isPointOfNoReturn,
   runControlStep,
@@ -390,6 +392,36 @@ export function createAgentTools(
         const approved = await requestApproval({ toolName: 'NavigateTab', summary, reason })
         if (!approved) return DENIED
         return { action, ...(await navigateTab(action, { tabId, url })) }
+      },
+    }),
+
+    ExtractData: tool({
+      description:
+        'Extract structured data from the active tab into a caller-defined JSON schema. Use when the user wants records pulled out — a table, a list of items, fields from a page — as clean JSON. Asks permission first.',
+      inputSchema: z.object({
+        reason: z.string().describe('Short reason shown to the user, e.g. "To pull the product table into a list"'),
+        instruction: z.string().describe('What to extract, e.g. "every product with name and price"'),
+        schema: z.record(z.any()).describe('A JSON Schema object describing the desired output shape.'),
+      }),
+      execute: async ({ reason, instruction, schema }) => {
+        const approved = await requestApproval({
+          toolName: 'ExtractData',
+          summary: 'Extract structured data from this page',
+          reason,
+        })
+        if (!approved) return DENIED
+        if (!selected) return { error: 'No model is configured.' }
+        const tab = await getActiveTab()
+        if (tab?.id === undefined) return { error: 'No active tab found.' }
+        const page = await readTabContent(tab.id)
+        const source = typeof page === 'object' && page && 'text' in page ? String((page as any).text) : JSON.stringify(page)
+        const model = createModel(selected.provider, selected.modelId)
+        const prompt = `${instruction}\n\nSource page content:\n${source.slice(0, 40_000)}`
+        try {
+          return { data: await extractStructured(model, prompt, schema as Record<string, unknown>) }
+        } catch (err) {
+          return { error: `Could not extract structured data (${err instanceof Error ? err.message : String(err)}).` }
+        }
       },
     }),
 
