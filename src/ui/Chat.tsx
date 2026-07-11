@@ -1160,15 +1160,14 @@ export default function Chat({
                   aria-expanded={toolsOpen}
                   onClick={() => setToolsOpen((o) => !o)}
                 >
-                  <svg width="15" height="15" viewBox="0 0 16 16" fill="none">
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none">
                     <path
-                      d="M2.5 5h4.5M11.5 5h2M2.5 11h2M9 11h4.5"
+                      d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"
                       stroke="currentColor"
-                      strokeWidth="1.3"
+                      strokeWidth="2"
                       strokeLinecap="round"
+                      strokeLinejoin="round"
                     />
-                    <circle cx="9" cy="5" r="1.7" stroke="currentColor" strokeWidth="1.3" />
-                    <circle cx="6.5" cy="11" r="1.7" stroke="currentColor" strokeWidth="1.3" />
                   </svg>
                 </button>
                 {toolsOpen && (
