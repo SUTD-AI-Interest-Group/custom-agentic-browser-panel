@@ -14,13 +14,15 @@ import {
   type ActionResult,
 } from '../platform/pageActions'
 
-/** A per-task grant to control one tab. Origin-fenced and action-budgeted. */
+/**
+ * A per-task grant to control one tab. Origin-fenced. There is no per-session
+ * action budget: the turn's step budget (MAX_STEPS in agent.ts) bounds all
+ * activity, and point-of-no-return steps still confirm individually.
+ */
 export interface ControlSession {
   tabId: number
   origin: string
   plan: string
-  actionsUsed: number
-  maxActions: number
   active: boolean
   /**
    * One-shot: the just-approved point-of-no-return may have triggered a
@@ -30,8 +32,6 @@ export interface ControlSession {
    */
   crossingAuthorized?: boolean
 }
-
-export const MAX_SESSION_ACTIONS = 20
 
 export type ControlAction =
   | 'click'

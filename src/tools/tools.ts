@@ -16,7 +16,6 @@ import { createStartResearchTool } from './research'
 import {
   isPointOfNoReturn,
   runControlStep,
-  MAX_SESSION_ACTIONS,
   type ControlSession,
   type ControlSpec,
 } from './pageControl'
@@ -279,10 +278,6 @@ export function createAgentTools(
         const session = pageControl.session()
         if (!session || !session.active)
           return { error: 'No page-control session is open. Call RequestPageControl first.' }
-        if (session.actionsUsed >= session.maxActions) {
-          pageControl.endSession()
-          return { error: `Action budget of ${MAX_SESSION_ACTIONS} reached. Ask the user to continue if more is needed.` }
-        }
         const tab = await getActiveTab()
         if (tab?.id === undefined || tab.id !== session.tabId)
           return { error: 'The controlled tab is no longer active.' }
@@ -331,7 +326,6 @@ export function createAgentTools(
               message: `The page is now on ${hostLabel(liveOrigin)}; re-read the elements and continue.`,
               urlChanged: true,
               elements: fresh.text,
-              actionsLeft: session.maxActions - session.actionsUsed,
             }
           } catch (err) {
             return { error: `Cannot read this page (${err instanceof Error ? err.message : String(err)}).` }
@@ -354,7 +348,6 @@ export function createAgentTools(
           })
           if (!approved) return DENIED
         }
-        session.actionsUsed += 1
         const { registry, ok, message, urlChanged, origin } = await runControlStep({
           tabId: tab.id,
           spec,
@@ -397,7 +390,7 @@ export function createAgentTools(
         }
         // Coerce to a real boolean: `urlChanged` is undefined for non-navigation
         // actions, and a tool result must not carry undefined into the history.
-        return { ok, message, urlChanged: urlChanged === true, elements: registry, actionsLeft: session.maxActions - session.actionsUsed }
+        return { ok, message, urlChanged: urlChanged === true, elements: registry }
       },
     }),
 
@@ -419,9 +412,7 @@ export function createAgentTools(
         if (tab?.id === undefined || tab.id !== session.tabId) return { error: 'The controlled tab is no longer active.' }
         const profile = await getProfileMemories()
         const filled: number[] = []
-        let budgetHit = false
         for (const f of fields) {
-          if (session.actionsUsed >= session.maxActions) { budgetHit = true; break }
           let snap
           try { snap = await snapshotPage(tab.id) } catch { return { error: 'Cannot read this page.' } }
           if (snap.origin !== session.origin) {
@@ -434,7 +425,6 @@ export function createAgentTools(
             const approved = await requestApproval({ toolName: 'AutofillForm', summary: `Fill a sensitive field (${el?.name ?? f.index})`, reason: 'This field is sensitive.', once: true })
             if (!approved) continue
           }
-          session.actionsUsed += 1
           await runControlStep({
             tabId: tab.id, spec, snapshot: snap,
             beforeAct: (i) => (i === undefined ? Promise.resolve() : focusOn(tab.id!, i, undefined)),
@@ -444,10 +434,7 @@ export function createAgentTools(
         }
         return {
           filled,
-          actionsLeft: session.maxActions - session.actionsUsed,
-          note: budgetHit
-            ? 'Action budget reached; ask the user to continue for more fields.'
-            : `Filled ${filled.length} field(s) from profile. Profile memories available: ${profile.length}. Submit is a separate, confirmed step.`,
+          note: `Filled ${filled.length} field(s) from profile. Profile memories available: ${profile.length}. Submit is a separate, confirmed step.`,
         }
       },
     }),

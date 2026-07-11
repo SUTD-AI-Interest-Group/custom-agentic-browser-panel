@@ -1,11 +1,11 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
 import type { ModelMessage } from 'ai'
 import Markdown from './Markdown'
 import ImageCarousel from './ImageCarousel'
 import LinkCardStack from './LinkCard'
 import JsonTree from './JsonTree'
 import { splitBlocks } from './blocks'
-import { runAgentTurn, type MessageSource, type UIMessage, type UIPart } from '../agent/agent'
+import { runAgentTurn, type Checkpoint, type MessageSource, type UIMessage, type UIPart } from '../agent/agent'
 import { captureRegion, type CapturedImage } from '../platform/capture'
 import { copyElementAsPng } from '../platform/domImage'
 import { getConversation, renameConversation, saveConversation } from '../data/conversations'
@@ -21,7 +21,7 @@ import {
 } from '../data/settings'
 import { getActiveTab, listOpenTabs, readTabContent, type TabContent, type TabSummary } from '../platform/tabs'
 import { createAgentTools, type ApprovalRequest, type PageControlGate } from '../tools/tools'
-import { MAX_SESSION_ACTIONS, type ControlSession } from '../tools/pageControl'
+import { type ControlSession } from '../tools/pageControl'
 import { clearIndex } from '../platform/domIndex'
 import { unmountPresence, unmountAllPresence } from '../platform/presence'
 import { grantedCapabilities, type BrowsingCapability } from '../platform/permissions'
@@ -93,6 +93,15 @@ const MAX_ALL_TABS = 25
 
 // Cap how much highlighted text we forward as context.
 const SELECTION_MAX = 4000
+
+// Long-horizon continuation: when a turn ends because the model checkpointed or
+// hit the step budget (see runAgentTurn's TurnStopReason), the chat auto-continues
+// up to this many times seamlessly before surfacing the Continue card.
+const MAX_AUTO_CONTINUES = 3
+// Transcript treatment of an auto-continue (swap flag): false = a new assistant
+// bubble per cycle with a "↻ Continued automatically" divider; true = append
+// every cycle's parts into one continuous bubble.
+const MERGE_AUTO_CONTINUES = false
 
 // Auto-approval is now driven by each tool's Never/Ask/Always policy
 // (DEFAULT_TOOL_POLICIES / Settings → Permissions). ReadSkill and ListAllSkills
@@ -233,6 +242,10 @@ export default function Chat({
   const [input, setInput] = useState('')
   const [streaming, setStreaming] = useState(false)
   const [turnStartedAt, setTurnStartedAt] = useState<number | null>(null)
+  // A long task paused at the auto-continue ceiling: the Continue card shows the
+  // model's checkpoint and, on click, resumes with a fresh budget. Ephemeral —
+  // the checkpoint itself rides in the message history, so it survives a reload.
+  const [continuation, setContinuation] = useState<{ checkpoint: Checkpoint | null } | null>(null)
   const [approval, setApproval] = useState<PendingApproval | null>(null)
   const [currentTab, setCurrentTab] = useState<CurrentTabInfo | null>(null)
   const [attachments, setAttachments] = useState<CapturedImage[]>([])
@@ -280,6 +293,9 @@ export default function Chat({
   // Tools pre-authorized for the current turn only (e.g. SearchMemory when the
   // user typed @memory — the mention itself is their consent).
   const turnAllowed = useRef<Set<string>>(new Set())
+  // Seamless auto-continuations used in the current chain, reset when the user
+  // starts or explicitly continues a task (see runTurnChain / MAX_AUTO_CONTINUES).
+  const autoContinuesRef = useRef(0)
   // The open page-control session (RequestPageControl → ControlPage), if any.
   const pageSessionRef = useRef<ControlSession | null>(null)
   const [sessionPlan, setSessionPlan] = useState<{ plan: string; host: string } | null>(null)
@@ -501,8 +517,6 @@ export default function Chat({
                 tabId,
                 origin,
                 plan,
-                actionsUsed: 0,
-                maxActions: MAX_SESSION_ACTIONS,
                 active: true,
               }
             }
@@ -802,96 +816,146 @@ export default function Chat({
     const attachedSources: MessageSource[] = syncedTabs
       .filter((c) => !c.error && isHttpUrl(c.url))
       .map((c) => ({ title: c.title, url: c.url }))
-    const assistantId = uid()
-    setMessages((m) => [
-      ...m,
-      { id: assistantId, role: 'assistant', parts: [], sources: attachedSources },
-    ])
-    const updateAssistant = (parts: UIPart[]) =>
-      setMessages((m) => m.map((msg) => (msg.id === assistantId ? { ...msg, parts } : msg)))
+    // Build the journal line for this user turn; the assistant side is appended
+    // when the whole continuation chain finishes. Tool calls are noted by name.
+    const notes: string[] = []
+    if (images.length > 0)
+      notes.push(`[attached ${images.length} screenshot${images.length > 1 ? 's' : ''}]`)
+    if (syncedTabs.length > 0)
+      notes.push(`[synced tabs: ${syncedTabs.map((t) => t.title).join(', ')}]`)
+    if (useMemory) notes.push('[asked to recall from memory]')
+    if (activeSkill) notes.push(`[invoked skill: ${activeSkill.name}]`)
+    if (useAll) notes.push('[shared all open tabs]')
+    if (activeSelection) notes.push('[shared a page selection]')
+    const journalUserText = [text, ...notes].filter(Boolean).join('\n')
 
+    // @memory is the user's consent to recall, so skip the SearchMemory card for
+    // this turn only (it reads local memory — no page or network access).
+    turnAllowed.current = useMemory ? new Set(['SearchMemory']) : new Set()
+    autoContinuesRef.current = 0
+    setContinuation(null)
+    await runTurnChain({
+      startedAt: Date.now(),
+      attachedSources,
+      activeSkill: activeSkill ? { name: activeSkill.name, body: activeSkill.body } : null,
+      journalUserText,
+      droppableTail: true,
+    })
+  }
+
+  /**
+   * Run one logical turn as a continuation *chain*. While the model checkpoints
+   * or hits its step budget (see runAgentTurn's TurnStopReason), auto-continue up
+   * to MAX_AUTO_CONTINUES seamlessly with a fresh budget each cycle, then surface
+   * the Continue card. Teardown (page-control session + on-page presence) lives in
+   * this outer finally, so the session and overlay SURVIVE auto-continues and are
+   * torn down only when the whole chain ends — completion, abort, error, or the
+   * ask-boundary. Point-of-no-return page actions still confirm individually
+   * inside each cycle, so auto-continue never bypasses a risky-action gate.
+   */
+  async function runTurnChain(ctx: {
+    startedAt: number
+    attachedSources: MessageSource[]
+    activeSkill: { name: string; body: string } | null
+    journalUserText: string
+    /** True when the caller (send) left a trailing user message a total failure
+     *  should drop; false for continueTask (history ends on the checkpoint). */
+    droppableTail: boolean
+  }) {
+    if (!selected) return
+    const model = selected
     const controller = new AbortController()
     abortRef.current = controller
-    // @memory is the user's consent to recall, so skip the SearchMemory card
-    // for this turn only (it reads local memory — no page or network access).
-    turnAllowed.current = useMemory ? new Set(['SearchMemory']) : new Set()
     setStreaming(true)
-    const startedAt = Date.now()
-    setTurnStartedAt(startedAt)
-    try {
-      // Recalled memories are injected fresh each turn so mid-conversation
-      // saves (SaveMemory) are visible on the very next turn.
-      const memoryContext = await getMemoryContext().catch(() => '')
-      const granted = await grantedCapabilities().catch(() => new Set<BrowsingCapability>())
-      const accessNote =
-        settings.tabAccess === 'active-tab'
-          ? '\n\nThe user has restricted your tab visibility to the tab they are currently on; ViewOpenedTabs and GetAllDOM are unavailable.'
-          : ''
-      // Level-1 progressive disclosure: name+description of every model-invocable
-      // skill, so the agent knows what it can load via ReadSkill.
-      const skillMetas = await listSkillMetas({ modelInvocableOnly: true }).catch(() => [])
-      const skillsCatalog =
-        skillMetas.length > 0
-          ? `\n\n## Skills\nThese skills are available. When a request matches one, call ReadSkill with its name to load its full instructions before proceeding.\n${skillMetas
-              .map((s) => `- ${s.name}: ${s.description}`)
-              .join('\n')}`
-          : ''
-      // Level-2: an explicitly invoked skill's body is injected directly (the
-      // user asked for it, so no ReadSkill round-trip is needed).
-      const activeSkills = activeSkill
-        ? `\n\n## Active skill: ${activeSkill.name}\nThe user invoked this skill. Follow these instructions for this task:\n\n${activeSkill.body}`
-        : ''
-      // Marked screenshots from InspectPage/RequestPageControl land here; the
-      // turn loop's prepareStep drains it and injects them as user image
-      // messages, since the OpenAI-compatible adapter can't carry images in a
-      // tool result. Fresh per turn — nothing should linger past it.
-      const imageQueue: string[] = []
-      const { parts, responseMessages } = await runAgentTurn({
-        model: createModel(selected.provider, selected.modelId),
-        system: `${settings.systemPrompt}${accessNote}${browsingInsightsNote(granted)}${MATH_FORMATTING_NOTE}${memoryContext ? `\n\n${memoryContext}` : ''}${skillsCatalog}${activeSkills}`,
-        history: [...historyRef.current],
-        tools: createAgentTools(
-          requestApproval,
-          settings.tabAccess,
-          granted,
-          pageControl,
-          selected,
-          imageQueue,
-          (name) => toolPolicy(settings, name),
-        ),
-        abortSignal: controller.signal,
-        onUpdate: updateAssistant,
-        imageQueue,
-      })
-      updateAssistant(parts)
-      historyRef.current.push(...responseMessages)
+    setTurnStartedAt(ctx.startedAt)
 
-      // Journal the exchange for the next dream cycle. Tool calls are noted
-      // by name only — page dumps would bloat the journal without adding
-      // anything a summary needs.
-      const assistantText = parts
-        .map((p) => (p.type === 'text' ? p.text : `[used tool: ${p.toolName}]`))
-        .join('\n')
-        .trim()
-      const notes: string[] = []
-      if (images.length > 0)
-        notes.push(`[attached ${images.length} screenshot${images.length > 1 ? 's' : ''}]`)
-      if (syncedTabs.length > 0)
-        notes.push(`[synced tabs: ${syncedTabs.map((t) => t.title).join(', ')}]`)
-      if (useMemory) notes.push('[asked to recall from memory]')
-      if (activeSkill) notes.push(`[invoked skill: ${activeSkill.name}]`)
-      if (useAll) notes.push('[shared all open tabs]')
-      if (activeSelection) notes.push('[shared a page selection]')
-      const journalUserText = [text, ...notes].filter(Boolean).join('\n')
+    // System prompt, built once for the chain. Recalled memories are fresh as of
+    // the chain start so a mid-conversation SaveMemory shows on the next turn.
+    const memoryContext = await getMemoryContext().catch(() => '')
+    const granted = await grantedCapabilities().catch(() => new Set<BrowsingCapability>())
+    const accessNote =
+      settings.tabAccess === 'active-tab'
+        ? '\n\nThe user has restricted your tab visibility to the tab they are currently on; ViewOpenedTabs and GetAllDOM are unavailable.'
+        : ''
+    const skillMetas = await listSkillMetas({ modelInvocableOnly: true }).catch(() => [])
+    const skillsCatalog =
+      skillMetas.length > 0
+        ? `\n\n## Skills\nThese skills are available. When a request matches one, call ReadSkill with its name to load its full instructions before proceeding.\n${skillMetas
+            .map((s) => `- ${s.name}: ${s.description}`)
+            .join('\n')}`
+        : ''
+    const activeSkills = ctx.activeSkill
+      ? `\n\n## Active skill: ${ctx.activeSkill.name}\nThe user invoked this skill. Follow these instructions for this task:\n\n${ctx.activeSkill.body}`
+      : ''
+    const system = `${settings.systemPrompt}${accessNote}${browsingInsightsNote(granted)}${MATH_FORMATTING_NOTE}${memoryContext ? `\n\n${memoryContext}` : ''}${skillsCatalog}${activeSkills}`
+
+    // Patch one assistant bubble: its parts are `base` (prior cycles, in merge
+    // mode) followed by this cycle's streamed parts.
+    const patch = (id: string, base: UIPart[]) => (parts: UIPart[]) =>
+      setMessages((m) => m.map((msg) => (msg.id === id ? { ...msg, parts: [...base, ...parts] } : msg)))
+
+    const assistantTexts: string[] = []
+    let pushedAny = false
+    let assistantId = uid()
+    let mergedParts: UIPart[] = []
+    setMessages((m) => [...m, { id: assistantId, role: 'assistant', parts: [], sources: ctx.attachedSources }])
+
+    try {
+      while (true) {
+        // Fresh per cycle: the queue is drained during the turn, and the tools
+        // must share the same instance so what they push, prepareStep injects.
+        const imageQueue: string[] = []
+        const base = MERGE_AUTO_CONTINUES ? mergedParts : []
+        const result = await runAgentTurn({
+          model: createModel(model.provider, model.modelId),
+          system,
+          history: [...historyRef.current],
+          tools: createAgentTools(
+            requestApproval,
+            settings.tabAccess,
+            granted,
+            pageControl,
+            model,
+            imageQueue,
+            (name) => toolPolicy(settings, name),
+          ),
+          abortSignal: controller.signal,
+          onUpdate: patch(assistantId, base),
+          imageQueue,
+        })
+        patch(assistantId, base)(result.parts)
+        historyRef.current.push(...result.responseMessages)
+        pushedAny = true
+        if (MERGE_AUTO_CONTINUES) mergedParts = [...mergedParts, ...result.parts]
+        assistantTexts.push(
+          result.parts.map((p) => (p.type === 'text' ? p.text : `[used tool: ${p.toolName}]`)).join('\n'),
+        )
+
+        if (result.stop.reason === 'completed') break
+        // 'checkpoint' | 'budget' — the task is not done. Auto-continue until the
+        // ceiling, then hand off to the user via the Continue card.
+        if (autoContinuesRef.current >= MAX_AUTO_CONTINUES) {
+          setContinuation({ checkpoint: result.stop.checkpoint ?? null })
+          break
+        }
+        autoContinuesRef.current += 1
+        if (!MERGE_AUTO_CONTINUES) {
+          assistantId = uid()
+          const cycle = autoContinuesRef.current
+          setMessages((m) => [...m, { id: assistantId, role: 'assistant', parts: [], autoContinue: cycle }])
+        }
+      }
+
+      // Journal the whole exchange once (success path only — not on abort/error).
       void appendToEpisode(episodeIdRef.current, [
-        { role: 'user', text: journalUserText, at: startedAt },
-        { role: 'assistant', text: assistantText, at: Date.now() },
+        { role: 'user', text: ctx.journalUserText, at: ctx.startedAt },
+        { role: 'assistant', text: assistantTexts.join('\n').trim(), at: Date.now() },
       ]).catch(() => {})
     } catch (err) {
       if (controller.signal.aborted) {
-        // Partial turn stays visible in the UI but is dropped from model
-        // history so the next request starts from a consistent state.
-        historyRef.current.pop()
+        // Keep completed cycles; only drop a dangling trailing user message (a
+        // send() turn that produced nothing) so the next request is consistent.
+        if (!pushedAny && ctx.droppableTail) historyRef.current.pop()
       } else {
         const message = err instanceof Error ? err.message : String(err)
         setMessages((m) =>
@@ -901,13 +965,13 @@ export default function Chat({
               : msg,
           ),
         )
-        historyRef.current.pop()
+        if (!pushedAny && ctx.droppableTail) historyRef.current.pop()
       }
     } finally {
       settleApproval(false)
       turnAllowed.current = new Set()
       pageControl.endSession()
-      // Tear down ambient presence on any tab the turn touched (navigate/inspect
+      // Tear down ambient presence on any tab the chain touched (navigate/inspect
       // mount the frame outside a session, so endSession alone won't clear them).
       void unmountAllPresence()
       abortRef.current = null
@@ -915,6 +979,23 @@ export default function Chat({
       setTurnStartedAt(null)
       setTurnSeq((n) => n + 1)
     }
+  }
+
+  // Resume a checkpointed task from the Continue card. The model's hand-off is
+  // already in history, so a fresh chain (new step budget + auto-continue quota)
+  // picks up where it left off — no new user message needed.
+  async function continueTask() {
+    if (streaming) return
+    setContinuation(null)
+    autoContinuesRef.current = 0
+    turnAllowed.current = new Set()
+    await runTurnChain({
+      startedAt: Date.now(),
+      attachedSources: [],
+      activeSkill: null,
+      journalUserText: '[continued the task]',
+      droppableTail: false,
+    })
   }
 
   function selectModel(value: string) {
@@ -986,12 +1067,18 @@ export default function Chat({
           </div>
         )}
         {messages.map((msg, i) => (
-          <MessageView
-            key={msg.id}
-            message={msg}
-            streaming={streaming && i === messages.length - 1}
-            turnStartedAt={turnStartedAt}
-          />
+          <Fragment key={msg.id}>
+            {msg.autoContinue != null && (
+              <div className="auto-continue-divider">
+                <span>↻ Continued automatically</span>
+              </div>
+            )}
+            <MessageView
+              message={msg}
+              streaming={streaming && i === messages.length - 1}
+              turnStartedAt={turnStartedAt}
+            />
+          </Fragment>
         ))}
         {approval && (
           <ApprovalCard
@@ -1000,6 +1087,13 @@ export default function Chat({
             onDeny={() => settleApproval(false)}
             onAllow={() => settleApproval(true)}
             onAllowSession={() => settleApproval(true, true)}
+          />
+        )}
+        {continuation && !streaming && (
+          <ContinuationCard
+            checkpoint={continuation.checkpoint}
+            onContinue={() => void continueTask()}
+            onDismiss={() => setContinuation(null)}
           />
         )}
       </div>
@@ -1771,7 +1865,10 @@ function ToolPill({ part }: { part: Extract<UIPart, { type: 'tool' }> }) {
     label = output?.started ? 'Started background research' : 'Research not started'
   else if (part.toolName === 'AutofillForm')
     label = output?.error ? 'Autofill stopped' : `Filled ${output?.filled?.length ?? 0} form field${(output?.filled?.length ?? 0) === 1 ? '' : 's'}`
-  else label = part.toolName
+  else if (part.toolName === 'Checkpoint') {
+    const cp = part.input as Partial<Checkpoint> | undefined
+    label = `Checkpointed progress — ${cp?.done?.length ?? 0} done, ${cp?.remaining?.length ?? 0} remaining`
+  } else label = part.toolName
 
   return (
     <details className={`tool-pill ${part.state} ${denied ? 'denied' : ''}`}>
@@ -1879,6 +1976,72 @@ function ApprovalCard({
         )}
         <button className="btn primary" onClick={onAllow}>
           Allow
+        </button>
+      </div>
+    </div>
+  )
+}
+
+// Shown after a long task auto-continues MAX_AUTO_CONTINUES times without
+// finishing: surfaces the model's checkpoint (what's done, what's left, what to
+// avoid, the next action) and a Continue button that resumes with a fresh budget.
+function ContinuationCard({
+  checkpoint,
+  onContinue,
+  onDismiss,
+}: {
+  checkpoint: Checkpoint | null
+  onContinue: () => void
+  onDismiss: () => void
+}) {
+  const section = (title: string, cls: string, items: string[]) =>
+    items.length > 0 ? (
+      <div className={`continuation-section ${cls}`}>
+        <div className="continuation-section-title">{title}</div>
+        <ul>
+          {items.map((it, i) => (
+            <li key={i}>{it}</li>
+          ))}
+        </ul>
+      </div>
+    ) : null
+
+  return (
+    <div className="continuation-card">
+      <div className="continuation-header">
+        <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+          <path
+            d="M2.5 2.5v9M6 2.5v9M10.5 7l-4-2.5v5z"
+            stroke="currentColor"
+            strokeWidth="1.3"
+            strokeLinejoin="round"
+          />
+        </svg>
+        <span>Task paused — step budget reached</span>
+      </div>
+      {checkpoint ? (
+        <div className="continuation-body">
+          {section('Done', 'done', checkpoint.done)}
+          {section('Still to do', 'remaining', checkpoint.remaining)}
+          {section('Avoid', 'avoid', checkpoint.avoid)}
+          {checkpoint.nextAction && (
+            <div className="continuation-next">
+              <span className="continuation-next-label">Next</span>
+              {checkpoint.nextAction}
+            </div>
+          )}
+        </div>
+      ) : (
+        <div className="continuation-reason">
+          The agent ran out of steps before finishing. Continue to give it a fresh budget.
+        </div>
+      )}
+      <div className="continuation-actions">
+        <button className="btn ghost" onClick={onDismiss}>
+          Dismiss
+        </button>
+        <button className="btn primary" onClick={onContinue}>
+          Continue task
         </button>
       </div>
     </div>
