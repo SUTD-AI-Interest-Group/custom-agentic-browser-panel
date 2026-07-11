@@ -45,7 +45,9 @@ export async function ensureVisionCapability(
         {
           role: 'user',
           content: [
-            { type: 'image', image: makeProbeImage(code) },
+            // v7: use a `file` part with an image mediaType instead of the
+            // deprecated `{ type: 'image', image }` part.
+            { type: 'file', mediaType: 'image', data: makeProbeImage(code) },
             { type: 'text', text: 'Reply with ONLY the 4-character code shown in this image.' },
           ],
         },

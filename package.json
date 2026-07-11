@@ -11,8 +11,8 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@ai-sdk/openai-compatible": "^1.0.0",
-    "ai": "^5.0.0",
+    "@ai-sdk/openai-compatible": "^3.0.7",
+    "ai": "^7.0.22",
     "dompurify": "^3.4.11",
     "highlight.js": "^11.11.1",
     "katex": "^0.17.0",

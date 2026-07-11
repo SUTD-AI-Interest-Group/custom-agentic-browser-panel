@@ -1,7 +1,7 @@
 import {
   streamText,
   generateText,
-  stepCountIs,
+  isStepCount,
   hasToolCall,
   tool,
   NoSuchToolError,
@@ -187,13 +187,14 @@ export async function runAgentTurn(options: {
   const parts: UIPart[] = []
   // Captured if the model calls Checkpoint (its input IS the reflection payload).
   let checkpoint: Checkpoint | undefined
-  // The wrap-up nudge fires at most once per turn (prepareStep runs every step).
-  let nudged = false
   const emit = () => onUpdate([...parts])
 
   const result = streamText({
     model,
-    system,
+    // v7 renamed the top-level `system` option to `instructions` (`system`
+    // still works as a deprecated fallback). The app keeps its own `system`
+    // field on runAgentTurn's options and maps it here.
+    instructions: system,
     // Sanitize incoming history so a conversation already persisted with a
     // nested-undefined tool result (see toValidModelMessages) still runs.
     messages: toValidModelMessages(history),
@@ -201,9 +202,9 @@ export async function runAgentTurn(options: {
     // `as ToolSet` keeps streamText's TOOLS generic string-keyed — a literal
     // 'Checkpoint' key would otherwise narrow toolChoice.toolName elsewhere.
     tools: { ...tools, [CHECKPOINT_TOOL]: checkpointTool } as ToolSet,
-    // Two ways to stop: the hard step ceiling, or the model choosing to hand off
-    // via Checkpoint (OR semantics — whichever fires first ends the loop).
-    stopWhen: [stepCountIs(MAX_STEPS), hasToolCall(CHECKPOINT_TOOL)],
+    // Two ways to stop: the hard step ceiling (v7's isStepCount), or the model
+    // choosing to hand off via Checkpoint (OR semantics — whichever fires first).
+    stopWhen: [isStepCount(MAX_STEPS), hasToolCall(CHECKPOINT_TOOL)],
     abortSignal,
     // Large tool inputs (a skill's Markdown body, a long typed string) make the
     // model occasionally emit malformed JSON arguments, which fail schema
@@ -216,13 +217,13 @@ export async function runAgentTurn(options: {
     // -output mode required. On ANY failure we return null: a thrown repair
     // function escalates to a ToolCallRepairError that would abort the whole
     // turn, so falling back to null preserves today's benign self-correction.
-    experimental_repairToolCall: async ({ toolCall, tools: turnTools, error, messages: priorMessages, system: sys }) => {
+    repairToolCall: async ({ toolCall, tools: turnTools, error, messages: priorMessages, instructions: sys }) => {
       // A hallucinated tool name can't be fixed by re-generating arguments.
       if (NoSuchToolError.isInstance(error)) return null
       try {
         const repaired = await generateText({
           model,
-          system: sys,
+          instructions: sys,
           messages: [
             ...priorMessages,
             {
@@ -259,7 +260,14 @@ export async function runAgentTurn(options: {
         return null
       }
     },
-    prepareStep: ({ stepNumber, messages }) => {
+    prepareStep: ({ stepNumber, initialMessages, responseMessages }) => {
+      // v7 changed prepareStep semantics: a `messages` override now carries
+      // forward as the base for all later steps (v6 applied it to one step
+      // only). Rebuild the base from initialMessages + responseMessages every
+      // step so an injected set-of-marks screenshot is shown only to the step
+      // that acts on the element list it matches (stale shots' [index] marks go
+      // wrong after an action), and so the wrap-up nudge below never lingers.
+      const base = [...initialMessages, ...responseMessages]
       const injected: ModelMessage[] = []
       // Drain any queued set-of-marks screenshots (see imageQueue doc).
       const queue = options.imageQueue
@@ -269,7 +277,10 @@ export async function runAgentTurn(options: {
           ...imgs.map((dataUrl): ModelMessage => ({
             role: 'user',
             content: [
-              { type: 'image' as const, image: dataUrl },
+              // v7 deprecated the `{ type: 'image', image }` part in favor of a
+              // `file` part with an image mediaType (the data URL's own image/png
+              // type is extracted and takes precedence over this top-level 'image').
+              { type: 'file' as const, mediaType: 'image', data: dataUrl },
               {
                 type: 'text' as const,
                 text: 'Set-of-marks screenshot of the current page — the numbered boxes correspond to the [index] values in the element list you just read.',
@@ -279,13 +290,13 @@ export async function runAgentTurn(options: {
         )
       }
       // Budget-awareness: once within NUDGE_LEAD steps of the ceiling, tell the
-      // model to wrap up / checkpoint instead of getting cut off mid-action.
-      // Once per turn — prepareStep runs before every step.
-      if (wrapUpNudge && !nudged && stepNumber >= MAX_STEPS - NUDGE_LEAD) {
-        nudged = true
+      // model to wrap up / checkpoint instead of getting cut off mid-action. base
+      // is rebuilt each step (no stacking), so re-injecting per step keeps the
+      // wrap-up pressure on across the final steps.
+      if (wrapUpNudge && stepNumber >= MAX_STEPS - NUDGE_LEAD) {
         injected.push({ role: 'user', content: wrapUpNudge })
       }
-      return injected.length > 0 ? { messages: [...messages, ...injected] } : undefined
+      return { messages: [...base, ...injected] }
     },
   })
 
@@ -294,9 +305,10 @@ export async function runAgentTurn(options: {
       | Extract<UIPart, { type: 'tool' }>
       | undefined
 
-  // Part shapes vary slightly across AI SDK v5 minor versions
-  // (text vs textDelta, input vs args, ...), so read them defensively.
-  for await (const part of result.fullStream as AsyncIterable<any>) {
+  // v7 renamed `fullStream` to `stream` (fullStream remains a deprecated
+  // alias). Part shapes have varied across SDK versions (text vs textDelta,
+  // input vs args, ...), so keep reading them defensively.
+  for await (const part of result.stream as AsyncIterable<any>) {
     switch (part.type) {
       case 'text-delta': {
         const delta: string = part.text ?? part.textDelta ?? ''
@@ -353,7 +365,6 @@ export async function runAgentTurn(options: {
     }
   }
 
-  const response = await result.response
   // Distinguish how the loop ended so the caller can auto-continue or prompt: an
   // explicit Checkpoint hand-off, a hard step-ceiling cut-off (the model still
   // wanted to act — finishReason 'tool-calls' at the ceiling), or a natural
@@ -366,11 +377,14 @@ export async function runAgentTurn(options: {
     : stepsUsed >= MAX_STEPS && finishReason === 'tool-calls'
       ? 'budget'
       : 'completed'
-  // Keep persisted history valid for the next turn: strip any nested undefined
-  // a tool result carried before it lands in the conversation.
+  // v7: use result.responseMessages (accumulated assistant/tool history across
+  // every step) — result.response is now final-step-only and would drop earlier
+  // tool calls/results. Keep it valid for the next turn: strip any nested
+  // undefined a tool result carried before it lands in the conversation.
+  const responseMessages = await result.responseMessages
   return {
     parts,
-    responseMessages: toValidModelMessages(response.messages),
+    responseMessages: toValidModelMessages(responseMessages),
     stop: { reason, checkpoint, stepsUsed },
   }
 }
