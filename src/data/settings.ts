@@ -52,6 +52,7 @@ export const TOOL_CATALOG: ToolCatalogEntry[] = [
   { name: 'InspectPage', group: 'reading', label: 'Inspect interactive elements' },
   { name: 'GetActiveTabDOM', group: 'reading', label: "Read the current tab's DOM" },
   { name: 'GetAllDOM', group: 'reading', label: "Read other tabs' DOM" },
+  { name: 'ExtractData', group: 'reading', label: 'Extract structured data from this page' },
   { name: 'RequestPageControl', group: 'control', label: 'Start a page-control session' },
   { name: 'ControlPage', group: 'control', label: 'Perform a page-control action' },
   { name: 'NavigateTab', group: 'navigation', label: 'Switch / open / navigate tabs' },

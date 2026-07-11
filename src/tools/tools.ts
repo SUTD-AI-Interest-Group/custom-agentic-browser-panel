@@ -414,7 +414,8 @@ export function createAgentTools(
         const tab = await getActiveTab()
         if (tab?.id === undefined) return { error: 'No active tab found.' }
         const page = await readTabContent(tab.id)
-        const source = typeof page === 'object' && page && 'text' in page ? String((page as any).text) : JSON.stringify(page)
+        if (page.error) return { error: page.error }
+        const source = page.text
         const model = createModel(selected.provider, selected.modelId)
         const prompt = `${instruction}\n\nSource page content:\n${source.slice(0, 40_000)}`
         try {
