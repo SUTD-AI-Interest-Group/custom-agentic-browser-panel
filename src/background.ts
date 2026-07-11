@@ -177,7 +177,7 @@ chrome.runtime.onMessage.addListener((msg: ResearchMsg) => {
     } else if (msg?.type === 'research.error') {
       await applyUpdate(msg.taskId, (cur) => (cur.status === 'cancelled' ? {} : { status: 'error', error: msg.error }))
     } else if (msg?.type === 'research.cancel') {
-      await applyUpdate(msg.taskId, { status: 'cancelled' })
+      await applyUpdate(msg.taskId, (cur) => (cur.status === 'running' ? { status: 'cancelled' } : {}))
     }
   })()
   return true
