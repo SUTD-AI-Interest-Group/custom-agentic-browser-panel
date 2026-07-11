@@ -80,43 +80,25 @@ chrome.commands.onCommand.addListener((command, tab) => {
 // ---------------------------------------------------------------------------
 
 const OFFSCREEN_URL = 'offscreen.html'
-const OFFSCREEN_LOCK = 'offscreenLock'
 
-/**
- * Ensure exactly one offscreen document exists, creating it if needed.
- *
- * Only one offscreen document may exist per extension — `createDocument()`
- * throws if called while one is already open or being opened. Because the SW
- * can process multiple `research.ensureAndStart` messages concurrently (e.g.
- * two rapid research requests), a `hasDocument()` check alone is not enough:
- * two concurrent calls could both observe "no document" and both race into
- * `createDocument()`. A `chrome.storage.session` lock (session storage does
- * not persist across browser restarts, which is correct here — the lock
- * should not outlive the SW's process lifetime) closes that window: the
- * second caller spins until the first finishes creating the document.
- */
-async function ensureOffscreen(): Promise<void> {
-  if (await chrome.offscreen.hasDocument()) return
-  const { [OFFSCREEN_LOCK]: locked } = await chrome.storage.session.get(OFFSCREEN_LOCK)
-  if (locked) {
-    for (let i = 0; i < 50; i++) {
-      await new Promise((r) => setTimeout(r, 100))
-      if (await chrome.offscreen.hasDocument()) return
-    }
-    return
-  }
-  await chrome.storage.session.set({ [OFFSCREEN_LOCK]: true })
-  try {
-    if (!(await chrome.offscreen.hasDocument())) {
-      await chrome.offscreen.createDocument({
-        url: OFFSCREEN_URL,
-        reasons: [chrome.offscreen.Reason.DOM_PARSER],
-        justification: 'Parse fetched HTML for background research.',
-      })
-    }
-  } finally {
-    await chrome.storage.session.set({ [OFFSCREEN_LOCK]: false })
-  }
+// A synchronous module-scope gate: the assignment to `creating` happens before
+// any await yields control, so two near-simultaneous calls share ONE in-flight
+// createDocument() instead of racing two. This is a synchronization primitive
+// for a disposable browser resource (like the existing openPanels Map), not
+// persisted research state — and it self-heals on SW restart (creating resets
+// to null, and hasDocument() reflects reality).
+let creatingOffscreen: Promise<void> | null = null
+function ensureOffscreen(): Promise<void> {
+  if (creatingOffscreen) return creatingOffscreen
+  creatingOffscreen = (async () => {
+    if (await chrome.offscreen.hasDocument()) return
+    await chrome.offscreen.createDocument({
+      url: OFFSCREEN_URL,
+      reasons: [chrome.offscreen.Reason.DOM_PARSER],
+      justification: 'Parse fetched HTML for background research.',
+    })
+  })().finally(() => { creatingOffscreen = null })
+  return creatingOffscreen
 }
 
 /** Draw a small notification icon at runtime — no bundled icon asset exists — and return it as a data URL. */
@@ -161,20 +143,24 @@ chrome.runtime.onMessage.addListener((msg: ResearchMsg) => {
         startedAt: Date.now(),
         updatedAt: Date.now(),
       })
-      await ensureOffscreen()
-      const settings = await loadSettings()
-      const sel = getSelectedProvider(settings)
-      if (!sel) {
-        await applyUpdate(msg.taskId, { status: 'error', error: 'No model is configured.' })
-        return
+      try {
+        await ensureOffscreen()
+        const settings = await loadSettings()
+        const sel = getSelectedProvider(settings)
+        if (!sel) {
+          await applyUpdate(msg.taskId, { status: 'error', error: 'No model is configured.' })
+          return
+        }
+        chrome.runtime.sendMessage({
+          type: 'research.start',
+          taskId: msg.taskId,
+          question: msg.question,
+          providerConfig: sel.provider,
+          modelId: sel.modelId,
+        } satisfies ResearchMsg)
+      } catch (err) {
+        await applyUpdate(msg.taskId, { status: 'error', error: err instanceof Error ? err.message : String(err) })
       }
-      chrome.runtime.sendMessage({
-        type: 'research.start',
-        taskId: msg.taskId,
-        question: msg.question,
-        providerConfig: sel.provider,
-        modelId: sel.modelId,
-      } satisfies ResearchMsg)
     } else if (msg?.type === 'research.update') {
       await applyUpdate(msg.taskId, (cur) => ({ steps: [...cur.steps, msg.step] }))
     } else if (msg?.type === 'research.done') {
@@ -183,13 +169,18 @@ chrome.runtime.onMessage.addListener((msg: ResearchMsg) => {
         report: msg.report,
         sources: msg.sources,
       })
-      if (t) await notifyDone(msg.taskId, t.question)
+      if (t) {
+        try {
+          await notifyDone(msg.taskId, t.question)
+        } catch (err) {
+          console.error('[research] notify failed', err)
+        }
+      }
     } else if (msg?.type === 'research.error') {
       await applyUpdate(msg.taskId, { status: 'error', error: msg.error })
+    } else if (msg?.type === 'research.cancel') {
+      await applyUpdate(msg.taskId, { status: 'cancelled' })
     }
-    // 'research.cancel' needs no SW-side handling: chrome.runtime.sendMessage
-    // broadcasts to every extension context, so the offscreen document (Task 8/10)
-    // receives it directly from the sender — the SW doesn't sit on that path.
   })()
   return true
 })
