@@ -104,6 +104,9 @@ export interface Settings {
   toolPolicies?: Record<string, ToolPolicy>
   /** Set once the first-run onboarding wizard has completed. */
   onboarded: boolean
+  /** Fetch OpenGraph previews for standalone links (privacy: contacts linked
+   *  sites). When false, link cards show favicon + domain only. */
+  fetchLinkPreviews?: boolean
 }
 
 /** Resolve a tool's effective policy: user override → catalog default → `ask`. */
@@ -147,6 +150,7 @@ const EMPTY: Settings = {
   systemPrompt: DEFAULT_SYSTEM_PROMPT,
   tabAccess: 'active-tab',
   onboarded: false,
+  fetchLinkPreviews: true,
 }
 
 export async function loadSettings(): Promise<Settings> {
