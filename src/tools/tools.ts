@@ -12,6 +12,7 @@ import { ensureVisionCapability } from '../agent/vision'
 import { captureWithMarks } from '../platform/marks'
 import { createModel } from '../agent/provider'
 import { extractStructured } from '../agent/extract'
+import { instrumentToolset, type Trace } from '../agent/observability'
 import { createStartResearchTool } from './research'
 import {
   isPointOfNoReturn,
@@ -128,6 +129,8 @@ export function createAgentTools(
   policyFor: (name: string) => ToolPolicy,
   /** The open conversation, tagged onto any background research launched this turn. */
   conversationId: string,
+  /** Optional Langfuse trace for this turn; when set, each tool call becomes a span. */
+  trace?: Trace,
 ): ToolSet {
   const tools: ToolSet = {
     ViewCurrentTab: tool({
@@ -563,7 +566,7 @@ export function createAgentTools(
         const model = createModel(selected.provider, selected.modelId)
         const prompt = `${instruction}\n\nSource page content:\n${source.slice(0, 40_000)}`
         try {
-          return { data: await extractStructured(model, prompt, schema as Record<string, unknown>, abortSignal) }
+          return { data: await extractStructured(model, prompt, schema as Record<string, unknown>, abortSignal, trace) }
         } catch (err) {
           return { error: `Could not extract structured data (${err instanceof Error ? err.message : String(err)}).` }
         }
@@ -834,6 +837,10 @@ export function createAgentTools(
   for (const name of Object.keys(tools)) {
     if (policyFor(name) === 'never') delete tools[name]
   }
+
+  // Observability: wrap the surviving tools so each call is a Langfuse span
+  // (input, output/error, duration, approval outcome). Only when a trace exists.
+  if (trace) instrumentToolset(tools, trace)
 
   return tools
 }

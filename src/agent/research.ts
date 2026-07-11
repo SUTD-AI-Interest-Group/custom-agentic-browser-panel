@@ -1,8 +1,9 @@
 import { runAgentTurn, type UIPart } from './agent'
 import { createModel } from './provider'
+import { getObserver } from './observability'
 import { createResearchTools } from '../tools/research'
 import type { ModelMessage } from 'ai'
-import type { ProviderConfig } from '../data/settings'
+import type { ObservabilityConfig, ProviderConfig } from '../data/settings'
 import type { ResearchSource, ResearchStep } from '../data/researchTasks'
 
 /** Compact one-line stringify for a step summary. */
@@ -59,10 +60,26 @@ export async function runResearch(opts: {
   question: string
   provider: ProviderConfig
   modelId: string
+  /** The launching chat, so the research trace joins that Langfuse session. */
+  conversationId?: string
+  /** Observability config forwarded from the SW (offscreen has no chrome.storage). */
+  observability?: ObservabilityConfig
   onSteps: (steps: ResearchStep[]) => void
   signal: AbortSignal
 }): Promise<{ report: string; sources: ResearchSource[] }> {
   const model = createModel(opts.provider, opts.modelId)
+  // Observability: one research-task trace, tagged and (when known) attached to
+  // the launching chat's session. Steps become generations; tools become spans.
+  const observer = getObserver(opts.observability)
+  const trace = observer.enabled
+    ? observer.startTrace({
+        name: 'research-task',
+        sessionId: opts.conversationId,
+        tags: ['research'],
+        input: opts.question,
+        metadata: { taskId: opts.taskId },
+      })
+    : undefined
   const sources: ResearchSource[] = []
   // Grows across cycles so a continued research task sees its own prior work
   // (and its Checkpoint hand-off) instead of restarting.
@@ -103,25 +120,36 @@ export async function runResearch(opts: {
   // The report is the model's final synthesized text; the last non-empty cycle
   // (a natural completion, or the forced final cycle) wins.
   let report = ''
-  for (let cycle = 0; ; cycle++) {
-    const finalCycle = cycle >= RESEARCH_MAX_AUTO_CONTINUES
-    const result = await runAgentTurn({
-      model,
-      system: RESEARCH_SYSTEM,
-      history: [...history],
-      tools: createResearchTools({ selected: { provider: opts.provider, modelId: opts.modelId } }),
-      abortSignal: opts.signal,
-      onUpdate,
-      // On the last allowed cycle, force a report instead of another checkpoint.
-      wrapUpNudge: finalCycle ? FINAL_CYCLE_NUDGE : undefined,
-    })
-    history.push(...result.responseMessages)
-    const text = result.parts.filter((p) => p.type === 'text').map((p) => (p as { text: string }).text).join('')
-    if (text.trim()) report = text
-    // Carry this cycle's steps forward so the next cycle's steps append to them.
-    priorSteps.push(...stepsOf(result.parts))
-    // Stop when the model finished, or we've exhausted the auto-continue budget.
-    if (finalCycle || result.stop.reason === 'completed') break
+  try {
+    for (let cycle = 0; ; cycle++) {
+      const finalCycle = cycle >= RESEARCH_MAX_AUTO_CONTINUES
+      const result = await runAgentTurn({
+        model,
+        system: RESEARCH_SYSTEM,
+        history: [...history],
+        // Fresh tools per cycle, instrumented with this task's trace so every
+        // cycle's tool calls become spans under the one research-task trace.
+        tools: createResearchTools({ selected: { provider: opts.provider, modelId: opts.modelId }, trace }),
+        abortSignal: opts.signal,
+        onUpdate,
+        trace,
+        // On the last allowed cycle, force a report instead of another checkpoint.
+        wrapUpNudge: finalCycle ? FINAL_CYCLE_NUDGE : undefined,
+      })
+      history.push(...result.responseMessages)
+      const text = result.parts.filter((p) => p.type === 'text').map((p) => (p as { text: string }).text).join('')
+      if (text.trim()) report = text
+      // Carry this cycle's steps forward so the next cycle's steps append to them.
+      priorSteps.push(...stepsOf(result.parts))
+      // Stop when the model finished, or we've exhausted the auto-continue budget.
+      if (finalCycle || result.stop.reason === 'completed') break
+    }
+  } catch (err) {
+    trace?.end({ metadata: { error: err instanceof Error ? err.message : String(err) } })
+    await observer.flush()
+    throw err
   }
+  trace?.end({ output: report, metadata: { sources: sources.length } })
+  await observer.flush()
   return { report, sources }
 }

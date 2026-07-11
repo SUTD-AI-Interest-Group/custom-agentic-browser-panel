@@ -94,6 +94,27 @@ export const DEFAULT_TOOL_POLICIES: Record<string, ToolPolicy> = Object.fromEntr
   TOOL_CATALOG.map((t) => [t.name, t.defaultPolicy ?? 'ask']),
 )
 
+/**
+ * Beta: opt-in Langfuse observability. When `enabled` is false, nothing is
+ * tracked and no network request is made. Keys are the user's own Langfuse
+ * project keys, stored locally like provider API keys. See
+ * `src/agent/observability/`.
+ */
+export interface ObservabilityConfig {
+  /** Master beta toggle. Off by default — no tracking, no overhead. */
+  enabled: boolean
+  /** Langfuse public key (pk-lf-…). */
+  publicKey: string
+  /** Langfuse secret key (sk-lf-…). */
+  secretKey: string
+  /** Ingestion host. Default EU cloud; editable for US / self-hosted. */
+  host: string
+  /** Send prompt/response/tool text (not just token/timing metadata). */
+  captureContent: boolean
+  /** Also attach marked/set-of-marks screenshots to generations. Heavy. */
+  captureScreenshots: boolean
+}
+
 export interface Settings {
   providers: ProviderConfig[]
   selected: SelectedModel | null
@@ -110,6 +131,23 @@ export interface Settings {
   /** Fetch OpenGraph previews for standalone links (privacy: contacts linked
    *  sites). When false, link cards show favicon + domain only. */
   fetchLinkPreviews?: boolean
+  /** Beta Langfuse observability. Absent on old installs → treated as disabled. */
+  observability?: ObservabilityConfig
+}
+
+/** Default (disabled) observability config; also the shape onboarding starts from. */
+export const DEFAULT_OBSERVABILITY: ObservabilityConfig = {
+  enabled: false,
+  publicKey: '',
+  secretKey: '',
+  host: 'https://cloud.langfuse.com',
+  captureContent: true,
+  captureScreenshots: false,
+}
+
+/** Resolve the effective observability config, filling defaults for old installs. */
+export function observabilityConfig(settings: Settings): ObservabilityConfig {
+  return { ...DEFAULT_OBSERVABILITY, ...settings.observability }
 }
 
 /** Resolve a tool's effective policy: user override → catalog default → `ask`. */
@@ -154,6 +192,7 @@ const EMPTY: Settings = {
   tabAccess: 'active-tab',
   onboarded: false,
   fetchLinkPreviews: true,
+  observability: DEFAULT_OBSERVABILITY,
 }
 
 export async function loadSettings(): Promise<Settings> {

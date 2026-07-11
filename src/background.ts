@@ -6,7 +6,7 @@
 import { dreamIfDue } from './agent/dream'
 import type { ResearchMsg } from './data/researchTasks'
 import { saveTask, applyUpdate } from './data/researchTasks'
-import { loadSettings, getSelectedProvider } from './data/settings'
+import { loadSettings, getSelectedProvider, observabilityConfig } from './data/settings'
 
 chrome.sidePanel
   .setPanelBehavior({ openPanelOnActionClick: true })
@@ -158,6 +158,10 @@ chrome.runtime.onMessage.addListener((msg: ResearchMsg) => {
           question: msg.question,
           providerConfig: sel.provider,
           modelId: sel.modelId,
+          conversationId: msg.conversationId,
+          // Forward observability config: the offscreen host has no chrome.storage
+          // to read it from itself.
+          observability: observabilityConfig(settings),
         } satisfies ResearchMsg)
       } catch (err) {
         await applyUpdate(msg.taskId, { status: 'error', error: err instanceof Error ? err.message : String(err) })

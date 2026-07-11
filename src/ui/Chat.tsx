@@ -11,8 +11,10 @@ import { copyElementAsPng } from '../platform/domImage'
 import { getConversation, renameConversation, saveConversation } from '../data/conversations'
 import { appendToEpisode, getMemoryContext } from '../data/memory'
 import { createModel, generateChatTitle } from '../agent/provider'
+import { getObserver } from '../agent/observability'
 import {
   getSelectedProvider,
+  observabilityConfig,
   toolPolicy,
   TOOL_CATALOG,
   GROUP_ORDER,
@@ -830,7 +832,7 @@ export default function Chat({
     // and applied whenever it resolves, so the title fills in on its own.
     if (isFirstMessage && text && selected) {
       const titleModel = createModel(selected.provider, selected.modelId)
-      void generateChatTitle(titleModel, text)
+      void generateChatTitle(titleModel, text, conversationId)
         .then((t) => (t ? renameConversation(conversationId, t).then(onConversationsChanged) : undefined))
         .catch(() => {})
     }
@@ -956,6 +958,23 @@ export default function Chat({
     abortRef.current = controller
     setStreaming(true)
     setTurnStartedAt(ctx.startedAt)
+    // Observability: one Langfuse trace per continuation chain, grouped into the
+    // conversation's session. Each cycle's model steps become generations and its
+    // tool calls become spans (wired via runAgentTurn + createAgentTools). No-op
+    // when the beta toggle is off.
+    const observer = getObserver(observabilityConfig(settings))
+    const trace = observer.enabled
+      ? observer.startTrace({
+          name: ctx.journalUserText.split('\n')[0].slice(0, 80) || 'chat turn',
+          sessionId: conversationId,
+          input: ctx.journalUserText,
+          tags: ['chat'],
+          metadata: {
+            sources: ctx.attachedSources.length || undefined,
+            skill: ctx.activeSkill?.name,
+          },
+        })
+      : undefined
 
     // System prompt, built once for the chain. Recalled memories are fresh as of
     // the chain start so a mid-conversation SaveMemory shows on the next turn.
@@ -1007,10 +1026,12 @@ export default function Chat({
             imageQueue,
             (name) => toolPolicy(settings, name),
             conversationId,
+            trace,
           ),
           abortSignal: controller.signal,
           onUpdate: patch(assistantId, base),
           imageQueue,
+          trace,
         })
         patch(assistantId, base)(result.parts)
         historyRef.current.push(...result.responseMessages)
@@ -1040,11 +1061,13 @@ export default function Chat({
         { role: 'user', text: ctx.journalUserText, at: ctx.startedAt },
         { role: 'assistant', text: assistantTexts.join('\n').trim(), at: Date.now() },
       ]).catch(() => {})
+      trace?.end({ output: assistantTexts.join('\n').trim() })
     } catch (err) {
       if (controller.signal.aborted) {
         // Keep completed cycles; only drop a dangling trailing user message (a
         // send() turn that produced nothing) so the next request is consistent.
         if (!pushedAny && ctx.droppableTail) historyRef.current.pop()
+        trace?.end({ metadata: { aborted: true } })
       } else {
         const message = err instanceof Error ? err.message : String(err)
         setMessages((m) =>
@@ -1055,6 +1078,7 @@ export default function Chat({
           ),
         )
         if (!pushedAny && ctx.droppableTail) historyRef.current.pop()
+        trace?.end({ metadata: { error: message } })
       }
     } finally {
       settleApproval(false)
@@ -1067,6 +1091,8 @@ export default function Chat({
       setStreaming(false)
       setTurnStartedAt(null)
       setTurnSeq((n) => n + 1)
+      // Observability: deliver this turn's buffered events. Best-effort.
+      void observer.flush()
     }
   }
 

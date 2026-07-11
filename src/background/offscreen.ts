@@ -14,6 +14,8 @@ chrome.runtime.onMessage.addListener((msg: ResearchMsg) => {
       question: msg.question,
       provider: msg.providerConfig,
       modelId: msg.modelId,
+      conversationId: msg.conversationId,
+      observability: msg.observability,
       signal: ctrl.signal,
       onSteps: (steps) => chrome.runtime.sendMessage({ type: 'research.update', taskId: msg.taskId, steps } satisfies ResearchMsg),
     })
