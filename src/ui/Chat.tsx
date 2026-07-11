@@ -14,7 +14,7 @@ import { getActiveTab, listOpenTabs, readTabContent, type TabContent, type TabSu
 import { createAgentTools, type ApprovalRequest, type PageControlGate } from '../tools/tools'
 import { MAX_SESSION_ACTIONS, type ControlSession } from '../tools/pageControl'
 import { clearIndex } from '../platform/domIndex'
-import { unmountPresence } from '../platform/presence'
+import { unmountPresence, unmountAllPresence } from '../platform/presence'
 import { grantedCapabilities, type BrowsingCapability } from '../platform/permissions'
 import { getSkill, listSkillMetas, listSkills } from '../data/skills'
 
@@ -775,6 +775,9 @@ export default function Chat({
       settleApproval(false)
       turnAllowed.current = new Set()
       pageControl.endSession()
+      // Tear down ambient presence on any tab the turn touched (navigate/inspect
+      // mount the frame outside a session, so endSession alone won't clear them).
+      void unmountAllPresence()
       abortRef.current = null
       setStreaming(false)
       setTurnSeq((n) => n + 1)

@@ -53,27 +53,41 @@ The cursor glide (`beforeAct`) is unchanged — it still moves to every targeted
 
 ### 2 + 3. Same-step origin handling (re-fence on approval, one-shot continue otherwise)
 
+Two detection points cooperate: a **same-step** re-fence for crossings the post-action
+snapshot can see reliably (fast path), and a **next-call** drift check for full-page loads
+that commit only after that snapshot (robust backstop). A one-shot `crossingAuthorized`
+flag on the session carries "the user already approved this crossing" across the gap.
+
 - `runControlStep` surfaces the post-action origin: extend `ControlStepResult` with
   `origin: string` (from the post-action `snapshotPage`; empty string if the re-read
-  failed).
+  failed). `ControlSession` gains `crossingAuthorized?: boolean`.
 - In `ControlPage`, capture whether this step was an approved point-of-no-return
   (`const por = isPointOfNoReturn(...)`; if `por`, request approval and return DENIED on
   reject). After `runControlStep`, compare the returned `origin` to `session.origin`:
-  - unchanged (or empty) → nothing.
-  - changed **and** `por` was true → the user already approved a cross-origin move
-    (explicit navigate, cross-origin href click, or any confirmed risky step that moved
-    sites) → **re-fence**: `session.origin = newOrigin`; session stays alive. Kills the
-    double-prompt.
-  - changed **and** `por` was false → unexpected JS/role=link cross-origin move → show a
-    one-shot approval card: "The page moved to `<host>` — continue controlling it?".
-    Approve → re-fence + continue. Deny → `endSession`, return a notice.
-- The existing start-of-call drift kill stays as a **backstop** for the residual case: a
-  delayed/async redirect that lands *between* calls, or a full-page nav still in flight
-  when the post-action snapshot runs (that read throws → empty origin → caught next
-  call). Honest limitation: a click that kicks off a full cross-origin *page load* may
-  race the snapshot, so that specific case falls through to the next-call backstop rather
-  than the in-step continue card. SPA/pushState and same-document JS nav are caught
-  in-step.
+  - **changed** (snapshot saw it — explicit navigate settles 600ms; SPA/same-document nav
+    is synchronous):
+    - `por` → **re-fence** silently: `session.origin = newOrigin`; `crossingAuthorized =
+      false`. Next call proceeds directly.
+    - not `por` → one-shot card "Keep controlling the page now that it moved to
+      `<host>`?". Approve → re-fence. Deny → `endSession` + notice.
+  - **unchanged / empty** (a full-page load may still be committing) → stash the
+    authorization for the next call: `session.crossingAuthorized = por`.
+- The **start-of-call drift check** (was a hard session-kill) becomes graceful and uses
+  the flag. When `liveOrigin !== session.origin`:
+  - `crossingAuthorized` → re-fence silently (no second grant — this is what kills the
+    double-prompt for a cross-origin href *click*, whose full-page load raced the
+    post-action snapshot).
+  - else → one-shot "keep controlling…?" card; deny → `endSession` + notice.
+  - In both surviving cases it then **hands back the freshly-snapshotted page without
+    running this call's action** (`session.origin` just changed, so the model's chosen
+    `spec.index` is stale) — the model re-reads and re-issues. Clears
+    `crossingAuthorized`.
+
+Net: explicit cross-origin navigate and SPA/role=link JS nav are caught in-step; a
+cross-origin href click's full-page load is caught on the next call and re-fenced without a
+second grant; a genuinely unexpected self-navigation gets exactly one continue card. No
+path silently acts on a stale index, and no path double-prompts for an already-approved
+crossing.
 
 ### 4. Breathing light-blue frame + softened tint
 
@@ -116,9 +130,12 @@ Split "present" from "actively controlling":
 - **NavigateTab** mounts the ambient frame on the returned `tabId` after a successful
   activate/goto/open (immediate for activate; a ~600ms settle for goto/open — matching the
   existing post-navigate delay in `runControlStep` — so the inject lands on the new
-  document, not the unloading one). Mounting is fire-and-forget (not awaited) so it never
-  delays the tool result. Restricted URLs (`chrome://`) fail the inject silently via the
-  existing `run().catch(() => {})` — no overlay, no error.
+  document, not the unloading one). The mount is **awaited** inside `execute` (adding the
+  settle to the tool's latency, which is acceptable for a navigation tool) rather than
+  fire-and-forget: a delayed inject that escaped `execute` could land *after* the turn's
+  `finally` ran `unmountAllPresence()` and leave a frame stuck on the page. Restricted URLs
+  (`chrome://`) fail the inject silently via the existing `run().catch(() => {})` — no
+  overlay, no error.
 - **InspectPage** mounts the ambient frame while it reads. Idempotent (`injMount`
   early-returns when the root exists), so it never disturbs an already-mounted session
   tint.
@@ -131,9 +148,11 @@ Split "present" from "actively controlling":
 
 - `src/platform/presence.ts` — frame, breathe, softened tint, bigger cursor, `mounted`
   registry, `setTint`, `unmountAllPresence`.
-- `src/tools/pageControl.ts` — click-only pulse; `origin` on `ControlStepResult`.
-- `src/tools/tools.ts` — same-step origin re-fence / continue card in `ControlPage`;
-  `setTint(true)` in `RequestPageControl`; ambient mount in `NavigateTab` + `InspectPage`.
+- `src/tools/pageControl.ts` — click-only pulse; `origin` on `ControlStepResult`;
+  `crossingAuthorized?` on `ControlSession`.
+- `src/tools/tools.ts` — graceful start-of-call drift check + same-step origin re-fence /
+  continue card in `ControlPage`; `setTint(true)` in `RequestPageControl`; ambient mount in
+  `NavigateTab` + `InspectPage`; `hostLabel` helper.
 - `src/ui/Chat.tsx` — `unmountAllPresence()` in the turn `finally`.
 
 No interface churn beyond adding `origin` to `ControlStepResult` and two new exports in
