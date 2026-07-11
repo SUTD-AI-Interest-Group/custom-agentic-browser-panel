@@ -565,25 +565,78 @@ body {
   padding: 0;
 }
 
+/* Wide display math (matrices, long aligned derivations) scrolls within its own
+   bubble instead of forcing the whole message list to scroll sideways in the
+   narrow side panel. overflow-y stays hidden so the horizontal scrollbar doesn't
+   introduce phantom vertical scroll. */
+.markdown .katex-display {
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
 .markdown a {
   color: inherit;
 }
 
-.thinking-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: var(--text-muted);
-  animation: pulse 1.2s ease-in-out infinite;
+/* ---- Thinking / waiting indicator ---- */
+
+/* Shown while a turn is live but nothing is visibly streaming: before the first
+   token, and in the gap after a tool result while the model decides its next
+   move. Muted and bubble-less to match the assistant text. */
+.thinking-indicator {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-muted);
+  font-size: 13px;
 }
 
-@keyframes pulse {
+.thinking-dots {
+  display: inline-flex;
+  align-items: flex-end;
+  gap: 3px;
+}
+
+.thinking-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--text-muted);
+  animation: thinking-bounce 1.2s ease-in-out infinite;
+}
+
+/* Stagger the three dots so the bounce ripples left-to-right. */
+.thinking-dot:nth-child(2) {
+  animation-delay: 0.16s;
+}
+
+.thinking-dot:nth-child(3) {
+  animation-delay: 0.32s;
+}
+
+@keyframes thinking-bounce {
   0%,
+  60%,
   100% {
-    opacity: 0.3;
+    transform: translateY(0);
+    opacity: 0.35;
   }
-  50% {
+  30% {
+    transform: translateY(-4px);
     opacity: 1;
+  }
+}
+
+.thinking-elapsed {
+  opacity: 0.7;
+  font-variant-numeric: tabular-nums;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .thinking-dot {
+    animation: none;
+    opacity: 0.6;
   }
 }
 
@@ -854,6 +907,96 @@ body {
   color: var(--text);
 }
 
+/* The composer's attached-context row: labelled pills wrap, collapsing beyond
+   MAX_VISIBLE_CONTEXT into a "+N" pill. */
+.context-pills {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+/* The remove "×" is revealed on hover/focus of its pill; its slot is always
+   reserved (padding-right on .attached) so the pill doesn't reflow. */
+.context-pill .context-remove {
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.12s ease;
+}
+
+.context-pill:hover .context-remove,
+.context-pill:focus-within .context-remove {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+/* Overflow "+N" pill and the hover list of the pages it collapses. */
+.context-more {
+  position: relative;
+  cursor: default;
+  color: var(--text);
+}
+
+.context-more-chip {
+  font-weight: 600;
+  line-height: 1;
+}
+
+.context-more-popover {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: max-content;
+  max-width: 260px;
+  max-height: 240px;
+  overflow-y: auto;
+  padding: 4px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.14);
+  opacity: 0;
+  transform: translateY(3px);
+  pointer-events: none;
+  transition: opacity 0.12s ease, transform 0.12s ease;
+  z-index: 30;
+}
+
+/* Transparent bridge so the pointer can travel from the pill onto the list. */
+.context-more-popover::before {
+  content: '';
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  height: 8px;
+}
+
+.context-more:hover .context-more-popover,
+.context-more:focus-within .context-more-popover {
+  opacity: 1;
+  transform: translateY(0);
+  pointer-events: auto;
+}
+
+.context-more-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px;
+  border-radius: 8px;
+}
+
+.context-more-row:hover {
+  background: var(--pill-bg);
+}
+
+.context-more-row .context-remove {
+  margin-left: auto;
+}
+
 /* Highlighted page text, offered as removable context. */
 .selection-chip {
   display: flex;
@@ -975,6 +1118,151 @@ body {
 .cam-btn:disabled {
   opacity: 0.3;
   cursor: default;
+}
+
+.tools-menu-wrap {
+  position: relative;
+  display: inline-flex;
+}
+
+.tools-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.tools-btn:hover,
+.tools-btn[aria-expanded='true'] {
+  background: var(--pill-bg);
+  color: var(--text);
+}
+
+.tools-popover {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  right: 0;
+  width: 288px;
+  max-height: 340px;
+  overflow-y: auto;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.1);
+  padding: 8px 16px 12px;
+  z-index: 20;
+}
+
+.tools-popover-head {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+  padding: 2px 2px 4px;
+}
+
+.tools-group-title {
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+  font-weight: 600;
+  margin: 10px 2px 2px;
+}
+
+.tools-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 6px 2px;
+  cursor: pointer;
+}
+
+.tools-item + .tools-item {
+  border-top: 1px solid var(--border);
+}
+
+.tools-item-label {
+  font-size: 12.5px;
+  color: var(--text);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.tools-badge {
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  font-weight: 600;
+  color: #16a34a;
+  border: 1px solid #16a34a;
+  border-radius: 5px;
+  padding: 0 4px;
+  line-height: 1.6;
+}
+
+/* Checkbox rendered as a sliding toggle switch. The <input type="checkbox">
+   keeps its native semantics/state; appearance:none lets us draw the track and
+   the ::after knob ourselves. */
+.tools-item input {
+  appearance: none;
+  -webkit-appearance: none;
+  position: relative;
+  width: 34px;
+  height: 20px;
+  flex: none;
+  border-radius: 999px;
+  background: var(--border);
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+.tools-item input::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
+  transition: transform 0.15s ease;
+}
+
+.tools-item input:checked {
+  background: var(--accent);
+}
+
+.tools-item input:checked::after {
+  transform: translateX(14px);
+}
+
+.tools-popover-foot {
+  display: block;
+  width: 100%;
+  text-align: left;
+  margin-top: 8px;
+  padding: 8px 2px 2px;
+  border: none;
+  border-top: 1px solid var(--border);
+  background: none;
+  color: var(--accent);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.tools-popover-foot:hover {
+  text-decoration: underline;
 }
 
 /* ---- Screenshot attachments ---- */

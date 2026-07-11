@@ -79,6 +79,43 @@ When the user asks you to draft a reply to an email, comment, chat, or thread sh
 3. Draft a reply that acknowledges the key point, answers or acts on it, and ends with a clear next step or sign-off.
 4. Keep it to the length the medium expects — a chat reply is short, an email can be longer. Offer one draft, then adjust on request. Never send anything; you only draft.`
 
+const WRITING_MATH_BODY = String.raw`# Writing math
+
+When answering a math, physics, statistics, or engineering question — or whenever your reply contains equations, formulas, derivations, or proofs — format the math as LaTeX so it renders in the panel.
+
+## Delimiters
+- Inline math: wrap it in single dollar signs, e.g. write $\pi r^2$ for the area of a circle.
+- Display (block) math: put $$ on its own line, then the expression, then $$ on its own line:
+$$
+E = mc^2
+$$
+- To show a literal dollar sign in prose, escape it as \$ so it is not read as a math delimiter.
+
+## Prefer LaTeX over Unicode
+Write \alpha, \leq, \times, \to, \infty rather than the Unicode characters α, ≤, ×, →, ∞. Unicode math renders inconsistently; LaTeX commands always typeset.
+
+## Common constructs
+- Fractions and roots: \frac{a}{b}, \sqrt{x}, \sqrt[3]{x}.
+- Sub/superscripts: x^{2}, a_{i}, x_{i}^{2}.
+- Auto-sized brackets: \left( \frac{a}{b} \right).
+- Multi-line or aligned steps: use an aligned environment inside $$ … $$, with & to align on a symbol and \\ to end each line.
+- Matrices: \begin{bmatrix} a & b \\ c & d \end{bmatrix}. Piecewise functions: \begin{cases} … \end{cases}.
+- Text and units inside math: \text{…}; use a thin space \, before units, e.g. 5\,\text{m/s}.
+
+## Stay within KaTeX
+Rendering uses KaTeX, which supports most standard LaTeX math but not every macro. Stick to standard commands; an unsupported command shows as a small inline error. Reference: https://katex.org/docs/supported.html
+
+## Example
+Inline: the solutions of ax^2 + bx + c = 0 are $x = \dfrac{-b \pm \sqrt{b^2 - 4ac}}{2a}$.
+
+Display derivation:
+$$
+\begin{aligned}
+(x + 1)^2 &= x^2 + 2x + 1 \\
+          &= x(x + 2) + 1
+\end{aligned}
+$$`
+
 /** Seed data. `create-skill` is user-only (the agent shouldn't spontaneously
  * author skills); the examples are invocable both ways. */
 export const BUILTIN_SKILLS: SaveSkillInput[] = [
@@ -118,6 +155,16 @@ export const BUILTIN_SKILLS: SaveSkillInput[] = [
       "Drafts a reply to the email, comment, or message thread on the current page, matching the user's tone. Use when the user asks to reply, respond to, or write a message about what's on screen.",
     body: DRAFTING_REPLIES_BODY,
     icon: '✉️',
+    source: 'builtin',
+    userInvocable: true,
+    modelInvocable: true,
+  },
+  {
+    name: 'writing-math',
+    description:
+      'Formats mathematical and scientific answers as LaTeX that renders in the panel. Use when the user asks a math, physics, statistics, or engineering question, or to write equations, formulas, derivations, or proofs.',
+    body: WRITING_MATH_BODY,
+    icon: '➗',
     source: 'builtin',
     userInvocable: true,
     modelInvocable: true,

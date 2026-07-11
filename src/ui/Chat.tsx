@@ -9,12 +9,19 @@ import { copyElementAsPng } from '../platform/domImage'
 import { getConversation, renameConversation, saveConversation } from '../data/conversations'
 import { appendToEpisode, getMemoryContext } from '../data/memory'
 import { createModel, generateChatTitle } from '../agent/provider'
-import { getSelectedProvider, toolPolicy, type Settings } from '../data/settings'
+import {
+  getSelectedProvider,
+  toolPolicy,
+  TOOL_CATALOG,
+  GROUP_ORDER,
+  GROUP_LABELS,
+  type Settings,
+} from '../data/settings'
 import { getActiveTab, listOpenTabs, readTabContent, type TabContent, type TabSummary } from '../platform/tabs'
 import { createAgentTools, type ApprovalRequest, type PageControlGate } from '../tools/tools'
 import { MAX_SESSION_ACTIONS, type ControlSession } from '../tools/pageControl'
 import { clearIndex } from '../platform/domIndex'
-import { unmountPresence } from '../platform/presence'
+import { unmountPresence, unmountAllPresence } from '../platform/presence'
 import { grantedCapabilities, type BrowsingCapability } from '../platform/permissions'
 import { getSkill, listSkillMetas, listSkills } from '../data/skills'
 import { listTasks, type ResearchTask, type ResearchMsg } from '../data/researchTasks'
@@ -38,6 +45,13 @@ function browsingInsightsNote(granted: Set<BrowsingCapability>): string {
   }
   return `\n\nBrowsing-insight tools available this turn: ${available.join(', ')}.`
 }
+
+// Appended to every system prompt (independent of the user's editable
+// settings.systemPrompt) so math renders in the panel even on quick replies
+// where the agent doesn't load the writing-math skill. Backslashes are doubled
+// for the JS string; the model sees single-backslash LaTeX.
+const MATH_FORMATTING_NOTE =
+  '\n\nWhen your answer includes mathematical notation, write it in LaTeX: `$…$` for inline math and `$$…$$` on their own lines for display math (these render in the panel). Prefer LaTeX commands over Unicode symbols (e.g. `\\alpha`, `\\leq`, `\\times`). Escape a literal dollar sign as `\\$`.'
 
 interface PendingApproval extends ApprovalRequest {
   resolve: (approved: boolean) => void
@@ -104,6 +118,16 @@ function hostOf(url: string): string {
   }
 }
 
+// Remove the first occurrence of `token` (and one trailing space) from `value`.
+// Used to detach an @mentioned tab when its composer pill is removed.
+function stripToken(value: string, token: string): string {
+  const i = value.indexOf(token)
+  if (i === -1) return value
+  let rest = value.slice(i + token.length)
+  if (rest.startsWith(' ')) rest = rest.slice(1)
+  return value.slice(0, i) + rest
+}
+
 // ---- Source favicons -----------------------------------------------------
 // The pages an assistant reply drew on, shown as a favicon avatar bar beside
 // the copy actions. Only real web pages count: tabs attached to the user's
@@ -111,6 +135,10 @@ function hostOf(url: string): string {
 // ViewOpenedTabs / GetActiveTabDOM / GetAllDOM (derived from the reply's tool parts).
 
 const MAX_VISIBLE_SOURCES = 3
+
+// The composer mirrors the reply source bar: at most this many attached-context
+// pills are shown inline, with the remainder collapsed into a "+N" pill.
+const MAX_VISIBLE_CONTEXT = 3
 
 const isHttpUrl = (url: string): boolean => /^https?:\/\//i.test(url)
 
@@ -202,6 +230,7 @@ export default function Chat({
   const [messages, setMessages] = useState<UIMessage[]>([])
   const [input, setInput] = useState('')
   const [streaming, setStreaming] = useState(false)
+  const [turnStartedAt, setTurnStartedAt] = useState<number | null>(null)
   const [approval, setApproval] = useState<PendingApproval | null>(null)
   const [currentTab, setCurrentTab] = useState<CurrentTabInfo | null>(null)
   const [attachments, setAttachments] = useState<CapturedImage[]>([])
@@ -225,6 +254,11 @@ export default function Chat({
   // Background research tasks (Task 7), rendered as live cards regardless of
   // which conversation is open — they aren't scoped to conversationId.
   const [researchTasks, setResearchTasks] = useState<ResearchTask[]>([])
+  // Open tabs resolved for @all, so the composer can preview each attached page
+  // as its own pill. Populated only while @all is active (see effect below).
+  const [allTabs, setAllTabs] = useState<TabSummary[]>([])
+  const [toolsOpen, setToolsOpen] = useState(false)
+  const toolsMenuRef = useRef<HTMLDivElement>(null)
 
   // Bumped when a turn finishes, to trigger persistence of the transcript.
   const [turnSeq, setTurnSeq] = useState(0)
@@ -278,6 +312,25 @@ export default function Chat({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [turnSeq])
 
+  // Close the tools menu on outside-click or Esc; only listen while open.
+  useEffect(() => {
+    if (!toolsOpen) return
+    function onDown(e: MouseEvent) {
+      if (toolsMenuRef.current && !toolsMenuRef.current.contains(e.target as Node)) {
+        setToolsOpen(false)
+      }
+    }
+    function onKey(e: KeyboardEvent) {
+      if (e.key === 'Escape') setToolsOpen(false)
+    }
+    document.addEventListener('mousedown', onDown)
+    document.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('mousedown', onDown)
+      document.removeEventListener('keydown', onKey)
+    }
+  }, [toolsOpen])
+
   // Passive context pill (Dia-style): shows which tab the agent would see if
   // granted access. Purely informational — access still goes through tools.
   useEffect(() => {
@@ -326,6 +379,35 @@ export default function Chat({
       chrome.storage.onChanged.removeListener(onChanged)
     }
   }, [])
+
+  // @all attaches every open tab; it's only honored when the user has granted
+  // all-tabs visibility. The composer previews each attached page as a pill.
+  const allTabsActive = settings.tabAccess === 'all-tabs' && ALL_TOKEN_RE.test(input)
+
+  // While @all is active, resolve the open tabs into `allTabs` (and keep them
+  // fresh as tabs open/close/navigate) so the pills reflect what will be sent.
+  useEffect(() => {
+    if (!allTabsActive) {
+      setAllTabs([])
+      return
+    }
+    let cancelled = false
+    const refresh = async () => {
+      const tabs = await listOpenTabs()
+      if (!cancelled) setAllTabs(tabs)
+    }
+    void refresh()
+    const onChange = () => void refresh()
+    chrome.tabs.onCreated.addListener(onChange)
+    chrome.tabs.onRemoved.addListener(onChange)
+    chrome.tabs.onUpdated.addListener(onChange)
+    return () => {
+      cancelled = true
+      chrome.tabs.onCreated.removeListener(onChange)
+      chrome.tabs.onRemoved.removeListener(onChange)
+      chrome.tabs.onUpdated.removeListener(onChange)
+    }
+  }, [allTabsActive])
 
   // Watch the active tab for a text selection and surface it as removable
   // context. Reading requires injecting into the page, so we only poll while
@@ -485,6 +567,16 @@ export default function Chat({
     }
   }
 
+  // Quick-menu tool switch. Off → 'never' (hidden from the agent). On → delete the
+  // override so the tool reverts to its catalog default (ask, or always for the
+  // skills tools), which preserves an Always tool instead of downgrading it to ask.
+  function toggleTool(name: string, on: boolean) {
+    const next = { ...(settings.toolPolicies ?? {}) }
+    if (on) delete next[name]
+    else next[name] = 'never'
+    onUpdateSettings({ ...settings, toolPolicies: next })
+  }
+
   // ---- @mention tabs -------------------------------------------------------
   // Typing "@" opens a tab picker; selecting inserts a literal token into the
   // text and records the tab. On send, each still-present mention has its tab
@@ -579,6 +671,13 @@ export default function Chat({
       inputRef.current?.focus()
       inputRef.current?.setSelectionRange(pos, pos)
     })
+  }
+
+  // Detach an @mentioned tab from its composer pill: drop it from `mentions` and
+  // strip its token from the input so it no longer syncs on send.
+  function removeMention(token: string) {
+    setMentions((arr) => arr.filter((m) => m.token !== token))
+    setInput((v) => stripToken(v, token))
   }
 
   async function send() {
@@ -715,7 +814,8 @@ export default function Chat({
     // for this turn only (it reads local memory — no page or network access).
     turnAllowed.current = useMemory ? new Set(['SearchMemory']) : new Set()
     setStreaming(true)
-    const turnStartedAt = Date.now()
+    const startedAt = Date.now()
+    setTurnStartedAt(startedAt)
     try {
       // Recalled memories are injected fresh each turn so mid-conversation
       // saves (SaveMemory) are visible on the very next turn.
@@ -746,7 +846,7 @@ export default function Chat({
       const imageQueue: string[] = []
       const { parts, responseMessages } = await runAgentTurn({
         model: createModel(selected.provider, selected.modelId),
-        system: `${settings.systemPrompt}${accessNote}${browsingInsightsNote(granted)}${memoryContext ? `\n\n${memoryContext}` : ''}${skillsCatalog}${activeSkills}`,
+        system: `${settings.systemPrompt}${accessNote}${browsingInsightsNote(granted)}${MATH_FORMATTING_NOTE}${memoryContext ? `\n\n${memoryContext}` : ''}${skillsCatalog}${activeSkills}`,
         history: [...historyRef.current],
         tools: createAgentTools(
           requestApproval,
@@ -782,7 +882,7 @@ export default function Chat({
       if (activeSelection) notes.push('[shared a page selection]')
       const journalUserText = [text, ...notes].filter(Boolean).join('\n')
       void appendToEpisode(episodeIdRef.current, [
-        { role: 'user', text: journalUserText, at: turnStartedAt },
+        { role: 'user', text: journalUserText, at: startedAt },
         { role: 'assistant', text: assistantText, at: Date.now() },
       ]).catch(() => {})
     } catch (err) {
@@ -805,8 +905,12 @@ export default function Chat({
       settleApproval(false)
       turnAllowed.current = new Set()
       pageControl.endSession()
+      // Tear down ambient presence on any tab the turn touched (navigate/inspect
+      // mount the frame outside a session, so endSession alone won't clear them).
+      void unmountAllPresence()
       abortRef.current = null
       setStreaming(false)
+      setTurnStartedAt(null)
       setTurnSeq((n) => n + 1)
     }
   }
@@ -819,6 +923,49 @@ export default function Chat({
   const modelOptions = settings.providers.flatMap((p) =>
     p.models.map((m) => ({ value: `${p.id}::${m}`, label: m, provider: p.name })),
   )
+
+  // The pages attached to the next message, rendered as a pill row in the
+  // composer: the first MAX_VISIBLE_CONTEXT with favicon + host, the rest
+  // collapsed into a "+N" pill whose hover reveals the remainder. @all resolves
+  // to every open web page (a live preview of what will be sent; detach by
+  // deleting the @all token). Otherwise it's the current tab (auto-attached to a
+  // fresh chat, or offered as ambient context later) plus each surviving
+  // @mention, both removable via a hover ×.
+  const contextTabs: ContextTab[] = []
+  if (allTabsActive) {
+    const seen = new Set<number>()
+    for (const t of allTabs) {
+      if (!isHttpUrl(t.url) || seen.has(t.tabId)) continue
+      seen.add(t.tabId)
+      contextTabs.push({ key: `all:${t.tabId}`, title: t.title, url: t.url, hint: t.title })
+      if (contextTabs.length >= MAX_ALL_TABS) break
+    }
+  } else {
+    const shownMentions = mentions.filter((m) => input.includes(m.token))
+    const mentionedIds = new Set(shownMentions.map((m) => m.tabId))
+    if (currentTab && !mentionedIds.has(currentTab.tabId)) {
+      const attachedFirst = messages.length === 0 && !tabDismissed
+      contextTabs.push({
+        key: `current:${currentTab.tabId}`,
+        title: currentTab.title,
+        url: currentTab.url,
+        favIconUrl: currentTab.favIconUrl,
+        hint: attachedFirst
+          ? `This page is attached to your first message — ${currentTab.title}`
+          : `The agent can ask to view this tab — ${currentTab.title}`,
+        onRemove: attachedFirst ? () => setTabDismissed(true) : undefined,
+      })
+    }
+    for (const m of shownMentions) {
+      contextTabs.push({
+        key: `mention:${m.tabId}:${m.token}`,
+        title: m.title,
+        url: m.url,
+        hint: `Attached to this message — ${m.title}`,
+        onRemove: () => removeMention(m.token),
+      })
+    }
+  }
 
   return (
     <div className="chat">
@@ -841,6 +988,7 @@ export default function Chat({
             key={msg.id}
             message={msg}
             streaming={streaming && i === messages.length - 1}
+            turnStartedAt={turnStartedAt}
           />
         ))}
         {approval && (
@@ -855,43 +1003,7 @@ export default function Chat({
       </div>
 
       <div className="composer-area">
-        {currentTab &&
-          (messages.length === 0 && !tabDismissed ? (
-            <div
-              className="context-pill attached"
-              title={`This page is attached to your first message — ${currentTab.title}`}
-            >
-              {currentTab.favIconUrl ? (
-                <img src={currentTab.favIconUrl} alt="" />
-              ) : (
-                <span className="context-dot" />
-              )}
-              <span className="context-title">{hostOf(currentTab.url) || currentTab.title}</span>
-              <button
-                className="context-remove"
-                title="Don't share this page"
-                onClick={() => setTabDismissed(true)}
-              >
-                <svg width="8" height="8" viewBox="0 0 8 8" fill="none">
-                  <path
-                    d="M1.5 1.5l5 5M6.5 1.5l-5 5"
-                    stroke="currentColor"
-                    strokeWidth="1.4"
-                    strokeLinecap="round"
-                  />
-                </svg>
-              </button>
-            </div>
-          ) : (
-            <div className="context-pill" title={`The agent can ask to view this tab — ${currentTab.title}`}>
-              {currentTab.favIconUrl ? (
-                <img src={currentTab.favIconUrl} alt="" />
-              ) : (
-                <span className="context-dot" />
-              )}
-              <span className="context-title">{hostOf(currentTab.url) || currentTab.title}</span>
-            </div>
-          ))}
+        <ContextPills tabs={contextTabs} />
         {selection && selection.text !== dismissedSelection && (
           <div className="selection-chip" title="Highlighted text shared as context">
             <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
@@ -1084,6 +1196,66 @@ export default function Chat({
               </button>
             )}
             <div className="composer-btns">
+              <div className="tools-menu-wrap" ref={toolsMenuRef}>
+                <button
+                  className="tools-btn"
+                  title="Tools & permissions"
+                  aria-haspopup="menu"
+                  aria-expanded={toolsOpen}
+                  onClick={() => setToolsOpen((o) => !o)}
+                >
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none">
+                    <path
+                      d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"
+                      stroke="currentColor"
+                      strokeWidth="2"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    />
+                  </svg>
+                </button>
+                {toolsOpen && (
+                  <div className="tools-popover" role="dialog" aria-label="Tools">
+                    <div className="tools-popover-head">Tools</div>
+                    {GROUP_ORDER.map((group) => {
+                      const tools = TOOL_CATALOG.filter((t) => t.group === group)
+                      if (tools.length === 0) return null
+                      return (
+                        <div className="tools-group" key={group}>
+                          <div className="tools-group-title">{GROUP_LABELS[group]}</div>
+                          {tools.map((t) => {
+                            const policy = toolPolicy(settings, t.name)
+                            return (
+                              <label className="tools-item" key={t.name}>
+                                <span className="tools-item-label">
+                                  {t.label}
+                                  {policy === 'always' && (
+                                    <span className="tools-badge" aria-hidden="true">auto</span>
+                                  )}
+                                </span>
+                                <input
+                                  type="checkbox"
+                                  checked={policy !== 'never'}
+                                  onChange={(e) => toggleTool(t.name, e.target.checked)}
+                                />
+                              </label>
+                            )
+                          })}
+                        </div>
+                      )
+                    })}
+                    <button
+                      className="tools-popover-foot"
+                      onClick={() => {
+                        setToolsOpen(false)
+                        onOpenSettings()
+                      }}
+                    >
+                      Open full permissions →
+                    </button>
+                  </div>
+                )}
+              </div>
               <button
                 className="cam-btn"
                 title="Screenshot part of the page"
@@ -1132,7 +1304,92 @@ export default function Chat({
   )
 }
 
-function MessageView({ message, streaming }: { message: UIMessage; streaming: boolean }) {
+// Whimsical waiting-state words, two registers blended (dry-witty + gen-z) so
+// the indicator reads differently turn to turn. Random-per-mount starting word;
+// index is `% length`, so ordering doesn't matter.
+const THINKING_WORDS = [
+  'Thinking', 'Pondering', 'Percolating', 'Noodling', 'Cerebrating',
+  'Ruminating', 'Marinating', 'Conjuring', 'Mulling', 'Puzzling', 'Brewing',
+  'Simmering', 'Wrangling', 'Untangling', 'Musing', 'Cogitating', 'Scheming',
+  'Reticulating splines', 'Computing', 'Contemplating', 'Incubating',
+  'Concocting', 'Hatching', 'Churning', 'Crunching', 'Formulating',
+  'Deliberating', 'Stewing', 'Tinkering', 'Whirring', 'Spitballing',
+  'Ideating', 'Plotting', 'Daydreaming', 'Head-scratching',
+  'Cooking', 'Locking in', 'Big braining', 'Galaxy braining', 'Manifesting',
+  'Vibing', 'Sussing it out', 'Understanding the assignment', 'Lowkey grinding',
+  'Deadass thinking', 'Cracked mode engaged', 'Cooking up something',
+  'In my thinking era', 'Brain going brrr', 'Spinning up the neurons',
+  'Doing the thing', 'Locking in fr', 'No thoughts just cooking',
+  "Chef's kiss incoming", 'Working on the glow-up',
+]
+
+// Shown in the gap right after a tool result, while the model reads what came
+// back and decides its next move.
+const DIGESTING_WORDS = [
+  'Reviewing', 'Digesting', 'Parsing', 'Absorbing', 'Interpreting',
+  'Synthesizing', 'Processing', 'Distilling', 'Piecing it together',
+  'Making sense of it', 'Cross-referencing', 'Sifting', 'Connecting the dots',
+  'Untangling the results', 'Weighing it up', 'Sorting it out',
+  'Reading the receipts', 'Peeping the results', 'Reading the room',
+  'Doing the math', 'Vibe-checking the output', 'Catching up on the tea',
+  'Fact-checking the vibes', 'Putting the pieces together fr',
+  'Decoding the lore',
+]
+
+/**
+ * Whimsical waiting-state indicator: three bouncing dots, a rotating word, and
+ * a whole-turn elapsed timer. Rendered by MessageView while the turn is
+ * streaming but nothing is visibly appearing. `startedAt` is the turn start
+ * (ms) so the timer stays continuous across tool steps; `variant` picks the
+ * word pool. A fresh random offset per mount makes successive gaps in one turn
+ * read differently.
+ */
+function ThinkingIndicator({
+  startedAt,
+  variant,
+}: {
+  startedAt: number
+  variant: 'thinking' | 'digesting'
+}) {
+  const [now, setNow] = useState(() => Date.now())
+  const [baseOffset] = useState(() => Math.floor(Math.random() * 1000))
+
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 1000)
+    return () => clearInterval(id)
+  }, [])
+
+  const elapsed = Math.max(0, Math.floor((now - startedAt) / 1000))
+  const pool = variant === 'digesting' ? DIGESTING_WORDS : THINKING_WORDS
+  // Rotate roughly every 3s; continuous elapsed keeps it moving across steps.
+  const word = pool[(baseOffset + Math.floor(elapsed / 3)) % pool.length]
+
+  return (
+    <div className="thinking-indicator" role="status" aria-label="Assistant is working">
+      <span className="thinking-dots" aria-hidden="true">
+        <span className="thinking-dot" />
+        <span className="thinking-dot" />
+        <span className="thinking-dot" />
+      </span>
+      <span aria-hidden="true">{word}…</span>
+      {elapsed >= 1 && (
+        <span className="thinking-elapsed" aria-hidden="true">
+          {elapsed}s
+        </span>
+      )}
+    </div>
+  )
+}
+
+function MessageView({
+  message,
+  streaming,
+  turnStartedAt,
+}: {
+  message: UIMessage
+  streaming: boolean
+  turnStartedAt: number | null
+}) {
   const bodyRef = useRef<HTMLDivElement>(null)
 
   if (message.role === 'user') {
@@ -1151,6 +1408,13 @@ function MessageView({ message, streaming }: { message: UIMessage; streaming: bo
     )
   }
 
+  // Show the waiting indicator while the turn is live but nothing is visibly
+  // streaming: before the first part (thinking), or in the gap right after a
+  // tool result while the model decides its next move (digesting). The inline
+  // `turnStartedAt != null` also narrows it to a number for the prop.
+  const last = message.parts[message.parts.length - 1]
+  const digesting = last?.type === 'tool' && last.state === 'done'
+
   return (
     <div className="msg-assistant">
       <div className="msg-assistant-body" ref={bodyRef}>
@@ -1161,7 +1425,14 @@ function MessageView({ message, streaming }: { message: UIMessage; streaming: bo
             <ToolPill key={part.toolCallId} part={part} />
           ),
         )}
-        {message.parts.length === 0 && <div className="thinking-dot" />}
+        {streaming &&
+          turnStartedAt != null &&
+          (message.parts.length === 0 || digesting) && (
+            <ThinkingIndicator
+              startedAt={turnStartedAt}
+              variant={digesting ? 'digesting' : 'thinking'}
+            />
+          )}
       </div>
       {message.parts.length > 0 && !streaming && (
         <MessageToolbar message={message} targetRef={bodyRef} />
@@ -1274,6 +1545,87 @@ function CheckIcon() {
       <path d="M3.5 8.5l3 3 6-6.5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
     </svg>
   )
+}
+
+// The small "×" on a removable context pill.
+function RemoveGlyph() {
+  return (
+    <svg width="8" height="8" viewBox="0 0 8 8" fill="none" aria-hidden>
+      <path d="M1.5 1.5l5 5M6.5 1.5l-5 5" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
+    </svg>
+  )
+}
+
+/**
+ * A page shown in the composer's attached-context row — the current tab, an
+ * @mentioned tab, or @all. When `onRemove` is set, the pill reveals a remove
+ * "×" on hover that detaches the page from the next message.
+ */
+interface ContextTab {
+  key: string
+  title: string
+  url: string
+  favIconUrl?: string
+  /** Native tooltip text for the pill. */
+  hint: string
+  onRemove?: () => void
+}
+
+// The composer's attached-context row: a labelled pill per page (favicon + host,
+// with a hover-revealed remove "×" when detachable). Beyond MAX_VISIBLE_CONTEXT
+// the remainder collapse into a "+N" pill whose hover reveals a removable list —
+// the same overflow behaviour as the reply SourceBar.
+function ContextPills({ tabs }: { tabs: ContextTab[] }) {
+  if (tabs.length === 0) return null
+  const visible = tabs.slice(0, MAX_VISIBLE_CONTEXT)
+  const overflow = tabs.slice(MAX_VISIBLE_CONTEXT)
+  return (
+    <div className="context-pills">
+      {visible.map((t) => (
+        <div key={t.key} className={`context-pill${t.onRemove ? ' attached' : ''}`} title={t.hint}>
+          <ContextFavicon tab={t} />
+          <span className="context-title">{hostOf(t.url) || t.title}</span>
+          {t.onRemove && (
+            <button className="context-remove" title="Remove from this message" onClick={t.onRemove}>
+              <RemoveGlyph />
+            </button>
+          )}
+        </div>
+      ))}
+      {overflow.length > 0 && (
+        <div className="context-pill context-more" tabIndex={0} aria-label={`${overflow.length} more attached`}>
+          <span className="context-more-chip">+{overflow.length}</span>
+          <div className="context-more-popover">
+            {overflow.map((t) => (
+              <div key={t.key} className="context-more-row" title={t.hint}>
+                <span className="source-card-icon">
+                  <ContextFavicon tab={t} />
+                </span>
+                <span className="source-card-text">
+                  <span className="source-card-title">{t.title}</span>
+                  {t.url && <span className="source-card-url">{hostOf(t.url) || t.url}</span>}
+                </span>
+                {t.onRemove && (
+                  <button className="context-remove" title="Remove from this message" onClick={t.onRemove}>
+                    <RemoveGlyph />
+                  </button>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// Favicon for a context pill: the tab's own icon when known, else Chrome's
+// on-device cache for the URL, else a neutral dot.
+function ContextFavicon({ tab }: { tab: ContextTab }) {
+  const [failed, setFailed] = useState(false)
+  const src = tab.favIconUrl || (isHttpUrl(tab.url) ? faviconUrl(tab.url) : '')
+  if (!src || failed) return <span className="context-dot" />
+  return <img src={src} alt="" onError={() => setFailed(true)} />
 }
 
 // The favicon avatar bar shown beside the copy actions: up to

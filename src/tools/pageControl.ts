@@ -22,6 +22,13 @@ export interface ControlSession {
   actionsUsed: number
   maxActions: number
   active: boolean
+  /**
+   * One-shot: the just-approved point-of-no-return may have triggered a
+   * full-page cross-origin load that committed *after* our post-action snapshot.
+   * When set, the next call's origin-drift check re-fences silently (the user
+   * already approved the crossing) instead of demanding a fresh grant.
+   */
+  crossingAuthorized?: boolean
 }
 
 export const MAX_SESSION_ACTIONS = 20
@@ -97,6 +104,9 @@ export interface ControlStepDeps {
 export interface ControlStepResult extends ActionResult {
   /** Refreshed registry text after the action. */
   registry: string
+  /** Page origin after the action (empty if the re-read failed). Lets the
+   *  caller re-fence the session when an action crossed origins. */
+  origin: string
 }
 
 const runRaw = (tabId: number, spec: ControlSpec): Promise<ActionResult> => {
@@ -140,7 +150,9 @@ export async function runControlStep(deps: ControlStepDeps): Promise<ControlStep
   const needsTarget = spec.index !== undefined && spec.action !== 'navigate'
   if (beforeAct && needsTarget) await beforeAct(spec.index)
   const result = await runRaw(tabId, spec)
-  if (afterAct && result.ok) await afterAct()
+  // The ripple represents a click; only play it for clicks (not type/select/
+  // scroll/navigate/press/highlight).
+  if (afterAct && result.ok && spec.action === 'click') await afterAct()
   // chrome.tabs.update resolves once navigation is *initiated*, not once the
   // new document exists, so waitForStable (which injects via executeScript)
   // can otherwise race the frame transition and read the OLD document as
@@ -152,10 +164,13 @@ export async function runControlStep(deps: ControlStepDeps): Promise<ControlStep
     await waitForStable(tabId, { timeoutMs: spec.action === 'navigate' ? 8000 : 4000 })
   }
   let registry = '(page not re-read)'
+  let origin = ''
   try {
-    registry = (await snapshotPage(tabId)).text
+    const snap = await snapshotPage(tabId)
+    registry = snap.text
+    origin = snap.origin
   } catch {
     registry = '(could not re-read the page)'
   }
-  return { ...result, registry }
+  return { ...result, registry, origin }
 }

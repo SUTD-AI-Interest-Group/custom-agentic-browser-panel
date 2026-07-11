@@ -69,6 +69,26 @@ export const TOOL_CATALOG: ToolCatalogEntry[] = [
   { name: 'SaveSkill', group: 'skills', label: 'Create / update a skill' },
 ]
 
+/** Display order of tool groups in the permission matrix and quick menu. */
+export const GROUP_ORDER: ToolGroup[] = [
+  'reading',
+  'control',
+  'navigation',
+  'memory',
+  'insights',
+  'skills',
+]
+
+/** Human labels for each tool group. */
+export const GROUP_LABELS: Record<ToolGroup, string> = {
+  reading: 'Page reading',
+  control: 'Page control',
+  navigation: 'Navigation',
+  memory: 'Long-term memory',
+  insights: 'Browsing insights',
+  skills: 'Skills',
+}
+
 /** Default policy per tool, derived from TOOL_CATALOG (unset → `ask`). */
 export const DEFAULT_TOOL_POLICIES: Record<string, ToolPolicy> = Object.fromEntries(
   TOOL_CATALOG.map((t) => [t.name, t.defaultPolicy ?? 'ask']),

@@ -2,8 +2,9 @@ import { useEffect, useState } from 'react'
 import {
   TOOL_CATALOG,
   toolPolicy,
+  GROUP_ORDER,
+  GROUP_LABELS,
   type Settings,
-  type ToolGroup,
   type ToolPolicy,
 } from '../../data/settings'
 import {
@@ -13,24 +14,6 @@ import {
   requestCapabilities,
   removeCapabilities,
 } from '../../platform/permissions'
-
-const GROUP_ORDER: ToolGroup[] = [
-  'reading',
-  'control',
-  'navigation',
-  'memory',
-  'insights',
-  'skills',
-]
-
-const GROUP_LABELS: Record<ToolGroup, string> = {
-  reading: 'Page reading',
-  control: 'Page control',
-  navigation: 'Navigation',
-  memory: 'Long-term memory',
-  insights: 'Browsing insights',
-  skills: 'Skills',
-}
 
 const POLICIES: ToolPolicy[] = ['never', 'ask', 'always']
 const POLICY_LABELS: Record<ToolPolicy, string> = {
