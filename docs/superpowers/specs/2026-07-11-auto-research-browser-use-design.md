@@ -57,11 +57,16 @@ These are corrections applied during design review and MUST be honored in implem
 3. **No icon files exist** in `public/`, so `chrome.notifications.create()` cannot reference a
    file path (would fail "Unable to download all specified images"). The completion notification
    **generates its icon as a data URL at runtime via `OffscreenCanvas` in the SW.**
-4. **Offscreen is a singleton and needs state-locking.** Guard `createDocument()` with
-   `chrome.offscreen.hasDocument()` **plus** an `idle→starting→running→stopping` lock in
-   `chrome.storage.session` so concurrent `StartResearch` calls cannot race two creations. The
-   single document **multiplexes multiple research tasks** keyed by `taskId` in its own in-memory
-   map — concurrency does not require a second document.
+4. **Offscreen is a singleton and needs state-locking.** Guard `createDocument()` against
+   concurrent `StartResearch` calls racing two creations. The single document **multiplexes
+   multiple research tasks** keyed by `taskId` in its own in-memory map — concurrency does not
+   require a second document.
+   *As built:* the `chrome.storage.session` lock originally specified here is a non-atomic
+   check-then-act (verified in review to let 4/5 concurrent calls throw "single offscreen
+   document"), so it was replaced with a **module-scope promise gate** — `let creatingOffscreen:
+   Promise<void> | null`, assigned synchronously before any `await`, cleared in `.finally` — plus
+   `hasDocument()`. The gate is a resource-creation mutex (same category as the existing
+   `openPanels` Map), not persisted task state, and self-heals on SW restart.
 5. **The SW stores zero state in variables.** All research-task state lives in
    `chrome.storage.local`; every message handler re-reads it. (The pre-existing `openPanels` Map
    for the close-panel feature is unaffected.)
@@ -130,7 +135,9 @@ Flow:
    `chrome.storage.local`.
 5. On completion the doc broadcasts `research.done`; the SW persists the final report and fires a
    `chrome.notifications` ping (runtime data-URL icon). If the panel was closed, the report is
-   read from storage on next open. SW closes the offscreen doc when no tasks remain.
+   read from storage on next open. *As built:* the offscreen doc is **kept alive and reused**
+   across tasks rather than closed per-task — it is one lightweight document with no security
+   decay over time, and reusing it avoids a close/recreate race for negligible resource benefit.
 6. Cancel: panel → SW → `research.cancel{taskId}` → doc aborts that task's `AbortController`.
 
 ### #7 — AutofillForm (foreground control session)
@@ -158,8 +165,8 @@ Flow:
 - **Fetch safety:** `credentials: 'omit'` (never ride the user's logged-in cookies), per-URL
   timeout, size cap, content-type guard, **SSRF guard** (reject localhost/private-IP/non-http(s)),
   per-run fetch budget.
-- **Offscreen lifecycle:** `hasDocument()` + `chrome.storage.session` state-lock; close when idle;
-  recreate on demand; one doc multiplexes tasks by `taskId`.
+- **Offscreen lifecycle:** `hasDocument()` + a module-scope promise gate (as built; see #4);
+  one long-lived doc, reused across tasks, multiplexing tasks by `taskId`.
 - **SW killed mid-task:** incremental persistence to `chrome.storage.local`; the offscreen→SW
   `done` message wakes the SW to notify; panel reads persisted result on open.
 - **Trust boundary:** background research has no user-data/tab/memory-write tools — the documented
