@@ -1,6 +1,6 @@
 import { tool, type ToolSet } from 'ai'
 import { z } from 'zod'
-import { saveMemory, searchMemories } from '../data/memory'
+import { saveMemory, searchMemories, getProfileMemories } from '../data/memory'
 import { getSkill, listSkillMetas, saveSkill } from '../data/skills'
 import type { ProviderConfig, TabAccess, ToolPolicy } from '../data/settings'
 import { getActiveTab, listOpenTabs, navigateTab, readTabContent, readTabDom } from '../platform/tabs'
@@ -306,6 +306,46 @@ export function createAgentTools(
         // Coerce to a real boolean: `urlChanged` is undefined for non-navigation
         // actions, and a tool result must not carry undefined into the history.
         return { ok, message, urlChanged: urlChanged === true, elements: registry, actionsLeft: session.maxActions - session.actionsUsed }
+      },
+    }),
+
+    /** Fills mapped, non-sensitive fields from saved profile memories inside an already-open page-control session; sensitive fields still raise a one-shot point-of-no-return card, and submit is never part of this tool. */
+    AutofillForm: tool({
+      description:
+        'Fill the form on the active tab from the user\'s saved profile memories, within an open page-control session. Maps profile details (name, email, address…) to the indexed fields you pass. Sensitive fields (passwords, payment) and any submit still ask each time. Never invents secrets.',
+      inputSchema: z.object({
+        fields: z.array(z.object({
+          index: z.number().describe('Target field [index] from InspectPage.'),
+          value: z.string().describe('The value to enter (you map this from profile memories).'),
+          sensitive: z.boolean().optional().describe('True for passwords/payment; forces a confirm and is skipped if not user-provided.'),
+        })).describe('The fields to fill and the values to enter.'),
+      }),
+      execute: async ({ fields }) => {
+        const session = pageControl.session()
+        if (!session || !session.active) return { error: 'No page-control session is open. Call RequestPageControl first.' }
+        const tab = await getActiveTab()
+        if (tab?.id === undefined || tab.id !== session.tabId) return { error: 'The controlled tab is no longer active.' }
+        const profile = await getProfileMemories()
+        const filled: number[] = []
+        for (const f of fields) {
+          if (session.actionsUsed >= session.maxActions) break
+          let snap
+          try { snap = await snapshotPage(tab.id) } catch { return { error: 'Cannot read this page.' } }
+          const el = snap.elements[f.index]
+          const spec: ControlSpec = { action: 'type', index: f.index, text: f.value, clear: true, sensitive: f.sensitive }
+          if (isPointOfNoReturn(spec, el, session.origin)) {
+            const approved = await requestApproval({ toolName: 'AutofillForm', summary: `Fill a sensitive field (${el?.name ?? f.index})`, reason: 'This field is sensitive.', once: true })
+            if (!approved) continue
+          }
+          session.actionsUsed += 1
+          await runControlStep({
+            tabId: tab.id, spec, snapshot: snap,
+            beforeAct: (i) => (i === undefined ? Promise.resolve() : focusOn(tab.id!, i, undefined)),
+            afterAct: () => pulse(tab.id!),
+          })
+          filled.push(f.index)
+        }
+        return { filled, note: `Filled ${filled.length} field(s) from profile. Profile memories available: ${profile.length}. Submit is a separate, confirmed step.` }
       },
     }),
 

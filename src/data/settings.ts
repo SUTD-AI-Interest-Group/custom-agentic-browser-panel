@@ -56,6 +56,7 @@ export const TOOL_CATALOG: ToolCatalogEntry[] = [
   { name: 'StartResearch', group: 'reading', label: 'Run background web research' },
   { name: 'RequestPageControl', group: 'control', label: 'Start a page-control session' },
   { name: 'ControlPage', group: 'control', label: 'Perform a page-control action' },
+  { name: 'AutofillForm', group: 'control', label: 'Fill a form from your profile' },
   { name: 'NavigateTab', group: 'navigation', label: 'Switch / open / navigate tabs' },
   { name: 'SaveMemory', group: 'memory', label: 'Save a long-term memory' },
   { name: 'SearchMemory', group: 'memory', label: 'Search long-term memory' },
