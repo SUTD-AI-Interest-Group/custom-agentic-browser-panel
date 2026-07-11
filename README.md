@@ -26,7 +26,7 @@ First run walks through a three-step wizard: pick/configure an
 OpenAI-compatible endpoint, **test it live** (one tiny completion proves the
 base URL + key + model id work before you can continue), and choose the
 agent's **tab visibility** — *only my current tab* or *all open tabs*. In
-active-tab mode the `ViewOpenedTabs` tool is never exposed to the model and
+active-tab mode the `ReadTabs` tool is never exposed to the model and
 @mentions offer only the current tab. Both the endpoint and the visibility
 preference can be changed later in Settings.
 
@@ -58,16 +58,25 @@ which is why no proxy server is needed.
 
 ## Agent tools
 
-The model's tools are all gated by a human-in-the-loop permission card in
-the chat:
+Tools are **progressively disclosed**, so a typical turn ships only a handful of
+tool schemas instead of the whole set. Only an always-on core is active by
+default — `ReadPage` (read the current tab) plus two meta-tools, `ToolSearch`
+(list the available tools) and `GetTool` (load some by name). Everything else is
+loaded on demand: the model searches the catalog, loads what it needs, and those
+tools stay available for the rest of the turn. The active set is computed each
+step in `runAgentTurn`'s `prepareStep` (`activeTools`) from a per-turn
+`activeNames` set that `GetTool` grows; the pure catalog/search/active-set logic
+lives in `src/tools/toolDiscovery.ts`. Loaded tools are all still gated by a
+human-in-the-loop permission card (`ToolSearch`/`GetTool` are the only ungated
+tools — they touch no page, network, or user data).
 
-- **ViewCurrentTab** — reads the active tab (title, URL, selection, visible text).
-- **ViewOpenedTabs** — lists all open tabs; optionally reads specific tabs by id.
-- **SaveMemory** — saves a durable fact/preference/project to long-term memory.
-- **SearchMemory** — keyword-searches long-term memory for older context.
-- **InspectPage** — reads the active tab as a numbered list of interactive elements.
+- **ReadPage** — reads the active tab: `mode:"text"` (title, URL, selection, visible text), `mode:"dom"` (HTML structure), or `mode:"elements"` (numbered interactive elements, used before controlling a page).
+- **ReadTabs** — lists all open tabs; optionally reads specific tabs by id (`mode:"text"` or `"dom"`).
+- **QueryBrowserData** — the user's history, bookmarks, top sites, or downloads (`source:…`, only enabled sources).
+- **SaveMemory / SearchMemory** — long-term memory: save a durable fact/preference/project, or keyword-search older context.
 - **RequestPageControl** — asks once to control the tab for a task, then the agent acts.
 - **ControlPage** — performs one action (click / type / select / scroll / highlight / navigate / press).
+- **NavigateTab · ExtractData · AutofillForm · ListAllSkills / ReadSkill / SaveSkill · StartResearch** — loaded on demand like the rest.
 
 ## Screenshots
 
@@ -95,8 +104,8 @@ highlight, navigate, or press a key — the "browser-use" capability, built
 entirely on the manifest's existing `scripting`/`tabs`/`activeTab`
 permissions (no `chrome.debugger`, no extra host permissions).
 
-- **Indexed-DOM registry** (`src/platform/domIndex.ts`) — `InspectPage` and
-  `RequestPageControl` inject a walker that finds visible interactive
+- **Indexed-DOM registry** (`src/platform/domIndex.ts`) — `ReadPage` (mode
+  `"elements"`) and `RequestPageControl` inject a walker that finds visible interactive
   elements (links, buttons, inputs, ARIA-interactive roles), stamps each with
   a `data-agent-idx` attribute so a later, separate injection can re-find it
   (`chrome.scripting` calls share no JS state, only the DOM), and returns a
@@ -190,7 +199,8 @@ public/manifest.json        MV3 manifest (sidePanel, scripting, tabs, storage)
 src/background.ts           Service worker: side panel behavior + dream alarm
 src/ui/                     React UI: Onboarding, Chat, Memory, Settings, Markdown
 src/ui/SkillsLibrary.tsx    Skills Library masonry UI + editor
-src/tools/tools.ts          Tool registry + approval gate
+src/tools/tools.ts          Tool registry + approval gate + ToolSearch/GetTool meta-tools
+src/tools/toolDiscovery.ts  Pure catalog / search / active-set logic (progressive disclosure)
 src/tools/pageControl.ts    Control session, point-of-no-return rules, action dispatch
 src/agent/agent.ts          One agent turn: streamText → UI part stream
 src/agent/provider.ts       Config → AI SDK model (createOpenAICompatible)
