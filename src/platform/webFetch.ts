@@ -19,7 +19,7 @@ export function isFetchableUrl(raw: string): { ok: boolean; reason?: string } {
   let u: URL
   try { u = new URL(raw) } catch { return { ok: false, reason: 'invalid URL' } }
   if (u.protocol !== 'http:' && u.protocol !== 'https:') return { ok: false, reason: `blocked scheme ${u.protocol}` }
-  const h = u.hostname.toLowerCase().replace(/\.$/, '')
+  const h = u.hostname.toLowerCase().replace(/\.+$/, '')
   if (h.startsWith('[')) return { ok: false, reason: 'blocked IPv6 literal' }
   if (h === 'localhost' || h.endsWith('.local') || h === '0.0.0.0') {
     return { ok: false, reason: 'blocked host' }

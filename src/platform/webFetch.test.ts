@@ -39,6 +39,11 @@ test('SSRF guard rejects trailing-dot localhost bypass', () => {
   expect(isFetchableUrl('http://localhost./').ok).toBe(false)
 })
 
+test('SSRF guard rejects multiple-trailing-dot bypass', () => {
+  expect(isFetchableUrl('http://localhost../').ok).toBe(false)
+  expect(isFetchableUrl('http://127.0.0.1../').ok).toBe(false)
+})
+
 test('SSRF guard rejects IPv4-mapped IPv6 literal bypass', () => {
   expect(isFetchableUrl('http://[::ffff:127.0.0.1]').ok).toBe(false)
   expect(isFetchableUrl('http://[::ffff:169.254.169.254]').ok).toBe(false)
