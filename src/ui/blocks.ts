@@ -65,8 +65,10 @@ function extractLineLink(line: string): LineLink | null {
     return u ? { url: angle[1], text: angle[1], isImage: isImageUrl(u) } : null
   }
   if (/^\S+$/.test(rest)) {
-    // Bare URL — trim trailing sentence punctuation from the href/text.
-    const token = rest.replace(/[.,;:!?)]+$/, '')
+    // Bare URL — trim trailing sentence punctuation from the href/text, but keep
+    // a closing paren that belongs to the URL itself (e.g. Wikipedia "…_(bar)").
+    let token = rest.replace(/[.,;:!?]+$/, '')
+    if (!token.includes('(')) token = token.replace(/\)+$/, '')
     const u = asUrl(token)
     return u ? { url: token, text: token, isImage: isImageUrl(u) } : null
   }
