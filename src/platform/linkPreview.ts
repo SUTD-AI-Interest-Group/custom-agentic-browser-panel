@@ -5,6 +5,34 @@
 
 import { loadSettings } from '../data/settings'
 
+/** Reject preview fetches to private/loopback/link-local/metadata hosts so an
+ *  assistant-authored link can't drive an automatic request at an internal
+ *  target (SSRF/info-disclosure). Does not defeat DNS-rebinding but blocks the
+ *  obvious literal-host cases. */
+function isSafePreviewTarget(url: string): boolean {
+  let u: URL
+  try {
+    u = new URL(url)
+  } catch {
+    return false
+  }
+  if (u.protocol !== 'http:' && u.protocol !== 'https:') return false
+  const host = u.hostname.toLowerCase().replace(/^\[|\]$/g, '')
+  if (host === 'localhost' || host.endsWith('.localhost') || host.endsWith('.local') || host.endsWith('.internal')) return false
+  if (host === '::1' || host.startsWith('fe80:') || host.startsWith('fc') || host.startsWith('fd')) return false
+  const m = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/)
+  if (m) {
+    const a = Number(m[1])
+    const b = Number(m[2])
+    if (a === 0 || a === 10 || a === 127) return false
+    if (a === 169 && b === 254) return false
+    if (a === 172 && b >= 16 && b <= 31) return false
+    if (a === 192 && b === 168) return false
+    if (a === 100 && b >= 64 && b <= 127) return false
+  }
+  return true
+}
+
 /** OpenGraph-derived preview data; every field optional. */
 export interface LinkPreview {
   title?: string
@@ -55,12 +83,33 @@ function cacheKey(url: string): string {
   return `linkPreview:${url}`
 }
 
+// Limits how many live fetches run at once so a long link list doesn't fire
+// a burst of parallel requests.
+const MAX_CONCURRENT = 4
+let active = 0
+const waiters: (() => void)[] = []
+async function acquire(): Promise<void> {
+  if (active < MAX_CONCURRENT) { active++; return }
+  await new Promise<void>((resolve) => waiters.push(resolve))
+  active++
+}
+function release(): void {
+  active--
+  const next = waiters.shift()
+  if (next) next()
+}
+
 /** Cached OpenGraph preview for `url`. Returns null when disabled, cached-null,
  *  or on any fetch/parse failure (caller falls back to favicon + domain). */
 export async function getLinkPreview(url: string): Promise<LinkPreview | null> {
   if (mem.has(url)) return mem.get(url)!
   const settings = await loadSettings().catch(() => null)
   if (settings && settings.fetchLinkPreviews === false) return null
+
+  if (!isSafePreviewTarget(url)) {
+    mem.set(url, null)
+    return null
+  }
 
   const key = cacheKey(url)
   try {
@@ -74,6 +123,7 @@ export async function getLinkPreview(url: string): Promise<LinkPreview | null> {
   }
 
   let data: LinkPreview | null = null
+  await acquire()
   try {
     const res = await fetch(url, { signal: AbortSignal.timeout(TIMEOUT_MS), redirect: 'follow' })
     if (res.ok && (res.headers.get('content-type') ?? '').includes('text/html')) {
@@ -81,6 +131,8 @@ export async function getLinkPreview(url: string): Promise<LinkPreview | null> {
     }
   } catch {
     data = null
+  } finally {
+    release()
   }
 
   mem.set(url, data)
