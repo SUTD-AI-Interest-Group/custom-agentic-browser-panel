@@ -75,7 +75,11 @@ export function createStartResearchTool(requestApproval: ApprovalGate, conversat
         // Tag the task with the launching conversation so its dock bar / report
         // card surface only in that chat (not globally in every conversation).
         chrome.runtime.sendMessage({ type: 'research.ensureAndStart', taskId, question, conversationId })
-        return { started: true, taskId, note: 'Research is running in the background; results will appear in the panel and a notification when done.' }
+        return {
+          started: true,
+          taskId,
+          note: 'Research is now running in the background and will appear in the panel with a notification when done. Do NOT research or answer the question yourself — reply with one short sentence telling the user it is underway, then end your turn.',
+        }
       },
     }),
   }

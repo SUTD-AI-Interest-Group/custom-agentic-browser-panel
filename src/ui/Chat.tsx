@@ -1881,20 +1881,23 @@ function ToolPill({ part }: { part: Extract<UIPart, { type: 'tool' }> }) {
 function ResearchReportCard({ task }: { task: ResearchTask }) {
   const bodyRef = useRef<HTMLDivElement>(null)
   return (
-    <div className="msg-assistant research-report" id={`research-report-${task.id}`}>
-      <div className="msg-assistant-body" ref={bodyRef}>
-        <div className="research-report__label">
+    <div className="research-report" id={`research-report-${task.id}`}>
+      {/* bodyRef wraps header + body so a copied PNG carries the research title. */}
+      <div className="research-report__content" ref={bodyRef}>
+        <div className="research-report__header">
           <ResearchGlyph />
-          <span>Research · {task.question}</span>
+          <span className="research-report__title">{task.question}</span>
         </div>
-        {task.report ? (
-          <AssistantText text={task.report} streaming={false} />
-        ) : (
-          <div className="research-card__error">{task.error}</div>
-        )}
+        <div className="research-report__body">
+          {task.report ? (
+            <AssistantText text={task.report} streaming={false} />
+          ) : (
+            <div className="research-card__error">{task.error}</div>
+          )}
+        </div>
       </div>
       {task.report && (
-        <div className="msg-toolbar">
+        <div className="msg-toolbar research-report__toolbar">
           <CopyActions targetRef={bodyRef} markdown={task.report} />
           {task.sources && task.sources.length > 0 && <SourceBar sources={task.sources} />}
         </div>
