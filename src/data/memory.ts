@@ -10,7 +10,7 @@
 // Episodes become memories through "dreaming" (see dream.ts): the model
 // periodically reviews unconsolidated episodes and rewrites the memory store.
 
-export type MemoryKind = 'fact' | 'preference' | 'project' | 'summary'
+export type MemoryKind = 'fact' | 'preference' | 'project' | 'summary' | 'profile'
 export type MemorySource = 'dream' | 'agent' | 'user'
 
 export interface MemoryRecord {
@@ -129,6 +129,11 @@ export async function deleteMemory(id: string): Promise<void> {
 export async function listMemories(): Promise<MemoryRecord[]> {
   const all = await requestOf<MemoryRecord[]>(MEMORIES, 'readonly', (s) => s.getAll())
   return all.sort((a, b) => b.updatedAt - a.updatedAt)
+}
+
+/** Memories the user has marked as reusable profile fields (name, email, address…) for form autofill. */
+export async function getProfileMemories(): Promise<MemoryRecord[]> {
+  return (await listMemories()).filter((m) => m.kind === 'profile')
 }
 
 /**

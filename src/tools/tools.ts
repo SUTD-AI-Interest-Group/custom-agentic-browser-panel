@@ -435,8 +435,10 @@ export function createAgentTools(
           .string()
           .describe('Short reason shown to the user, e.g. "So I remember your preferred format"'),
         kind: z
-          .enum(['fact', 'preference', 'project'])
-          .describe('fact: stable info about the user; preference: how they want you to behave; project: ongoing work or goals'),
+          .enum(['fact', 'preference', 'project', 'profile'])
+          .describe(
+            'fact: stable info about the user; preference: how they want you to behave; project: ongoing work or goals; profile: a reusable personal detail for filling forms (name, email, address)',
+          ),
         content: z
           .string()
           .describe('The memory as one self-contained sentence, understandable without this conversation'),
