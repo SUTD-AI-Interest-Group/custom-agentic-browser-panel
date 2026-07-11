@@ -164,12 +164,10 @@ chrome.runtime.onMessage.addListener((msg: ResearchMsg) => {
     } else if (msg?.type === 'research.update') {
       await applyUpdate(msg.taskId, (cur) => ({ steps: [...cur.steps, msg.step] }))
     } else if (msg?.type === 'research.done') {
-      const t = await applyUpdate(msg.taskId, {
-        status: 'done',
-        report: msg.report,
-        sources: msg.sources,
-      })
-      if (t) {
+      const t = await applyUpdate(msg.taskId, (cur) =>
+        cur.status === 'cancelled' ? {} : { status: 'done', report: msg.report, sources: msg.sources },
+      )
+      if (t && t.status === 'done') {
         try {
           await notifyDone(msg.taskId, t.question)
         } catch (err) {
@@ -177,7 +175,7 @@ chrome.runtime.onMessage.addListener((msg: ResearchMsg) => {
         }
       }
     } else if (msg?.type === 'research.error') {
-      await applyUpdate(msg.taskId, { status: 'error', error: msg.error })
+      await applyUpdate(msg.taskId, (cur) => (cur.status === 'cancelled' ? {} : { status: 'error', error: msg.error }))
     } else if (msg?.type === 'research.cancel') {
       await applyUpdate(msg.taskId, { status: 'cancelled' })
     }
