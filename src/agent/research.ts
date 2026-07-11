@@ -324,7 +324,7 @@ async function synthesize(
   const outline = nb.plan.outline.join(' · ')
   const prompt =
     `Write the final research report answering: ${question}\n\n` +
-    `Use ONLY the findings and sources below. Cite each claim inline as [n] where n is the source number, and end with a "Sources" section listing "[n] Title — URL" for every source you cite.\n` +
+    `Use ONLY the findings and sources below. Cite each claim inline as [[n]] (DOUBLE square brackets) where n is the source number from the SOURCES list — e.g. "The market grew 12% [[3]]." End with a "Sources" section listing "[[n]] Title — URL" for every source you cite.\n` +
     (outline ? `Follow this section outline: ${outline}\n` : '') +
     `\n${summarizeNotebook(nb, { maxFindings: 200 })}\n\n` +
     `Write a thorough, well-structured Markdown report. Do not invent facts or citations beyond the findings above.`
@@ -446,7 +446,8 @@ async function verifyReport(
     if (issues.length > 0) {
       const revisePrompt =
         `Revise this research report. For each flagged claim: if action is "remove", delete the claim and its citation; ` +
-        `if "hedge", soften it and note the uncertainty. Keep all other content, structure, and citations exactly as-is. ` +
+        `if "hedge", soften it and note the uncertainty. Keep all other content, structure, and citations exactly as-is — ` +
+        `citations use the [[n]] double-bracket form, preserve that exact form. ` +
         `Return the full revised Markdown report only.\n\nFLAGGED:\n${issues
           .map((i) => `- (${i.fix}) ${i.claim} — ${i.problem}`)
           .join('\n')}\n\nREPORT:\n${draft}`

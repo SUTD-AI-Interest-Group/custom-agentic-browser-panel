@@ -5,6 +5,7 @@ import ImageCarousel from './ImageCarousel'
 import LinkCardStack from './LinkCard'
 import JsonTree from './JsonTree'
 import { splitBlocks } from './blocks'
+import { citationsToPlain } from './citations'
 import { runAgentTurn, type Checkpoint, type MessageSource, type UIMessage, type UIPart } from '../agent/agent'
 import { captureRegion, type CapturedImage } from '../platform/capture'
 import { copyElementAsPng } from '../platform/domImage'
@@ -157,15 +158,11 @@ const MAX_VISIBLE_CONTEXT = 3
 
 const isHttpUrl = (url: string): boolean => /^https?:\/\//i.test(url)
 
-// Chrome's built-in, on-device favicon cache — keeps visited URLs local rather
-// than shipping them to a third-party favicon service. Needs the "favicon"
-// manifest permission.
-export function faviconUrl(pageUrl: string, size = 32): string {
-  const u = new URL(chrome.runtime.getURL('/_favicon/'))
-  u.searchParams.set('pageUrl', pageUrl)
-  u.searchParams.set('size', String(size))
-  return u.toString()
-}
+// Imported from ./favicon and re-exported so the chat SourceBar and the
+// research-report inline citations share one implementation (LinkCard and others
+// still import it from here).
+import { faviconUrl } from './favicon'
+export { faviconUrl }
 
 /**
  * The de-duplicated web sources behind one assistant reply: pages attached to
@@ -1689,7 +1686,16 @@ function MessageView({
 
 // Renders one assistant text part as ordered blocks: image runs → carousel,
 // standalone links → cards, standalone JSON → collapsible tree, else markdown.
-function AssistantText({ text, streaming }: { text: string; streaming: boolean }) {
+// `citations` (research reports) turns inline [[n]] into favicon chips.
+function AssistantText({
+  text,
+  streaming,
+  citations,
+}: {
+  text: string
+  streaming: boolean
+  citations?: MessageSource[]
+}) {
   const blocks = useMemo(() => splitBlocks(text), [text])
   return (
     <>
@@ -1697,7 +1703,7 @@ function AssistantText({ text, streaming }: { text: string; streaming: boolean }
         if (b.type === 'images') return <ImageCarousel key={i} urls={b.urls} />
         if (b.type === 'links') return <LinkCardStack key={i} links={b.links} />
         if (b.type === 'json') return <JsonTree key={i} value={b.value} />
-        return <Markdown key={i} text={b.text} streaming={streaming} />
+        return <Markdown key={i} text={b.text} streaming={streaming} citations={citations} />
       })}
     </>
   )
@@ -2088,7 +2094,7 @@ function ResearchReportMessage({ message }: { message: UIMessage }) {
           <div className="research-report__body">
             {research.verification && <VerificationBadge v={research.verification} />}
             {reportText ? (
-              <AssistantText text={reportText} streaming={false} />
+              <AssistantText text={reportText} streaming={false} citations={message.sources} />
             ) : (
               <div className="research-card__error">{research.error}</div>
             )}
@@ -2097,7 +2103,7 @@ function ResearchReportMessage({ message }: { message: UIMessage }) {
       </div>
       {!collapsed && reportText && (
         <div className="msg-toolbar research-report__toolbar">
-          <CopyActions targetRef={bodyRef} markdown={reportText} />
+          <CopyActions targetRef={bodyRef} markdown={citationsToPlain(reportText)} />
           {message.sources && message.sources.length > 0 && <SourceBar sources={message.sources} />}
         </div>
       )}

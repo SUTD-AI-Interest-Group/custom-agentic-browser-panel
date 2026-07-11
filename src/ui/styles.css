@@ -1063,6 +1063,37 @@ body {
   background: color-mix(in srgb, #c98a1a 8%, transparent);
 }
 
+/* ---- Inline favicon citations (research reports) ---- */
+.markdown a.cite {
+  display: inline-flex;
+  align-items: center;
+  vertical-align: text-top;
+  margin: 0 1px;
+  padding: 1px;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--text-muted) 14%, transparent);
+  line-height: 0;
+  text-decoration: none;
+  transition: background 0.12s ease, transform 0.12s ease;
+}
+
+.markdown a.cite:hover {
+  background: color-mix(in srgb, var(--accent) 24%, transparent);
+  transform: translateY(-1px);
+}
+
+.markdown a.cite .cite-favicon {
+  width: 14px;
+  height: 14px;
+  border-radius: 3px;
+  display: block;
+}
+
+/* A cluster like [[1]][[2]] tucks the chips together. */
+.markdown a.cite + a.cite {
+  margin-left: -1px;
+}
+
 /* ---- Research bottom sheet (expanded live workflow) ---- */
 
 .research-sheet__scrim {
