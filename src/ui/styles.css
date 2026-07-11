@@ -1112,16 +1112,37 @@ body {
 
 .research-sheet__steps li {
   display: flex;
-  align-items: flex-start;
-  gap: 8px;
+  flex-direction: column;
   color: var(--text-muted);
 }
 
 .research-sheet__steps li.muted {
+  padding-left: 2px;
   font-style: italic;
 }
 
+/* The clickable step row; expands its detail block on click. */
+.research-step__row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  width: 100%;
+  padding: 4px 6px;
+  border: none;
+  border-radius: 7px;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+}
+
+.research-step__row:hover {
+  background: var(--pill-bg);
+}
+
 .research-step__text {
+  flex: 1;
   min-width: 0;
   word-break: break-word;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
@@ -1129,9 +1150,21 @@ body {
   line-height: 1.5;
 }
 
+.research-step__caret {
+  flex-shrink: 0;
+  margin-top: 4px;
+  color: var(--text-muted);
+  opacity: 0.5;
+  transition: transform 0.15s ease;
+}
+
+.research-sheet__steps li.open .research-step__caret {
+  transform: rotate(180deg);
+}
+
 .research-step__mark {
   flex-shrink: 0;
-  width: 14px;
+  width: 12px;
   height: 14px;
   margin-top: 1px;
   display: inline-flex;
@@ -1139,27 +1172,48 @@ body {
   justify-content: center;
 }
 
-/* Completed step → a faded green dot; current step → a pulsing accent dot. */
-.research-sheet__steps li.done .research-step__mark::before {
+/* Status dot: green (done), red (error), pulsing accent (running). */
+.research-sheet__steps li.done .research-step__mark::before,
+.research-sheet__steps li.error .research-step__mark::before,
+.research-sheet__steps li.running .research-step__mark::before {
   content: '';
   width: 8px;
   height: 8px;
   border-radius: 50%;
-  background: var(--success);
-  opacity: 0.55;
 }
 
-.research-sheet__steps li.active .research-step__mark::before {
-  content: '';
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
+.research-sheet__steps li.done .research-step__mark::before {
+  background: var(--success);
+  opacity: 0.6;
+}
+
+.research-sheet__steps li.error .research-step__mark::before {
+  background: var(--danger);
+}
+
+.research-sheet__steps li.running .research-step__mark::before {
   background: var(--accent);
   animation: research-pulse 1s ease-in-out infinite;
 }
 
-.research-sheet__steps li.active .research-step__text {
+.research-sheet__steps li.running .research-step__text {
   color: var(--text);
+}
+
+/* Expanded detail: bounded, scrollable monospace block under the row. */
+.research-step__detail {
+  margin: 2px 0 4px 26px;
+  padding: 8px 10px;
+  background: var(--pill-bg);
+  border-radius: 8px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--text-muted);
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 240px;
+  overflow: auto;
 }
 
 @keyframes research-pulse {

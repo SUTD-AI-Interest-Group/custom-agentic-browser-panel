@@ -15,7 +15,7 @@ chrome.runtime.onMessage.addListener((msg: ResearchMsg) => {
       provider: msg.providerConfig,
       modelId: msg.modelId,
       signal: ctrl.signal,
-      onStep: (step) => chrome.runtime.sendMessage({ type: 'research.update', taskId: msg.taskId, step } satisfies ResearchMsg),
+      onSteps: (steps) => chrome.runtime.sendMessage({ type: 'research.update', taskId: msg.taskId, steps } satisfies ResearchMsg),
     })
       .then(({ report, sources }) => {
         // The SW already persisted status:'cancelled' when research.cancel fired;

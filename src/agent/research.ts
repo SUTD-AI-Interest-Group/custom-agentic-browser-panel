@@ -3,7 +3,41 @@ import { createModel } from './provider'
 import { createResearchTools } from '../tools/research'
 import type { ModelMessage } from 'ai'
 import type { ProviderConfig } from '../data/settings'
-import type { ResearchSource } from '../data/researchTasks'
+import type { ResearchSource, ResearchStep } from '../data/researchTasks'
+
+/** Compact one-line stringify for a step summary. */
+function compact(value: unknown): string {
+  try {
+    return typeof value === 'string' ? value : JSON.stringify(value)
+  } catch {
+    return String(value)
+  }
+}
+
+/** Pretty, size-bounded stringify for the expandable step detail — caps how much
+ *  streamed page text lands in chrome.storage. */
+function preview(value: unknown, max: number): string {
+  let s: string
+  try {
+    s = typeof value === 'string' ? value : JSON.stringify(value, null, 2)
+  } catch {
+    s = String(value)
+  }
+  if (!s) return ''
+  return s.length > max ? `${s.slice(0, max)}\n…(truncated)` : s
+}
+
+/** Build the expandable detail for one tool call: its input, then its result. */
+function stepDetail(p: Extract<UIPart, { type: 'tool' }>): string {
+  const input = `Input:\n${preview(p.input, 600)}`
+  const result =
+    p.state === 'done'
+      ? `Result:\n${preview(p.output, 2000)}`
+      : p.state === 'error'
+        ? 'Result: (the tool call failed)'
+        : '(running…)'
+  return `${input}\n\n${result}`
+}
 
 const RESEARCH_SYSTEM = `You are a research agent running in the background. Answer the user's question by:
 1. Planning sub-questions. 2. WebSearch for each. 3. FetchUrl the most relevant results and read them.
@@ -25,23 +59,37 @@ export async function runResearch(opts: {
   question: string
   provider: ProviderConfig
   modelId: string
-  onStep: (s: string) => void
+  onSteps: (steps: ResearchStep[]) => void
   signal: AbortSignal
 }): Promise<{ report: string; sources: ResearchSource[] }> {
   const model = createModel(opts.provider, opts.modelId)
   const sources: ResearchSource[] = []
-  const seenSteps = new Set<string>()
   // Grows across cycles so a continued research task sees its own prior work
   // (and its Checkpoint hand-off) instead of restarting.
   const history: ModelMessage[] = [{ role: 'user', content: opts.question }]
 
+  // One ResearchStep per tool call (main's expandable-steps model). priorSteps
+  // accumulates completed cycles' steps so an auto-continue doesn't erase them.
+  const priorSteps: ResearchStep[] = []
+  const stepsOf = (parts: UIPart[]): ResearchStep[] =>
+    parts
+      .filter((p): p is Extract<UIPart, { type: 'tool' }> => p.type === 'tool')
+      .map((p) => ({
+        tool: p.toolName,
+        summary: `${p.toolName}: ${compact(p.input).slice(0, 120)}`,
+        detail: stepDetail(p),
+        status: p.state === 'done' ? 'done' : p.state === 'error' ? 'error' : 'running',
+      }))
+
+  let lastSig = ''
   const onUpdate = (parts: UIPart[]) => {
-    const last = parts[parts.length - 1]
-    // The last part stays 'tool' across several onUpdate emissions (running ->
-    // done/error), so gate on toolCallId to log each call once, not per emission.
-    if (last?.type === 'tool' && !seenSteps.has(last.toolCallId)) {
-      seenSteps.add(last.toolCallId)
-      opts.onStep(`${last.toolName}: ${JSON.stringify(last.input).slice(0, 120)}`)
+    const steps = [...priorSteps, ...stepsOf(parts)]
+    // Emit only when a step appears or flips status (running -> done/error), so
+    // the sheet updates without a storage write on every stream chunk.
+    const sig = steps.map((s) => `${s.tool}:${s.status}`).join('|')
+    if (sig !== lastSig) {
+      lastSig = sig
+      opts.onSteps(steps)
     }
     // Collect sources from successful FetchUrl results.
     for (const p of parts) {
@@ -70,9 +118,10 @@ export async function runResearch(opts: {
     history.push(...result.responseMessages)
     const text = result.parts.filter((p) => p.type === 'text').map((p) => (p as { text: string }).text).join('')
     if (text.trim()) report = text
+    // Carry this cycle's steps forward so the next cycle's steps append to them.
+    priorSteps.push(...stepsOf(result.parts))
     // Stop when the model finished, or we've exhausted the auto-continue budget.
     if (finalCycle || result.stop.reason === 'completed') break
-    opts.onStep(`↻ continuing research (cycle ${cycle + 2})`)
   }
   return { report, sources }
 }

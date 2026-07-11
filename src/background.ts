@@ -163,7 +163,9 @@ chrome.runtime.onMessage.addListener((msg: ResearchMsg) => {
         await applyUpdate(msg.taskId, { status: 'error', error: err instanceof Error ? err.message : String(err) })
       }
     } else if (msg?.type === 'research.update') {
-      await applyUpdate(msg.taskId, (cur) => ({ steps: [...cur.steps, msg.step] }))
+      // The offscreen host sends the full derived step list (with live results);
+      // replace rather than append.
+      await applyUpdate(msg.taskId, { steps: msg.steps })
     } else if (msg?.type === 'research.done') {
       const t = await applyUpdate(msg.taskId, (cur) =>
         cur.status === 'cancelled' ? {} : { status: 'done', report: msg.report, sources: msg.sources },

@@ -277,6 +277,9 @@ export default function Chat({
   const [researchTasks, setResearchTasks] = useState<ResearchTask[]>([])
   // Which research task's live-workflow bottom sheet is open (null = closed).
   const [openSheetTaskId, setOpenSheetTaskId] = useState<string | null>(null)
+  // True once this conversation's persisted transcript has been restored, so the
+  // research-report injection effect below runs after (not racing) the restore.
+  const [restored, setRestored] = useState(false)
   // A ~1s wall-clock tick that only runs while a finished task is still inside
   // its DOCK_LINGER_MS window, so dock bars can auto-expire without an idle
   // timer when nothing is completing (see effect below).
@@ -320,15 +323,58 @@ export default function Chat({
   // in App, so this runs once per chat and never mid-conversation.
   useEffect(() => {
     let cancelled = false
+    setRestored(false)
     void getConversation(conversationId).then((c) => {
-      if (cancelled || !c) return
-      setMessages(c.messages)
-      historyRef.current = c.history
+      if (cancelled) return
+      if (c) {
+        setMessages(c.messages)
+        historyRef.current = c.history
+      }
+      setRestored(true)
     })
     return () => {
       cancelled = true
     }
   }, [conversationId])
+
+  // Drop a finished research task into THIS conversation's transcript as a
+  // message, so its report card scrolls with the chat and later turns follow it
+  // (rather than staying pinned at the bottom). Reconstructed from persistent
+  // researchTasks storage, deduped by the deterministic `research-<id>` message
+  // id, and gated on `restored` so it appends after the restore, never racing
+  // it. Display-only: not added to model history.
+  useEffect(() => {
+    if (!restored) return
+    const done = researchTasks
+      .filter(
+        (t) =>
+          t.conversationId === conversationId &&
+          ((t.status === 'done' && t.report) || (t.status === 'error' && t.error)),
+      )
+      .sort((a, b) => a.updatedAt - b.updatedAt)
+    if (done.length === 0) return
+    setMessages((prev) => {
+      const have = new Set(prev.map((m) => m.id))
+      const add = done
+        .filter((t) => !have.has(`research-${t.id}`))
+        .map((t) => ({
+          id: `research-${t.id}`,
+          role: 'assistant' as const,
+          parts: t.report ? [{ type: 'text' as const, text: t.report }] : [],
+          sources: t.sources,
+          research: { question: t.question, error: t.error },
+        }))
+      return add.length ? [...prev, ...add] : prev
+    })
+  }, [restored, researchTasks, conversationId])
+
+  // When the task whose live sheet is open finishes, collapse the sheet back to
+  // the chat (its report has just dropped into the transcript above).
+  useEffect(() => {
+    if (!openSheetTaskId) return
+    const t = researchTasks.find((r) => r.id === openSheetTaskId)
+    if (t && t.status !== 'running') setOpenSheetTaskId(null)
+  }, [researchTasks, openSheetTaskId])
 
   // Persist after each finished turn (not on restore or mid-stream), then let
   // App refresh its history list.
@@ -601,7 +647,7 @@ export default function Chat({
     }
     setOpenSheetTaskId(null)
     document
-      .getElementById(`research-report-${t.id}`)
+      .getElementById(`research-${t.id}`)
       ?.scrollIntoView({ behavior: 'smooth', block: 'start' })
   }
 
@@ -1102,12 +1148,8 @@ export default function Chat({
   const dockTasks = myTasks.filter(
     (t) => t.status === 'running' || now - t.updatedAt < DOCK_LINGER_MS,
   )
-  // Finished tasks whose report/error drops into the chat, oldest → newest so
-  // the most recent research lands last (at the end of the transcript).
-  const reportTasks = myTasks
-    .filter((t) => (t.status === 'done' && t.report) || (t.status === 'error' && t.error))
-    .slice()
-    .sort((a, b) => a.updatedAt - b.updatedAt)
+  // Finished reports are injected into `messages` as research-report cards (see
+  // the injection effect), so there's no separate overlay list here.
   const openSheetTask = researchTasks.find((t) => t.id === openSheetTaskId) ?? null
 
   return (
@@ -1136,9 +1178,6 @@ export default function Chat({
               turnStartedAt={turnStartedAt}
             />
           </Fragment>
-        ))}
-        {reportTasks.map((t) => (
-          <ResearchReportCard key={t.id} task={t} />
         ))}
         {approval && (
           <ApprovalCard
@@ -1555,6 +1594,9 @@ function MessageView({
   turnStartedAt: number | null
 }) {
   const bodyRef = useRef<HTMLDivElement>(null)
+
+  // A dropped-in background-research report renders as its own card.
+  if (message.research) return <ResearchReportMessage message={message} />
 
   if (message.role === 'user') {
     const text = message.parts.map((p) => (p.type === 'text' ? p.text : '')).join('')
@@ -1975,28 +2017,30 @@ function ToolPill({ part }: { part: Extract<UIPart, { type: 'tool' }> }) {
 // treatment as an assistant reply: an AssistantText body (image carousels,
 // link cards, JSON, markdown) plus the shared copy-as-image / copy-as-markdown
 // actions and a SourceBar. The `id` is the scroll target for its ✓ dock bar.
-function ResearchReportCard({ task }: { task: ResearchTask }) {
+function ResearchReportMessage({ message }: { message: UIMessage }) {
   const bodyRef = useRef<HTMLDivElement>(null)
+  const research = message.research!
+  const reportText = message.parts.map((p) => (p.type === 'text' ? p.text : '')).join('')
   return (
-    <div className="research-report" id={`research-report-${task.id}`}>
+    <div className="research-report" id={message.id}>
       {/* bodyRef wraps header + body so a copied PNG carries the research title. */}
       <div className="research-report__content" ref={bodyRef}>
         <div className="research-report__header">
           <ResearchGlyph />
-          <span className="research-report__title">{task.question}</span>
+          <span className="research-report__title">{research.question}</span>
         </div>
         <div className="research-report__body">
-          {task.report ? (
-            <AssistantText text={task.report} streaming={false} />
+          {reportText ? (
+            <AssistantText text={reportText} streaming={false} />
           ) : (
-            <div className="research-card__error">{task.error}</div>
+            <div className="research-card__error">{research.error}</div>
           )}
         </div>
       </div>
-      {task.report && (
+      {reportText && (
         <div className="msg-toolbar research-report__toolbar">
-          <CopyActions targetRef={bodyRef} markdown={task.report} />
-          {task.sources && task.sources.length > 0 && <SourceBar sources={task.sources} />}
+          <CopyActions targetRef={bodyRef} markdown={reportText} />
+          {message.sources && message.sources.length > 0 && <SourceBar sources={message.sources} />}
         </div>
       )}
     </div>
@@ -2048,6 +2092,15 @@ function ResearchSheet({
   onClose: () => void
   onStop: () => void
 }) {
+  // Which step rows are expanded to show their input/result detail.
+  const [expanded, setExpanded] = useState<Set<number>>(() => new Set())
+  const toggle = (i: number) =>
+    setExpanded((prev) => {
+      const next = new Set(prev)
+      if (next.has(i)) next.delete(i)
+      else next.add(i)
+      return next
+    })
   return (
     <>
       <div className="research-sheet__scrim" onClick={onClose} />
@@ -2063,12 +2116,18 @@ function ResearchSheet({
         </div>
         <div className="research-sheet__body">
           <ul className="research-sheet__steps">
-            {task.steps.map((s, i) => {
-              const active = task.status === 'running' && i === task.steps.length - 1
+            {task.steps.map((step, i) => {
+              const open = expanded.has(i)
               return (
-                <li key={i} className={active ? 'active' : 'done'}>
-                  <span className="research-step__mark" aria-hidden />
-                  <span className="research-step__text">{s}</span>
+                <li key={i} className={`${step.status}${open ? ' open' : ''}`}>
+                  <button className="research-step__row" onClick={() => toggle(i)} aria-expanded={open}>
+                    <span className="research-step__mark" aria-hidden />
+                    <span className="research-step__text">{step.summary}</span>
+                    <svg className="research-step__caret" width="9" height="9" viewBox="0 0 10 10" aria-hidden>
+                      <path d="M2 3.5l3 3 3-3" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" fill="none" />
+                    </svg>
+                  </button>
+                  {open && <pre className="research-step__detail">{step.detail}</pre>}
                 </li>
               )
             })}
