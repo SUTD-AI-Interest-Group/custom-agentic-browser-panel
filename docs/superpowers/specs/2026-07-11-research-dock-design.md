@@ -26,11 +26,16 @@ number of concurrent tasks.
 
 - No change to the research **engine** (offscreen agent, `runResearch`, tools,
   storage protocol) — this is a panel-UI change only.
-- No change to research-task **scoping**: tasks remain **global** (not tied to a
-  conversation), exactly as today. Report cards render after the last message in
-  whatever conversation is open.
-- No new persisted fields on `ResearchTask`. Dock/sheet state is ephemeral React
-  state derived from the existing `researchTasks` array.
+- Dock/sheet UI state is ephemeral React state derived from the existing
+  `researchTasks` array (only `openSheetTaskId` + a `now` tick are new).
+
+**Scoping (revised after first review):** research tasks are now **scoped to the
+conversation they were launched from**, not global. `ResearchTask` gains a
+`conversationId` (tagged in `StartResearch` → `research.ensureAndStart` →
+`saveTask`), and the panel filters both the dock and the report cards to the
+open conversation. This fixes a reported bug where a finished report stayed
+pinned in *every* chat, including brand-new ones. Legacy tasks predating the
+field have no `conversationId` and therefore surface in no conversation.
 
 ## Surfaces
 
@@ -151,9 +156,9 @@ Reused as-is:
 
 Terminal tasks with a report/error render **after** `messages.map(...)`, ordered
 by `updatedAt` (oldest → newest) so the newest research report is the last thing
-in the scroll — consistent with "append to the end of the chat." (Research tasks
-remain global, so these cards appear regardless of which conversation is open,
-same as today's top-pinned cards.)
+in the scroll — consistent with "append to the end of the chat." Only the open
+conversation's tasks render (see Scoping), so a report appears at the bottom of
+the chat it was launched from and nowhere else.
 
 ## Styling (`styles.css`)
 

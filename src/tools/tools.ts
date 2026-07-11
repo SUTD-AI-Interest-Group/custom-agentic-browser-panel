@@ -127,6 +127,8 @@ export function createAgentTools(
   imageQueue: string[],
   /** Resolves each tool's Never/Ask/Always policy; `never` tools are removed below. */
   policyFor: (name: string) => ToolPolicy,
+  /** The open conversation, tagged onto any background research launched this turn. */
+  conversationId: string,
 ): ToolSet {
   const tools: ToolSet = {
     ViewCurrentTab: tool({
@@ -823,7 +825,7 @@ export function createAgentTools(
   // Background web research: gated in the foreground (this card), then handed
   // off to the offscreen research host, which runs the real (ungated) research
   // tools headlessly — see src/tools/research.ts and src/agent/research.ts.
-  Object.assign(tools, createStartResearchTool(requestApproval))
+  Object.assign(tools, createStartResearchTool(requestApproval, conversationId))
 
   // Honor the tab-visibility preference chosen in onboarding: in active-tab
   // mode the model never even sees a tool that could enumerate other tabs.

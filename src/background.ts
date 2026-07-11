@@ -142,6 +142,7 @@ chrome.runtime.onMessage.addListener((msg: ResearchMsg) => {
         steps: [],
         startedAt: Date.now(),
         updatedAt: Date.now(),
+        conversationId: msg.conversationId,
       })
       try {
         await ensureOffscreen()

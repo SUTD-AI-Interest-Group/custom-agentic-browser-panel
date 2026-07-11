@@ -62,7 +62,7 @@ export function createResearchTools(deps: {
  * ensureAndStart`. The task runs to completion even if the panel closes; the
  * result lands in `researchTasks` storage and a system notification fires.
  */
-export function createStartResearchTool(requestApproval: ApprovalGate): ToolSet {
+export function createStartResearchTool(requestApproval: ApprovalGate, conversationId: string): ToolSet {
   return {
     StartResearch: tool({
       description:
@@ -72,7 +72,9 @@ export function createStartResearchTool(requestApproval: ApprovalGate): ToolSet 
         const approved = await requestApproval({ toolName: 'StartResearch', summary: 'Run background research', reason: question })
         if (!approved) return { denied: true, message: 'The user denied permission for this tool call.' }
         const taskId = `r-${Date.now()}-${Math.floor(performance.now())}`
-        chrome.runtime.sendMessage({ type: 'research.ensureAndStart', taskId, question })
+        // Tag the task with the launching conversation so its dock bar / report
+        // card surface only in that chat (not globally in every conversation).
+        chrome.runtime.sendMessage({ type: 'research.ensureAndStart', taskId, question, conversationId })
         return { started: true, taskId, note: 'Research is running in the background; results will appear in the panel and a notification when done.' }
       },
     }),

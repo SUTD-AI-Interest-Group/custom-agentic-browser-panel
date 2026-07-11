@@ -26,7 +26,12 @@ import { clearIndex } from '../platform/domIndex'
 import { unmountPresence, unmountAllPresence } from '../platform/presence'
 import { grantedCapabilities, type BrowsingCapability } from '../platform/permissions'
 import { getSkill, listSkillMetas, listSkills } from '../data/skills'
-import { listTasks, type ResearchTask, type ResearchMsg } from '../data/researchTasks'
+import { listTasks, type ResearchTask, type ResearchStatus, type ResearchMsg } from '../data/researchTasks'
+
+// How long a finished research task lingers in the composer dock (as a ✓/✕/⊘
+// bar) after it completes before auto-dismissing. Its report has already
+// dropped into the chat by then, so the bar is just a brief completion cue.
+const DOCK_LINGER_MS = 15_000
 
 // Which browsing-insight tool each capability exposes — used to tell the model,
 // each turn, exactly which are usable so it never calls a disabled one.
@@ -253,9 +258,16 @@ export default function Chat({
   // so it isn't re-attached until they highlight something different.
   const [selection, setSelection] = useState<{ text: string; tabId: number } | null>(null)
   const [dismissedSelection, setDismissedSelection] = useState('')
-  // Background research tasks (Task 7), rendered as live cards regardless of
-  // which conversation is open — they aren't scoped to conversationId.
+  // Background research tasks (Task 7). Loaded globally from storage, then
+  // filtered to the open conversation (see `myTasks` in render) so a task's
+  // dock bar + report card surface only in the chat it was launched from.
   const [researchTasks, setResearchTasks] = useState<ResearchTask[]>([])
+  // Which research task's live-workflow bottom sheet is open (null = closed).
+  const [openSheetTaskId, setOpenSheetTaskId] = useState<string | null>(null)
+  // A ~1s wall-clock tick that only runs while a finished task is still inside
+  // its DOCK_LINGER_MS window, so dock bars can auto-expire without an idle
+  // timer when nothing is completing (see effect below).
+  const [now, setNow] = useState(() => Date.now())
   // Open tabs resolved for @all, so the composer can preview each attached page
   // as its own pill. Populated only while @all is active (see effect below).
   const [allTabs, setAllTabs] = useState<TabSummary[]>([])
@@ -381,6 +393,20 @@ export default function Chat({
       chrome.storage.onChanged.removeListener(onChanged)
     }
   }, [])
+
+  // Drive dock-bar expiry: while any terminal task is still within its linger
+  // window, tick `now` once a second so the derived dock list re-filters and
+  // drops the bar when it crosses DOCK_LINGER_MS. Depending on `now` re-runs
+  // this each tick, which lets it self-stop (clear the interval) once the last
+  // lingering task ages out — no idle timer when nothing is finishing.
+  useEffect(() => {
+    const lingering = researchTasks.some(
+      (t) => t.status !== 'running' && now - t.updatedAt < DOCK_LINGER_MS,
+    )
+    if (!lingering) return
+    const id = setInterval(() => setNow(Date.now()), 1000)
+    return () => clearInterval(id)
+  }, [researchTasks, now])
 
   // @all attaches every open tab; it's only honored when the user has granted
   // all-tabs visibility. The composer previews each attached page as a pill.
@@ -549,6 +575,20 @@ export default function Chat({
   // storage.onChanged listener above then refreshes this card.
   function cancelResearchTask(taskId: string) {
     chrome.runtime.sendMessage({ type: 'research.cancel', taskId } satisfies ResearchMsg)
+  }
+
+  // Tapping a dock bar: a running task opens its live-workflow sheet; a finished
+  // one closes any sheet and scrolls the chat to the report card that dropped in
+  // (a cancelled task has no card, so this is a harmless no-op for it).
+  function openDockTask(t: ResearchTask) {
+    if (t.status === 'running') {
+      setOpenSheetTaskId(t.id)
+      return
+    }
+    setOpenSheetTaskId(null)
+    document
+      .getElementById(`research-report-${t.id}`)
+      ?.scrollIntoView({ behavior: 'smooth', block: 'start' })
   }
 
   // Arc/Dia-style snipe: tint the page, snap to hovered components, or drag
@@ -858,6 +898,7 @@ export default function Chat({
           selected,
           imageQueue,
           (name) => toolPolicy(settings, name),
+          conversationId,
         ),
         abortSignal: controller.signal,
         onUpdate: updateAssistant,
@@ -969,12 +1010,26 @@ export default function Chat({
     }
   }
 
+  // Only this conversation's research surfaces here: each task is tagged with
+  // the chat it was launched from, so other chats — and brand-new ones — stay
+  // clean. Legacy tasks predating tagging have no conversationId and match none.
+  const myTasks = researchTasks.filter((t) => t.conversationId === conversationId)
+  // Tasks shown in the composer dock: everything still running, plus terminal
+  // tasks still inside their linger window. Newest first (listTasks order).
+  const dockTasks = myTasks.filter(
+    (t) => t.status === 'running' || now - t.updatedAt < DOCK_LINGER_MS,
+  )
+  // Finished tasks whose report/error drops into the chat, oldest → newest so
+  // the most recent research lands last (at the end of the transcript).
+  const reportTasks = myTasks
+    .filter((t) => (t.status === 'done' && t.report) || (t.status === 'error' && t.error))
+    .slice()
+    .sort((a, b) => a.updatedAt - b.updatedAt)
+  const openSheetTask = researchTasks.find((t) => t.id === openSheetTaskId) ?? null
+
   return (
     <div className="chat">
       <div className="messages" ref={scrollRef}>
-        {researchTasks.map((t) => (
-          <ResearchCard key={t.id} task={t} onCancel={() => cancelResearchTask(t.id)} />
-        ))}
         {messages.length === 0 && (
           <div className="empty-state">
             <div className="empty-title">How can I help?</div>
@@ -992,6 +1047,9 @@ export default function Chat({
             streaming={streaming && i === messages.length - 1}
             turnStartedAt={turnStartedAt}
           />
+        ))}
+        {reportTasks.map((t) => (
+          <ResearchReportCard key={t.id} task={t} />
         ))}
         {approval && (
           <ApprovalCard
@@ -1095,6 +1153,7 @@ export default function Chat({
             ))}
           </div>
         )}
+        <ResearchDock tasks={dockTasks} onOpen={openDockTask} />
         <div className="composer">
           {attachments.length > 0 && (
             <div className="attachment-row">
@@ -1302,6 +1361,13 @@ export default function Chat({
           </div>
         </div>
       </div>
+      {openSheetTask && (
+        <ResearchSheet
+          task={openSheetTask}
+          onClose={() => setOpenSheetTaskId(null)}
+          onStop={() => cancelResearchTask(openSheetTask.id)}
+        />
+      )}
     </div>
   )
 }
@@ -1459,14 +1525,38 @@ function AssistantText({ text, streaming }: { text: string; streaming: boolean }
   )
 }
 
-// Actions on a completed assistant message: copy the rendered message as a PNG
-// image, or copy its text as markdown.
+// Actions on a completed assistant message: the shared copy-as-image /
+// copy-as-markdown group, plus the message's source favicons.
 function MessageToolbar({
   message,
   targetRef,
 }: {
   message: UIMessage
   targetRef: React.RefObject<HTMLDivElement>
+}) {
+  const markdown = message.parts
+    .map((p) => (p.type === 'text' ? p.text : ''))
+    .filter(Boolean)
+    .join('\n\n')
+    .trim()
+  return (
+    <div className="msg-toolbar">
+      <CopyActions targetRef={targetRef} markdown={markdown} />
+      <SourceBar sources={deriveSources(message)} />
+    </div>
+  )
+}
+
+// Copy-as-image (a PNG of `targetRef`'s rendered DOM) and copy-as-markdown
+// (`markdown` text) buttons, each with a transient check/error state. Shared by
+// assistant replies and research report cards so the clipboard + icon logic
+// lives in one place. `targetRef` is HTMLElement so any body ref can pass here.
+function CopyActions({
+  targetRef,
+  markdown,
+}: {
+  targetRef: React.RefObject<HTMLElement>
+  markdown: string
 }) {
   const [imageState, setImageState] = useState<'idle' | 'done' | 'error'>('idle')
   const [copyState, setCopyState] = useState<'idle' | 'done' | 'error'>('idle')
@@ -1484,11 +1574,6 @@ function MessageToolbar({
   }
 
   async function copyMarkdown() {
-    const markdown = message.parts
-      .map((p) => (p.type === 'text' ? p.text : ''))
-      .filter(Boolean)
-      .join('\n\n')
-      .trim()
     try {
       await navigator.clipboard.writeText(markdown)
       setCopyState('done')
@@ -1498,11 +1583,8 @@ function MessageToolbar({
     setTimeout(() => setCopyState('idle'), 1500)
   }
 
-  const sources = deriveSources(message)
-
   return (
-    <div className="msg-toolbar">
-      <div className="msg-toolbar-actions">
+    <div className="msg-toolbar-actions">
       <button
         className={`msg-tool-btn ${imageState}`}
         data-tooltip={imageState === 'error' ? "Couldn't copy image" : 'Copy response as image'}
@@ -1534,8 +1616,6 @@ function MessageToolbar({
           </svg>
         )}
       </button>
-      </div>
-      <SourceBar sources={sources} />
     </div>
   )
 }
@@ -1791,54 +1871,171 @@ function ToolPill({ part }: { part: Extract<UIPart, { type: 'tool' }> }) {
   )
 }
 
-// Live card for one background research task (Task 7): streams `steps` while
-// running, then swaps in the rendered Markdown report + clickable sources.
-// Rendered newest-first, independent of which conversation is open.
-function ResearchCard({ task, onCancel }: { task: ResearchTask; onCancel: () => void }) {
-  const statusLabel =
-    task.status === 'running'
-      ? 'Researching…'
-      : task.status === 'done'
-        ? 'Done'
-        : task.status === 'cancelled'
-          ? 'Cancelled'
-          : 'Failed'
+// A finished background-research task dropped into the chat at the end of the
+// transcript (done → report, error → error text). Rendered with the same
+// treatment as an assistant reply: an AssistantText body (image carousels,
+// link cards, JSON, markdown) plus the shared copy-as-image / copy-as-markdown
+// actions and a SourceBar. The `id` is the scroll target for its ✓ dock bar.
+function ResearchReportCard({ task }: { task: ResearchTask }) {
+  const bodyRef = useRef<HTMLDivElement>(null)
   return (
-    <div className={`research-card ${task.status}`}>
-      <div className="research-card__head">
-        <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-          <circle cx="6" cy="6" r="4.2" stroke="currentColor" strokeWidth="1.3" />
-          <path d="M9 9l3.2 3.2" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
-        </svg>
-        <span className="research-card__question">{task.question}</span>
-        <span className="research-card__status">{statusLabel}</span>
+    <div className="msg-assistant research-report" id={`research-report-${task.id}`}>
+      <div className="msg-assistant-body" ref={bodyRef}>
+        <div className="research-report__label">
+          <ResearchGlyph />
+          <span>Research · {task.question}</span>
+        </div>
+        {task.report ? (
+          <AssistantText text={task.report} streaming={false} />
+        ) : (
+          <div className="research-card__error">{task.error}</div>
+        )}
       </div>
-      {task.status === 'running' && (
-        <>
-          <ul className="research-card__steps">
-            {task.steps.slice(-6).map((s, i) => (
-              <li key={i}>{s}</li>
-            ))}
+      {task.report && (
+        <div className="msg-toolbar">
+          <CopyActions targetRef={bodyRef} markdown={task.report} />
+          {task.sources && task.sources.length > 0 && <SourceBar sources={task.sources} />}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// The dock of live / just-finished research tasks, stacked directly above the
+// composer. Each bar taps through to `onOpen`. Renders nothing when empty so
+// the composer sits flush with no gap.
+function ResearchDock({
+  tasks,
+  onOpen,
+}: {
+  tasks: ResearchTask[]
+  onOpen: (t: ResearchTask) => void
+}) {
+  if (tasks.length === 0) return null
+  return (
+    <div className="research-dock">
+      {tasks.map((t) => (
+        <ResearchBar key={t.id} task={t} onOpen={() => onOpen(t)} />
+      ))}
+    </div>
+  )
+}
+
+// One thin dock bar: status icon + question + expand chevron.
+function ResearchBar({ task, onOpen }: { task: ResearchTask; onOpen: () => void }) {
+  return (
+    <button className={`research-bar ${task.status}`} onClick={onOpen} title={task.question}>
+      <ResearchStatusIcon status={task.status} />
+      <span className="research-bar__title">{task.question}</span>
+      <svg className="research-bar__chevron" width="10" height="10" viewBox="0 0 10 10" aria-hidden>
+        <path d="M2 6.5L5 3.5l3 3" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" fill="none" />
+      </svg>
+    </button>
+  )
+}
+
+// The bottom sheet (~85% height) for one task's live workflow: question header,
+// full step log (each marked done/active), sources gathered so far, and a Stop
+// button while running. A scrim behind it closes on click.
+function ResearchSheet({
+  task,
+  onClose,
+  onStop,
+}: {
+  task: ResearchTask
+  onClose: () => void
+  onStop: () => void
+}) {
+  return (
+    <>
+      <div className="research-sheet__scrim" onClick={onClose} />
+      <div className="research-sheet" role="dialog" aria-label={`Research: ${task.question}`}>
+        <div className="research-sheet__head">
+          <ResearchStatusIcon status={task.status} />
+          <span className="research-sheet__question">{task.question}</span>
+          <button className="research-sheet__close" onClick={onClose} aria-label="Collapse">
+            <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden>
+              <path d="M3 5l3 3 3-3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" fill="none" />
+            </svg>
+          </button>
+        </div>
+        <div className="research-sheet__body">
+          <ul className="research-sheet__steps">
+            {task.steps.map((s, i) => {
+              const active = task.status === 'running' && i === task.steps.length - 1
+              return (
+                <li key={i} className={active ? 'active' : 'done'}>
+                  <span className="research-step__mark" aria-hidden />
+                  <span className="research-step__text">{s}</span>
+                </li>
+              )
+            })}
+            {task.steps.length === 0 && <li className="muted">Starting…</li>}
           </ul>
-          <div className="research-card__actions">
-            <button className="btn ghost" onClick={onCancel}>
+          {task.sources && task.sources.length > 0 && (
+            <div className="research-sheet__sources">
+              <div className="research-sheet__sources-title">Sources so far</div>
+              {task.sources.map((s) => (
+                <a key={s.url} href={s.url} target="_blank" rel="noreferrer">
+                  {s.title || s.url}
+                </a>
+              ))}
+            </div>
+          )}
+        </div>
+        {task.status === 'running' && (
+          <div className="research-sheet__foot">
+            <button className="btn ghost" onClick={onStop}>
               Stop
             </button>
           </div>
-        </>
+        )}
+      </div>
+    </>
+  )
+}
+
+// Dock/sheet status glyph: a spinner while running, then ✓ / ✕ / ⊘ for
+// done / error / cancelled.
+function ResearchStatusIcon({ status }: { status: ResearchStatus }) {
+  if (status === 'running') return <ResearchSpinner />
+  return (
+    <span className={`research-status research-status--${status}`}>
+      {status === 'done' ? (
+        <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden>
+          <path d="M3.5 8.5l3 3 6-6.5" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" fill="none" />
+        </svg>
+      ) : status === 'error' ? (
+        <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden>
+          <path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" fill="none" />
+        </svg>
+      ) : (
+        <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden>
+          <circle cx="8" cy="8" r="6" stroke="currentColor" strokeWidth="1.5" fill="none" />
+          <path d="M4 4l8 8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+        </svg>
       )}
-      {task.report && <Markdown text={task.report} />}
-      {task.sources && task.sources.length > 0 && (
-        <div className="research-card__sources">
-          {task.sources.map((s) => (
-            <a key={s.url} href={s.url} target="_blank" rel="noreferrer">
-              {s.title || s.url}
-            </a>
-          ))}
-        </div>
-      )}
-      {task.error && <div className="research-card__error">{task.error}</div>}
-    </div>
+    </span>
+  )
+}
+
+// A CSS-animated ring spinner for running research.
+function ResearchSpinner() {
+  return (
+    <svg className="research-spinner" width="14" height="14" viewBox="0 0 16 16" aria-hidden>
+      <circle cx="8" cy="8" r="6" stroke="currentColor" strokeWidth="1.6" fill="none" opacity="0.25" />
+      <path d="M8 2a6 6 0 0 1 6 6" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" fill="none" />
+    </svg>
+  )
+}
+
+// The small search glyph beside a report card's title.
+function ResearchGlyph() {
+  return (
+    <svg width="13" height="13" viewBox="0 0 14 14" fill="none" aria-hidden>
+      <circle cx="6" cy="6" r="4.2" stroke="currentColor" strokeWidth="1.3" />
+      <path d="M9 9l3.2 3.2" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
+    </svg>
   )
 }
 

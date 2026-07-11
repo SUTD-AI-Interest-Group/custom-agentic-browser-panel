@@ -15,11 +15,15 @@ export interface ResearchTask {
   error?: string
   startedAt: number
   updatedAt: number
+  /** The conversation this research was launched from, so its dock bar and
+   *  report card only surface in that chat (legacy tasks lack it and, being
+   *  unmatched, surface in none). */
+  conversationId?: string
 }
 
 /** SW↔offscreen↔panel message protocol: panel sends `ensureAndStart`/`cancel`; offscreen sends `start`, `update`, `done`, `error`. */
 export type ResearchMsg =
-  | { type: 'research.ensureAndStart'; taskId: string; question: string }
+  | { type: 'research.ensureAndStart'; taskId: string; question: string; conversationId: string }
   | { type: 'research.start'; taskId: string; question: string; providerConfig: ProviderConfig; modelId: string }
   | { type: 'research.update'; taskId: string; step: string }
   | { type: 'research.done'; taskId: string; report: string; sources: ResearchSource[] }
