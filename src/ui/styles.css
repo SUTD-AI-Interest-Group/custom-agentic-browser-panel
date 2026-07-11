@@ -664,6 +664,77 @@ body {
   margin-top: 12px;
 }
 
+/* ---- Research task card ---- */
+
+.research-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 12px;
+}
+
+.research-card.error {
+  border-color: var(--danger);
+}
+
+.research-card__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+}
+
+.research-card__question {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.research-card__status {
+  font-weight: 400;
+  font-size: 12px;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.research-card__steps {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11.5px;
+  color: var(--text-muted);
+}
+
+.research-card__actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.research-card__sources {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  font-size: 12px;
+}
+
+.research-card__sources a {
+  color: var(--accent);
+}
+
+.research-card__error {
+  color: var(--danger);
+  font-size: 12.5px;
+}
+
 /* ---- Buttons ---- */
 
 .btn {

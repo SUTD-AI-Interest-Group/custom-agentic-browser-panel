@@ -17,6 +17,7 @@ import { clearIndex } from '../platform/domIndex'
 import { unmountPresence } from '../platform/presence'
 import { grantedCapabilities, type BrowsingCapability } from '../platform/permissions'
 import { getSkill, listSkillMetas, listSkills } from '../data/skills'
+import { listTasks, type ResearchTask, type ResearchMsg } from '../data/researchTasks'
 
 // Which browsing-insight tool each capability exposes — used to tell the model,
 // each turn, exactly which are usable so it never calls a disabled one.
@@ -221,6 +222,9 @@ export default function Chat({
   // so it isn't re-attached until they highlight something different.
   const [selection, setSelection] = useState<{ text: string; tabId: number } | null>(null)
   const [dismissedSelection, setDismissedSelection] = useState('')
+  // Background research tasks (Task 7), rendered as live cards regardless of
+  // which conversation is open — they aren't scoped to conversationId.
+  const [researchTasks, setResearchTasks] = useState<ResearchTask[]>([])
 
   // Bumped when a turn finishes, to trigger persistence of the transcript.
   const [turnSeq, setTurnSeq] = useState(0)
@@ -301,6 +305,21 @@ export default function Chat({
       chrome.tabs.onActivated.removeListener(onActivated)
       chrome.tabs.onUpdated.removeListener(onUpdated)
     }
+  }, [])
+
+  // Research task cards: load persisted tasks on mount (so a task that
+  // finished while the panel was closed still shows), then refresh from
+  // storage whenever the persisted 'researchTasks' map changes. Refreshing
+  // off storage.onChanged (not chrome.runtime.onMessage) avoids a race where
+  // the panel's own message listener fires before the SW has finished
+  // persisting the same broadcast.
+  useEffect(() => {
+    void listTasks().then(setResearchTasks)
+    const onChanged = (changes: { [k: string]: chrome.storage.StorageChange }, area: string) => {
+      if (area === 'local' && changes.researchTasks) void listTasks().then(setResearchTasks)
+    }
+    chrome.storage.onChanged.addListener(onChanged)
+    return () => chrome.storage.onChanged.removeListener(onChanged)
   }, [])
 
   // Watch the active tab for a text selection and surface it as removable
@@ -435,6 +454,12 @@ export default function Chat({
   function stop() {
     settleApproval(false)
     abortRef.current?.abort()
+  }
+
+  // Cancel a running research task. The SW persists status:'cancelled'; the
+  // storage.onChanged listener above then refreshes this card.
+  function cancelResearchTask(taskId: string) {
+    chrome.runtime.sendMessage({ type: 'research.cancel', taskId } satisfies ResearchMsg)
   }
 
   // Arc/Dia-style snipe: tint the page, snap to hovered components, or drag
@@ -793,6 +818,9 @@ export default function Chat({
   return (
     <div className="chat">
       <div className="messages" ref={scrollRef}>
+        {researchTasks.map((t) => (
+          <ResearchCard key={t.id} task={t} onCancel={() => cancelResearchTask(t.id)} />
+        ))}
         {messages.length === 0 && (
           <div className="empty-state">
             <div className="empty-title">How can I help?</div>
@@ -1396,6 +1424,57 @@ function ToolPill({ part }: { part: Extract<UIPart, { type: 'tool' }> }) {
       </summary>
       <pre>{JSON.stringify({ input: part.input, output: part.output }, null, 2)}</pre>
     </details>
+  )
+}
+
+// Live card for one background research task (Task 7): streams `steps` while
+// running, then swaps in the rendered Markdown report + clickable sources.
+// Rendered newest-first, independent of which conversation is open.
+function ResearchCard({ task, onCancel }: { task: ResearchTask; onCancel: () => void }) {
+  const statusLabel =
+    task.status === 'running'
+      ? 'Researching…'
+      : task.status === 'done'
+        ? 'Done'
+        : task.status === 'cancelled'
+          ? 'Cancelled'
+          : 'Failed'
+  return (
+    <div className={`research-card ${task.status}`}>
+      <div className="research-card__head">
+        <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+          <circle cx="6" cy="6" r="4.2" stroke="currentColor" strokeWidth="1.3" />
+          <path d="M9 9l3.2 3.2" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
+        </svg>
+        <span className="research-card__question">{task.question}</span>
+        <span className="research-card__status">{statusLabel}</span>
+      </div>
+      {task.status === 'running' && (
+        <>
+          <ul className="research-card__steps">
+            {task.steps.slice(-6).map((s, i) => (
+              <li key={i}>{s}</li>
+            ))}
+          </ul>
+          <div className="research-card__actions">
+            <button className="btn ghost" onClick={onCancel}>
+              Stop
+            </button>
+          </div>
+        </>
+      )}
+      {task.report && <Markdown text={task.report} />}
+      {task.sources && task.sources.length > 0 && (
+        <div className="research-card__sources">
+          {task.sources.map((s) => (
+            <a key={s.url} href={s.url} target="_blank" rel="noreferrer">
+              {s.title || s.url}
+            </a>
+          ))}
+        </div>
+      )}
+      {task.error && <div className="research-card__error">{task.error}</div>}
+    </div>
   )
 }
 
