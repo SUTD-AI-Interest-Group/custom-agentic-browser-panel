@@ -33,24 +33,13 @@ import { listTasks, type ResearchTask, type ResearchStatus, type ResearchMsg } f
 // dropped into the chat by then, so the bar is just a brief completion cue.
 const DOCK_LINGER_MS = 15_000
 
-// Which browsing-insight tool each capability exposes — used to tell the model,
-// each turn, exactly which are usable so it never calls a disabled one.
-const BROWSING_TOOL_NAMES: Record<BrowsingCapability, string> = {
-  history: 'GetBrowsingHistory',
-  bookmarks: 'GetBookmarks',
-  topSites: 'GetTopSites',
-  downloads: 'GetDownloads',
-}
-
-/** System-prompt suffix naming the browsing-insight tools available this turn. */
+/** System-prompt suffix naming the QueryBrowserData sources available this turn. */
 function browsingInsightsNote(granted: Set<BrowsingCapability>): string {
-  const available = (Object.keys(BROWSING_TOOL_NAMES) as BrowsingCapability[])
-    .filter((cap) => granted.has(cap))
-    .map((cap) => BROWSING_TOOL_NAMES[cap])
-  if (available.length === 0) {
-    return '\n\nThe browsing-insight tools (history, bookmarks, top sites, downloads) are currently turned off; do not offer to use them.'
+  const sources = (['history', 'bookmarks', 'topSites', 'downloads'] as const).filter((s) => granted.has(s))
+  if (sources.length === 0) {
+    return '\n\nThe QueryBrowserData tool (history, bookmarks, top sites, downloads) is currently turned off; do not offer to use it.'
   }
-  return `\n\nBrowsing-insight tools available this turn: ${available.join(', ')}.`
+  return `\n\nQueryBrowserData sources available this turn: ${sources.join(', ')}.`
 }
 
 // Appended to every system prompt (independent of the user's editable
@@ -91,7 +80,7 @@ const MEMORY_TOKEN = '@memory'
 const MEMORY_TOKEN_RE = /(^|\s)@memory\b/i
 
 // @all attaches the content of every open tab. Only offered when the user has
-// granted all-tabs visibility, mirroring the ViewOpenedTabs gate.
+// granted all-tabs visibility, mirroring the ReadTabs gate.
 const ALL_TOKEN = '@all'
 const ALL_TOKEN_RE = /(^|\s)@all\b/i
 const MAX_ALL_TABS = 25
@@ -147,8 +136,8 @@ function stripToken(value: string, token: string): string {
 // ---- Source favicons -----------------------------------------------------
 // The pages an assistant reply drew on, shown as a favicon avatar bar beside
 // the copy actions. Only real web pages count: tabs attached to the user's
-// turn (stored on the message) plus pages the model read via ViewCurrentTab /
-// ViewOpenedTabs / GetActiveTabDOM / GetAllDOM (derived from the reply's tool parts).
+// turn (stored on the message) plus pages the model read via ReadPage /
+// ReadTabs (derived from the reply's tool parts).
 
 const MAX_VISIBLE_SOURCES = 3
 
@@ -180,15 +169,16 @@ function deriveSources(message: UIMessage): MessageSource[] {
     if (part.type !== 'tool' || part.state !== 'done') continue
     const output = part.output as any
     if (!output || typeof output !== 'object' || output.denied) continue
-    if ((part.toolName === 'ViewCurrentTab' || part.toolName === 'GetActiveTabDOM') && !output.error) {
+    if (part.toolName === 'ReadPage' && !output.error && output.url) {
       collected.push({ title: output.title ?? '', url: output.url ?? '' })
-    } else if (part.toolName === 'ViewOpenedTabs' && Array.isArray(output.contents)) {
-      for (const c of output.contents) {
+    } else if (part.toolName === 'ReadTabs') {
+      const items = Array.isArray(output.contents)
+        ? output.contents
+        : Array.isArray(output.doms)
+          ? output.doms
+          : []
+      for (const c of items) {
         if (c && !c.error) collected.push({ title: c.title ?? '', url: c.url ?? '' })
-      }
-    } else if (part.toolName === 'GetAllDOM' && Array.isArray(output.doms)) {
-      for (const d of output.doms) {
-        if (d && !d.error) collected.push({ title: d.title ?? '', url: d.url ?? '' })
       }
     }
   }
@@ -963,7 +953,7 @@ export default function Chat({
     const granted = await grantedCapabilities().catch(() => new Set<BrowsingCapability>())
     const accessNote =
       settings.tabAccess === 'active-tab'
-        ? '\n\nThe user has restricted your tab visibility to the tab they are currently on; ViewOpenedTabs and GetAllDOM are unavailable.'
+        ? '\n\nThe user has restricted your tab visibility to the tab they are currently on; ReadTabs is unavailable.'
         : ''
     const skillMetas = await listSkillMetas({ modelInvocableOnly: true }).catch(() => [])
     const skillsCatalog =
@@ -1951,17 +1941,21 @@ function ToolPill({ part }: { part: Extract<UIPart, { type: 'tool' }> }) {
   if (part.state === 'running') label = 'Waiting for permission…'
   else if (part.state === 'error') label = `${part.toolName} failed`
   else if (denied) label = 'Permission denied'
-  else if (part.toolName === 'ViewCurrentTab') label = `Viewed current tab · ${output?.title ?? ''}`
-  else if (part.toolName === 'ViewOpenedTabs')
+  else if (part.toolName === 'ReadPage') {
+    const mode = (part.input as any)?.mode
+    label = output?.error
+      ? 'Could not read the page'
+      : mode === 'elements'
+        ? 'Read the page elements'
+        : mode === 'dom'
+          ? `Read current tab DOM · ${output?.title ?? ''}`
+          : `Viewed current tab · ${output?.title ?? ''}`
+  } else if (part.toolName === 'ReadTabs')
     label = output?.contents
       ? `Read ${output.contents.length} tab${output.contents.length > 1 ? 's' : ''}`
-      : `Listed ${output?.tabs?.length ?? 0} open tabs`
-  else if (part.toolName === 'GetActiveTabDOM')
-    label = output?.error ? 'Could not read tab DOM' : `Read current tab DOM · ${output?.title ?? ''}`
-  else if (part.toolName === 'GetAllDOM')
-    label = output?.doms
-      ? `Read DOM of ${output.doms.length} tab${output.doms.length > 1 ? 's' : ''}`
-      : `Listed ${output?.tabs?.length ?? 0} open tabs`
+      : output?.doms
+        ? `Read DOM of ${output.doms.length} tab${output.doms.length > 1 ? 's' : ''}`
+        : `Listed ${output?.tabs?.length ?? 0} open tabs`
   else if (part.toolName === 'NavigateTab')
     label = output?.error
       ? 'Navigation failed'
@@ -1979,7 +1973,8 @@ function ToolPill({ part }: { part: Extract<UIPart, { type: 'tool' }> }) {
     label = output?.error ? 'Skill not found' : `Loaded skill · ${output?.name ?? ''}`
   else if (part.toolName === 'SaveSkill')
     label = output?.saved ? `Saved skill · ${output?.name ?? ''}` : 'Skill not saved'
-  else if (part.toolName === 'InspectPage') label = 'Read the page elements'
+  else if (part.toolName === 'QueryBrowserData')
+    label = output?.error ? 'Browser data unavailable' : `Queried your ${(part.input as any)?.source ?? 'browser data'}`
   else if (part.toolName === 'RequestPageControl')
     label = output?.started ? 'Started controlling the page' : 'Asked to control the page'
   else if (part.toolName === 'ControlPage') label = controlActionLabel(part.input, output)

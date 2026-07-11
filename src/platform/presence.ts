@@ -6,7 +6,7 @@
 // injection animates from where the cursor last was.
 //
 // Two intensities, chosen by the caller:
-//   - Ambient (NavigateTab / InspectPage): frame only — page not dimmed.
+//   - Ambient (NavigateTab / ReadPage mode "elements"): frame only — page not dimmed.
 //   - Active control (a page-control session): frame + soft tint + spotlight +
 //     cursor + click ripple. The session flips the tint on with `setTint`.
 

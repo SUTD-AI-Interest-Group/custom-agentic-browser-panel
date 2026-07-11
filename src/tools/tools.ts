@@ -114,8 +114,8 @@ async function lookResult(
 }
 
 // DOM is denser than plain text, so these caps run larger than the 25k text cap.
-const MAX_DOM_CHARS = 40_000 // single active tab (GetActiveTabDOM)
-const MAX_DOM_CHARS_PER_TAB = 15_000 // per tab in GetAllDOM, to bound aggregate size
+const MAX_DOM_CHARS = 40_000 // single active tab (ReadPage mode "dom")
+const MAX_DOM_CHARS_PER_TAB = 15_000 // per tab in ReadTabs mode "dom", to bound aggregate size
 
 export function createAgentTools(
   requestApproval: ApprovalGate,
@@ -129,6 +129,10 @@ export function createAgentTools(
   /** The open conversation, tagged onto any background research launched this turn. */
   conversationId: string,
 ): ToolSet {
+  const BROWSING_SOURCES = ['history', 'bookmarks', 'topSites', 'downloads'] as const
+  const grantedSources = BROWSING_SOURCES.filter((s) => granted.has(s))
+  const sourcesLabel = grantedSources.length ? grantedSources.join(', ') : 'none currently enabled'
+
   const tools: ToolSet = {
     ReadPage: tool({
       description:
@@ -218,7 +222,7 @@ export function createAgentTools(
 
     RequestPageControl: tool({
       description:
-        'Ask the user for permission to control the active tab to carry out a task (fill a form, click through a flow, navigate). State a concise plan. On approval you get a page-control session and the first element list; then use ControlPage for each step and InspectPage to re-read. Point-of-no-return steps (submitting, cross-site navigation, passwords/payments) still ask each time.',
+        'Ask the user for permission to control the active tab to carry out a task (fill a form, click through a flow, navigate). State a concise plan. On approval you get a page-control session and the first element list; then use ControlPage for each step and ReadPage (mode "elements") to re-read. Point-of-no-return steps (submitting, cross-site navigation, passwords/payments) still ask each time.',
       inputSchema: z.object({
         plan: z
           .string()
@@ -259,7 +263,7 @@ export function createAgentTools(
 
     ControlPage: tool({
       description:
-        'Perform ONE action on the active tab within an open page-control session: click, type, select, scroll, highlight, navigate, press a key, or wait. Target elements by their [index] from InspectPage/RequestPageControl. wait: pause until the page settles or an optional CSS selector (passed in text) appears. Returns the refreshed element list.',
+        'Perform ONE action on the active tab within an open page-control session: click, type, select, scroll, highlight, navigate, press a key, or wait. Target elements by their [index] from ReadPage (mode "elements")/RequestPageControl. wait: pause until the page settles or an optional CSS selector (passed in text) appears. Returns the refreshed element list.',
       inputSchema: z.object({
         action: z.enum(['click', 'type', 'select', 'scroll', 'highlight', 'navigate', 'press', 'wait']),
         index: z.number().optional().describe('Target element index from the list.'),
@@ -399,7 +403,7 @@ export function createAgentTools(
         'Fill the form on the active tab from the user\'s saved profile memories, within an open page-control session. Maps profile details (name, email, address…) to the indexed fields you pass. Sensitive fields (passwords, payment) and any submit still ask each time. Never invents secrets.',
       inputSchema: z.object({
         fields: z.array(z.object({
-          index: z.number().describe('Target field [index] from InspectPage.'),
+          index: z.number().describe('Target field [index] from ReadPage (mode "elements").'),
           value: z.string().describe('The value to enter (you map this from profile memories).'),
           sensitive: z.boolean().optional().describe('True for passwords/payment; forces a confirm and is skipped if not user-provided.'),
         })).describe('The fields to fill and the values to enter.'),
@@ -573,105 +577,49 @@ export function createAgentTools(
       },
     }),
 
-    GetBrowsingHistory: tool({
+    QueryBrowserData: tool({
       description:
-        "Search the user's own browser history for pages they visited. Asks the user for permission first. Use to enrich a request when the user refers to something they read or visited earlier but did not share — e.g. \"that article I read last week\".",
+        `Draw on the user's own browser data. source="history": pages they visited; source="bookmarks": saved bookmarks; source="topSites": most-visited sites; source="downloads": downloaded files. Only enabled sources work (currently: ${sourcesLabel}). Asks the user for permission first. Use when the user refers to something they read, saved, or downloaded but did not share.`,
       inputSchema: z.object({
+        source: z
+          .enum(['history', 'bookmarks', 'topSites', 'downloads'])
+          .describe('Which browser-data source to query'),
         reason: z
           .string()
           .describe('Short reason shown to the user, e.g. "To find the article you read about X"'),
         query: z
           .string()
           .optional()
-          .describe('Free-text terms to match page title/URL. Omit to list recent history.'),
-        sinceDays: z.number().optional().describe('How many days back to search (default 7).'),
-        maxResults: z.number().optional().describe('Max entries to return (default 50, max 200).'),
-      }),
-      execute: async ({ reason, query, sinceDays, maxResults }) => {
-        const approved = await requestApproval({
-          toolName: 'GetBrowsingHistory',
-          summary: query
-            ? `Search your browsing history for “${query}”`
-            : 'Look through your recent browsing history',
-          reason,
-        })
-        if (!approved) return DENIED
-        const history = await getBrowsingHistory({ query, sinceDays, maxResults })
-        return { history }
-      },
-    }),
-
-    GetBookmarks: tool({
-      description:
-        "Search or list the user's bookmarks. Asks the user for permission first. Use when the user refers to a page they bookmarked or saved, or asks what they have bookmarked.",
-      inputSchema: z.object({
-        reason: z
-          .string()
-          .describe('Short reason shown to the user, e.g. "To find the docs you bookmarked"'),
-        query: z
-          .string()
-          .optional()
-          .describe('Terms to match bookmark title/URL. Omit to list recent bookmarks.'),
-        maxResults: z.number().optional().describe('Max bookmarks to return (default 50, max 200).'),
-      }),
-      execute: async ({ reason, query, maxResults }) => {
-        const approved = await requestApproval({
-          toolName: 'GetBookmarks',
-          summary: query ? `Search your bookmarks for “${query}”` : 'List your recent bookmarks',
-          reason,
-        })
-        if (!approved) return DENIED
-        const bookmarks = await getBookmarks({ query, maxResults })
-        return { bookmarks }
-      },
-    }),
-
-    GetTopSites: tool({
-      description:
-        "List the user's most-visited sites (their new-tab top sites). Asks the user for permission first. Use when the user asks about the sites they use most, or you need their frequent destinations to tailor an answer.",
-      inputSchema: z.object({
-        reason: z
-          .string()
-          .describe('Short reason shown to the user, e.g. "To see which sites you use most"'),
-      }),
-      execute: async ({ reason }) => {
-        const approved = await requestApproval({
-          toolName: 'GetTopSites',
-          summary: 'See your most-visited sites',
-          reason,
-        })
-        if (!approved) return DENIED
-        const sites = await getTopSites()
-        return { sites }
-      },
-    }),
-
-    GetDownloads: tool({
-      description:
-        "Search the user's download history. Asks the user for permission first. Use when the user refers to a file they downloaded — e.g. \"the PDF I downloaded yesterday\" — or asks what they have downloaded.",
-      inputSchema: z.object({
-        reason: z
-          .string()
-          .describe('Short reason shown to the user, e.g. "To find the file you downloaded"'),
-        query: z
-          .string()
-          .optional()
-          .describe('Terms to match filename or URL. Omit to list recent downloads.'),
+          .describe('Terms to match (history / bookmarks / downloads). Omit to list recent.'),
+        sinceDays: z.number().optional().describe('history only: how many days back (default 7).'),
         state: z
           .enum(['complete', 'in_progress', 'interrupted'])
           .optional()
-          .describe('Filter by download state.'),
-        maxResults: z.number().optional().describe('Max downloads to return (default 25, max 100).'),
+          .describe('downloads only: filter by state.'),
+        maxResults: z.number().optional().describe('Max entries to return.'),
       }),
-      execute: async ({ reason, query, state, maxResults }) => {
-        const approved = await requestApproval({
-          toolName: 'GetDownloads',
-          summary: 'Look through your downloads',
-          reason,
-        })
+      execute: async ({ source, reason, query, sinceDays, state, maxResults }) => {
+        if (!granted.has(source)) {
+          return { error: `The "${source}" source is not enabled. Ask the user to grant it in Settings → Permissions.` }
+        }
+        const summary =
+          source === 'topSites'
+            ? 'See your most-visited sites'
+            : source === 'history'
+              ? query
+                ? `Search your browsing history for “${query}”`
+                : 'Look through your recent browsing history'
+              : source === 'bookmarks'
+                ? query
+                  ? `Search your bookmarks for “${query}”`
+                  : 'List your recent bookmarks'
+                : 'Look through your downloads'
+        const approved = await requestApproval({ toolName: 'QueryBrowserData', summary, reason })
         if (!approved) return DENIED
-        const downloads = await getDownloads({ query, state, maxResults })
-        return { downloads }
+        if (source === 'history') return { history: await getBrowsingHistory({ query, sinceDays, maxResults }) }
+        if (source === 'bookmarks') return { bookmarks: await getBookmarks({ query, maxResults }) }
+        if (source === 'topSites') return { sites: await getTopSites() }
+        return { downloads: await getDownloads({ query, state, maxResults }) }
       },
     }),
 
@@ -765,12 +713,12 @@ export function createAgentTools(
     delete tools.ReadTabs
   }
 
-  // Browsing-data tools are hidden unless the user has granted the matching
-  // optional permission — the model never sees a capability that is off.
-  if (!granted.has('history')) delete tools.GetBrowsingHistory
-  if (!granted.has('bookmarks')) delete tools.GetBookmarks
-  if (!granted.has('topSites')) delete tools.GetTopSites
-  if (!granted.has('downloads')) delete tools.GetDownloads
+  // Browsing-data is hidden unless the user has granted at least one optional
+  // permission. The single QueryBrowserData tool is removed only when NO source
+  // is granted; per-source gating happens inside its execute (and the granted
+  // sources are named in its description) so the model never requests an
+  // ungranted source.
+  if (grantedSources.length === 0) delete tools.QueryBrowserData
 
   // Honor the per-tool permission policy: a tool set to "Never" is removed
   // entirely (like the visibility/insight gates above), so the model never even

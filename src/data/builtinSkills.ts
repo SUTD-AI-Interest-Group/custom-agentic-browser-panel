@@ -17,7 +17,7 @@ Keep to **one skill = one capability**. If the user describes several unrelated 
 Ask briefly, and only for what you don't already know:
 - **Task**: what should happen when this skill runs, and what's the end result?
 - **Triggers**: what will the user say that means "use this"? Collect concrete phrases and keywords.
-- **Inputs**: does it need the current page, a selection, a screenshot, or memory? You have \`ViewCurrentTab\`, \`ViewOpenedTabs\`, and \`SearchMemory\`.
+- **Inputs**: does it need the current page, a selection, a screenshot, or memory? You have \`ReadPage\`, \`ReadTabs\`, and \`SearchMemory\`.
 - **Output**: format, length, tone, must-haves.
 - **Strictness**: an exact sequence to follow, or room to improvise?
 
@@ -39,7 +39,7 @@ The description is the *only* thing that decides when this skill triggers, so ma
 
 - **Be concise — the context window is a public good.** Only add what you wouldn't already know; cut generic filler.
 - Give **concrete steps**. If the task is fragile and must happen in an exact order, spell that order out. If several approaches are fine, give guidance rather than rigid steps.
-- Refer to tools by their exact name (\`ViewCurrentTab\`, etc.).
+- Refer to tools by their exact name (\`ReadPage\`, etc.).
 - For style-sensitive output, include a short **example** of the desired result — it teaches shape better than description does.
 - Avoid time-sensitive notes ("as of 2025…"). Keep terminology consistent throughout.
 
@@ -54,7 +54,7 @@ const SUMMARIZING_PAGES_BODY = `# Summarizing pages
 
 When the user asks for a summary, TL;DR, or recap of the page they're viewing:
 
-1. If the page content isn't already in the conversation, call \`ViewCurrentTab\` to read it.
+1. If the page content isn't already in the conversation, call \`ReadPage\` (mode "text") to read it.
 2. Write the summary as:
    - **Gist** — one sentence capturing what the page is.
    - **Key points** — 3–6 tight bullets, most important first.
@@ -65,7 +65,7 @@ const EXTRACTING_TABLES_BODY = `# Extracting tables
 
 When the user asks to pull a table, list, or other structured data out of the current page:
 
-1. If you don't already have the page content, call \`ViewCurrentTab\` to read it.
+1. If you don't already have the page content, call \`ReadPage\` (mode "text") to read it.
 2. Identify the structured data the user means (ask only if genuinely ambiguous).
 3. Output a clean **Markdown table** by default. If the user asked for CSV, output CSV in a fenced code block instead.
 4. Preserve column headers and units. Don't invent or reorder rows; leave a missing cell blank. If nothing tabular is present, say so.`
@@ -74,7 +74,7 @@ const DRAFTING_REPLIES_BODY = `# Drafting replies
 
 When the user asks you to draft a reply to an email, comment, chat, or thread shown on the current page:
 
-1. If you don't already have the content, call \`ViewCurrentTab\` to read the thread being replied to.
+1. If you don't already have the content, call \`ReadPage\` (mode "text") to read the thread being replied to.
 2. Match the tone of the surrounding conversation unless the user asks for a specific tone.
 3. Draft a reply that acknowledges the key point, answers or acts on it, and ends with a clear next step or sign-off.
 4. Keep it to the length the medium expects — a chat reply is short, an email can be longer. Offer one draft, then adjust on request. Never send anything; you only draft.`

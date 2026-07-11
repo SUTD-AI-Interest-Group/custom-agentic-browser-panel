@@ -175,7 +175,7 @@ export async function runAgentTurn(options: {
    * Data URLs of marked screenshots awaiting delivery to the model. The
    * OpenAI-compatible adapter serializes a tool result's `media` part to
    * plain text, so images never reach the model that way — perception
-   * tools (InspectPage, RequestPageControl) stash their set-of-marks
+   * tools (ReadPage mode "elements", RequestPageControl) stash their set-of-marks
    * screenshot here instead, and prepareStep injects it as a `user` image
    * message right before the next step, the one channel the adapter
    * actually turns into an `image_url`.
