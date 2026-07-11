@@ -9,7 +9,14 @@ import { copyElementAsPng } from '../platform/domImage'
 import { getConversation, renameConversation, saveConversation } from '../data/conversations'
 import { appendToEpisode, getMemoryContext } from '../data/memory'
 import { createModel, generateChatTitle } from '../agent/provider'
-import { getSelectedProvider, toolPolicy, type Settings } from '../data/settings'
+import {
+  getSelectedProvider,
+  toolPolicy,
+  TOOL_CATALOG,
+  GROUP_ORDER,
+  GROUP_LABELS,
+  type Settings,
+} from '../data/settings'
 import { getActiveTab, listOpenTabs, readTabContent, type TabContent, type TabSummary } from '../platform/tabs'
 import { createAgentTools, type ApprovalRequest, type PageControlGate } from '../tools/tools'
 import { MAX_SESSION_ACTIONS, type ControlSession } from '../tools/pageControl'
@@ -474,6 +481,16 @@ export default function Chat({
     } finally {
       setCapturing(false)
     }
+  }
+
+  // Quick-menu tool switch. Off → 'never' (hidden from the agent). On → delete the
+  // override so the tool reverts to its catalog default (ask, or always for the
+  // skills tools), which preserves an Always tool instead of downgrading it to ask.
+  function toggleTool(name: string, on: boolean) {
+    const next = { ...(settings.toolPolicies ?? {}) }
+    if (on) delete next[name]
+    else next[name] = 'never'
+    onUpdateSettings({ ...settings, toolPolicies: next })
   }
 
   // ---- @mention tabs -------------------------------------------------------
@@ -1097,6 +1114,40 @@ export default function Chat({
                 {toolsOpen && (
                   <div className="tools-popover" role="menu">
                     <div className="tools-popover-head">Tools</div>
+                    {GROUP_ORDER.map((group) => {
+                      const tools = TOOL_CATALOG.filter((t) => t.group === group)
+                      if (tools.length === 0) return null
+                      return (
+                        <div className="tools-group" key={group}>
+                          <div className="tools-group-title">{GROUP_LABELS[group]}</div>
+                          {tools.map((t) => {
+                            const policy = toolPolicy(settings, t.name)
+                            return (
+                              <label className="tools-item" key={t.name}>
+                                <span className="tools-item-label">
+                                  {t.label}
+                                  {policy === 'always' && <span className="tools-badge">auto</span>}
+                                </span>
+                                <input
+                                  type="checkbox"
+                                  checked={policy !== 'never'}
+                                  onChange={(e) => toggleTool(t.name, e.target.checked)}
+                                />
+                              </label>
+                            )
+                          })}
+                        </div>
+                      )
+                    })}
+                    <button
+                      className="tools-popover-foot"
+                      onClick={() => {
+                        setToolsOpen(false)
+                        onOpenSettings()
+                      }}
+                    >
+                      Open full permissions →
+                    </button>
                   </div>
                 )}
               </div>
