@@ -12,6 +12,7 @@ import {
 import { z } from 'zod'
 import { resolveActiveTools } from '../tools/toolDiscovery'
 import type { Trace } from './observability'
+import type { ResearchVerification } from '../data/researchTasks'
 
 // UI-facing representation of one assistant turn. A turn is an ordered list
 // of parts: streamed text interleaved with tool invocations.
@@ -65,7 +66,7 @@ export interface UIMessage {
    * reply, so it scrolls with the chat and later turns follow it. The report
    * text lives in `parts`; `sources` carries the fetched pages.
    */
-  research?: { question: string; error?: string }
+  research?: { question: string; error?: string; verification?: ResearchVerification }
 }
 
 /**

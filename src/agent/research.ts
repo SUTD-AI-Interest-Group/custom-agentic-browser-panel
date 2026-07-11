@@ -57,6 +57,13 @@ function stepDetail(p: Extract<UIPart, { type: 'tool' }>): string {
 // long-horizon memory, which keeps context bounded on big topics.
 const MAX_GATHER_ROUNDS = 5
 
+/** A minimal sink for the live step log: append a step, or replace the last one
+ *  in place (used to flip a "running" phase step to its "done" state). */
+interface StepSink {
+  push(step: ResearchStep): void
+  replaceTail(step: ResearchStep): void
+}
+
 const GATHER_SYSTEM = `You are the GATHER phase of a background research agent. Your job THIS round is to close the open sub-questions you are given — nothing else.
 - Use WebSearch to find sources, then FetchUrl to read the most relevant ones (FetchUrl auto-renders JS/paywalled/PDF pages when needed).
 - For every substantive fact you will rely on, call Notebook.write with the claim, the exact source URL you read it from, and a short verbatim quote. This is how findings are recorded — text you type outside a Notebook.write is NOT saved.
@@ -109,6 +116,15 @@ export async function runResearch(opts: {
   const pushStep = (step: ResearchStep) => {
     allSteps.push(step)
     emit()
+  }
+  const stepSink: StepSink = {
+    push: pushStep,
+    replaceTail: (step) => {
+      if (allSteps.length) allSteps[allSteps.length - 1] = step
+      else allSteps.push(step)
+      lastSig = '' // force a re-emit after an in-place status flip
+      emit()
+    },
   }
 
   const notebook: NotebookHandle = createNotebook(undefined, emit)
@@ -189,17 +205,10 @@ export async function runResearch(opts: {
     // ---- Phase 3: Synthesize --------------------------------------------------
     pushStep({ tool: 'Synthesize', summary: 'Writing the report…', detail: '', status: 'running' })
     const draft = await synthesize(opts.question, notebook.get(), model, opts.signal, trace)
-    // Mark the synthesize step done.
-    const synthStep = allSteps[allSteps.length - 1]
-    if (synthStep && synthStep.tool === 'Synthesize') {
-      synthStep.status = 'done'
-      synthStep.summary = 'Report drafted'
-    }
-    lastSig = '' // force a re-emit after the in-place status flip
-    emit()
+    stepSink.replaceTail({ tool: 'Synthesize', summary: 'Report drafted', detail: '', status: 'done' })
 
-    // ---- Phase 4: Verify (implemented in Phase 2 of the build) ---------------
-    const { report, verification } = await verifyReport(draft, notebook, model, opts.signal, trace, pushStep, emit)
+    // ---- Phase 4: Verify — grounding + adversarial, then revise --------------
+    const { report, verification } = await verifyReport(draft, notebook, model, opts.signal, trace, stepSink)
 
     const nb = notebook.get()
     const sources: ResearchSource[] = nb.sources.map((s) => ({ title: s.title, url: s.url }))
@@ -329,16 +338,138 @@ async function synthesize(
   }
 }
 
-// Placeholder verify — replaced with real grounding + adversarial passes in the
-// next build phase. For now it returns the draft unchanged with no summary.
+// ---------------------------------------------------------------------------
+// Verify: (1) a grounding audit — does each cited claim actually rest on its
+// source's recorded quote? — and (2) a bounded adversarial pass that red-teams
+// the most load-bearing claims. Flagged claims are hedged or removed in a final
+// revise pass. Resilient: any failure falls back to the un-revised draft.
+// ---------------------------------------------------------------------------
+
+const MAX_ADVERSARIAL = 3
+
+const AUDIT_SCHEMA = {
+  type: 'object',
+  properties: {
+    issues: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          claim: { type: 'string', description: 'The claim in the report that is problematic' },
+          problem: { type: 'string', description: 'Why it is not supported by its cited source (or is uncited)' },
+          fix: { type: 'string', enum: ['keep', 'hedge', 'remove'], description: 'Recommended action' },
+        },
+        required: ['claim', 'problem', 'fix'],
+      },
+    },
+    loadBearing: {
+      type: 'array',
+      items: { type: 'string' },
+      description: 'Up to 3 of the most important, most falsifiable claims to double-check',
+    },
+  },
+  required: ['issues'],
+} as const
+
+const REFUTE_SCHEMA = {
+  type: 'object',
+  properties: {
+    refuted: { type: 'boolean', description: 'True if the claim is likely false, outdated, or commonly contradicted' },
+    reason: { type: 'string' },
+  },
+  required: ['refuted'],
+} as const
+
+interface AuditIssue {
+  claim: string
+  problem: string
+  fix: 'keep' | 'hedge' | 'remove'
+}
+
 async function verifyReport(
   draft: string,
-  _notebook: NotebookHandle,
-  _model: LanguageModel,
-  _signal: AbortSignal,
-  _trace: unknown,
-  _pushStep: (s: ResearchStep) => void,
-  _emit: () => void,
+  notebook: NotebookHandle,
+  model: LanguageModel,
+  signal: AbortSignal,
+  trace: Trace | undefined,
+  steps: StepSink,
 ): Promise<{ report: string; verification?: ResearchVerification }> {
-  return { report: draft }
+  steps.push({ tool: 'Verify', summary: 'Checking citations & claims…', detail: '', status: 'running' })
+  const nb = notebook.get()
+  const evidence = summarizeNotebook(nb, { maxFindings: 200 })
+  try {
+    // 1) Grounding audit.
+    const auditPrompt =
+      `Audit this research report against its evidence. Flag every claim that is NOT supported by the source it cites, ` +
+      `or that states a specific fact with no citation. For each, recommend keep / hedge / remove. Also list up to 3 of the ` +
+      `most load-bearing, falsifiable claims.\n\nEVIDENCE (numbered sources + recorded findings/quotes):\n${evidence}\n\nREPORT:\n${draft}`
+    const audit = (await extractStructured(model, auditPrompt, AUDIT_SCHEMA as Record<string, unknown>, signal, trace)) as {
+      issues?: AuditIssue[]
+      loadBearing?: string[]
+    }
+    const issues: AuditIssue[] = (audit.issues ?? []).filter((i) => i && i.claim && i.fix !== 'keep')
+
+    // 2) Adversarial refutation of the top load-bearing claims (bounded).
+    let refuted = 0
+    for (const claim of (audit.loadBearing ?? []).slice(0, MAX_ADVERSARIAL)) {
+      if (signal.aborted) break
+      try {
+        const r = (await extractStructured(
+          model,
+          `Try hard to REFUTE this claim from a research report. If it is likely false, outdated, oversimplified, or commonly contradicted, set refuted=true and explain. Otherwise refuted=false.\n\nClaim: ${claim}`,
+          REFUTE_SCHEMA as Record<string, unknown>,
+          signal,
+          trace,
+        )) as { refuted?: boolean; reason?: string }
+        if (r.refuted) {
+          refuted++
+          issues.push({ claim, problem: `Adversarial check: ${r.reason ?? 'contradicted'}`, fix: 'hedge' })
+        }
+      } catch {
+        /* skip this refutation */
+      }
+    }
+
+    const removed = issues.filter((i) => i.fix === 'remove').length
+    const hedged = issues.filter((i) => i.fix === 'hedge').length
+    const checked = (audit.issues?.length ?? 0) + Math.min(MAX_ADVERSARIAL, audit.loadBearing?.length ?? 0)
+    const verification: ResearchVerification = {
+      checked: Math.max(checked, issues.length),
+      confirmed: Math.max(0, Math.max(checked, issues.length) - removed - hedged),
+      hedged,
+      removed,
+      notes: issues.slice(0, 5).map((i) => `${i.fix}: ${i.claim.slice(0, 80)}`),
+    }
+
+    // 3) Revise: hedge/remove the flagged claims, keep everything else + citations.
+    let report = draft
+    if (issues.length > 0) {
+      const revisePrompt =
+        `Revise this research report. For each flagged claim: if action is "remove", delete the claim and its citation; ` +
+        `if "hedge", soften it and note the uncertainty. Keep all other content, structure, and citations exactly as-is. ` +
+        `Return the full revised Markdown report only.\n\nFLAGGED:\n${issues
+          .map((i) => `- (${i.fix}) ${i.claim} — ${i.problem}`)
+          .join('\n')}\n\nREPORT:\n${draft}`
+      try {
+        const gen = trace?.generation({ name: 'verify-revise', model: (model as { modelId?: string }).modelId })
+        const { text, usage } = await generateText({ model, prompt: revisePrompt, abortSignal: signal })
+        gen?.end({ output: text, usage })
+        if (text.trim()) report = text
+      } catch {
+        /* keep the un-revised draft */
+      }
+    }
+
+    steps.replaceTail({
+      tool: 'Verify',
+      summary: `Verified: ${verification.confirmed} ok · ${verification.hedged} hedged · ${verification.removed} removed`,
+      detail: verification.notes?.length ? verification.notes.join('\n') : 'No issues found.',
+      status: 'done',
+    })
+    return { report, verification }
+  } catch {
+    // Verification is best-effort — never fail the whole task over it.
+    steps.replaceTail({ tool: 'Verify', summary: 'Verification skipped (unavailable)', detail: '', status: 'done' })
+    return { report: draft }
+  }
 }

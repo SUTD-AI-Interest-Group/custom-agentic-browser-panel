@@ -28,7 +28,7 @@ import { clearIndex } from '../platform/domIndex'
 import { unmountPresence, unmountAllPresence } from '../platform/presence'
 import { grantedCapabilities, type BrowsingCapability } from '../platform/permissions'
 import { getSkill, listSkillMetas, listSkills } from '../data/skills'
-import { listTasks, type ResearchTask, type ResearchStatus, type ResearchMsg } from '../data/researchTasks'
+import { listTasks, type ResearchTask, type ResearchStatus, type ResearchMsg, type ResearchVerification } from '../data/researchTasks'
 
 // How long a finished research task lingers in the composer dock (as a ✓/✕/⊘
 // bar) after it completes before auto-dismissing. Its report has already
@@ -362,7 +362,7 @@ export default function Chat({
           role: 'assistant' as const,
           parts: t.report ? [{ type: 'text' as const, text: t.report }] : [],
           sources: t.sources,
-          research: { question: t.question, error: t.error },
+          research: { question: t.question, error: t.error, verification: t.verification },
         }))
       return add.length ? [...prev, ...add] : prev
     })
@@ -2086,6 +2086,7 @@ function ResearchReportMessage({ message }: { message: UIMessage }) {
         </button>
         {!collapsed && (
           <div className="research-report__body">
+            {research.verification && <VerificationBadge v={research.verification} />}
             {reportText ? (
               <AssistantText text={reportText} streaming={false} />
             ) : (
@@ -2100,6 +2101,26 @@ function ResearchReportMessage({ message }: { message: UIMessage }) {
           {message.sources && message.sources.length > 0 && <SourceBar sources={message.sources} />}
         </div>
       )}
+    </div>
+  )
+}
+
+// A compact "verified" strip above a finished report: how many cited claims
+// held up in the grounding + adversarial pass. Hover reveals what was changed.
+function VerificationBadge({ v }: { v: ResearchVerification }) {
+  const flagged = v.hedged + v.removed
+  const title = v.notes && v.notes.length ? v.notes.join('\n') : 'No issues found.'
+  return (
+    <div className={`research-verify ${flagged ? 'has-flags' : 'clean'}`} title={title}>
+      <svg width="12" height="12" viewBox="0 0 16 16" aria-hidden>
+        <path d="M8 1.5l5 2v3.2c0 3.2-2.1 5.6-5 6.8-2.9-1.2-5-3.6-5-6.8V3.5l5-2z" stroke="currentColor" strokeWidth="1.2" fill="none" />
+        <path d="M5.5 8l1.8 1.8L10.8 6" stroke="currentColor" strokeWidth="1.2" fill="none" strokeLinecap="round" strokeLinejoin="round" />
+      </svg>
+      <span>
+        Verified · {v.confirmed} confirmed
+        {v.hedged > 0 && ` · ${v.hedged} hedged`}
+        {v.removed > 0 && ` · ${v.removed} removed`}
+      </span>
     </div>
   )
 }

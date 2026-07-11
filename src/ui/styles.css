@@ -1036,6 +1036,33 @@ body {
   padding: 0 14px 12px;
 }
 
+/* ---- Verification badge (report card) ---- */
+.research-verify {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  align-self: flex-start;
+  padding: 3px 9px;
+  border-radius: 999px;
+  font-size: 11.5px;
+  font-weight: 500;
+  cursor: default;
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+}
+
+.research-verify.clean {
+  color: #2f9e5f;
+  border-color: color-mix(in srgb, #2f9e5f 40%, var(--border));
+  background: color-mix(in srgb, #2f9e5f 8%, transparent);
+}
+
+.research-verify.has-flags {
+  color: #c98a1a;
+  border-color: color-mix(in srgb, #c98a1a 40%, var(--border));
+  background: color-mix(in srgb, #c98a1a 8%, transparent);
+}
+
 /* ---- Research bottom sheet (expanded live workflow) ---- */
 
 .research-sheet__scrim {
