@@ -64,7 +64,7 @@ export function extractReadableText(html: string, maxChars = 20_000): { title: s
   const root = doc.querySelector('main') ?? doc.querySelector('article') ?? doc.body
   // Block elements carry no separator between siblings, so adjacent blocks' text runs together
   // (e.g. "<p>A</p><p>B</p>" -> "AB"). Insert a newline after each so words stay separated.
-  root?.querySelectorAll('p,div,section,article,h1,h2,h3,h4,h5,h6,li,br,tr,blockquote,pre').forEach((el) => el.after(document.createTextNode('\n')))
+  root?.querySelectorAll('p,div,section,article,h1,h2,h3,h4,h5,h6,li,br,tr,td,th,blockquote,pre').forEach((el) => el.after(doc.createTextNode('\n')))
   const text = (root?.textContent ?? '').replace(/[ \t]+/g, ' ').replace(/\n\s*\n\s*/g, '\n\n').trim()
   return { title, text: text.slice(0, maxChars) }
 }

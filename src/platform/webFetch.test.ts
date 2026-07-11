@@ -79,3 +79,8 @@ test('extractReadableText inserts separators between adjacent block elements', (
   const { text } = extractReadableText('<main><p>Alpha</p><p>Beta</p></main>')
   expect(text).toMatch(/Alpha\s+Beta/)
 })
+
+test('extractReadableText separates adjacent table cells', () => {
+  const { text } = extractReadableText('<main><table><tr><td>Cell1</td><td>Cell2</td></tr></table></main>')
+  expect(text).toMatch(/Cell1\s+Cell2/)
+})

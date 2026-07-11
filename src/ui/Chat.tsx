@@ -314,12 +314,17 @@ export default function Chat({
   // the panel's own message listener fires before the SW has finished
   // persisting the same broadcast.
   useEffect(() => {
-    void listTasks().then(setResearchTasks)
+    let cancelled = false
+    const load = () => listTasks().then((t) => { if (!cancelled) setResearchTasks(t) })
+    void load()
     const onChanged = (changes: { [k: string]: chrome.storage.StorageChange }, area: string) => {
-      if (area === 'local' && changes.researchTasks) void listTasks().then(setResearchTasks)
+      if (area === 'local' && changes.researchTasks) void load()
     }
     chrome.storage.onChanged.addListener(onChanged)
-    return () => chrome.storage.onChanged.removeListener(onChanged)
+    return () => {
+      cancelled = true
+      chrome.storage.onChanged.removeListener(onChanged)
+    }
   }, [])
 
   // Watch the active tab for a text selection and surface it as removable
@@ -1407,6 +1412,12 @@ function ToolPill({ part }: { part: Extract<UIPart, { type: 'tool' }> }) {
   else if (part.toolName === 'RequestPageControl')
     label = output?.started ? 'Started controlling the page' : 'Asked to control the page'
   else if (part.toolName === 'ControlPage') label = controlActionLabel(part.input, output)
+  else if (part.toolName === 'ExtractData')
+    label = output?.error ? 'Could not extract data' : 'Extracted structured data'
+  else if (part.toolName === 'StartResearch')
+    label = output?.started ? 'Started background research' : 'Research not started'
+  else if (part.toolName === 'AutofillForm')
+    label = output?.error ? 'Autofill stopped' : `Filled ${output?.filled?.length ?? 0} form field${(output?.filled?.length ?? 0) === 1 ? '' : 's'}`
   else label = part.toolName
 
   return (
