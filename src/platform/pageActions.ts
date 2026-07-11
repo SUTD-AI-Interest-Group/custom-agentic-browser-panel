@@ -79,6 +79,35 @@ function injPress(keys: string) {
   return { ok: true, message: `pressed ${keys}` }
 }
 
+// Resolves once the page settles: either `selector` appears, or the DOM stops
+// mutating for `quietMs`. Bounded by `timeoutMs` so a never-quiet page (ads,
+// polling) proceeds instead of hanging. Runs in the page's isolated world.
+function injWaitStable(selector: string, quietMs: number, timeoutMs: number) {
+  if (selector && document.querySelector(selector)) {
+    return Promise.resolve({ ok: true, reason: 'selector-present' })
+  }
+  return new Promise<{ ok: boolean; reason: string }>((resolve) => {
+    let quiet: number
+    let hard: number
+    const finish = (reason: string) => {
+      try { obs.disconnect() } catch {}
+      clearTimeout(quiet)
+      clearTimeout(hard)
+      resolve({ ok: true, reason })
+    }
+    const obs = new MutationObserver(() => {
+      if (selector && document.querySelector(selector)) return finish('selector-appeared')
+      clearTimeout(quiet)
+      quiet = setTimeout(() => finish('quiet'), quietMs) as unknown as number
+    })
+    obs.observe(document.documentElement, {
+      childList: true, subtree: true, attributes: true, characterData: true,
+    })
+    quiet = setTimeout(() => finish('quiet'), quietMs) as unknown as number
+    hard = setTimeout(() => finish('timeout'), timeoutMs) as unknown as number
+  })
+}
+
 async function inject<T>(tabId: number, func: (...a: any[]) => T, args: any[]): Promise<T> {
   const [res] = await chrome.scripting.executeScript({ target: { tabId }, func, args })
   return res?.result as T
@@ -123,6 +152,23 @@ export function scrollPage(
 /** Dispatch a key (Enter | Tab | Escape) to the focused element. */
 export function pressKey(tabId: number, keys: string): Promise<ActionResult> {
   return guarded(tabId, () => inject(tabId, injPress, [keys]))
+}
+
+/**
+ * Wait for the page to settle after an action: the DOM goes quiet for
+ * `quietMs`, or `selector` appears, whichever first, bounded by `timeoutMs`.
+ * executeScript awaits the injected promise. Never throws.
+ */
+export async function waitForStable(
+  tabId: number,
+  opts: { selector?: string; quietMs?: number; timeoutMs?: number } = {},
+): Promise<{ ok: boolean; reason: string }> {
+  const { selector = '', quietMs = 400, timeoutMs = 6000 } = opts
+  try {
+    return await inject(tabId, injWaitStable, [selector, quietMs, timeoutMs])
+  } catch (err) {
+    return { ok: false, reason: `wait failed (${err instanceof Error ? err.message : String(err)})` }
+  }
 }
 
 /** Navigate the tab to `url`. Returns urlChanged so the caller can re-fence origin. */

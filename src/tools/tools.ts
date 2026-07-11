@@ -238,11 +238,11 @@ export function createAgentTools(
 
     ControlPage: tool({
       description:
-        'Perform ONE action on the active tab within an open page-control session: click, type, select, scroll, highlight, navigate, or press a key. Target elements by their [index] from InspectPage/RequestPageControl. Returns the refreshed element list.',
+        'Perform ONE action on the active tab within an open page-control session: click, type, select, scroll, highlight, navigate, press a key, or wait. Target elements by their [index] from InspectPage/RequestPageControl. wait: pause until the page settles or an optional CSS selector (passed in text) appears. Returns the refreshed element list.',
       inputSchema: z.object({
-        action: z.enum(['click', 'type', 'select', 'scroll', 'highlight', 'navigate', 'press']),
+        action: z.enum(['click', 'type', 'select', 'scroll', 'highlight', 'navigate', 'press', 'wait']),
         index: z.number().optional().describe('Target element index from the list.'),
-        text: z.string().optional().describe('Text to type (action=type).'),
+        text: z.string().optional().describe('Text to type (action=type), or a CSS selector to wait for (action=wait).'),
         value: z.string().optional().describe('Option value or label (action=select).'),
         url: z.string().optional().describe('URL to open (action=navigate).'),
         keys: z.string().optional().describe('Key to press: Enter, Tab, or Escape (action=press).'),
@@ -250,6 +250,7 @@ export function createAgentTools(
         label: z.string().optional().describe('Callout text to show on the page (action=highlight).'),
         clear: z.boolean().optional().describe('Replace existing text instead of appending (action=type).'),
         sensitive: z.boolean().optional().describe('Set true if this step is risky; forces a confirm.'),
+        timeoutMs: z.number().optional().describe('Max ms to wait for the page to settle (action=wait).'),
       }),
       execute: async (spec: ControlSpec) => {
         const session = pageControl.session()

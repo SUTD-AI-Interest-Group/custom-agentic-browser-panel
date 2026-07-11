@@ -10,6 +10,7 @@ import {
   scrollPage,
   selectOption,
   typeIntoElement,
+  waitForStable,
   type ActionResult,
 } from '../platform/pageActions'
 
@@ -33,6 +34,7 @@ export type ControlAction =
   | 'highlight'
   | 'navigate'
   | 'press'
+  | 'wait'
 
 /** One action request from the model. */
 export interface ControlSpec {
@@ -46,6 +48,8 @@ export interface ControlSpec {
   label?: string
   sensitive?: boolean
   clear?: boolean
+  /** Max ms to wait for stability (action='wait'); also caps post-action auto-wait. */
+  timeoutMs?: number
 }
 
 const hostOf = (url: string): string => {
@@ -110,6 +114,11 @@ const runRaw = (tabId: number, spec: ControlSpec): Promise<ActionResult> => {
       return pressKey(tabId, spec.keys ?? 'Enter')
     case 'navigate':
       return navigateTab(tabId, spec.url ?? '')
+    case 'wait':
+      return waitForStable(tabId, {
+        selector: spec.text || undefined,
+        timeoutMs: spec.timeoutMs,
+      }).then((r) => ({ ok: r.ok, message: `waited (${r.reason})` }))
   }
 }
 
@@ -132,8 +141,11 @@ export async function runControlStep(deps: ControlStepDeps): Promise<ControlStep
   if (beforeAct && needsTarget) await beforeAct(spec.index)
   const result = await runRaw(tabId, spec)
   if (afterAct && result.ok) await afterAct()
-  // Navigation reloads the document; give it a beat before re-reading.
-  if (spec.action === 'navigate') await new Promise((r) => setTimeout(r, 600))
+  // Let async pages settle before re-reading, instead of a fixed delay. Skip
+  // for 'wait' (already waited) and 'highlight'/'scroll' (no state change).
+  if (['click', 'type', 'select', 'navigate', 'press'].includes(spec.action)) {
+    await waitForStable(tabId, { timeoutMs: spec.action === 'navigate' ? 8000 : 4000 })
+  }
   let registry = '(page not re-read)'
   try {
     registry = (await snapshotPage(tabId)).text
