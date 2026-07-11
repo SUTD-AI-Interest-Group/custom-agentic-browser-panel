@@ -11,6 +11,7 @@ import {
 } from 'ai'
 import { z } from 'zod'
 import { resolveActiveTools } from '../tools/toolDiscovery'
+import type { Trace } from './observability'
 
 // UI-facing representation of one assistant turn. A turn is an ordered list
 // of parts: streamed text interleaved with tool invocations.
@@ -196,9 +197,22 @@ export async function runAgentTurn(options: {
    * "write the report now"), or '' to disable the nudge for this turn.
    */
   wrapUpNudge?: string
+  /**
+   * Optional Langfuse trace for this turn (created by the caller). When present,
+   * each model step is recorded as a generation with token usage; when absent,
+   * observability is off and nothing here runs. Tool spans are emitted separately
+   * by the instrumented toolset — see `createAgentTools`.
+   */
+  trace?: Trace
 }): Promise<AgentTurnResult> {
   const { model, system, history, tools, abortSignal, onUpdate } = options
   const wrapUpNudge = options.wrapUpNudge ?? DEFAULT_WRAP_UP_NUDGE
+  const trace = options.trace
+  const modelId = (model as { modelId?: string }).modelId
+  // Per-step latency: attribute the wall-clock between step boundaries to each
+  // generation (model call + any tool execution in that step).
+  let stepStart = new Date().toISOString()
+  let stepIndex = 0
 
   const parts: UIPart[] = []
   // Captured if the model calls Checkpoint (its input IS the reflection payload).
@@ -222,6 +236,50 @@ export async function runAgentTurn(options: {
     // choosing to hand off via Checkpoint (OR semantics — whichever fires first).
     stopWhen: [isStepCount(MAX_STEPS), hasToolCall(CHECKPOINT_TOOL)],
     abortSignal,
+    // Observability: record one Langfuse generation per model step (tokens,
+    // finish reason, tool calls) and roll the turn totals onto the trace. All
+    // reads are defensive — a shape change or Langfuse hiccup never breaks a turn.
+    onStepFinish: trace
+      ? (step: any) => {
+          const start = stepStart
+          stepStart = new Date().toISOString()
+          const idx = stepIndex++
+          try {
+            const toolNames = Array.isArray(step?.toolCalls)
+              ? step.toolCalls.map((t: any) => t?.toolName).filter(Boolean)
+              : undefined
+            const gen = trace.generation({
+              name: `step-${idx + 1}`,
+              model: (step?.response?.modelId as string) || modelId,
+              input: step?.request?.body,
+              startTime: start,
+              metadata: toolNames?.length ? { toolCalls: toolNames } : undefined,
+            })
+            gen.end({
+              output: step?.content ?? { text: step?.text, toolCalls: step?.toolCalls },
+              usage: step?.usage,
+              finishReason: step?.finishReason,
+            })
+          } catch {
+            /* best-effort */
+          }
+        }
+      : undefined,
+    onFinish: trace
+      ? (final: any) => {
+          try {
+            trace.update({
+              metadata: {
+                totalUsage: final?.totalUsage,
+                steps: Array.isArray(final?.steps) ? final.steps.length : undefined,
+                finishReason: final?.finishReason,
+              },
+            })
+          } catch {
+            /* best-effort */
+          }
+        }
+      : undefined,
     // Large tool inputs (a skill's Markdown body, a long typed string) make the
     // model occasionally emit malformed JSON arguments, which fail schema
     // validation and surface as a red "… failed" tool card before the model

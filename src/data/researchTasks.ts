@@ -1,5 +1,5 @@
 /** Persisted research-task state + the SW↔offscreen↔panel message protocol. Runs in SW/panel only (never offscreen). */
-import type { ProviderConfig } from './settings'
+import type { ObservabilityConfig, ProviderConfig } from './settings'
 
 export type ResearchStatus = 'running' | 'done' | 'error' | 'cancelled'
 
@@ -36,7 +36,17 @@ export interface ResearchTask {
 /** SW↔offscreen↔panel message protocol: panel sends `ensureAndStart`/`cancel`; offscreen sends `start`, `update`, `done`, `error`. */
 export type ResearchMsg =
   | { type: 'research.ensureAndStart'; taskId: string; question: string; conversationId: string }
-  | { type: 'research.start'; taskId: string; question: string; providerConfig: ProviderConfig; modelId: string }
+  | {
+      type: 'research.start'
+      taskId: string
+      question: string
+      providerConfig: ProviderConfig
+      modelId: string
+      /** The launching chat, for the research trace's Langfuse session. */
+      conversationId?: string
+      /** Observability config forwarded from the SW (offscreen has no chrome.storage). */
+      observability?: ObservabilityConfig
+    }
   | { type: 'research.update'; taskId: string; steps: ResearchStep[] }
   | { type: 'research.done'; taskId: string; report: string; sources: ResearchSource[] }
   | { type: 'research.error'; taskId: string; error: string }

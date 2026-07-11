@@ -973,18 +973,44 @@ body {
      horizontal scroll. The header rounds its own top corners instead. */
 }
 
+/* Clickable header: toggles the card between expanded and collapsed. */
 .research-report__header {
   display: flex;
   align-items: flex-start;
   gap: 7px;
+  width: 100%;
   padding: 10px 14px;
+  border: none;
   border-bottom: 1px solid var(--border);
   background: var(--pill-bg);
   border-top-left-radius: 13px;
   border-top-right-radius: 13px;
+  font-family: inherit;
   font-size: 12.5px;
   font-weight: 600;
   color: var(--text);
+  text-align: left;
+  cursor: pointer;
+}
+
+.research-report__header:hover {
+  background: var(--border);
+}
+
+/* Collapsed → header is the whole card: drop the divider, round all corners. */
+.research-report.collapsed .research-report__header {
+  border-bottom-color: transparent;
+  border-bottom-left-radius: 13px;
+  border-bottom-right-radius: 13px;
+}
+
+.research-report__caret {
+  margin-left: auto;
+  transition: transform 0.15s ease;
+}
+
+.research-report.collapsed .research-report__caret {
+  transform: rotate(-90deg);
 }
 
 .research-report__header svg {
@@ -2676,6 +2702,102 @@ body {
   gap: 6px;
   font-size: 12px;
   color: var(--text);
+}
+
+/* Beta observability: master toggle switch + revealed config panel. */
+.switch-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 6px 0;
+  font-size: 13px;
+  color: var(--text);
+}
+.switch-row .switch-label {
+  flex: 1;
+}
+.switch {
+  position: relative;
+  display: inline-block;
+  flex: none;
+  width: 34px;
+  height: 20px;
+  cursor: pointer;
+}
+.switch input {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  margin: 0;
+  cursor: pointer;
+}
+.switch .track {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border-radius: 999px;
+  background: var(--border);
+  transition: background 0.15s ease;
+}
+.switch .thumb {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--bg);
+  transition: transform 0.15s ease;
+  pointer-events: none;
+}
+.switch input:checked + .track {
+  background: var(--accent);
+}
+.switch input:checked ~ .thumb {
+  transform: translateX(14px);
+}
+.switch input:focus-visible + .track {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.obs-panel {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin: 8px 0 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.obs-panel .check.sub {
+  margin-left: 18px;
+}
+.obs-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.obs-status {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.obs-status.ok {
+  color: var(--accent);
+}
+.obs-status.err {
+  color: var(--danger);
+}
+.beta-tag {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--accent-text);
+  background: var(--accent);
+  border-radius: 4px;
+  padding: 1px 5px;
+  margin-left: 6px;
+  vertical-align: middle;
 }
 
 .skill-notice {
