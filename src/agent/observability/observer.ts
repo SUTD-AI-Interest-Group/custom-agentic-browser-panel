@@ -103,6 +103,10 @@ class LiveObserver implements Observer {
     this.client = new LangfuseIngestionClient(cfg.host, cfg.publicKey, cfg.secretKey)
     this.captureContent = cfg.captureContent
     this.keepImages = cfg.captureContent && cfg.captureScreenshots
+    console.info('[langfuse] observability ENABLED →', cfg.host, {
+      captureContent: cfg.captureContent,
+      captureScreenshots: cfg.captureScreenshots,
+    })
   }
 
   /** Apply the content-capture policy to any input/output value. */
@@ -301,6 +305,8 @@ export const NOOP_OBSERVER: Observer = {
 
 let cachedConfig: ObservabilityConfig = DEFAULT_OBSERVABILITY
 let live: { sig: string; observer: LiveObserver } | null = null
+/** Warn once, not on every turn, when the toggle is on but keys are missing. */
+let warnedIncomplete = false
 
 async function refresh(): Promise<void> {
   try {
@@ -334,7 +340,20 @@ function signature(c: ObservabilityConfig): string {
  */
 export function getObserver(config?: ObservabilityConfig): Observer {
   const cfg = config ?? cachedConfig
-  if (!cfg.enabled || !cfg.publicKey || !cfg.secretKey || !cfg.host) return NOOP_OBSERVER
+  if (!cfg.enabled) return NOOP_OBSERVER
+  // Enabled but unusable: warn rather than silently no-op — an empty key here is
+  // otherwise indistinguishable from "observability is off" and produces no traces.
+  if (!cfg.publicKey || !cfg.secretKey || !cfg.host) {
+    if (!warnedIncomplete) {
+      warnedIncomplete = true
+      console.warn('[langfuse] observability is ON but not configured — missing', {
+        publicKey: !cfg.publicKey,
+        secretKey: !cfg.secretKey,
+        host: !cfg.host,
+      })
+    }
+    return NOOP_OBSERVER
+  }
   const sig = signature(cfg)
   if (live && live.sig === sig) return live.observer
   live = { sig, observer: new LiveObserver(cfg) }

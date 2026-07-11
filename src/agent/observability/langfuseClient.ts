@@ -83,14 +83,26 @@ export class LangfuseIngestionClient {
         headers: { 'Content-Type': 'application/json', Authorization: this.auth },
         body: JSON.stringify({ batch }),
       })
-      // The ingestion endpoint returns 207 with a per-event error list rather
-      // than a 4xx; surface it only in debug logging, never to the user.
+      const payload = await readJson(res)
+      // CRITICAL: Langfuse answers *input* errors with 207 + a per-event `errors`
+      // list, NOT a 4xx — so `res.ok` alone proves nothing: a batch in which every
+      // event was rejected also comes back 207/ok. Always inspect `errors`, or a
+      // schema problem silently looks like success and no trace ever appears.
       if (!res.ok) {
-        // eslint-disable-next-line no-console
-        console.debug('[observability] ingestion HTTP', res.status)
+        console.warn('[langfuse] ingestion failed — HTTP', res.status, payload ?? '(no body)')
+        return
       }
-    } catch {
-      // Offline / bad host / CORS — drop the batch. Observability is best-effort.
+      const errors = Array.isArray(payload?.errors) ? payload.errors : []
+      if (errors.length > 0) {
+        console.warn(`[langfuse] ${errors.length}/${batch.length} events REJECTED:`, errors)
+      } else {
+        const n = Array.isArray(payload?.successes) ? payload.successes.length : batch.length
+        console.info(`[langfuse] ingested ${n} event(s)`)
+      }
+    } catch (err) {
+      // Network / CORS / bad host. Still non-fatal for the turn, but never silent:
+      // a swallowed error here is exactly why a missing trace is undiagnosable.
+      console.warn('[langfuse] ingestion request failed (network/CORS/host):', err)
     }
   }
 }
@@ -101,6 +113,34 @@ function approxSize(event: QueuedEvent): number {
     return JSON.stringify(event).length
   } catch {
     return 1_000
+  }
+}
+
+/** Ingestion response body, when it is JSON. Null on an empty/non-JSON body. */
+interface IngestionResult {
+  successes?: unknown[]
+  errors?: unknown[]
+}
+
+async function readJson(res: Response): Promise<IngestionResult | null> {
+  try {
+    return (await res.json()) as IngestionResult
+  } catch {
+    return null
+  }
+}
+
+/** Pull a human-readable reason out of one entry of the 207 `errors` array. */
+function errorDetail(e: unknown): string {
+  if (e && typeof e === 'object') {
+    const o = e as { message?: unknown; error?: unknown; status?: unknown }
+    const msg = o.message ?? o.error
+    if (msg) return `${o.status ? `[${String(o.status)}] ` : ''}${String(msg)}`
+  }
+  try {
+    return JSON.stringify(e)
+  } catch {
+    return String(e)
   }
 }
 
@@ -125,10 +165,25 @@ export async function testLangfuseConnection(
         ],
       }),
     })
-    if (res.ok) return { ok: true, message: 'Connected — a test trace was sent to Langfuse.' }
-    if (res.status === 401 || res.status === 403) return { ok: false, message: 'Auth failed — check your public/secret keys.' }
-    return { ok: false, message: `Langfuse returned HTTP ${res.status}.` }
+    const payload = await readJson(res)
+    if (res.status === 401 || res.status === 403) {
+      return {
+        ok: false,
+        message: 'Auth failed — check the keys, and that the Host matches your project’s region (EU vs US).',
+      }
+    }
+    if (!res.ok) return { ok: false, message: `Langfuse returned HTTP ${res.status}.` }
+    // 207 is the success status, but a rejected event ALSO returns 207 — the real
+    // verdict is the per-event `errors` list. Checking only res.ok gives a false ✓.
+    const errors = Array.isArray(payload?.errors) ? payload.errors : []
+    if (errors.length > 0) {
+      return { ok: false, message: `Langfuse rejected the test event: ${errorDetail(errors[0]).slice(0, 180)}` }
+    }
+    return { ok: true, message: 'Connected — Langfuse accepted a test trace.' }
   } catch (err) {
-    return { ok: false, message: err instanceof Error ? err.message : 'Network error — check the host URL.' }
+    return {
+      ok: false,
+      message: `Network/CORS error — check the Host URL. ${err instanceof Error ? err.message : String(err)}`,
+    }
   }
 }
