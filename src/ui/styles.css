@@ -793,17 +793,22 @@ body {
   font-size: 12.5px;
 }
 
-/* ---- Research dock (live-task bars above the composer) ---- */
+/* ---- Research dock ----
+   A strip at the TOP of the composer box (shares the same rounded container),
+   stacking one bar per live/just-finished task above a divider that separates
+   it from the input. Bars are borderless rows, not separate cards. */
 
 .research-dock {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 2px;
   /* Cap the stack so many concurrent tasks scroll internally instead of
      pushing the composer up the panel. */
-  max-height: 148px;
+  max-height: 130px;
   overflow-y: auto;
   margin-bottom: 8px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--border);
 }
 
 .research-bar {
@@ -812,10 +817,10 @@ body {
   gap: 8px;
   width: 100%;
   text-align: left;
-  padding: 7px 10px;
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  background: var(--surface);
+  padding: 6px 8px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
   color: var(--text);
   cursor: pointer;
   font-size: 12.5px;
@@ -823,10 +828,6 @@ body {
 
 .research-bar:hover {
   background: var(--pill-bg);
-}
-
-.research-bar.error {
-  border-color: var(--danger);
 }
 
 .research-bar__title {

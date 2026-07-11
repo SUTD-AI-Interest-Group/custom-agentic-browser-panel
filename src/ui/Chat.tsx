@@ -1153,8 +1153,8 @@ export default function Chat({
             ))}
           </div>
         )}
-        <ResearchDock tasks={dockTasks} onOpen={openDockTask} />
         <div className="composer">
+          <ResearchDock tasks={dockTasks} onOpen={openDockTask} />
           {attachments.length > 0 && (
             <div className="attachment-row">
               {attachments.map((img) => (
