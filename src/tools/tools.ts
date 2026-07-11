@@ -7,7 +7,7 @@ import { getActiveTab, listOpenTabs, navigateTab, readTabContent, readTabDom } f
 import { getBrowsingHistory, getBookmarks, getTopSites, getDownloads } from '../platform/browsingData'
 import type { BrowsingCapability } from '../platform/permissions'
 import { snapshotPage, type PageSnapshot } from '../platform/domIndex'
-import { mountPresence, focusOn, pulse, setPresenceHidden } from '../platform/presence'
+import { mountPresence, setTint, focusOn, pulse, setPresenceHidden } from '../platform/presence'
 import { ensureVisionCapability } from '../agent/vision'
 import { captureWithMarks } from '../platform/marks'
 import {
@@ -54,6 +54,15 @@ function pointOfNoReturnSummary(spec: ControlSpec, el?: { name: string }): strin
   if (spec.action === 'click') return `Click “${el?.name || `element ${spec.index}`}”`
   if (spec.action === 'type') return `Enter text into a sensitive field`
   return `Perform ${spec.action}`
+}
+
+/** Friendly host from an origin string, for approval-card copy. */
+function hostLabel(origin: string): string {
+  try {
+    return new URL(origin).host
+  } catch {
+    return origin || 'a different site'
+  }
 }
 
 /** Human-in-the-loop gate for page control, implemented by the chat UI. */
@@ -189,6 +198,10 @@ export function createAgentTools(
           })
           if (!approved) return DENIED
         }
+        // Ambient presence: the agent is looking at this page. Idempotent, so it
+        // never disturbs an already-mounted session (and warms the overlay
+        // before a likely RequestPageControl). lookResult hides it for the shot.
+        await mountPresence(tab.id)
         try {
           const snap = await snapshotPage(tab.id)
           return await lookResult(tab, snap, {}, selected, imageQueue)
@@ -226,6 +239,9 @@ export function createAgentTools(
         const granted = await pageControl.requestSession({ plan, host, origin, tabId: tab.id })
         if (!granted) return DENIED
         await mountPresence(tab.id)
+        // Entering active control: turn the soft dark tint on (ambient shows the
+        // frame only). The spotlight/cursor come alive on the first ControlPage.
+        await setTint(tab.id, true)
         try {
           const snap = await snapshotPage(tab.id)
           return await lookResult(tab, snap, { started: true }, selected, imageQueue)
@@ -269,10 +285,40 @@ export function createAgentTools(
             return ''
           }
         })()
+        // Origin drifted since the last step — a full-page nav that committed
+        // after that step's post-action snapshot. If the previous step's approved
+        // point-of-no-return authorized the crossing, re-fence silently (no
+        // second grant); otherwise ask once to continue. Either way, hand back
+        // the fresh page instead of running this call's action against a
+        // now-stale element index.
         if (liveOrigin !== session.origin) {
-          pageControl.endSession()
-          return {
-            error: `The page is now on a different site (${liveOrigin || 'unknown'}); page control ended for safety. Call RequestPageControl again to continue.`,
+          if (!session.crossingAuthorized) {
+            const cont = await requestApproval({
+              toolName: 'ControlPage',
+              summary: `Keep controlling the page now that it moved to ${hostLabel(liveOrigin)}?`,
+              reason: 'The page navigated to a different site on its own.',
+              once: true,
+            })
+            if (!cont) {
+              pageControl.endSession()
+              return {
+                error: `The page moved to ${hostLabel(liveOrigin)}; page control ended for safety. Call RequestPageControl again to continue.`,
+              }
+            }
+          }
+          session.origin = liveOrigin
+          session.crossingAuthorized = false
+          try {
+            const fresh = await snapshotPage(tab.id)
+            return {
+              ok: true,
+              message: `The page is now on ${hostLabel(liveOrigin)}; re-read the elements and continue.`,
+              urlChanged: true,
+              elements: fresh.text,
+              actionsLeft: session.maxActions - session.actionsUsed,
+            }
+          } catch (err) {
+            return { error: `Cannot read this page (${err instanceof Error ? err.message : String(err)}).` }
           }
         }
         let snap
@@ -282,7 +328,8 @@ export function createAgentTools(
           return { error: `Cannot read this page (${err instanceof Error ? err.message : String(err)}).` }
         }
         const el = spec.index !== undefined ? snap.elements[spec.index] : undefined
-        if (isPointOfNoReturn(spec, el, session.origin)) {
+        const por = isPointOfNoReturn(spec, el, session.origin)
+        if (por) {
           const approved = await requestApproval({
             toolName: 'ControlPage',
             summary: pointOfNoReturnSummary(spec, el),
@@ -292,13 +339,42 @@ export function createAgentTools(
           if (!approved) return DENIED
         }
         session.actionsUsed += 1
-        const { registry, ok, message, urlChanged } = await runControlStep({
+        const { registry, ok, message, urlChanged, origin } = await runControlStep({
           tabId: tab.id,
           spec,
           snapshot: snap,
           beforeAct: (index) => (index === undefined ? Promise.resolve() : focusOn(tab.id!, index, spec.label)),
           afterAct: () => pulse(tab.id!),
         })
+        // Handle an origin change this action caused. When the post-action
+        // snapshot already shows the new origin (explicit navigate — which
+        // settles 600ms — or a same-document/SPA nav), re-fence here so the next
+        // call proceeds directly: an approved point-of-no-return re-fences
+        // silently; an unexpected crossing (a plain click that JS-navigated, a
+        // role=link with no href) asks once, and deny ends the session. When the
+        // snapshot did NOT show a change (a full-page load may still be
+        // committing), remember whether this step was an approved crossing so the
+        // next call's drift check re-fences without a second grant.
+        if (origin && origin !== session.origin) {
+          if (!por) {
+            const cont = await requestApproval({
+              toolName: 'ControlPage',
+              summary: `Keep controlling the page now that it moved to ${hostLabel(origin)}?`,
+              reason: 'The page navigated to a different site on its own.',
+              once: true,
+            })
+            if (!cont) {
+              pageControl.endSession()
+              return {
+                error: `The page moved to ${hostLabel(origin)}; page control ended for safety. Call RequestPageControl again to continue.`,
+              }
+            }
+          }
+          session.origin = origin
+          session.crossingAuthorized = false
+        } else {
+          session.crossingAuthorized = por
+        }
         // Coerce to a real boolean: `urlChanged` is undefined for non-navigation
         // actions, and a tool result must not carry undefined into the history.
         return { ok, message, urlChanged: urlChanged === true, elements: registry, actionsLeft: session.maxActions - session.actionsUsed }
@@ -388,7 +464,18 @@ export function createAgentTools(
               : `Navigate ${tabId !== undefined ? `tab #${tabId}` : 'the current tab'} to ${url}`
         const approved = await requestApproval({ toolName: 'NavigateTab', summary, reason })
         if (!approved) return DENIED
-        return { action, ...(await navigateTab(action, { tabId, url })) }
+        const result = await navigateTab(action, { tabId, url })
+        // Ambient presence on the tab the agent just moved to (frame only, no
+        // dimming). For goto/open the new document is still loading, so wait a
+        // beat — matching runControlStep's post-navigate delay — before mounting,
+        // and await it so the frame can't land after the turn's teardown.
+        // Restricted URLs (chrome://) fail the inject silently. 'activate' is
+        // already loaded, so mount immediately.
+        if (!result.error && result.tabId >= 0) {
+          if (action !== 'activate') await new Promise((r) => setTimeout(r, 600))
+          await mountPresence(result.tabId)
+        }
+        return { action, ...result }
       },
     }),
 
