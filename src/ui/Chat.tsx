@@ -229,6 +229,7 @@ export default function Chat({
   const [messages, setMessages] = useState<UIMessage[]>([])
   const [input, setInput] = useState('')
   const [streaming, setStreaming] = useState(false)
+  const [turnStartedAt, setTurnStartedAt] = useState<number | null>(null)
   const [approval, setApproval] = useState<PendingApproval | null>(null)
   const [currentTab, setCurrentTab] = useState<CurrentTabInfo | null>(null)
   const [attachments, setAttachments] = useState<CapturedImage[]>([])
@@ -783,7 +784,8 @@ export default function Chat({
     // for this turn only (it reads local memory — no page or network access).
     turnAllowed.current = useMemory ? new Set(['SearchMemory']) : new Set()
     setStreaming(true)
-    const turnStartedAt = Date.now()
+    const startedAt = Date.now()
+    setTurnStartedAt(startedAt)
     try {
       // Recalled memories are injected fresh each turn so mid-conversation
       // saves (SaveMemory) are visible on the very next turn.
@@ -850,7 +852,7 @@ export default function Chat({
       if (activeSelection) notes.push('[shared a page selection]')
       const journalUserText = [text, ...notes].filter(Boolean).join('\n')
       void appendToEpisode(episodeIdRef.current, [
-        { role: 'user', text: journalUserText, at: turnStartedAt },
+        { role: 'user', text: journalUserText, at: startedAt },
         { role: 'assistant', text: assistantText, at: Date.now() },
       ]).catch(() => {})
     } catch (err) {
@@ -878,6 +880,7 @@ export default function Chat({
       void unmountAllPresence()
       abortRef.current = null
       setStreaming(false)
+      setTurnStartedAt(null)
       setTurnSeq((n) => n + 1)
     }
   }
@@ -952,6 +955,7 @@ export default function Chat({
             key={msg.id}
             message={msg}
             streaming={streaming && i === messages.length - 1}
+            turnStartedAt={turnStartedAt}
           />
         ))}
         {approval && (
@@ -1267,7 +1271,92 @@ export default function Chat({
   )
 }
 
-function MessageView({ message, streaming }: { message: UIMessage; streaming: boolean }) {
+// Whimsical waiting-state words, two registers blended (dry-witty + gen-z) so
+// the indicator reads differently turn to turn. Random-per-mount starting word;
+// index is `% length`, so ordering doesn't matter.
+const THINKING_WORDS = [
+  'Thinking', 'Pondering', 'Percolating', 'Noodling', 'Cerebrating',
+  'Ruminating', 'Marinating', 'Conjuring', 'Mulling', 'Puzzling', 'Brewing',
+  'Simmering', 'Wrangling', 'Untangling', 'Musing', 'Cogitating', 'Scheming',
+  'Reticulating splines', 'Computing', 'Contemplating', 'Incubating',
+  'Concocting', 'Hatching', 'Churning', 'Crunching', 'Formulating',
+  'Deliberating', 'Stewing', 'Tinkering', 'Whirring', 'Spitballing',
+  'Ideating', 'Plotting', 'Daydreaming', 'Head-scratching',
+  'Cooking', 'Locking in', 'Big braining', 'Galaxy braining', 'Manifesting',
+  'Vibing', 'Sussing it out', 'Understanding the assignment', 'Lowkey grinding',
+  'Deadass thinking', 'Cracked mode engaged', 'Cooking up something',
+  'In my thinking era', 'Brain going brrr', 'Spinning up the neurons',
+  'Doing the thing', 'Locking in fr', 'No thoughts just cooking',
+  "Chef's kiss incoming", 'Working on the glow-up',
+]
+
+// Shown in the gap right after a tool result, while the model reads what came
+// back and decides its next move.
+const DIGESTING_WORDS = [
+  'Reviewing', 'Digesting', 'Parsing', 'Absorbing', 'Interpreting',
+  'Synthesizing', 'Processing', 'Distilling', 'Piecing it together',
+  'Making sense of it', 'Cross-referencing', 'Sifting', 'Connecting the dots',
+  'Untangling the results', 'Weighing it up', 'Sorting it out',
+  'Reading the receipts', 'Peeping the results', 'Reading the room',
+  'Doing the math', 'Vibe-checking the output', 'Catching up on the tea',
+  'Fact-checking the vibes', 'Putting the pieces together fr',
+  'Decoding the lore',
+]
+
+/**
+ * Whimsical waiting-state indicator: three bouncing dots, a rotating word, and
+ * a whole-turn elapsed timer. Rendered by MessageView while the turn is
+ * streaming but nothing is visibly appearing. `startedAt` is the turn start
+ * (ms) so the timer stays continuous across tool steps; `variant` picks the
+ * word pool. A fresh random offset per mount makes successive gaps in one turn
+ * read differently.
+ */
+function ThinkingIndicator({
+  startedAt,
+  variant,
+}: {
+  startedAt: number
+  variant: 'thinking' | 'digesting'
+}) {
+  const [now, setNow] = useState(() => Date.now())
+  const [baseOffset] = useState(() => Math.floor(Math.random() * 1000))
+
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 1000)
+    return () => clearInterval(id)
+  }, [])
+
+  const elapsed = Math.max(0, Math.floor((now - startedAt) / 1000))
+  const pool = variant === 'digesting' ? DIGESTING_WORDS : THINKING_WORDS
+  // Rotate roughly every 3s; continuous elapsed keeps it moving across steps.
+  const word = pool[(baseOffset + Math.floor(elapsed / 3)) % pool.length]
+
+  return (
+    <div className="thinking-indicator" role="status" aria-label="Assistant is working">
+      <span className="thinking-dots" aria-hidden="true">
+        <span className="thinking-dot" />
+        <span className="thinking-dot" />
+        <span className="thinking-dot" />
+      </span>
+      <span aria-hidden="true">{word}…</span>
+      {elapsed >= 1 && (
+        <span className="thinking-elapsed" aria-hidden="true">
+          {elapsed}s
+        </span>
+      )}
+    </div>
+  )
+}
+
+function MessageView({
+  message,
+  streaming,
+  turnStartedAt,
+}: {
+  message: UIMessage
+  streaming: boolean
+  turnStartedAt: number | null
+}) {
   const bodyRef = useRef<HTMLDivElement>(null)
 
   if (message.role === 'user') {
@@ -1286,6 +1375,13 @@ function MessageView({ message, streaming }: { message: UIMessage; streaming: bo
     )
   }
 
+  // Show the waiting indicator while the turn is live but nothing is visibly
+  // streaming: before the first part (thinking), or in the gap right after a
+  // tool result while the model decides its next move (digesting). The inline
+  // `turnStartedAt != null` also narrows it to a number for the prop.
+  const last = message.parts[message.parts.length - 1]
+  const digesting = last?.type === 'tool' && last.state === 'done'
+
   return (
     <div className="msg-assistant">
       <div className="msg-assistant-body" ref={bodyRef}>
@@ -1296,7 +1392,14 @@ function MessageView({ message, streaming }: { message: UIMessage; streaming: bo
             <ToolPill key={part.toolCallId} part={part} />
           ),
         )}
-        {message.parts.length === 0 && <div className="thinking-dot" />}
+        {streaming &&
+          turnStartedAt != null &&
+          (message.parts.length === 0 || digesting) && (
+            <ThinkingIndicator
+              startedAt={turnStartedAt}
+              variant={digesting ? 'digesting' : 'thinking'}
+            />
+          )}
       </div>
       {message.parts.length > 0 && !streaming && (
         <MessageToolbar message={message} targetRef={bodyRef} />
