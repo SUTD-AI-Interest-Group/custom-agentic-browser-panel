@@ -38,6 +38,13 @@ function browsingInsightsNote(granted: Set<BrowsingCapability>): string {
   return `\n\nBrowsing-insight tools available this turn: ${available.join(', ')}.`
 }
 
+// Appended to every system prompt (independent of the user's editable
+// settings.systemPrompt) so math renders in the panel even on quick replies
+// where the agent doesn't load the writing-math skill. Backslashes are doubled
+// for the JS string; the model sees single-backslash LaTeX.
+const MATH_FORMATTING_NOTE =
+  '\n\nWhen your answer includes mathematical notation, write it in LaTeX: `$…$` for inline math and `$$…$$` on their own lines for display math (these render in the panel). Prefer LaTeX commands over Unicode symbols (e.g. `\\alpha`, `\\leq`, `\\times`). Escape a literal dollar sign as `\\$`.'
+
 interface PendingApproval extends ApprovalRequest {
   resolve: (approved: boolean) => void
 }
@@ -716,7 +723,7 @@ export default function Chat({
       const imageQueue: string[] = []
       const { parts, responseMessages } = await runAgentTurn({
         model: createModel(selected.provider, selected.modelId),
-        system: `${settings.systemPrompt}${accessNote}${browsingInsightsNote(granted)}${memoryContext ? `\n\n${memoryContext}` : ''}${skillsCatalog}${activeSkills}`,
+        system: `${settings.systemPrompt}${accessNote}${browsingInsightsNote(granted)}${MATH_FORMATTING_NOTE}${memoryContext ? `\n\n${memoryContext}` : ''}${skillsCatalog}${activeSkills}`,
         history: [...historyRef.current],
         tools: createAgentTools(
           requestApproval,
