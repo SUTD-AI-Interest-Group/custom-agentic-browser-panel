@@ -462,7 +462,7 @@ Run: `npx tsx og.check.ts` → FAIL.
 // The OG parser is pure (testable without network); getLinkPreview adds a memory
 // + chrome.storage.local cache and a timeout, and is gated by a privacy setting.
 
-import { getSettings } from '../data/settings'
+import { loadSettings } from '../data/settings'
 
 /** OpenGraph-derived preview data; every field optional. */
 export interface LinkPreview {
@@ -518,7 +518,7 @@ function cacheKey(url: string): string {
  *  or on any fetch/parse failure (caller falls back to favicon + domain). */
 export async function getLinkPreview(url: string): Promise<LinkPreview | null> {
   if (mem.has(url)) return mem.get(url)!
-  const settings = await getSettings().catch(() => null)
+  const settings = await loadSettings().catch(() => null)
   if (settings && settings.fetchLinkPreviews === false) return null
 
   const key = cacheKey(url)
@@ -552,7 +552,7 @@ export async function getLinkPreview(url: string): Promise<LinkPreview | null> {
 }
 ```
 
-*(Note: confirm `getSettings` is the exported accessor in `src/data/settings.ts`; if the export name differs, use the actual one — check with `grep -n "export .*function get" src/data/settings.ts`.)*
+*(`loadSettings(): Promise<Settings>` is the confirmed accessor at `src/data/settings.ts:152`. `DOMParser` is a browser global available in the side panel.)*
 
 - [ ] **Step 5: Run the check → PASS**
 
@@ -678,20 +678,18 @@ import LinkCardStack from './LinkCard'
 
 - [ ] **Step 4: Add the privacy toggle** in `src/ui/settings/GeneralTab.tsx`
 
-First `grep -n "checkbox\|type=\"checkbox\"\|onChange" src/ui/settings/GeneralTab.tsx` to copy the file's existing toggle pattern. Add a labeled checkbox bound to `settings.fetchLinkPreviews` (default treated as `true` when undefined) that persists via the tab's existing settings-save path:
+`GeneralTab` receives props `{ draft: Settings; buffer: (next: Settings) => void; commit: (next: Settings) => void; commitDraft: () => void }`. A toggle should persist immediately via `commit`. Add this labeled checkbox among the tab's existing fields (find a sensible spot near the other general options; `grep -n "className=\"check\"\|<label" src/ui/settings/GeneralTab.tsx` to match the file's label markup — reuse `className="check"` if present, else the file's field pattern):
 
 ```tsx
 <label className="check">
   <input
     type="checkbox"
-    checked={settings.fetchLinkPreviews !== false}
-    onChange={(e) => save({ ...settings, fetchLinkPreviews: e.target.checked })}
+    checked={draft.fetchLinkPreviews !== false}
+    onChange={(e) => commit({ ...draft, fetchLinkPreviews: e.target.checked })}
   />
   Fetch link previews (contacts linked sites for title/description/image)
 </label>
 ```
-
-Match the actual prop/handler names in that file (the `save`/`update` function and `settings` object may be named differently — use what the file already uses).
 
 - [ ] **Step 5: Add CSS** to `src/ui/styles.css` (append near the image-carousel rules)
 
@@ -1043,25 +1041,43 @@ git commit -m "feat: collapsible JSON tree for standalone json blocks" -- src/ui
 ### Task 8: Table polish
 
 **Files:**
-- Modify: `src/ui/Markdown.tsx` (wrap tables), `src/ui/styles.css`
+- Modify: `src/ui/codeEnhance.ts` (add `wrapTables`), `src/ui/Markdown.tsx` (call it), `src/ui/styles.css`
 
-- [ ] **Step 1: Wrap tables via a marked renderer** in `src/ui/Markdown.tsx`
+marked v15's `renderer.table` takes a single `token` (not `(header, body)`), so overriding it to merely wrap the default output is awkward. Instead, wrap tables in the same post-render DOM pass used for code blocks — consistent with `enhanceCodeBlocks` and idempotent.
 
-Add a table renderer to the module-load marked config so each table is scroll-wrapped:
+- [ ] **Step 1: Add `wrapTables` to `src/ui/codeEnhance.ts`**
 
-```tsx
-marked.use({
-  renderer: {
-    table(header, body) {
-      return `<div class="table-scroll"><table><thead>${header}</thead><tbody>${body}</tbody></table></div>`
-    },
-  },
-})
+```ts
+/** Wrap each not-yet-wrapped <table> in a horizontal-scroll container so a wide
+ *  table scrolls within its own bubble instead of stretching the message. */
+export function wrapTables(root: HTMLElement): void {
+  root.querySelectorAll<HTMLTableElement>('table:not([data-wrapped])').forEach((table) => {
+    table.setAttribute('data-wrapped', '1')
+    const scroll = document.createElement('div')
+    scroll.className = 'table-scroll'
+    table.replaceWith(scroll)
+    scroll.append(table)
+  })
+}
 ```
 
-*(marked v15 renderer signature: confirm with `node -e "const {marked}=require('marked')"` or the marked v15 docs; if `table` receives a token object rather than `(header, body)`, adapt to `table(token){…}` returning the wrapped default. Verify the built output wraps tables.)*
+- [ ] **Step 2: Call it from `Markdown`'s effect** (`src/ui/Markdown.tsx`)
 
-- [ ] **Step 2: Add CSS** to `src/ui/styles.css`
+Extend the import and the existing enhancement effect (added in Task 5):
+
+```tsx
+import { enhanceCodeBlocks, wrapTables } from './codeEnhance'
+```
+```tsx
+  useEffect(() => {
+    if (ref.current) {
+      enhanceCodeBlocks(ref.current)
+      wrapTables(ref.current)
+    }
+  }, [html])
+```
+
+- [ ] **Step 3: Add CSS** to `src/ui/styles.css`
 
 ```css
 .table-scroll { overflow-x: auto; margin: 8px 0; border: 1px solid var(--border); border-radius: 10px; }
@@ -1071,11 +1087,11 @@ marked.use({
 .markdown .table-scroll tbody tr:nth-child(even) { background: color-mix(in srgb, var(--pill-bg) 50%, transparent); }
 ```
 
-- [ ] **Step 3: Build + commit**
+- [ ] **Step 4: Build + commit**
 
 ```bash
 npm run build   # must PASS
-git commit -m "feat: table polish (scroll container, sticky header, zebra)" -- src/ui/Markdown.tsx src/ui/styles.css
+git commit -m "feat: table polish (scroll container, sticky header, zebra)" -- src/ui/codeEnhance.ts src/ui/Markdown.tsx src/ui/styles.css
 ```
 
 ---
