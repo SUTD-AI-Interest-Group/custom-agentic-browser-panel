@@ -13,6 +13,7 @@ export function enhanceCodeBlocks(root: HTMLElement): void {
     pre.setAttribute('data-enhanced', '1')
     const code = pre.querySelector('code')
     const lang = languageOf(code)
+    if (code) void highlightCode(code, lang)
 
     const wrap = document.createElement('div')
     wrap.className = 'code-block'
@@ -31,7 +32,7 @@ export function enhanceCodeBlocks(root: HTMLElement): void {
       void navigator.clipboard.writeText(code?.textContent ?? '').then(() => {
         copy.textContent = 'Copied'
         setTimeout(() => (copy.textContent = 'Copy'), 1200)
-      })
+      }).catch(() => {})
     })
     header.append(label, copy)
 
@@ -59,4 +60,41 @@ function languageOf(code: Element | null): string {
   const cls = code?.className ?? ''
   const m = cls.match(/language-([\w-]+)/)
   return m ? m[1] : ''
+}
+
+// Lazy highlight.js core with a curated common-language set, loaded once and
+// shared. Dynamic import keeps it out of the initial sidepanel bundle.
+let hljsPromise: Promise<typeof import('highlight.js/lib/core').default> | null = null
+async function loadHljs() {
+  if (!hljsPromise) {
+    hljsPromise = (async () => {
+      const { default: hljs } = await import('highlight.js/lib/core')
+      const langs: [string, () => Promise<{ default: unknown }>][] = [
+        ['javascript', () => import('highlight.js/lib/languages/javascript')],
+        ['typescript', () => import('highlight.js/lib/languages/typescript')],
+        ['python', () => import('highlight.js/lib/languages/python')],
+        ['bash', () => import('highlight.js/lib/languages/bash')],
+        ['json', () => import('highlight.js/lib/languages/json')],
+        ['xml', () => import('highlight.js/lib/languages/xml')],
+        ['css', () => import('highlight.js/lib/languages/css')],
+      ]
+      await Promise.all(
+        langs.map(async ([name, imp]) => hljs.registerLanguage(name, ((await imp()).default) as never)),
+      )
+      return hljs
+    })()
+  }
+  return hljsPromise
+}
+
+/** Highlight one code element with the lazily-loaded engine. Idempotent. */
+export async function highlightCode(code: HTMLElement, lang: string): Promise<void> {
+  if (code.dataset.highlighted) return
+  const hljs = await loadHljs()
+  code.dataset.highlighted = '1'
+  const result = hljs.getLanguage(lang)
+    ? hljs.highlight(code.textContent ?? '', { language: lang })
+    : hljs.highlightAuto(code.textContent ?? '')
+  code.innerHTML = result.value
+  code.classList.add('hljs')
 }
