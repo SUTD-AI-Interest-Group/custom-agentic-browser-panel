@@ -19,7 +19,9 @@ function isSafePreviewTarget(url: string): boolean {
   if (u.protocol !== 'http:' && u.protocol !== 'https:') return false
   const host = u.hostname.toLowerCase().replace(/^\[|\]$/g, '')
   if (host === 'localhost' || host.endsWith('.localhost') || host.endsWith('.local') || host.endsWith('.internal')) return false
-  if (host === '::1' || host.startsWith('fe80:') || host.startsWith('fc') || host.startsWith('fd')) return false
+  // IPv6 loopback/link-local/unique-local — gated on ':' so real domains like
+  // "fdic.gov" or "fcbank.com" (which start with fc/fd) aren't caught.
+  if (host.includes(':') && (host === '::1' || host.startsWith('fe80:') || host.startsWith('fc') || host.startsWith('fd'))) return false
   const m = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/)
   if (m) {
     const a = Number(m[1])
