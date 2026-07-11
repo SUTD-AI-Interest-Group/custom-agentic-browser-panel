@@ -783,6 +783,96 @@ body {
   color: var(--text);
 }
 
+/* The composer's attached-context row: labelled pills wrap, collapsing beyond
+   MAX_VISIBLE_CONTEXT into a "+N" pill. */
+.context-pills {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+/* The remove "×" is revealed on hover/focus of its pill; its slot is always
+   reserved (padding-right on .attached) so the pill doesn't reflow. */
+.context-pill .context-remove {
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.12s ease;
+}
+
+.context-pill:hover .context-remove,
+.context-pill:focus-within .context-remove {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+/* Overflow "+N" pill and the hover list of the pages it collapses. */
+.context-more {
+  position: relative;
+  cursor: default;
+  color: var(--text);
+}
+
+.context-more-chip {
+  font-weight: 600;
+  line-height: 1;
+}
+
+.context-more-popover {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: max-content;
+  max-width: 260px;
+  max-height: 240px;
+  overflow-y: auto;
+  padding: 4px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.14);
+  opacity: 0;
+  transform: translateY(3px);
+  pointer-events: none;
+  transition: opacity 0.12s ease, transform 0.12s ease;
+  z-index: 30;
+}
+
+/* Transparent bridge so the pointer can travel from the pill onto the list. */
+.context-more-popover::before {
+  content: '';
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  height: 8px;
+}
+
+.context-more:hover .context-more-popover,
+.context-more:focus-within .context-more-popover {
+  opacity: 1;
+  transform: translateY(0);
+  pointer-events: auto;
+}
+
+.context-more-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px;
+  border-radius: 8px;
+}
+
+.context-more-row:hover {
+  background: var(--pill-bg);
+}
+
+.context-more-row .context-remove {
+  margin-left: auto;
+}
+
 /* Highlighted page text, offered as removable context. */
 .selection-chip {
   display: flex;

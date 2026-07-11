@@ -103,6 +103,16 @@ function hostOf(url: string): string {
   }
 }
 
+// Remove the first occurrence of `token` (and one trailing space) from `value`.
+// Used to detach an @mentioned tab when its composer pill is removed.
+function stripToken(value: string, token: string): string {
+  const i = value.indexOf(token)
+  if (i === -1) return value
+  let rest = value.slice(i + token.length)
+  if (rest.startsWith(' ')) rest = rest.slice(1)
+  return value.slice(0, i) + rest
+}
+
 // ---- Source favicons -----------------------------------------------------
 // The pages an assistant reply drew on, shown as a favicon avatar bar beside
 // the copy actions. Only real web pages count: tabs attached to the user's
@@ -110,6 +120,10 @@ function hostOf(url: string): string {
 // ViewOpenedTabs / GetActiveTabDOM / GetAllDOM (derived from the reply's tool parts).
 
 const MAX_VISIBLE_SOURCES = 3
+
+// The composer mirrors the reply source bar: at most this many attached-context
+// pills are shown inline, with the remainder collapsed into a "+N" pill.
+const MAX_VISIBLE_CONTEXT = 3
 
 const isHttpUrl = (url: string): boolean => /^https?:\/\//i.test(url)
 
@@ -221,6 +235,9 @@ export default function Chat({
   // so it isn't re-attached until they highlight something different.
   const [selection, setSelection] = useState<{ text: string; tabId: number } | null>(null)
   const [dismissedSelection, setDismissedSelection] = useState('')
+  // Open tabs resolved for @all, so the composer can preview each attached page
+  // as its own pill. Populated only while @all is active (see effect below).
+  const [allTabs, setAllTabs] = useState<TabSummary[]>([])
 
   // Bumped when a turn finishes, to trigger persistence of the transcript.
   const [turnSeq, setTurnSeq] = useState(0)
@@ -302,6 +319,35 @@ export default function Chat({
       chrome.tabs.onUpdated.removeListener(onUpdated)
     }
   }, [])
+
+  // @all attaches every open tab; it's only honored when the user has granted
+  // all-tabs visibility. The composer previews each attached page as a pill.
+  const allTabsActive = settings.tabAccess === 'all-tabs' && ALL_TOKEN_RE.test(input)
+
+  // While @all is active, resolve the open tabs into `allTabs` (and keep them
+  // fresh as tabs open/close/navigate) so the pills reflect what will be sent.
+  useEffect(() => {
+    if (!allTabsActive) {
+      setAllTabs([])
+      return
+    }
+    let cancelled = false
+    const refresh = async () => {
+      const tabs = await listOpenTabs()
+      if (!cancelled) setAllTabs(tabs)
+    }
+    void refresh()
+    const onChange = () => void refresh()
+    chrome.tabs.onCreated.addListener(onChange)
+    chrome.tabs.onRemoved.addListener(onChange)
+    chrome.tabs.onUpdated.addListener(onChange)
+    return () => {
+      cancelled = true
+      chrome.tabs.onCreated.removeListener(onChange)
+      chrome.tabs.onRemoved.removeListener(onChange)
+      chrome.tabs.onUpdated.removeListener(onChange)
+    }
+  }, [allTabsActive])
 
   // Watch the active tab for a text selection and surface it as removable
   // context. Reading requires injecting into the page, so we only poll while
@@ -551,6 +597,13 @@ export default function Chat({
     })
   }
 
+  // Detach an @mentioned tab from its composer pill: drop it from `mentions` and
+  // strip its token from the input so it no longer syncs on send.
+  function removeMention(token: string) {
+    setMentions((arr) => arr.filter((m) => m.token !== token))
+    setInput((v) => stripToken(v, token))
+  }
+
   async function send() {
     const text = input.trim()
     // A leading "/skill-name" token explicitly invokes that skill for this turn:
@@ -793,6 +846,49 @@ export default function Chat({
     p.models.map((m) => ({ value: `${p.id}::${m}`, label: m, provider: p.name })),
   )
 
+  // The pages attached to the next message, rendered as a pill row in the
+  // composer: the first MAX_VISIBLE_CONTEXT with favicon + host, the rest
+  // collapsed into a "+N" pill whose hover reveals the remainder. @all resolves
+  // to every open web page (a live preview of what will be sent; detach by
+  // deleting the @all token). Otherwise it's the current tab (auto-attached to a
+  // fresh chat, or offered as ambient context later) plus each surviving
+  // @mention, both removable via a hover ×.
+  const contextTabs: ContextTab[] = []
+  if (allTabsActive) {
+    const seen = new Set<number>()
+    for (const t of allTabs) {
+      if (!isHttpUrl(t.url) || seen.has(t.tabId)) continue
+      seen.add(t.tabId)
+      contextTabs.push({ key: `all:${t.tabId}`, title: t.title, url: t.url, hint: t.title })
+      if (contextTabs.length >= MAX_ALL_TABS) break
+    }
+  } else {
+    const shownMentions = mentions.filter((m) => input.includes(m.token))
+    const mentionedIds = new Set(shownMentions.map((m) => m.tabId))
+    if (currentTab && !mentionedIds.has(currentTab.tabId)) {
+      const attachedFirst = messages.length === 0 && !tabDismissed
+      contextTabs.push({
+        key: `current:${currentTab.tabId}`,
+        title: currentTab.title,
+        url: currentTab.url,
+        favIconUrl: currentTab.favIconUrl,
+        hint: attachedFirst
+          ? `This page is attached to your first message — ${currentTab.title}`
+          : `The agent can ask to view this tab — ${currentTab.title}`,
+        onRemove: attachedFirst ? () => setTabDismissed(true) : undefined,
+      })
+    }
+    for (const m of shownMentions) {
+      contextTabs.push({
+        key: `mention:${m.tabId}:${m.token}`,
+        title: m.title,
+        url: m.url,
+        hint: `Attached to this message — ${m.title}`,
+        onRemove: () => removeMention(m.token),
+      })
+    }
+  }
+
   return (
     <div className="chat">
       <div className="messages" ref={scrollRef}>
@@ -825,43 +921,7 @@ export default function Chat({
       </div>
 
       <div className="composer-area">
-        {currentTab &&
-          (messages.length === 0 && !tabDismissed ? (
-            <div
-              className="context-pill attached"
-              title={`This page is attached to your first message — ${currentTab.title}`}
-            >
-              {currentTab.favIconUrl ? (
-                <img src={currentTab.favIconUrl} alt="" />
-              ) : (
-                <span className="context-dot" />
-              )}
-              <span className="context-title">{hostOf(currentTab.url) || currentTab.title}</span>
-              <button
-                className="context-remove"
-                title="Don't share this page"
-                onClick={() => setTabDismissed(true)}
-              >
-                <svg width="8" height="8" viewBox="0 0 8 8" fill="none">
-                  <path
-                    d="M1.5 1.5l5 5M6.5 1.5l-5 5"
-                    stroke="currentColor"
-                    strokeWidth="1.4"
-                    strokeLinecap="round"
-                  />
-                </svg>
-              </button>
-            </div>
-          ) : (
-            <div className="context-pill" title={`The agent can ask to view this tab — ${currentTab.title}`}>
-              {currentTab.favIconUrl ? (
-                <img src={currentTab.favIconUrl} alt="" />
-              ) : (
-                <span className="context-dot" />
-              )}
-              <span className="context-title">{hostOf(currentTab.url) || currentTab.title}</span>
-            </div>
-          ))}
+        <ContextPills tabs={contextTabs} />
         {selection && selection.text !== dismissedSelection && (
           <div className="selection-chip" title="Highlighted text shared as context">
             <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
@@ -1244,6 +1304,87 @@ function CheckIcon() {
       <path d="M3.5 8.5l3 3 6-6.5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
     </svg>
   )
+}
+
+// The small "×" on a removable context pill.
+function RemoveGlyph() {
+  return (
+    <svg width="8" height="8" viewBox="0 0 8 8" fill="none" aria-hidden>
+      <path d="M1.5 1.5l5 5M6.5 1.5l-5 5" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
+    </svg>
+  )
+}
+
+/**
+ * A page shown in the composer's attached-context row — the current tab, an
+ * @mentioned tab, or @all. When `onRemove` is set, the pill reveals a remove
+ * "×" on hover that detaches the page from the next message.
+ */
+interface ContextTab {
+  key: string
+  title: string
+  url: string
+  favIconUrl?: string
+  /** Native tooltip text for the pill. */
+  hint: string
+  onRemove?: () => void
+}
+
+// The composer's attached-context row: a labelled pill per page (favicon + host,
+// with a hover-revealed remove "×" when detachable). Beyond MAX_VISIBLE_CONTEXT
+// the remainder collapse into a "+N" pill whose hover reveals a removable list —
+// the same overflow behaviour as the reply SourceBar.
+function ContextPills({ tabs }: { tabs: ContextTab[] }) {
+  if (tabs.length === 0) return null
+  const visible = tabs.slice(0, MAX_VISIBLE_CONTEXT)
+  const overflow = tabs.slice(MAX_VISIBLE_CONTEXT)
+  return (
+    <div className="context-pills">
+      {visible.map((t) => (
+        <div key={t.key} className={`context-pill${t.onRemove ? ' attached' : ''}`} title={t.hint}>
+          <ContextFavicon tab={t} />
+          <span className="context-title">{hostOf(t.url) || t.title}</span>
+          {t.onRemove && (
+            <button className="context-remove" title="Remove from this message" onClick={t.onRemove}>
+              <RemoveGlyph />
+            </button>
+          )}
+        </div>
+      ))}
+      {overflow.length > 0 && (
+        <div className="context-pill context-more" tabIndex={0} aria-label={`${overflow.length} more attached`}>
+          <span className="context-more-chip">+{overflow.length}</span>
+          <div className="context-more-popover">
+            {overflow.map((t) => (
+              <div key={t.key} className="context-more-row" title={t.hint}>
+                <span className="source-card-icon">
+                  <ContextFavicon tab={t} />
+                </span>
+                <span className="source-card-text">
+                  <span className="source-card-title">{t.title}</span>
+                  {t.url && <span className="source-card-url">{hostOf(t.url) || t.url}</span>}
+                </span>
+                {t.onRemove && (
+                  <button className="context-remove" title="Remove from this message" onClick={t.onRemove}>
+                    <RemoveGlyph />
+                  </button>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// Favicon for a context pill: the tab's own icon when known, else Chrome's
+// on-device cache for the URL, else a neutral dot.
+function ContextFavicon({ tab }: { tab: ContextTab }) {
+  const [failed, setFailed] = useState(false)
+  const src = tab.favIconUrl || (isHttpUrl(tab.url) ? faviconUrl(tab.url) : '')
+  if (!src || failed) return <span className="context-dot" />
+  return <img src={src} alt="" onError={() => setFailed(true)} />
 }
 
 // The favicon avatar bar shown beside the copy actions: up to
