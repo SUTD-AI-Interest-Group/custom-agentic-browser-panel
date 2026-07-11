@@ -188,9 +188,13 @@ export async function runResearch(opts: {
 
       // Reflect: assess coverage of the focus sub-questions; may end the loop.
       const reflection = await reflect(opts.question, focus, notebook.get(), model, opts.signal, trace)
-      for (const a of reflection.assessments) {
-        notebook.setCoverage(a.subQuestion, { supported: a.supported, gap: a.gap })
-      }
+      reflection.assessments.forEach((a, i) => {
+        // Map back to the exact plan wording (focus ⊂ plan.subQuestions) by
+        // position — the model often paraphrases, which would otherwise create a
+        // coverage key that never matches a plan sub-question and never converges.
+        const key = focus[i] ?? a.subQuestion
+        notebook.setCoverage(key, { supported: a.supported, gap: a.gap })
+      })
       const covered = notebook.get().plan.subQuestions.filter((q) => notebook.get().coverage[q]?.supported).length
       pushStep({
         tool: 'Reflect',
