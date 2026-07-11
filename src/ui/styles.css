@@ -973,18 +973,44 @@ body {
      horizontal scroll. The header rounds its own top corners instead. */
 }
 
+/* Clickable header: toggles the card between expanded and collapsed. */
 .research-report__header {
   display: flex;
   align-items: flex-start;
   gap: 7px;
+  width: 100%;
   padding: 10px 14px;
+  border: none;
   border-bottom: 1px solid var(--border);
   background: var(--pill-bg);
   border-top-left-radius: 13px;
   border-top-right-radius: 13px;
+  font-family: inherit;
   font-size: 12.5px;
   font-weight: 600;
   color: var(--text);
+  text-align: left;
+  cursor: pointer;
+}
+
+.research-report__header:hover {
+  background: var(--border);
+}
+
+/* Collapsed → header is the whole card: drop the divider, round all corners. */
+.research-report.collapsed .research-report__header {
+  border-bottom-color: transparent;
+  border-bottom-left-radius: 13px;
+  border-bottom-right-radius: 13px;
+}
+
+.research-report__caret {
+  margin-left: auto;
+  transition: transform 0.15s ease;
+}
+
+.research-report.collapsed .research-report__caret {
+  transform: rotate(-90deg);
 }
 
 .research-report__header svg {

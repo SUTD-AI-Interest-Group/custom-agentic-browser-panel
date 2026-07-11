@@ -2019,25 +2019,37 @@ function ToolPill({ part }: { part: Extract<UIPart, { type: 'tool' }> }) {
 // actions and a SourceBar. The `id` is the scroll target for its ✓ dock bar.
 function ResearchReportMessage({ message }: { message: UIMessage }) {
   const bodyRef = useRef<HTMLDivElement>(null)
+  // Collapsed hides the body + toolbar, leaving just the titled header. Starts
+  // expanded so a freshly-dropped report is readable; the header toggles it.
+  const [collapsed, setCollapsed] = useState(false)
   const research = message.research!
   const reportText = message.parts.map((p) => (p.type === 'text' ? p.text : '')).join('')
   return (
-    <div className="research-report" id={message.id}>
+    <div className={`research-report${collapsed ? ' collapsed' : ''}`} id={message.id}>
       {/* bodyRef wraps header + body so a copied PNG carries the research title. */}
       <div className="research-report__content" ref={bodyRef}>
-        <div className="research-report__header">
+        <button
+          className="research-report__header"
+          onClick={() => setCollapsed((c) => !c)}
+          aria-expanded={!collapsed}
+        >
           <ResearchGlyph />
           <span className="research-report__title">{research.question}</span>
-        </div>
-        <div className="research-report__body">
-          {reportText ? (
-            <AssistantText text={reportText} streaming={false} />
-          ) : (
-            <div className="research-card__error">{research.error}</div>
-          )}
-        </div>
+          <svg className="research-report__caret" width="11" height="11" viewBox="0 0 12 12" aria-hidden>
+            <path d="M3 4.5l3 3 3-3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" fill="none" />
+          </svg>
+        </button>
+        {!collapsed && (
+          <div className="research-report__body">
+            {reportText ? (
+              <AssistantText text={reportText} streaming={false} />
+            ) : (
+              <div className="research-card__error">{research.error}</div>
+            )}
+          </div>
+        )}
       </div>
-      {reportText && (
+      {!collapsed && reportText && (
         <div className="msg-toolbar research-report__toolbar">
           <CopyActions targetRef={bodyRef} markdown={reportText} />
           {message.sources && message.sources.length > 0 && <SourceBar sources={message.sources} />}
