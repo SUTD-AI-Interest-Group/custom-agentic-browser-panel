@@ -1,9 +1,10 @@
-import { useMemo } from 'react'
+import { useEffect, useMemo, useRef } from 'react'
 import { marked } from 'marked'
 import markedKatex from 'marked-katex-extension'
 import DOMPurify from 'dompurify'
 import 'katex/dist/katex.min.css'
 import { normalizeMathDelimiters } from './mathDelimiters'
+import { enhanceCodeBlocks, highlightAll, wrapTables } from './codeEnhance'
 
 // Configure the KaTeX extension once at module load (marked.use mutates the
 // shared marked instance; Markdown is the only consumer of marked). Options
@@ -12,7 +13,8 @@ import { normalizeMathDelimiters } from './mathDelimiters'
 // dropping the whole message.
 marked.use(markedKatex({ throwOnError: false, output: 'htmlAndMathml' }))
 
-export default function Markdown({ text }: { text: string }) {
+export default function Markdown({ text, streaming }: { text: string; streaming?: boolean }) {
+  const ref = useRef<HTMLDivElement>(null)
   const html = useMemo(() => {
     const normalized = normalizeMathDelimiters(text)
     const raw = marked.parse(normalized, { async: false }) as string
@@ -27,5 +29,11 @@ export default function Markdown({ text }: { text: string }) {
       ADD_ATTR: ['encoding'],
     })
   }, [text])
-  return <div className="markdown" dangerouslySetInnerHTML={{ __html: html }} />
+  useEffect(() => {
+    if (!ref.current) return
+    enhanceCodeBlocks(ref.current)
+    wrapTables(ref.current)
+    if (!streaming) highlightAll(ref.current)
+  }, [html, streaming])
+  return <div className="markdown" ref={ref} dangerouslySetInnerHTML={{ __html: html }} />
 }

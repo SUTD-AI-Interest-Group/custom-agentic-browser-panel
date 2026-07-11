@@ -73,6 +73,16 @@ export default function GeneralTab({
 
       <ShortcutSection />
 
+      <h2>Privacy</h2>
+      <label className="check">
+        <input
+          type="checkbox"
+          checked={draft.fetchLinkPreviews !== false}
+          onChange={(e) => commit({ ...draft, fetchLinkPreviews: e.target.checked })}
+        />
+        Fetch link previews (contacts linked sites for title/description/image)
+      </label>
+
       <h2>Providers</h2>
       <p className="hint">
         Any OpenAI-compatible endpoint works. Keys are stored locally in your browser and sent

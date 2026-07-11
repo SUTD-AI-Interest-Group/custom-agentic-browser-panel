@@ -99,6 +99,13 @@ export interface ControlStepDeps {
   beforeAct?: (index: number | undefined) => Promise<void>
   /** Presence hook: play the click pulse after acting. */
   afterAct?: () => Promise<void>
+  /**
+   * Presence hook: re-establish the overlay after a navigation replaced the
+   * page's DOM (which wipes the injected overlay). Called once the new document
+   * has settled and been re-read, so the tint/frame/cursor return on the fresh
+   * page instead of vanishing for the rest of the session.
+   */
+  afterNav?: () => Promise<void>
 }
 
 export interface ControlStepResult extends ActionResult {
@@ -146,7 +153,7 @@ const clickElementOrHighlight = (tabId: number, spec: ControlSpec): Promise<Acti
 
 /** Run one action: presence glide → real action → pulse → re-snapshot. */
 export async function runControlStep(deps: ControlStepDeps): Promise<ControlStepResult> {
-  const { tabId, spec, beforeAct, afterAct } = deps
+  const { tabId, spec, beforeAct, afterAct, afterNav } = deps
   const needsTarget = spec.index !== undefined && spec.action !== 'navigate'
   if (beforeAct && needsTarget) await beforeAct(spec.index)
   const result = await runRaw(tabId, spec)
@@ -172,5 +179,12 @@ export async function runControlStep(deps: ControlStepDeps): Promise<ControlStep
   } catch {
     registry = '(could not re-read the page)'
   }
+  // A navigation replaces the page's DOM and so destroys the injected presence
+  // overlay. Re-establish it whenever this step navigated — the explicit
+  // navigate action (which may reload to the same origin), or any action that
+  // drifted the origin — so the tint/frame/cursor come back on the fresh page
+  // now, not on the next step (or never, if this was the last step).
+  if (afterNav && (spec.action === 'navigate' || (origin !== '' && origin !== deps.snapshot.origin)))
+    await afterNav()
   return { ...result, registry, origin }
 }

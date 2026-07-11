@@ -2,7 +2,9 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import type { ModelMessage } from 'ai'
 import Markdown from './Markdown'
 import ImageCarousel from './ImageCarousel'
-import { splitImageBlocks } from './imageBlocks'
+import LinkCardStack from './LinkCard'
+import JsonTree from './JsonTree'
+import { splitBlocks } from './blocks'
 import { runAgentTurn, type MessageSource, type UIMessage, type UIPart } from '../agent/agent'
 import { captureRegion, type CapturedImage } from '../platform/capture'
 import { copyElementAsPng } from '../platform/domImage'
@@ -145,7 +147,7 @@ const isHttpUrl = (url: string): boolean => /^https?:\/\//i.test(url)
 // Chrome's built-in, on-device favicon cache — keeps visited URLs local rather
 // than shipping them to a third-party favicon service. Needs the "favicon"
 // manifest permission.
-function faviconUrl(pageUrl: string, size = 32): string {
+export function faviconUrl(pageUrl: string, size = 32): string {
   const u = new URL(chrome.runtime.getURL('/_favicon/'))
   u.searchParams.set('pageUrl', pageUrl)
   u.searchParams.set('size', String(size))
@@ -1420,7 +1422,7 @@ function MessageView({
       <div className="msg-assistant-body" ref={bodyRef}>
         {message.parts.map((part, i) =>
           part.type === 'text' ? (
-            <AssistantText key={i} text={part.text} />
+            <AssistantText key={i} text={part.text} streaming={streaming} />
           ) : (
             <ToolPill key={part.toolCallId} part={part} />
           ),
@@ -1441,19 +1443,18 @@ function MessageView({
   )
 }
 
-// Renders one assistant text part. Runs of grouped image URLs become a
-// side-scrollable download carousel; everything else renders as markdown.
-function AssistantText({ text }: { text: string }) {
-  const segments = useMemo(() => splitImageBlocks(text), [text])
+// Renders one assistant text part as ordered blocks: image runs → carousel,
+// standalone links → cards, standalone JSON → collapsible tree, else markdown.
+function AssistantText({ text, streaming }: { text: string; streaming: boolean }) {
+  const blocks = useMemo(() => splitBlocks(text), [text])
   return (
     <>
-      {segments.map((seg, i) =>
-        seg.type === 'images' ? (
-          <ImageCarousel key={i} urls={seg.urls} />
-        ) : (
-          <Markdown key={i} text={seg.text} />
-        ),
-      )}
+      {blocks.map((b, i) => {
+        if (b.type === 'images') return <ImageCarousel key={i} urls={b.urls} />
+        if (b.type === 'links') return <LinkCardStack key={i} links={b.links} />
+        if (b.type === 'json') return <JsonTree key={i} value={b.value} />
+        return <Markdown key={i} text={b.text} streaming={streaming} />
+      })}
     </>
   )
 }
