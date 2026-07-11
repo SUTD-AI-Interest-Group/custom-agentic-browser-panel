@@ -20,6 +20,12 @@ export interface Skill {
   userInvocable: boolean
   /** Included in the always-on system-prompt catalog (agent may auto-load). */
   modelInvocable: boolean
+  /**
+   * User on/off switch (Settings → Skills). When false the skill is hidden from
+   * the agent catalog, the "/" menu and ReadSkill, regardless of the invocable
+   * flags. Absent on older records → treated as enabled.
+   */
+  enabled: boolean
   /** Emoji shown on the Library card. */
   icon?: string
   /** Accent hex; auto-derived from name when absent. */
@@ -225,7 +231,10 @@ export async function getSkill(name: string): Promise<Skill | null> {
 
 export async function listSkillMetas(opts?: { modelInvocableOnly?: boolean }): Promise<SkillMeta[]> {
   const all = await listSkills()
-  const filtered = opts?.modelInvocableOnly ? all.filter((s) => s.modelInvocable) : all
+  // Disabled skills are invisible to the agent everywhere this feeds (the
+  // system-prompt catalog and ListAllSkills).
+  const enabled = all.filter((s) => s.enabled !== false)
+  const filtered = opts?.modelInvocableOnly ? enabled.filter((s) => s.modelInvocable) : enabled
   return filtered.map((s) => ({ name: s.name, description: s.description, source: s.source }))
 }
 
@@ -246,6 +255,8 @@ export async function saveSkill(input: SaveSkillInput): Promise<Skill> {
     source: input.source ?? existing?.source ?? 'user',
     userInvocable: input.userInvocable ?? existing?.userInvocable ?? true,
     modelInvocable: input.modelInvocable ?? existing?.modelInvocable ?? true,
+    // Editing a skill preserves its on/off state; new skills start enabled.
+    enabled: existing?.enabled ?? true,
     icon: input.icon ?? existing?.icon,
     color: input.color ?? existing?.color,
     createdAt: existing?.createdAt ?? now,
@@ -260,4 +271,15 @@ export async function deleteSkill(name: string): Promise<void> {
   if (!existing) return
   if (existing.source === 'builtin') throw new Error('Built-in skills cannot be deleted.')
   await requestOf('readwrite', (s) => s.delete(existing.id))
+}
+
+/**
+ * Flip a skill's on/off switch. Unlike saveSkill this deliberately allows
+ * toggling built-ins — the enabled flag is a local user preference, not an edit
+ * to the skill's content, so the built-in-overwrite guard does not apply.
+ */
+export async function setSkillEnabled(name: string, enabled: boolean): Promise<void> {
+  const existing = await getSkill(name)
+  if (!existing) return
+  await requestOf('readwrite', (s) => s.put({ ...existing, enabled, updatedAt: Date.now() }))
 }

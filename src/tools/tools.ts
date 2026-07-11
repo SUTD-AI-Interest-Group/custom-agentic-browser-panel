@@ -2,7 +2,7 @@ import { tool, type ToolSet } from 'ai'
 import { z } from 'zod'
 import { saveMemory, searchMemories } from '../data/memory'
 import { getSkill, listSkillMetas, saveSkill } from '../data/skills'
-import type { ProviderConfig, TabAccess } from '../data/settings'
+import type { ProviderConfig, TabAccess, ToolPolicy } from '../data/settings'
 import { getActiveTab, listOpenTabs, navigateTab, readTabContent, readTabDom } from '../platform/tabs'
 import { getBrowsingHistory, getBookmarks, getTopSites, getDownloads } from '../platform/browsingData'
 import type { BrowsingCapability } from '../platform/permissions'
@@ -113,6 +113,8 @@ export function createAgentTools(
   pageControl: PageControlGate,
   selected: { provider: ProviderConfig; modelId: string } | null,
   imageQueue: string[],
+  /** Resolves each tool's Never/Ask/Always policy; `never` tools are removed below. */
+  policyFor: (name: string) => ToolPolicy,
 ): ToolSet {
   const tools: ToolSet = {
     ViewCurrentTab: tool({
@@ -577,6 +579,8 @@ export function createAgentTools(
         if (!approved) return DENIED
         const skill = await getSkill(name)
         if (!skill) return { error: `No skill named "${name}". Use ListAllSkills to see valid names.` }
+        if (skill.enabled === false)
+          return { error: `The "${name}" skill is turned off in Settings → Skills.` }
         if (!skill.modelInvocable)
           return { error: `The "${name}" skill can only be run when the user types /${name}; it cannot be auto-loaded.` }
         return { name: skill.name, description: skill.description, body: skill.body }
@@ -636,6 +640,13 @@ export function createAgentTools(
   if (!granted.has('bookmarks')) delete tools.GetBookmarks
   if (!granted.has('topSites')) delete tools.GetTopSites
   if (!granted.has('downloads')) delete tools.GetDownloads
+
+  // Honor the per-tool permission policy: a tool set to "Never" is removed
+  // entirely (like the visibility/insight gates above), so the model never even
+  // sees it. "Ask"/"Always" only differ at the approval gate (see requestApproval).
+  for (const name of Object.keys(tools)) {
+    if (policyFor(name) === 'never') delete tools[name]
+  }
 
   return tools
 }

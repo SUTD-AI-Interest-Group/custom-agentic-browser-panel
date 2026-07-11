@@ -9,7 +9,7 @@ import { copyElementAsPng } from '../platform/domImage'
 import { getConversation, renameConversation, saveConversation } from '../data/conversations'
 import { appendToEpisode, getMemoryContext } from '../data/memory'
 import { createModel, generateChatTitle } from '../agent/provider'
-import { getSelectedProvider, type Settings } from '../data/settings'
+import { getSelectedProvider, toolPolicy, type Settings } from '../data/settings'
 import { getActiveTab, listOpenTabs, readTabContent, type TabContent, type TabSummary } from '../platform/tabs'
 import { createAgentTools, type ApprovalRequest, type PageControlGate } from '../tools/tools'
 import { MAX_SESSION_ACTIONS, type ControlSession } from '../tools/pageControl'
@@ -77,10 +77,10 @@ const MAX_ALL_TABS = 25
 // Cap how much highlighted text we forward as context.
 const SELECTION_MAX = 4000
 
-// Reading/listing skills only touches the user's own local skill store — as
-// benign as SearchMemory — so these route through the approval gate (invariant)
-// but are auto-approved. SaveSkill is NOT here: it mutates and shows the card.
-const AUTO_APPROVED_TOOLS = new Set(['ReadSkill', 'ListAllSkills'])
+// Auto-approval is now driven by each tool's Never/Ask/Always policy
+// (DEFAULT_TOOL_POLICIES / Settings → Permissions). ReadSkill and ListAllSkills
+// default to "always" — as benign as SearchMemory — so they still clear the gate
+// without a card unless the user changes them. See requestApproval below.
 
 // Deictic references to the page/tab the user is currently viewing — "what
 // about this?", "summarize this page", "what's here". Liberal by design: a
@@ -408,9 +408,14 @@ export default function Chat({
   }
 
   function requestApproval(request: ApprovalRequest): Promise<boolean> {
-    if (AUTO_APPROVED_TOOLS.has(request.toolName)) return Promise.resolve(true)
-    if (sessionAllowed.current.has(request.toolName)) return Promise.resolve(true)
-    if (turnAllowed.current.has(request.toolName)) return Promise.resolve(true)
+    // Point-of-no-return steps (form submits, cross-origin nav, passwords) are
+    // the safety backstop: they always show a card, ignoring every auto-approve
+    // path — including an "Always" policy — so they confirm every single time.
+    if (!request.once) {
+      if (toolPolicy(settings, request.toolName) === 'always') return Promise.resolve(true)
+      if (sessionAllowed.current.has(request.toolName)) return Promise.resolve(true)
+      if (turnAllowed.current.has(request.toolName)) return Promise.resolve(true)
+    }
     return new Promise<boolean>((resolve) => {
       const pending = { ...request, resolve }
       approvalRef.current = pending
@@ -484,7 +489,7 @@ export default function Chat({
     const all = await listSkills().catch(() => [])
     const q = s.query.trim().toLowerCase()
     const matched = all
-      .filter((sk) => sk.userInvocable)
+      .filter((sk) => sk.userInvocable && sk.enabled !== false)
       .filter((sk) => !q || sk.name.includes(q) || sk.description.toLowerCase().includes(q))
       .slice(0, 8)
       .map((sk): SlashCandidate => ({ kind: 'skill', name: sk.name, description: sk.description }))
@@ -552,7 +557,10 @@ export default function Chat({
     // its full instructions are injected into the system prompt below.
     const slashMatch = text.match(/^\/([a-z0-9-]+)(?:\s|$)/)
     const invokedSkill = slashMatch ? await getSkill(slashMatch[1]) : null
-    const activeSkill = invokedSkill && invokedSkill.userInvocable ? invokedSkill : null
+    const activeSkill =
+      invokedSkill && invokedSkill.userInvocable && invokedSkill.enabled !== false
+        ? invokedSkill
+        : null
     const images = attachments
     // Mentions only count if their token survived editing.
     const activeMentions = mentions.filter((m) => text.includes(m.token))
@@ -710,7 +718,15 @@ export default function Chat({
         model: createModel(selected.provider, selected.modelId),
         system: `${settings.systemPrompt}${accessNote}${browsingInsightsNote(granted)}${memoryContext ? `\n\n${memoryContext}` : ''}${skillsCatalog}${activeSkills}`,
         history: [...historyRef.current],
-        tools: createAgentTools(requestApproval, settings.tabAccess, granted, pageControl, selected, imageQueue),
+        tools: createAgentTools(
+          requestApproval,
+          settings.tabAccess,
+          granted,
+          pageControl,
+          selected,
+          imageQueue,
+          (name) => toolPolicy(settings, name),
+        ),
         abortSignal: controller.signal,
         onUpdate: updateAssistant,
         imageQueue,
