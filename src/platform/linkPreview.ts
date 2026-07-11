@@ -102,9 +102,9 @@ function release(): void {
 /** Cached OpenGraph preview for `url`. Returns null when disabled, cached-null,
  *  or on any fetch/parse failure (caller falls back to favicon + domain). */
 export async function getLinkPreview(url: string): Promise<LinkPreview | null> {
-  if (mem.has(url)) return mem.get(url)!
   const settings = await loadSettings().catch(() => null)
   if (settings && settings.fetchLinkPreviews === false) return null
+  if (mem.has(url)) return mem.get(url)!
 
   if (!isSafePreviewTarget(url)) {
     mem.set(url, null)

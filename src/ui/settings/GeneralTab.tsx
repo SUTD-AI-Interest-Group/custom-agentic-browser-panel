@@ -73,7 +73,7 @@ export default function GeneralTab({
 
       <ShortcutSection />
 
-      <h2>Appearance</h2>
+      <h2>Privacy</h2>
       <label className="check">
         <input
           type="checkbox"
