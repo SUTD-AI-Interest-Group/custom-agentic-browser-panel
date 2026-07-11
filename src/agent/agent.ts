@@ -10,6 +10,7 @@ import {
   type ToolSet,
 } from 'ai'
 import { z } from 'zod'
+import { resolveActiveTools } from '../tools/toolDiscovery'
 
 // UI-facing representation of one assistant turn. A turn is an ordered list
 // of parts: streamed text interleaved with tool invocations.
@@ -182,6 +183,14 @@ export async function runAgentTurn(options: {
    */
   imageQueue?: string[]
   /**
+   * Per-turn set of tool names the model has loaded (via GetTool) or the app
+   * has seeded from context. When present, each step's `activeTools` is the
+   * always-on core plus this set, intersected with the turn's real tools — so
+   * only those tool schemas are sent to the model. Absent = every tool active
+   * (legacy behavior).
+   */
+  activeNames?: Set<string>
+  /**
    * Overrides the near-the-ceiling wrap-up nudge (see DEFAULT_WRAP_UP_NUDGE).
    * Pass a custom string to change it (the research agent's final cycle says
    * "write the report now"), or '' to disable the nudge for this turn.
@@ -303,7 +312,14 @@ export async function runAgentTurn(options: {
       if (wrapUpNudge && stepNumber >= MAX_STEPS - NUDGE_LEAD) {
         injected.push({ role: 'user', content: wrapUpNudge })
       }
-      return { messages: [...base, ...injected] }
+      // Progressive disclosure: expose only the always-on core plus whatever the
+      // model has loaded (GetTool) or the app seeded this turn, intersected with
+      // the turn's real tools. Absent activeNames = legacy "every tool active".
+      const activeTools = options.activeNames
+        ? resolveActiveTools(options.activeNames, Object.keys(tools))
+        : undefined
+      const messages = [...base, ...injected]
+      return activeTools ? { messages, activeTools } : { messages }
     },
   })
 
