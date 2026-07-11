@@ -65,3 +65,52 @@ export function extractReadableText(html: string, maxChars = 20_000): { title: s
   const text = (root?.textContent ?? '').replace(/[ \t]+/g, ' ').replace(/\n\s*\n\s*/g, '\n\n').trim()
   return { title, text: text.slice(0, maxChars) }
 }
+
+const FETCH_TIMEOUT_MS = 15_000
+const MAX_BYTES = 2_000_000
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
+
+/** Search DuckDuckGo (keyless lite endpoint) with retry/backoff. Never throws — returns {error} on failure so callers can react. */
+export async function searchDuckDuckGo(
+  query: string,
+  maxResults = 8,
+): Promise<{ results: ReturnType<typeof parseDuckDuckGoLite> } | { error: string }> {
+  const url = `https://lite.duckduckgo.com/lite/?q=${encodeURIComponent(query)}`
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const res = await fetch(url, {
+        method: 'GET',
+        credentials: 'omit',
+        headers: { 'User-Agent': 'Mozilla/5.0' },
+        signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+      })
+      if (res.status === 202 || res.status === 429) { await sleep(400 * (attempt + 1)); continue }
+      if (!res.ok) return { error: `search failed: HTTP ${res.status}` }
+      const results = parseDuckDuckGoLite(await res.text()).slice(0, Math.min(maxResults, 20))
+      return { results }
+    } catch (err) {
+      if (attempt === 2) return { error: `search error: ${err instanceof Error ? err.message : String(err)}` }
+      await sleep(400 * (attempt + 1))
+    }
+  }
+  return { error: 'search failed after retries' }
+}
+
+/** Fetch a public page and return its readable text. SSRF-guarded, credentials omitted, timed, size-capped. Never throws. */
+export async function fetchReadable(
+  url: string,
+): Promise<{ url: string; title: string; text: string } | { error: string }> {
+  const guard = isFetchableUrl(url)
+  if (!guard.ok) return { error: `refused to fetch (${guard.reason})` }
+  try {
+    const res = await fetch(url, { credentials: 'omit', redirect: 'follow', signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) })
+    if (!res.ok) return { error: `fetch failed: HTTP ${res.status}` }
+    const ct = res.headers.get('content-type') ?? ''
+    if (!/text\/html|text\/plain|application\/xhtml/i.test(ct)) return { error: `unsupported content-type: ${ct}` }
+    const body = (await res.text()).slice(0, MAX_BYTES)
+    const { title, text } = extractReadableText(body)
+    return { url: res.url, title, text }
+  } catch (err) {
+    return { error: `fetch error: ${err instanceof Error ? err.message : String(err)}` }
+  }
+}

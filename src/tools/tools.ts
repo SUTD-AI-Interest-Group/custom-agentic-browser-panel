@@ -12,6 +12,7 @@ import { ensureVisionCapability } from '../agent/vision'
 import { captureWithMarks } from '../platform/marks'
 import { createModel } from '../agent/provider'
 import { extractStructured } from '../agent/extract'
+import { searchDuckDuckGo, fetchReadable } from '../platform/webFetch'
 import {
   isPointOfNoReturn,
   runControlStep,
@@ -659,6 +660,34 @@ export function createAgentTools(
           // model can correct the name and retry rather than treating it as denial.
           return { error: err instanceof Error ? err.message : String(err) }
         }
+      },
+    }),
+
+    // TEMP (Task 6 live-validation only; removed in Task 10 when the ungated
+    // research tools move into the offscreen sandbox). Gated so the invariant
+    // "every foreground tool routes through requestApproval" holds at this commit.
+    WebSearchPreview: tool({
+      description: 'Search the web (DuckDuckGo) and return ranked {title,url,snippet} results. Asks permission first.',
+      inputSchema: z.object({
+        reason: z.string().describe('Short reason shown to the user, e.g. "To find the release notes"'),
+        query: z.string().describe('Search query'),
+      }),
+      execute: async ({ reason, query }) => {
+        const approved = await requestApproval({ toolName: 'WebSearchPreview', summary: `Search the web for “${query}”`, reason })
+        if (!approved) return DENIED
+        return searchDuckDuckGo(query)
+      },
+    }),
+    FetchUrlPreview: tool({
+      description: 'Fetch a public web page and return its readable text. Asks permission first.',
+      inputSchema: z.object({
+        reason: z.string().describe('Short reason shown to the user, e.g. "To read the top result"'),
+        url: z.string().describe('http(s) URL to read'),
+      }),
+      execute: async ({ reason, url }) => {
+        const approved = await requestApproval({ toolName: 'FetchUrlPreview', summary: `Fetch ${url}`, reason })
+        if (!approved) return DENIED
+        return fetchReadable(url)
       },
     }),
   }
