@@ -2263,7 +2263,10 @@ body {
   gap: 10px;
 }
 
-.provider-card label {
+/* Field labels stack their caption above the control. `.check` rows (a checkbox
+   beside its text) opt out — they stay horizontal via the .check rule. */
+.provider-card label,
+.obs-panel label:not(.check) {
   display: flex;
   flex-direction: column;
   gap: 4px;
@@ -2274,6 +2277,7 @@ body {
 
 .provider-card input,
 .provider-card textarea,
+.obs-panel input:not([type='checkbox']),
 .system-prompt {
   border: 1px solid var(--border);
   border-radius: 8px;
@@ -2289,6 +2293,7 @@ body {
 
 .provider-card input:focus,
 .provider-card textarea:focus,
+.obs-panel input:not([type='checkbox']):focus,
 .system-prompt:focus {
   border-color: var(--text-muted);
 }
@@ -2874,20 +2879,23 @@ body {
   transform: translateX(14px);
 }
 .switch input:focus-visible + .track {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
+  box-shadow: 0 0 0 2px var(--bg), 0 0 0 4px var(--accent);
 }
 .obs-panel {
+  background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 10px 12px;
+  border-radius: 14px;
+  padding: 12px;
   margin: 8px 0 4px;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 10px;
 }
 .obs-panel .check.sub {
   margin-left: 18px;
+}
+.obs-panel .check input[type='checkbox'] {
+  flex: none;
 }
 .obs-actions {
   display: flex;

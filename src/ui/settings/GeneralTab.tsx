@@ -90,8 +90,6 @@ export default function GeneralTab({
         Fetch link previews (contacts linked sites for title/description/image)
       </label>
 
-      <ObservabilitySection draft={draft} buffer={buffer} commit={commit} commitDraft={commitDraft} />
-
       <h2>Providers</h2>
       <p className="hint">
         Any OpenAI-compatible endpoint works. Keys are stored locally in your browser and sent
@@ -159,6 +157,8 @@ export default function GeneralTab({
           </button>
         ))}
       </div>
+
+      <ObservabilitySection draft={draft} buffer={buffer} commit={commit} commitDraft={commitDraft} />
     </div>
   )
 }
