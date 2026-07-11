@@ -297,7 +297,9 @@ export function createAgentTools(
           beforeAct: (index) => (index === undefined ? Promise.resolve() : focusOn(tab.id!, index, spec.label)),
           afterAct: () => pulse(tab.id!),
         })
-        return { ok, message, urlChanged, elements: registry, actionsLeft: session.maxActions - session.actionsUsed }
+        // Coerce to a real boolean: `urlChanged` is undefined for non-navigation
+        // actions, and a tool result must not carry undefined into the history.
+        return { ok, message, urlChanged: urlChanged === true, elements: registry, actionsLeft: session.maxActions - session.actionsUsed }
       },
     }),
 

@@ -1,6 +1,8 @@
 import {
   streamText,
+  generateText,
   stepCountIs,
+  NoSuchToolError,
   type LanguageModel,
   type ModelMessage,
   type ToolSet,
@@ -56,6 +58,30 @@ export interface AgentTurnResult {
 
 const MAX_STEPS = 24
 
+/**
+ * Drop `undefined`-valued keys from model messages via a JSON round-trip.
+ *
+ * Tool executors can return objects with optional fields left `undefined`
+ * (e.g. ControlPage's `urlChanged` on a non-navigation action). The AI SDK
+ * stores that object inside a tool result's `{ type: 'json', value }` output
+ * but only strips *top-level* undefined — a nested `undefined` survives. On
+ * the NEXT turn the SDK re-validates the whole history against its message
+ * schema, where `undefined` is not a valid JSON value, and rejects the entire
+ * prompt with "The messages must be a ModelMessage[]". Round-tripping through
+ * JSON removes undefined recursively, keeping every turn valid — and repairs
+ * conversations already persisted with the bad shape. Falls back to the
+ * original message if it somehow isn't JSON-serializable.
+ */
+function toValidModelMessages(messages: ModelMessage[]): ModelMessage[] {
+  return messages.map((m) => {
+    try {
+      return JSON.parse(JSON.stringify(m)) as ModelMessage
+    } catch {
+      return m
+    }
+  })
+}
+
 export async function runAgentTurn(options: {
   model: LanguageModel
   system: string
@@ -82,10 +108,66 @@ export async function runAgentTurn(options: {
   const result = streamText({
     model,
     system,
-    messages: history,
+    // Sanitize incoming history so a conversation already persisted with a
+    // nested-undefined tool result (see toValidModelMessages) still runs.
+    messages: toValidModelMessages(history),
     tools,
     stopWhen: stepCountIs(MAX_STEPS),
     abortSignal,
+    // Large tool inputs (a skill's Markdown body, a long typed string) make the
+    // model occasionally emit malformed JSON arguments, which fail schema
+    // validation and surface as a red "… failed" tool card before the model
+    // retries on its own. Repair that first attempt silently: re-ask the same
+    // model with its broken call and the validation error fed back, forcing it
+    // to reissue the same tool with corrected arguments. We deliberately re-ask
+    // (rather than generateObject) so this leans only on ordinary tool-calling
+    // and works against any OpenAI-compatible endpoint, no JSON/structured
+    // -output mode required. On ANY failure we return null: a thrown repair
+    // function escalates to a ToolCallRepairError that would abort the whole
+    // turn, so falling back to null preserves today's benign self-correction.
+    experimental_repairToolCall: async ({ toolCall, tools: turnTools, error, messages: priorMessages, system: sys }) => {
+      // A hallucinated tool name can't be fixed by re-generating arguments.
+      if (NoSuchToolError.isInstance(error)) return null
+      try {
+        const repaired = await generateText({
+          model,
+          system: sys,
+          messages: [
+            ...priorMessages,
+            {
+              role: 'assistant',
+              content: [
+                {
+                  type: 'tool-call',
+                  toolCallId: toolCall.toolCallId,
+                  toolName: toolCall.toolName,
+                  input: toolCall.input,
+                },
+              ],
+            },
+            {
+              role: 'tool',
+              content: [
+                {
+                  type: 'tool-result',
+                  toolCallId: toolCall.toolCallId,
+                  toolName: toolCall.toolName,
+                  output: { type: 'error-text', value: error.message },
+                },
+              ],
+            },
+          ],
+          tools: turnTools,
+          toolChoice: { type: 'tool', toolName: toolCall.toolName },
+          abortSignal,
+        })
+        const fixed = repaired.toolCalls.find((tc) => tc.toolName === toolCall.toolName)
+        if (!fixed) return null
+        return { ...toolCall, input: JSON.stringify(fixed.input) }
+      } catch {
+        return null
+      }
+    },
     prepareStep: ({ messages }) => {
       const queue = options.imageQueue
       if (!queue || queue.length === 0) return undefined
@@ -157,5 +239,7 @@ export async function runAgentTurn(options: {
   }
 
   const response = await result.response
-  return { parts, responseMessages: response.messages }
+  // Keep persisted history valid for the next turn: strip any nested undefined
+  // a tool result carried before it lands in the conversation.
+  return { parts, responseMessages: toValidModelMessages(response.messages) }
 }
