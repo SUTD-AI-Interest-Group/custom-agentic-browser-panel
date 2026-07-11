@@ -53,6 +53,7 @@ export const TOOL_CATALOG: ToolCatalogEntry[] = [
   { name: 'GetActiveTabDOM', group: 'reading', label: "Read the current tab's DOM" },
   { name: 'GetAllDOM', group: 'reading', label: "Read other tabs' DOM" },
   { name: 'ExtractData', group: 'reading', label: 'Extract structured data from this page' },
+  { name: 'StartResearch', group: 'reading', label: 'Run background web research' },
   { name: 'RequestPageControl', group: 'control', label: 'Start a page-control session' },
   { name: 'ControlPage', group: 'control', label: 'Perform a page-control action' },
   { name: 'NavigateTab', group: 'navigation', label: 'Switch / open / navigate tabs' },
