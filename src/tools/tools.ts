@@ -182,33 +182,36 @@ export function createAgentTools(
       },
     }),
 
-    ViewOpenedTabs: tool({
+    ReadTabs: tool({
       description:
-        'List all tabs the user has open (titles, URLs, tab ids). Optionally pass tabIds to also read the full content of specific tabs. Asks the user for permission first. Use to find or read a tab other than the current one.',
+        'List all tabs the user has open (titles, URLs, tab ids), and optionally read specific tabs by id. mode="text": visible text; mode="dom": cleaned HTML structure. Pass tabIds to read those tabs; omit tabIds to only list. Asks the user for permission first. Read only the tabs you need — each page is large.',
       inputSchema: z.object({
+        mode: z.enum(['text', 'dom']).describe('text = visible text; dom = HTML structure'),
         reason: z
           .string()
           .describe('Short reason shown to the user, e.g. "To find your open documentation tabs"'),
         tabIds: z
           .array(z.number())
           .optional()
-          .describe(
-            'Tab ids (from a previous ViewOpenedTabs listing) whose full content should be read. Omit to only list tabs.',
-          ),
+          .describe('Tab ids (from a previous listing) to read. Omit to only list tabs.'),
       }),
-      execute: async ({ reason, tabIds }) => {
+      execute: async ({ mode, reason, tabIds }) => {
         const reading = tabIds && tabIds.length > 0
         const approved = await requestApproval({
-          toolName: 'ViewOpenedTabs',
+          toolName: 'ReadTabs',
           summary: reading
-            ? `Read the content of ${tabIds.length} open tab${tabIds.length > 1 ? 's' : ''}`
+            ? `Read the ${mode === 'dom' ? 'DOM' : 'content'} of ${tabIds!.length} open tab${tabIds!.length > 1 ? 's' : ''}`
             : 'See the list of your open tabs',
           reason,
         })
         if (!approved) return DENIED
         const tabs = await listOpenTabs()
         if (!reading) return { tabs }
-        const contents = await Promise.all(tabIds.map((id) => readTabContent(id)))
+        if (mode === 'dom') {
+          const doms = await Promise.all(tabIds!.map((id) => readTabDom(id, MAX_DOM_CHARS_PER_TAB)))
+          return { tabs, doms }
+        }
+        const contents = await Promise.all(tabIds!.map((id) => readTabContent(id)))
         return { tabs, contents }
       },
     }),
@@ -432,37 +435,6 @@ export function createAgentTools(
           filled,
           note: `Filled ${filled.length} field(s) from profile. Profile memories available: ${profile.length}. Submit is a separate, confirmed step.`,
         }
-      },
-    }),
-
-    GetAllDOM: tool({
-      description:
-        'List all open tabs (titles, URLs, tab ids). Optionally pass tabIds to also read the cleaned DOM (HTML structure) of specific tabs. Use to inspect the structure of tabs other than the current one. Asks the user for permission first. Read only the tabs you need — each DOM is large.',
-      inputSchema: z.object({
-        reason: z
-          .string()
-          .describe('Short reason shown to the user, e.g. "To read the structure of your open form tabs"'),
-        tabIds: z
-          .array(z.number())
-          .optional()
-          .describe(
-            'Tab ids (from a previous listing) whose cleaned DOM should be read. Omit to only list tabs.',
-          ),
-      }),
-      execute: async ({ reason, tabIds }) => {
-        const reading = tabIds && tabIds.length > 0
-        const approved = await requestApproval({
-          toolName: 'GetAllDOM',
-          summary: reading
-            ? `Read the DOM of ${tabIds.length} open tab${tabIds.length > 1 ? 's' : ''}`
-            : 'See the list of your open tabs',
-          reason,
-        })
-        if (!approved) return DENIED
-        const tabs = await listOpenTabs()
-        if (!reading) return { tabs }
-        const doms = await Promise.all(tabIds.map((id) => readTabDom(id, MAX_DOM_CHARS_PER_TAB)))
-        return { tabs, doms }
       },
     }),
 
@@ -790,8 +762,7 @@ export function createAgentTools(
   // Honor the tab-visibility preference chosen in onboarding: in active-tab
   // mode the model never even sees a tool that could enumerate other tabs.
   if (tabAccess !== 'all-tabs') {
-    delete tools.ViewOpenedTabs
-    delete tools.GetAllDOM
+    delete tools.ReadTabs
   }
 
   // Browsing-data tools are hidden unless the user has granted the matching
