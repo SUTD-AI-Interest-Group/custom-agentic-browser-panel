@@ -327,10 +327,15 @@ export function createAgentTools(
         if (tab?.id === undefined || tab.id !== session.tabId) return { error: 'The controlled tab is no longer active.' }
         const profile = await getProfileMemories()
         const filled: number[] = []
+        let budgetHit = false
         for (const f of fields) {
-          if (session.actionsUsed >= session.maxActions) break
+          if (session.actionsUsed >= session.maxActions) { budgetHit = true; break }
           let snap
           try { snap = await snapshotPage(tab.id) } catch { return { error: 'Cannot read this page.' } }
+          if (snap.origin !== session.origin) {
+            pageControl.endSession()
+            return { filled, error: 'The page is now on a different site; autofill stopped and page control ended for safety.' }
+          }
           const el = snap.elements[f.index]
           const spec: ControlSpec = { action: 'type', index: f.index, text: f.value, clear: true, sensitive: f.sensitive }
           if (isPointOfNoReturn(spec, el, session.origin)) {
@@ -345,7 +350,13 @@ export function createAgentTools(
           })
           filled.push(f.index)
         }
-        return { filled, note: `Filled ${filled.length} field(s) from profile. Profile memories available: ${profile.length}. Submit is a separate, confirmed step.` }
+        return {
+          filled,
+          actionsLeft: session.maxActions - session.actionsUsed,
+          note: budgetHit
+            ? 'Action budget reached; ask the user to continue for more fields.'
+            : `Filled ${filled.length} field(s) from profile. Profile memories available: ${profile.length}. Submit is a separate, confirmed step.`,
+        }
       },
     }),
 
