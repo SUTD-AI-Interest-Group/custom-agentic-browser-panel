@@ -48,6 +48,13 @@ export interface UIMessage {
    * bar. Absent on user messages and turns with no attached tabs.
    */
   sources?: MessageSource[]
+  /**
+   * Marks a background-research report injected into the transcript: it renders
+   * as a research report card (titled header + report body) instead of a plain
+   * reply, so it scrolls with the chat and later turns follow it. The report
+   * text lives in `parts`; `sources` carries the fetched pages.
+   */
+  research?: { question: string; error?: string }
 }
 
 export interface AgentTurnResult {

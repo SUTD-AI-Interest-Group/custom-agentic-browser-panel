@@ -5,11 +5,23 @@ export type ResearchStatus = 'running' | 'done' | 'error' | 'cancelled'
 
 export interface ResearchSource { title: string; url: string }
 
+/** One tool call in a research run: a collapsed one-liner plus expandable
+ *  detail (bounded input + result) so the sheet can show what was fetched. */
+export interface ResearchStep {
+  /** Tool that ran, e.g. 'WebSearch' | 'FetchUrl' | 'ExtractDataText'. */
+  tool: string
+  /** Collapsed one-liner shown in the log (tool + short input preview). */
+  summary: string
+  /** Expanded detail: bounded, pretty-printed input + result. */
+  detail: string
+  status: 'running' | 'done' | 'error'
+}
+
 export interface ResearchTask {
   id: string
   question: string
   status: ResearchStatus
-  steps: string[]
+  steps: ResearchStep[]
   report?: string
   sources?: ResearchSource[]
   error?: string
@@ -25,7 +37,7 @@ export interface ResearchTask {
 export type ResearchMsg =
   | { type: 'research.ensureAndStart'; taskId: string; question: string; conversationId: string }
   | { type: 'research.start'; taskId: string; question: string; providerConfig: ProviderConfig; modelId: string }
-  | { type: 'research.update'; taskId: string; step: string }
+  | { type: 'research.update'; taskId: string; steps: ResearchStep[] }
   | { type: 'research.done'; taskId: string; report: string; sources: ResearchSource[] }
   | { type: 'research.error'; taskId: string; error: string }
   | { type: 'research.cancel'; taskId: string }
