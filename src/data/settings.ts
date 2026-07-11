@@ -52,8 +52,11 @@ export const TOOL_CATALOG: ToolCatalogEntry[] = [
   { name: 'InspectPage', group: 'reading', label: 'Inspect interactive elements' },
   { name: 'GetActiveTabDOM', group: 'reading', label: "Read the current tab's DOM" },
   { name: 'GetAllDOM', group: 'reading', label: "Read other tabs' DOM" },
+  { name: 'ExtractData', group: 'reading', label: 'Extract structured data from this page' },
+  { name: 'StartResearch', group: 'reading', label: 'Run background web research' },
   { name: 'RequestPageControl', group: 'control', label: 'Start a page-control session' },
   { name: 'ControlPage', group: 'control', label: 'Perform a page-control action' },
+  { name: 'AutofillForm', group: 'control', label: 'Fill a form from your profile' },
   { name: 'NavigateTab', group: 'navigation', label: 'Switch / open / navigate tabs' },
   { name: 'SaveMemory', group: 'memory', label: 'Save a long-term memory' },
   { name: 'SearchMemory', group: 'memory', label: 'Search long-term memory' },
@@ -104,6 +107,9 @@ export interface Settings {
   toolPolicies?: Record<string, ToolPolicy>
   /** Set once the first-run onboarding wizard has completed. */
   onboarded: boolean
+  /** Fetch OpenGraph previews for standalone links (privacy: contacts linked
+   *  sites). When false, link cards show favicon + domain only. */
+  fetchLinkPreviews?: boolean
 }
 
 /** Resolve a tool's effective policy: user override → catalog default → `ask`. */
@@ -147,6 +153,7 @@ const EMPTY: Settings = {
   systemPrompt: DEFAULT_SYSTEM_PROMPT,
   tabAccess: 'active-tab',
   onboarded: false,
+  fetchLinkPreviews: true,
 }
 
 export async function loadSettings(): Promise<Settings> {

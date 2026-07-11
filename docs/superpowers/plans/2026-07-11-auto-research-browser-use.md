@@ -286,10 +286,12 @@ git commit -m "feat: wait for page stability in the control loop (+ explicit wai
 **Files:**
 - Create: `src/platform/webFetch.ts` (only `parseJsonLoose` in this task; the rest lands in Phase 2)
 - Create: `src/platform/webFetch.test.ts`
+- Create: `src/agent/extract.ts` (shared `extractStructured` helper, reused by Task 6)
 - Modify: `src/tools/tools.ts` (register `ExtractData`)
 
 **Interfaces:**
-- Produces: `parseJsonLoose(text: string): unknown` — tolerant JSON parse (strips code fences, takes the outermost `{...}`/`[...]`); throws on unrecoverable input. Used by the `generateObject` fallback path.
+- Produces: `parseJsonLoose(text: string): unknown` — tolerant JSON parse (strips code fences, takes the outermost `{...}`/`[...]`); throws on unrecoverable input. Used by the `extractStructured` fallback path.
+- Produces: `extractStructured(model: LanguageModel, prompt: string, schema: Record<string, unknown>): Promise<unknown>` — structured-output first, prompted-JSON fallback; throws on total failure. Reused by Task 6's `ExtractDataText`.
 - Produces: `ExtractData` tool: `{ instruction: string, schema: <JSON schema object>, reason: string }` → `{ data }` or `{ error }`.
 
 - [ ] **Step 1: Failing test for `parseJsonLoose`**
@@ -344,19 +346,49 @@ export function parseJsonLoose(text: string): unknown {
 Run: `npm test`
 Expected: PASS (4 tests).
 
-- [ ] **Step 5: Register the `ExtractData` tool**
+- [ ] **Step 5: Create the shared `extractStructured` helper**
+
+The structured-extraction logic (structured-output first, prompted-JSON fallback) is used by BOTH `ExtractData` here and `ExtractDataText` in Task 6. Put it in one place so there is a single source of truth. Create `src/agent/extract.ts`:
+```ts
+import { generateObject, generateText, jsonSchema, type LanguageModel } from 'ai'
+import { parseJsonLoose } from '../platform/webFetch'
+
+/**
+ * Extract a JSON value matching `schema` (a JSON Schema object) from `prompt`.
+ * Tries the endpoint's structured-output mode; on failure (endpoints without
+ * it) falls back to prompted JSON + tolerant parse. Returns the value or throws.
+ * `schema` is passed declaratively via jsonSchema() — never eval'd (CSP).
+ */
+export async function extractStructured(
+  model: LanguageModel,
+  prompt: string,
+  schema: Record<string, unknown>,
+): Promise<unknown> {
+  try {
+    const { object } = await generateObject({ model, schema: jsonSchema(schema as any), prompt })
+    return object
+  } catch {
+    const { text } = await generateText({
+      model,
+      prompt: `${prompt}\n\nReturn ONLY JSON matching this schema:\n${JSON.stringify(schema)}`,
+    })
+    return parseJsonLoose(text)
+  }
+}
+```
+
+- [ ] **Step 6: Register the `ExtractData` tool**
 
 In `src/tools/tools.ts`, add imports:
 ```ts
-import { generateObject, jsonSchema } from 'ai'
 import { createModel } from '../agent/provider'
-import { parseJsonLoose } from '../platform/webFetch'
+import { extractStructured } from '../agent/extract'
 ```
 Add inside `createAgentTools`'s `tools` object:
 ```ts
     ExtractData: tool({
       description:
-        'Extract structured data from the active tab (or provided text) into a caller-defined JSON schema. Use when the user wants records pulled out — a table, a list of items, fields from a page — as clean JSON. Asks permission first.',
+        'Extract structured data from the active tab into a caller-defined JSON schema. Use when the user wants records pulled out — a table, a list of items, fields from a page — as clean JSON. Asks permission first.',
       inputSchema: z.object({
         reason: z.string().describe('Short reason shown to the user, e.g. "To pull the product table into a list"'),
         instruction: z.string().describe('What to extract, e.g. "every product with name and price"'),
@@ -377,41 +409,31 @@ Add inside `createAgentTools`'s `tools` object:
         const model = createModel(selected.provider, selected.modelId)
         const prompt = `${instruction}\n\nSource page content:\n${source.slice(0, 40_000)}`
         try {
-          const { object } = await generateObject({ model, schema: jsonSchema(schema as any), prompt })
-          return { data: object }
-        } catch {
-          // Endpoints without structured-output: fall back to prompted JSON + tolerant parse.
-          const { text } = await generateText({
-            model,
-            prompt: `${prompt}\n\nReturn ONLY JSON matching this schema:\n${JSON.stringify(schema)}`,
-          })
-          try {
-            return { data: parseJsonLoose(text) }
-          } catch (err) {
-            return { error: `Could not extract structured data (${err instanceof Error ? err.message : String(err)}).` }
-          }
+          return { data: await extractStructured(model, prompt, schema as Record<string, unknown>) }
+        } catch (err) {
+          return { error: `Could not extract structured data (${err instanceof Error ? err.message : String(err)}).` }
         }
       },
     }),
 ```
-Ensure `generateText` is imported (it is not yet in tools.ts — add it to the `from 'ai'` import alongside `tool`).
+(No `generateObject`/`generateText`/`jsonSchema`/`parseJsonLoose` imports are needed in `tools.ts` — they live in `extract.ts` now.)
 
-- [ ] **Step 6: Typecheck**
+- [ ] **Step 7: Typecheck**
 
 Run: `npm run build`
 Expected: PASS.
 
-- [ ] **Step 7: Manual verify (`/verify-extension`)**
+- [ ] **Step 8: Manual verify (`/verify-extension`)**
 
 1. Reload unpacked. Open a page with an obvious table/list.
 2. Ask: "Extract every row as `{name, value}` objects." Approve the card.
 3. Confirm the tool returns a `data` array in the tool card. Repeat against a local model (e.g. Ollama) to exercise the fallback path if available.
 
-- [ ] **Step 8: Commit**
+- [ ] **Step 9: Commit**
 
 ```bash
-git add src/platform/webFetch.ts src/platform/webFetch.test.ts src/tools/tools.ts
-git commit -m "feat: ExtractData tool (structured extraction from the active tab)"
+git add src/platform/webFetch.ts src/platform/webFetch.test.ts src/agent/extract.ts src/tools/tools.ts
+git commit -m "feat: ExtractData tool + shared extractStructured helper"
 ```
 
 ---
@@ -545,30 +567,90 @@ git commit -m "feat: web-fetch pure logic (SSRF guard, DDG-lite parse, HTML->tex
 
 ---
 
-## Task 6: Research tools (`WebSearch`, `FetchUrl`) + in-panel validation
+## Task 6: Research tools (`WebSearch`, `FetchUrl`) + gated in-panel validation
 
 **Files:**
+- Modify: `src/platform/webFetch.ts` (add network helpers `searchDuckDuckGo`, `fetchReadable`)
 - Create: `src/tools/research.ts` (`createResearchTools`)
-- Modify: `src/tools/tools.ts` (temporarily spread research tools into the foreground toolset for validation)
+- Modify: `src/tools/tools.ts` (TEMP **gated** preview tools for live validation; removed in Task 10)
 
 **Interfaces:**
-- Produces: `createResearchTools(deps: { selected: { provider: ProviderConfig; modelId: string } | null }): ToolSet` exposing `WebSearch`, `FetchUrl`, `ExtractDataText`. These do NOT call `requestApproval` (sandbox rule) — but in this task they run in the foreground toolset for validation, so gate them here and remove the gate in Task 10 when they move to the offscreen agent.
-- Consumes: `isFetchableUrl`, `parseDuckDuckGoLite`, `extractReadableText`, `parseJsonLoose` (Task 5).
+- Produces: `searchDuckDuckGo(query: string, maxResults?: number): Promise<{ results: {title,url,snippet}[] } | { error: string }>` and `fetchReadable(url: string): Promise<{ url,title,text } | { error: string }>` in `webFetch.ts` — the network layer, shared by BOTH the ungated research tools and the gated foreground previews (single source of truth for the fetch behavior + hardening).
+- Produces: `createResearchTools(deps: { selected: { provider: ProviderConfig; modelId: string } | null }): ToolSet` exposing `WebSearch`, `FetchUrl`, `ExtractDataText`. These are **ungated by design** (the read-only, no-user-data sandbox rule) and are wired into the model ONLY inside the offscreen research agent in Task 10 — never the foreground chat.
+- Produces (TEMP, this task only): `WebSearchPreview` / `FetchUrlPreview` in the foreground toolset, each routed through `requestApproval` before calling the same `searchDuckDuckGo`/`fetchReadable` helpers, so live DuckDuckGo is validated in-panel **without** violating the "every tool routes through requestApproval" invariant. Task 10 removes these two.
+- Consumes: `isFetchableUrl`, `parseDuckDuckGoLite`, `extractReadableText` (Task 5); `extractStructured` (Task 4).
 
-- [ ] **Step 1: Implement `createResearchTools`**
+- [ ] **Step 1: Add the network helpers to `webFetch.ts`**
+
+Append to `src/platform/webFetch.ts`:
+```ts
+const FETCH_TIMEOUT_MS = 15_000
+const MAX_BYTES = 2_000_000
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
+
+/** Search DuckDuckGo (keyless lite endpoint) with retry/backoff. Never throws — returns {error} on failure so callers can react. */
+export async function searchDuckDuckGo(
+  query: string,
+  maxResults = 8,
+): Promise<{ results: ReturnType<typeof parseDuckDuckGoLite> } | { error: string }> {
+  const url = `https://lite.duckduckgo.com/lite/?q=${encodeURIComponent(query)}`
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const res = await fetch(url, {
+        method: 'GET',
+        credentials: 'omit',
+        headers: { 'User-Agent': 'Mozilla/5.0' },
+        signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+      })
+      if (res.status === 202 || res.status === 429) { await sleep(400 * (attempt + 1)); continue }
+      if (!res.ok) return { error: `search failed: HTTP ${res.status}` }
+      const results = parseDuckDuckGoLite(await res.text()).slice(0, Math.min(maxResults, 20))
+      return { results }
+    } catch (err) {
+      if (attempt === 2) return { error: `search error: ${err instanceof Error ? err.message : String(err)}` }
+      await sleep(400 * (attempt + 1))
+    }
+  }
+  return { error: 'search failed after retries' }
+}
+
+/** Fetch a public page and return its readable text. SSRF-guarded, credentials omitted, timed, size-capped. Never throws. */
+export async function fetchReadable(
+  url: string,
+): Promise<{ url: string; title: string; text: string } | { error: string }> {
+  const guard = isFetchableUrl(url)
+  if (!guard.ok) return { error: `refused to fetch (${guard.reason})` }
+  try {
+    const res = await fetch(url, { credentials: 'omit', redirect: 'follow', signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) })
+    if (!res.ok) return { error: `fetch failed: HTTP ${res.status}` }
+    const ct = res.headers.get('content-type') ?? ''
+    if (!/text\/html|text\/plain|application\/xhtml/i.test(ct)) return { error: `unsupported content-type: ${ct}` }
+    const body = (await res.text()).slice(0, MAX_BYTES)
+    const { title, text } = extractReadableText(body)
+    return { url: res.url, title, text }
+  } catch (err) {
+    return { error: `fetch error: ${err instanceof Error ? err.message : String(err)}` }
+  }
+}
+```
+
+- [ ] **Step 2: Implement `createResearchTools` (ungated sandbox tools)**
 
 Create `src/tools/research.ts`:
 ```ts
-import { tool, generateObject, generateText, jsonSchema, type ToolSet } from 'ai'
+import { tool, type ToolSet } from 'ai'
 import { z } from 'zod'
 import type { ProviderConfig } from '../data/settings'
 import { createModel } from '../agent/provider'
-import { isFetchableUrl, parseDuckDuckGoLite, extractReadableText, parseJsonLoose } from '../platform/webFetch'
+import { extractStructured } from '../agent/extract'
+import { searchDuckDuckGo, fetchReadable } from '../platform/webFetch'
 
-const FETCH_TIMEOUT_MS = 15_000
-const MAX_BYTES = 2_000_000
-
-/** Read-only, web-egress-only tools used by the background research agent (no user data, no tabs, no gate). */
+/**
+ * Read-only, web-egress-only tools for the BACKGROUND research agent. Ungated by
+ * design — there is no user present in the offscreen sandbox, and these tools
+ * touch no tabs, cookies, or user data. They are wired into the model ONLY inside
+ * the offscreen research agent (Task 10), never the foreground chat.
+ */
 export function createResearchTools(deps: {
   selected: { provider: ProviderConfig; modelId: string } | null
 }): ToolSet {
@@ -580,46 +662,16 @@ export function createResearchTools(deps: {
         maxResults: z.number().optional().describe('Default 8, max 20'),
       }),
       execute: async ({ query, maxResults = 8 }) => {
-        const url = `https://lite.duckduckgo.com/lite/?q=${encodeURIComponent(query)}`
-        for (let attempt = 0; attempt < 3; attempt++) {
-          try {
-            const res = await fetch(url, {
-              method: 'GET',
-              credentials: 'omit',
-              headers: { 'User-Agent': 'Mozilla/5.0' },
-              signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
-            })
-            if (res.status === 202 || res.status === 429) { await sleep(400 * (attempt + 1)); continue }
-            if (!res.ok) return { error: `search failed: HTTP ${res.status}` }
-            const rows = parseDuckDuckGoLite(await res.text()).slice(0, Math.min(maxResults, 20))
-            return rows.length ? { results: rows } : { results: [], note: 'No results parsed; try a different query.' }
-          } catch (err) {
-            if (attempt === 2) return { error: `search error: ${err instanceof Error ? err.message : String(err)}` }
-            await sleep(400 * (attempt + 1))
-          }
-        }
-        return { error: 'search failed after retries' }
+        const r = await searchDuckDuckGo(query, maxResults)
+        if ('error' in r) return r
+        return r.results.length ? { results: r.results } : { results: [], note: 'No results parsed; try a different query.' }
       },
     }),
 
     FetchUrl: tool({
       description: 'Fetch a public web page and return its readable text (for reading a search result).',
       inputSchema: z.object({ url: z.string().describe('http(s) URL to read') }),
-      execute: async ({ url }) => {
-        const guard = isFetchableUrl(url)
-        if (!guard.ok) return { error: `refused to fetch (${guard.reason})` }
-        try {
-          const res = await fetch(url, { credentials: 'omit', redirect: 'follow', signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) })
-          if (!res.ok) return { error: `fetch failed: HTTP ${res.status}` }
-          const ct = res.headers.get('content-type') ?? ''
-          if (!/text\/html|text\/plain|application\/xhtml/i.test(ct)) return { error: `unsupported content-type: ${ct}` }
-          const body = (await res.text()).slice(0, MAX_BYTES)
-          const { title, text } = extractReadableText(body)
-          return { url: res.url, title, text }
-        } catch (err) {
-          return { error: `fetch error: ${err instanceof Error ? err.message : String(err)}` }
-        }
-      },
+      execute: async ({ url }) => fetchReadable(url),
     }),
 
     ExtractDataText: tool({
@@ -634,46 +686,65 @@ export function createResearchTools(deps: {
         const model = createModel(deps.selected.provider, deps.selected.modelId)
         const prompt = `${instruction}\n\nText:\n${text.slice(0, 40_000)}`
         try {
-          const { object } = await generateObject({ model, schema: jsonSchema(schema as any), prompt })
-          return { data: object }
-        } catch {
-          const { text: out } = await generateText({ model, prompt: `${prompt}\n\nReturn ONLY JSON for schema:\n${JSON.stringify(schema)}` })
-          try { return { data: parseJsonLoose(out) } } catch (err) { return { error: String(err) } }
+          return { data: await extractStructured(model, prompt, schema as Record<string, unknown>) }
+        } catch (err) {
+          return { error: `Could not extract structured data (${err instanceof Error ? err.message : String(err)}).` }
         }
       },
     }),
   }
 }
-
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 ```
 
-- [ ] **Step 2: Temporarily wire into the foreground toolset for validation**
+- [ ] **Step 3: TEMP gated preview tools in the foreground (for validation)**
 
-In `src/tools/tools.ts`, at the end of `createAgentTools`, before `return tools`, add:
+In `src/tools/tools.ts`, add `import { searchDuckDuckGo, fetchReadable } from '../platform/webFetch'` and, inside `createAgentTools`'s `tools` object, add these two TEMP tools (a comment marks them for removal in Task 10):
 ```ts
-  // TEMP (Task 6 validation only; removed in Task 10 once these move to the
-  // offscreen research agent): expose research primitives in the foreground.
-  Object.assign(tools, createResearchTools({ selected }))
+    // TEMP (Task 6 live-validation only; removed in Task 10 when the ungated
+    // research tools move into the offscreen sandbox). Gated so the invariant
+    // "every foreground tool routes through requestApproval" holds at this commit.
+    WebSearchPreview: tool({
+      description: 'Search the web (DuckDuckGo) and return ranked {title,url,snippet} results. Asks permission first.',
+      inputSchema: z.object({
+        reason: z.string().describe('Short reason shown to the user, e.g. "To find the release notes"'),
+        query: z.string().describe('Search query'),
+      }),
+      execute: async ({ reason, query }) => {
+        const approved = await requestApproval({ toolName: 'WebSearchPreview', summary: `Search the web for “${query}”`, reason })
+        if (!approved) return DENIED
+        return searchDuckDuckGo(query)
+      },
+    }),
+    FetchUrlPreview: tool({
+      description: 'Fetch a public web page and return its readable text. Asks permission first.',
+      inputSchema: z.object({
+        reason: z.string().describe('Short reason shown to the user, e.g. "To read the top result"'),
+        url: z.string().describe('http(s) URL to read'),
+      }),
+      execute: async ({ reason, url }) => {
+        const approved = await requestApproval({ toolName: 'FetchUrlPreview', summary: `Fetch ${url}`, reason })
+        if (!approved) return DENIED
+        return fetchReadable(url)
+      },
+    }),
 ```
-and `import { createResearchTools } from './research'`.
 
-- [ ] **Step 3: Typecheck**
+- [ ] **Step 4: Typecheck**
 
 Run: `npm run build`
 Expected: PASS.
 
-- [ ] **Step 4: Manual verify (`/verify-extension`)**
+- [ ] **Step 5: Manual verify (`/verify-extension`)**
 
 1. Reload unpacked. In the panel ask: "Search the web for the Vercel AI SDK v5 release notes and read the top result."
-2. Confirm `WebSearch` returns rows and `FetchUrl` returns readable text in the tool cards.
-3. Ask it to fetch `http://localhost` — confirm `FetchUrl` returns the SSRF refusal, not a fetch.
+2. Confirm `WebSearchPreview` returns rows and `FetchUrlPreview` returns readable text in the tool cards — each after its approval card.
+3. Ask it to fetch `http://localhost` — confirm `FetchUrlPreview` returns the SSRF refusal, not a fetch.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
-git add src/tools/research.ts src/tools/tools.ts
-git commit -m "feat: research tools (WebSearch/FetchUrl/ExtractDataText), validated in-panel"
+git add src/platform/webFetch.ts src/tools/research.ts src/tools/tools.ts
+git commit -m "feat: research tools + gated in-panel preview validation"
 ```
 
 ---

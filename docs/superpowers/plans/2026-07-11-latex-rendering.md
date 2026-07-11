@@ -26,11 +26,11 @@
 - **Modify** `src/ui/Chat.tsx` — add `MATH_FORMATTING_NOTE` constant (after `browsingInsightsNote`, ~line 66) and splice it into the system-prompt assembly (line 719).
 - **Modify** `src/data/builtinSkills.ts` — add `WRITING_MATH_BODY` constant and the `writing-math` entry to `BUILTIN_SKILLS`.
 
-Task order: **A** (renderer) → **B** (normalization) → **C** (nudge) → **D** (skill). B builds on A; C and D are independent of A/B but sequenced last.
+Task order: **1** (renderer) → **2** (normalization) → **3** (nudge) → **4** (skill). Task 2 builds on Task 1; Tasks 3 and 4 are independent of 1/2 but sequenced last.
 
 ---
 
-### Task A: KaTeX rendering in Markdown
+### Task 1: KaTeX rendering in Markdown
 
 **Files:**
 - Modify: `package.json` (dependencies)
@@ -104,7 +104,7 @@ git commit -m "feat: render LaTeX math in chat via KaTeX"
 
 ---
 
-### Task B: `\(…\)` / `\[…\]` delimiter normalization
+### Task 2: `\(…\)` / `\[…\]` delimiter normalization
 
 **Files:**
 - Create: `src/ui/mathDelimiters.ts`
@@ -243,7 +243,7 @@ git commit -m "feat: normalize \\(…\\) and \\[…\\] math delimiters outside c
 
 ---
 
-### Task C: Always-on math-formatting nudge
+### Task 3: Always-on math-formatting nudge
 
 **Files:**
 - Modify: `src/ui/Chat.tsx` (add constant ~line 66; splice into system string at line 719)
@@ -295,7 +295,7 @@ git commit -m "feat: nudge the agent to emit render-ready LaTeX for math"
 
 ---
 
-### Task D: Built-in `writing-math` skill
+### Task 4: Built-in `writing-math` skill
 
 **Files:**
 - Modify: `src/data/builtinSkills.ts` (add body constant + `BUILTIN_SKILLS` entry)
@@ -389,14 +389,14 @@ git commit -m "feat: add built-in writing-math skill for LaTeX authoring"
 ## Self-Review
 
 **1. Spec coverage** (checked against `docs/superpowers/specs/2026-07-11-latex-rendering-design.md`):
-- Part A renderer (deps, KaTeX CSS, marked config, dompurify bump, render-then-sanitize) → Task A. ✓
-- Delimiter normalization with code-guard → Task B. ✓
-- Streaming (no special handling; `useMemo` re-runs) → inherent in Task A/B; verified implicitly by echo prompts. ✓
-- Part B baseline nudge in `Chat.tsx:719` → Task C. ✓
-- Part C `writing-math` skill (String.raw, `\text{}`/units, aligned example, katex link) → Task D. ✓
-- Edge cases: malformed (`throwOnError:false`) → Task A Step 4; copy-as-markdown preserves source (no code change, unaffected) → noted, no task needed; copy-as-PNG → covered by manual verification, no code change. ✓
-- No-manifest-change, same-origin fonts → Task A Step 3 (fonts emitted) + Global Constraints. ✓
+- Part A renderer (deps, KaTeX CSS, marked config, dompurify bump, render-then-sanitize) → Task 1. ✓
+- Delimiter normalization with code-guard → Task 2. ✓
+- Streaming (no special handling; `useMemo` re-runs) → inherent in Task 1/B; verified implicitly by echo prompts. ✓
+- Part B baseline nudge in `Chat.tsx:719` → Task 3. ✓
+- Part C `writing-math` skill (String.raw, `\text{}`/units, aligned example, katex link) → Task 4. ✓
+- Edge cases: malformed (`throwOnError:false`) → Task 1 Step 4; copy-as-markdown preserves source (no code change, unaffected) → noted, no task needed; copy-as-PNG → covered by manual verification, no code change. ✓
+- No-manifest-change, same-origin fonts → Task 1 Step 3 (fonts emitted) + Global Constraints. ✓
 
 **2. Placeholder scan:** No TBD/TODO; every code step shows complete code; commands have expected output. The `…` characters inside the skill body and nudge are intentional literal ellipsis copy, not placeholders. ✓
 
-**3. Type consistency:** `normalizeMathDelimiters(text: string): string` is defined in Task B Step 3 and consumed identically in Task B Step 5. `Markdown` props unchanged (`{ text: string }`). `WRITING_MATH_BODY` (Task D Step 1) referenced as `body: WRITING_MATH_BODY` (Task D Step 2). `MATH_FORMATTING_NOTE` (Task C Step 1) spliced in Task C Step 2. All consistent. ✓
+**3. Type consistency:** `normalizeMathDelimiters(text: string): string` is defined in Task 2 Step 3 and consumed identically in Task 2 Step 5. `Markdown` props unchanged (`{ text: string }`). `WRITING_MATH_BODY` (Task 4 Step 1) referenced as `body: WRITING_MATH_BODY` (Task 4 Step 2). `MATH_FORMATTING_NOTE` (Task 3 Step 1) spliced in Task 3 Step 2. All consistent. ✓

@@ -2,7 +2,9 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import type { ModelMessage } from 'ai'
 import Markdown from './Markdown'
 import ImageCarousel from './ImageCarousel'
-import { splitImageBlocks } from './imageBlocks'
+import LinkCardStack from './LinkCard'
+import JsonTree from './JsonTree'
+import { splitBlocks } from './blocks'
 import { runAgentTurn, type MessageSource, type UIMessage, type UIPart } from '../agent/agent'
 import { captureRegion, type CapturedImage } from '../platform/capture'
 import { copyElementAsPng } from '../platform/domImage'
@@ -24,6 +26,12 @@ import { clearIndex } from '../platform/domIndex'
 import { unmountPresence, unmountAllPresence } from '../platform/presence'
 import { grantedCapabilities, type BrowsingCapability } from '../platform/permissions'
 import { getSkill, listSkillMetas, listSkills } from '../data/skills'
+import { listTasks, type ResearchTask, type ResearchStatus, type ResearchMsg } from '../data/researchTasks'
+
+// How long a finished research task lingers in the composer dock (as a ✓/✕/⊘
+// bar) after it completes before auto-dismissing. Its report has already
+// dropped into the chat by then, so the bar is just a brief completion cue.
+const DOCK_LINGER_MS = 15_000
 
 // Which browsing-insight tool each capability exposes — used to tell the model,
 // each turn, exactly which are usable so it never calls a disabled one.
@@ -44,6 +52,13 @@ function browsingInsightsNote(granted: Set<BrowsingCapability>): string {
   }
   return `\n\nBrowsing-insight tools available this turn: ${available.join(', ')}.`
 }
+
+// Appended to every system prompt (independent of the user's editable
+// settings.systemPrompt) so math renders in the panel even on quick replies
+// where the agent doesn't load the writing-math skill. Backslashes are doubled
+// for the JS string; the model sees single-backslash LaTeX.
+const MATH_FORMATTING_NOTE =
+  '\n\nWhen your answer includes mathematical notation, write it in LaTeX: `$…$` for inline math and `$$…$$` on their own lines for display math (these render in the panel). Prefer LaTeX commands over Unicode symbols (e.g. `\\alpha`, `\\leq`, `\\times`). Escape a literal dollar sign as `\\$`.'
 
 interface PendingApproval extends ApprovalRequest {
   resolve: (approved: boolean) => void
@@ -137,7 +152,7 @@ const isHttpUrl = (url: string): boolean => /^https?:\/\//i.test(url)
 // Chrome's built-in, on-device favicon cache — keeps visited URLs local rather
 // than shipping them to a third-party favicon service. Needs the "favicon"
 // manifest permission.
-function faviconUrl(pageUrl: string, size = 32): string {
+export function faviconUrl(pageUrl: string, size = 32): string {
   const u = new URL(chrome.runtime.getURL('/_favicon/'))
   u.searchParams.set('pageUrl', pageUrl)
   u.searchParams.set('size', String(size))
@@ -222,6 +237,7 @@ export default function Chat({
   const [messages, setMessages] = useState<UIMessage[]>([])
   const [input, setInput] = useState('')
   const [streaming, setStreaming] = useState(false)
+  const [turnStartedAt, setTurnStartedAt] = useState<number | null>(null)
   const [approval, setApproval] = useState<PendingApproval | null>(null)
   const [currentTab, setCurrentTab] = useState<CurrentTabInfo | null>(null)
   const [attachments, setAttachments] = useState<CapturedImage[]>([])
@@ -242,6 +258,16 @@ export default function Chat({
   // so it isn't re-attached until they highlight something different.
   const [selection, setSelection] = useState<{ text: string; tabId: number } | null>(null)
   const [dismissedSelection, setDismissedSelection] = useState('')
+  // Background research tasks (Task 7). Loaded globally from storage, then
+  // filtered to the open conversation (see `myTasks` in render) so a task's
+  // dock bar + report card surface only in the chat it was launched from.
+  const [researchTasks, setResearchTasks] = useState<ResearchTask[]>([])
+  // Which research task's live-workflow bottom sheet is open (null = closed).
+  const [openSheetTaskId, setOpenSheetTaskId] = useState<string | null>(null)
+  // A ~1s wall-clock tick that only runs while a finished task is still inside
+  // its DOCK_LINGER_MS window, so dock bars can auto-expire without an idle
+  // timer when nothing is completing (see effect below).
+  const [now, setNow] = useState(() => Date.now())
   // Open tabs resolved for @all, so the composer can preview each attached page
   // as its own pill. Populated only while @all is active (see effect below).
   const [allTabs, setAllTabs] = useState<TabSummary[]>([])
@@ -347,6 +373,40 @@ export default function Chat({
       chrome.tabs.onUpdated.removeListener(onUpdated)
     }
   }, [])
+
+  // Research task cards: load persisted tasks on mount (so a task that
+  // finished while the panel was closed still shows), then refresh from
+  // storage whenever the persisted 'researchTasks' map changes. Refreshing
+  // off storage.onChanged (not chrome.runtime.onMessage) avoids a race where
+  // the panel's own message listener fires before the SW has finished
+  // persisting the same broadcast.
+  useEffect(() => {
+    let cancelled = false
+    const load = () => listTasks().then((t) => { if (!cancelled) setResearchTasks(t) })
+    void load()
+    const onChanged = (changes: { [k: string]: chrome.storage.StorageChange }, area: string) => {
+      if (area === 'local' && changes.researchTasks) void load()
+    }
+    chrome.storage.onChanged.addListener(onChanged)
+    return () => {
+      cancelled = true
+      chrome.storage.onChanged.removeListener(onChanged)
+    }
+  }, [])
+
+  // Drive dock-bar expiry: while any terminal task is still within its linger
+  // window, tick `now` once a second so the derived dock list re-filters and
+  // drops the bar when it crosses DOCK_LINGER_MS. Depending on `now` re-runs
+  // this each tick, which lets it self-stop (clear the interval) once the last
+  // lingering task ages out — no idle timer when nothing is finishing.
+  useEffect(() => {
+    const lingering = researchTasks.some(
+      (t) => t.status !== 'running' && now - t.updatedAt < DOCK_LINGER_MS,
+    )
+    if (!lingering) return
+    const id = setInterval(() => setNow(Date.now()), 1000)
+    return () => clearInterval(id)
+  }, [researchTasks, now])
 
   // @all attaches every open tab; it's only honored when the user has granted
   // all-tabs visibility. The composer previews each attached page as a pill.
@@ -509,6 +569,26 @@ export default function Chat({
   function stop() {
     settleApproval(false)
     abortRef.current?.abort()
+  }
+
+  // Cancel a running research task. The SW persists status:'cancelled'; the
+  // storage.onChanged listener above then refreshes this card.
+  function cancelResearchTask(taskId: string) {
+    chrome.runtime.sendMessage({ type: 'research.cancel', taskId } satisfies ResearchMsg)
+  }
+
+  // Tapping a dock bar: a running task opens its live-workflow sheet; a finished
+  // one closes any sheet and scrolls the chat to the report card that dropped in
+  // (a cancelled task has no card, so this is a harmless no-op for it).
+  function openDockTask(t: ResearchTask) {
+    if (t.status === 'running') {
+      setOpenSheetTaskId(t.id)
+      return
+    }
+    setOpenSheetTaskId(null)
+    document
+      .getElementById(`research-report-${t.id}`)
+      ?.scrollIntoView({ behavior: 'smooth', block: 'start' })
   }
 
   // Arc/Dia-style snipe: tint the page, snap to hovered components, or drag
@@ -778,7 +858,8 @@ export default function Chat({
     // for this turn only (it reads local memory — no page or network access).
     turnAllowed.current = useMemory ? new Set(['SearchMemory']) : new Set()
     setStreaming(true)
-    const turnStartedAt = Date.now()
+    const startedAt = Date.now()
+    setTurnStartedAt(startedAt)
     try {
       // Recalled memories are injected fresh each turn so mid-conversation
       // saves (SaveMemory) are visible on the very next turn.
@@ -809,7 +890,7 @@ export default function Chat({
       const imageQueue: string[] = []
       const { parts, responseMessages } = await runAgentTurn({
         model: createModel(selected.provider, selected.modelId),
-        system: `${settings.systemPrompt}${accessNote}${browsingInsightsNote(granted)}${memoryContext ? `\n\n${memoryContext}` : ''}${skillsCatalog}${activeSkills}`,
+        system: `${settings.systemPrompt}${accessNote}${browsingInsightsNote(granted)}${MATH_FORMATTING_NOTE}${memoryContext ? `\n\n${memoryContext}` : ''}${skillsCatalog}${activeSkills}`,
         history: [...historyRef.current],
         tools: createAgentTools(
           requestApproval,
@@ -819,6 +900,7 @@ export default function Chat({
           selected,
           imageQueue,
           (name) => toolPolicy(settings, name),
+          conversationId,
         ),
         abortSignal: controller.signal,
         onUpdate: updateAssistant,
@@ -845,7 +927,7 @@ export default function Chat({
       if (activeSelection) notes.push('[shared a page selection]')
       const journalUserText = [text, ...notes].filter(Boolean).join('\n')
       void appendToEpisode(episodeIdRef.current, [
-        { role: 'user', text: journalUserText, at: turnStartedAt },
+        { role: 'user', text: journalUserText, at: startedAt },
         { role: 'assistant', text: assistantText, at: Date.now() },
       ]).catch(() => {})
     } catch (err) {
@@ -873,6 +955,7 @@ export default function Chat({
       void unmountAllPresence()
       abortRef.current = null
       setStreaming(false)
+      setTurnStartedAt(null)
       setTurnSeq((n) => n + 1)
     }
   }
@@ -929,6 +1012,23 @@ export default function Chat({
     }
   }
 
+  // Only this conversation's research surfaces here: each task is tagged with
+  // the chat it was launched from, so other chats — and brand-new ones — stay
+  // clean. Legacy tasks predating tagging have no conversationId and match none.
+  const myTasks = researchTasks.filter((t) => t.conversationId === conversationId)
+  // Tasks shown in the composer dock: everything still running, plus terminal
+  // tasks still inside their linger window. Newest first (listTasks order).
+  const dockTasks = myTasks.filter(
+    (t) => t.status === 'running' || now - t.updatedAt < DOCK_LINGER_MS,
+  )
+  // Finished tasks whose report/error drops into the chat, oldest → newest so
+  // the most recent research lands last (at the end of the transcript).
+  const reportTasks = myTasks
+    .filter((t) => (t.status === 'done' && t.report) || (t.status === 'error' && t.error))
+    .slice()
+    .sort((a, b) => a.updatedAt - b.updatedAt)
+  const openSheetTask = researchTasks.find((t) => t.id === openSheetTaskId) ?? null
+
   return (
     <div className="chat">
       <div className="messages" ref={scrollRef}>
@@ -947,7 +1047,11 @@ export default function Chat({
             key={msg.id}
             message={msg}
             streaming={streaming && i === messages.length - 1}
+            turnStartedAt={turnStartedAt}
           />
+        ))}
+        {reportTasks.map((t) => (
+          <ResearchReportCard key={t.id} task={t} />
         ))}
         {approval && (
           <ApprovalCard
@@ -1052,6 +1156,7 @@ export default function Chat({
           </div>
         )}
         <div className="composer">
+          <ResearchDock tasks={dockTasks} onOpen={openDockTask} />
           {attachments.length > 0 && (
             <div className="attachment-row">
               {attachments.map((img) => (
@@ -1258,11 +1363,103 @@ export default function Chat({
           </div>
         </div>
       </div>
+      {openSheetTask && (
+        <ResearchSheet
+          task={openSheetTask}
+          onClose={() => setOpenSheetTaskId(null)}
+          onStop={() => cancelResearchTask(openSheetTask.id)}
+        />
+      )}
     </div>
   )
 }
 
-function MessageView({ message, streaming }: { message: UIMessage; streaming: boolean }) {
+// Whimsical waiting-state words, two registers blended (dry-witty + gen-z) so
+// the indicator reads differently turn to turn. Random-per-mount starting word;
+// index is `% length`, so ordering doesn't matter.
+const THINKING_WORDS = [
+  'Thinking', 'Pondering', 'Percolating', 'Noodling', 'Cerebrating',
+  'Ruminating', 'Marinating', 'Conjuring', 'Mulling', 'Puzzling', 'Brewing',
+  'Simmering', 'Wrangling', 'Untangling', 'Musing', 'Cogitating', 'Scheming',
+  'Reticulating splines', 'Computing', 'Contemplating', 'Incubating',
+  'Concocting', 'Hatching', 'Churning', 'Crunching', 'Formulating',
+  'Deliberating', 'Stewing', 'Tinkering', 'Whirring', 'Spitballing',
+  'Ideating', 'Plotting', 'Daydreaming', 'Head-scratching',
+  'Cooking', 'Locking in', 'Big braining', 'Galaxy braining', 'Manifesting',
+  'Vibing', 'Sussing it out', 'Understanding the assignment', 'Lowkey grinding',
+  'Deadass thinking', 'Cracked mode engaged', 'Cooking up something',
+  'In my thinking era', 'Brain going brrr', 'Spinning up the neurons',
+  'Doing the thing', 'Locking in fr', 'No thoughts just cooking',
+  "Chef's kiss incoming", 'Working on the glow-up',
+]
+
+// Shown in the gap right after a tool result, while the model reads what came
+// back and decides its next move.
+const DIGESTING_WORDS = [
+  'Reviewing', 'Digesting', 'Parsing', 'Absorbing', 'Interpreting',
+  'Synthesizing', 'Processing', 'Distilling', 'Piecing it together',
+  'Making sense of it', 'Cross-referencing', 'Sifting', 'Connecting the dots',
+  'Untangling the results', 'Weighing it up', 'Sorting it out',
+  'Reading the receipts', 'Peeping the results', 'Reading the room',
+  'Doing the math', 'Vibe-checking the output', 'Catching up on the tea',
+  'Fact-checking the vibes', 'Putting the pieces together fr',
+  'Decoding the lore',
+]
+
+/**
+ * Whimsical waiting-state indicator: three bouncing dots, a rotating word, and
+ * a whole-turn elapsed timer. Rendered by MessageView while the turn is
+ * streaming but nothing is visibly appearing. `startedAt` is the turn start
+ * (ms) so the timer stays continuous across tool steps; `variant` picks the
+ * word pool. A fresh random offset per mount makes successive gaps in one turn
+ * read differently.
+ */
+function ThinkingIndicator({
+  startedAt,
+  variant,
+}: {
+  startedAt: number
+  variant: 'thinking' | 'digesting'
+}) {
+  const [now, setNow] = useState(() => Date.now())
+  const [baseOffset] = useState(() => Math.floor(Math.random() * 1000))
+
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 1000)
+    return () => clearInterval(id)
+  }, [])
+
+  const elapsed = Math.max(0, Math.floor((now - startedAt) / 1000))
+  const pool = variant === 'digesting' ? DIGESTING_WORDS : THINKING_WORDS
+  // Rotate roughly every 3s; continuous elapsed keeps it moving across steps.
+  const word = pool[(baseOffset + Math.floor(elapsed / 3)) % pool.length]
+
+  return (
+    <div className="thinking-indicator" role="status" aria-label="Assistant is working">
+      <span className="thinking-dots" aria-hidden="true">
+        <span className="thinking-dot" />
+        <span className="thinking-dot" />
+        <span className="thinking-dot" />
+      </span>
+      <span aria-hidden="true">{word}…</span>
+      {elapsed >= 1 && (
+        <span className="thinking-elapsed" aria-hidden="true">
+          {elapsed}s
+        </span>
+      )}
+    </div>
+  )
+}
+
+function MessageView({
+  message,
+  streaming,
+  turnStartedAt,
+}: {
+  message: UIMessage
+  streaming: boolean
+  turnStartedAt: number | null
+}) {
   const bodyRef = useRef<HTMLDivElement>(null)
 
   if (message.role === 'user') {
@@ -1281,17 +1478,31 @@ function MessageView({ message, streaming }: { message: UIMessage; streaming: bo
     )
   }
 
+  // Show the waiting indicator while the turn is live but nothing is visibly
+  // streaming: before the first part (thinking), or in the gap right after a
+  // tool result while the model decides its next move (digesting). The inline
+  // `turnStartedAt != null` also narrows it to a number for the prop.
+  const last = message.parts[message.parts.length - 1]
+  const digesting = last?.type === 'tool' && last.state === 'done'
+
   return (
     <div className="msg-assistant">
       <div className="msg-assistant-body" ref={bodyRef}>
         {message.parts.map((part, i) =>
           part.type === 'text' ? (
-            <AssistantText key={i} text={part.text} />
+            <AssistantText key={i} text={part.text} streaming={streaming} />
           ) : (
             <ToolPill key={part.toolCallId} part={part} />
           ),
         )}
-        {message.parts.length === 0 && <div className="thinking-dot" />}
+        {streaming &&
+          turnStartedAt != null &&
+          (message.parts.length === 0 || digesting) && (
+            <ThinkingIndicator
+              startedAt={turnStartedAt}
+              variant={digesting ? 'digesting' : 'thinking'}
+            />
+          )}
       </div>
       {message.parts.length > 0 && !streaming && (
         <MessageToolbar message={message} targetRef={bodyRef} />
@@ -1300,31 +1511,54 @@ function MessageView({ message, streaming }: { message: UIMessage; streaming: bo
   )
 }
 
-// Renders one assistant text part. Runs of grouped image URLs become a
-// side-scrollable download carousel; everything else renders as markdown.
-function AssistantText({ text }: { text: string }) {
-  const segments = useMemo(() => splitImageBlocks(text), [text])
+// Renders one assistant text part as ordered blocks: image runs → carousel,
+// standalone links → cards, standalone JSON → collapsible tree, else markdown.
+function AssistantText({ text, streaming }: { text: string; streaming: boolean }) {
+  const blocks = useMemo(() => splitBlocks(text), [text])
   return (
     <>
-      {segments.map((seg, i) =>
-        seg.type === 'images' ? (
-          <ImageCarousel key={i} urls={seg.urls} />
-        ) : (
-          <Markdown key={i} text={seg.text} />
-        ),
-      )}
+      {blocks.map((b, i) => {
+        if (b.type === 'images') return <ImageCarousel key={i} urls={b.urls} />
+        if (b.type === 'links') return <LinkCardStack key={i} links={b.links} />
+        if (b.type === 'json') return <JsonTree key={i} value={b.value} />
+        return <Markdown key={i} text={b.text} streaming={streaming} />
+      })}
     </>
   )
 }
 
-// Actions on a completed assistant message: copy the rendered message as a PNG
-// image, or copy its text as markdown.
+// Actions on a completed assistant message: the shared copy-as-image /
+// copy-as-markdown group, plus the message's source favicons.
 function MessageToolbar({
   message,
   targetRef,
 }: {
   message: UIMessage
   targetRef: React.RefObject<HTMLDivElement>
+}) {
+  const markdown = message.parts
+    .map((p) => (p.type === 'text' ? p.text : ''))
+    .filter(Boolean)
+    .join('\n\n')
+    .trim()
+  return (
+    <div className="msg-toolbar">
+      <CopyActions targetRef={targetRef} markdown={markdown} />
+      <SourceBar sources={deriveSources(message)} />
+    </div>
+  )
+}
+
+// Copy-as-image (a PNG of `targetRef`'s rendered DOM) and copy-as-markdown
+// (`markdown` text) buttons, each with a transient check/error state. Shared by
+// assistant replies and research report cards so the clipboard + icon logic
+// lives in one place. `targetRef` is HTMLElement so any body ref can pass here.
+function CopyActions({
+  targetRef,
+  markdown,
+}: {
+  targetRef: React.RefObject<HTMLElement>
+  markdown: string
 }) {
   const [imageState, setImageState] = useState<'idle' | 'done' | 'error'>('idle')
   const [copyState, setCopyState] = useState<'idle' | 'done' | 'error'>('idle')
@@ -1342,11 +1576,6 @@ function MessageToolbar({
   }
 
   async function copyMarkdown() {
-    const markdown = message.parts
-      .map((p) => (p.type === 'text' ? p.text : ''))
-      .filter(Boolean)
-      .join('\n\n')
-      .trim()
     try {
       await navigator.clipboard.writeText(markdown)
       setCopyState('done')
@@ -1356,11 +1585,8 @@ function MessageToolbar({
     setTimeout(() => setCopyState('idle'), 1500)
   }
 
-  const sources = deriveSources(message)
-
   return (
-    <div className="msg-toolbar">
-      <div className="msg-toolbar-actions">
+    <div className="msg-toolbar-actions">
       <button
         className={`msg-tool-btn ${imageState}`}
         data-tooltip={imageState === 'error' ? "Couldn't copy image" : 'Copy response as image'}
@@ -1392,8 +1618,6 @@ function MessageToolbar({
           </svg>
         )}
       </button>
-      </div>
-      <SourceBar sources={sources} />
     </div>
   )
 }
@@ -1623,6 +1847,12 @@ function ToolPill({ part }: { part: Extract<UIPart, { type: 'tool' }> }) {
   else if (part.toolName === 'RequestPageControl')
     label = output?.started ? 'Started controlling the page' : 'Asked to control the page'
   else if (part.toolName === 'ControlPage') label = controlActionLabel(part.input, output)
+  else if (part.toolName === 'ExtractData')
+    label = output?.error ? 'Could not extract data' : 'Extracted structured data'
+  else if (part.toolName === 'StartResearch')
+    label = output?.started ? 'Started background research' : 'Research not started'
+  else if (part.toolName === 'AutofillForm')
+    label = output?.error ? 'Autofill stopped' : `Filled ${output?.filled?.length ?? 0} form field${(output?.filled?.length ?? 0) === 1 ? '' : 's'}`
   else label = part.toolName
 
   return (
@@ -1640,6 +1870,174 @@ function ToolPill({ part }: { part: Extract<UIPart, { type: 'tool' }> }) {
       </summary>
       <pre>{JSON.stringify({ input: part.input, output: part.output }, null, 2)}</pre>
     </details>
+  )
+}
+
+// A finished background-research task dropped into the chat at the end of the
+// transcript (done → report, error → error text). Rendered with the same
+// treatment as an assistant reply: an AssistantText body (image carousels,
+// link cards, JSON, markdown) plus the shared copy-as-image / copy-as-markdown
+// actions and a SourceBar. The `id` is the scroll target for its ✓ dock bar.
+function ResearchReportCard({ task }: { task: ResearchTask }) {
+  const bodyRef = useRef<HTMLDivElement>(null)
+  return (
+    <div className="msg-assistant research-report" id={`research-report-${task.id}`}>
+      <div className="msg-assistant-body" ref={bodyRef}>
+        <div className="research-report__label">
+          <ResearchGlyph />
+          <span>Research · {task.question}</span>
+        </div>
+        {task.report ? (
+          <AssistantText text={task.report} streaming={false} />
+        ) : (
+          <div className="research-card__error">{task.error}</div>
+        )}
+      </div>
+      {task.report && (
+        <div className="msg-toolbar">
+          <CopyActions targetRef={bodyRef} markdown={task.report} />
+          {task.sources && task.sources.length > 0 && <SourceBar sources={task.sources} />}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// The dock of live / just-finished research tasks, stacked directly above the
+// composer. Each bar taps through to `onOpen`. Renders nothing when empty so
+// the composer sits flush with no gap.
+function ResearchDock({
+  tasks,
+  onOpen,
+}: {
+  tasks: ResearchTask[]
+  onOpen: (t: ResearchTask) => void
+}) {
+  if (tasks.length === 0) return null
+  return (
+    <div className="research-dock">
+      {tasks.map((t) => (
+        <ResearchBar key={t.id} task={t} onOpen={() => onOpen(t)} />
+      ))}
+    </div>
+  )
+}
+
+// One thin dock bar: status icon + question + expand chevron.
+function ResearchBar({ task, onOpen }: { task: ResearchTask; onOpen: () => void }) {
+  return (
+    <button className={`research-bar ${task.status}`} onClick={onOpen} title={task.question}>
+      <ResearchStatusIcon status={task.status} />
+      <span className="research-bar__title">{task.question}</span>
+      <svg className="research-bar__chevron" width="10" height="10" viewBox="0 0 10 10" aria-hidden>
+        <path d="M2 6.5L5 3.5l3 3" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" fill="none" />
+      </svg>
+    </button>
+  )
+}
+
+// The bottom sheet (~85% height) for one task's live workflow: question header,
+// full step log (each marked done/active), sources gathered so far, and a Stop
+// button while running. A scrim behind it closes on click.
+function ResearchSheet({
+  task,
+  onClose,
+  onStop,
+}: {
+  task: ResearchTask
+  onClose: () => void
+  onStop: () => void
+}) {
+  return (
+    <>
+      <div className="research-sheet__scrim" onClick={onClose} />
+      <div className="research-sheet" role="dialog" aria-label={`Research: ${task.question}`}>
+        <div className="research-sheet__head">
+          <ResearchStatusIcon status={task.status} />
+          <span className="research-sheet__question">{task.question}</span>
+          <button className="research-sheet__close" onClick={onClose} aria-label="Collapse">
+            <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden>
+              <path d="M3 5l3 3 3-3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" fill="none" />
+            </svg>
+          </button>
+        </div>
+        <div className="research-sheet__body">
+          <ul className="research-sheet__steps">
+            {task.steps.map((s, i) => {
+              const active = task.status === 'running' && i === task.steps.length - 1
+              return (
+                <li key={i} className={active ? 'active' : 'done'}>
+                  <span className="research-step__mark" aria-hidden />
+                  <span className="research-step__text">{s}</span>
+                </li>
+              )
+            })}
+            {task.steps.length === 0 && <li className="muted">Starting…</li>}
+          </ul>
+          {task.sources && task.sources.length > 0 && (
+            <div className="research-sheet__sources">
+              <div className="research-sheet__sources-title">Sources so far</div>
+              {task.sources.map((s) => (
+                <a key={s.url} href={s.url} target="_blank" rel="noreferrer">
+                  {s.title || s.url}
+                </a>
+              ))}
+            </div>
+          )}
+        </div>
+        {task.status === 'running' && (
+          <div className="research-sheet__foot">
+            <button className="btn ghost" onClick={onStop}>
+              Stop
+            </button>
+          </div>
+        )}
+      </div>
+    </>
+  )
+}
+
+// Dock/sheet status glyph: a spinner while running, then ✓ / ✕ / ⊘ for
+// done / error / cancelled.
+function ResearchStatusIcon({ status }: { status: ResearchStatus }) {
+  if (status === 'running') return <ResearchSpinner />
+  return (
+    <span className={`research-status research-status--${status}`}>
+      {status === 'done' ? (
+        <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden>
+          <path d="M3.5 8.5l3 3 6-6.5" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" fill="none" />
+        </svg>
+      ) : status === 'error' ? (
+        <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden>
+          <path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" fill="none" />
+        </svg>
+      ) : (
+        <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden>
+          <circle cx="8" cy="8" r="6" stroke="currentColor" strokeWidth="1.5" fill="none" />
+          <path d="M4 4l8 8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+        </svg>
+      )}
+    </span>
+  )
+}
+
+// A CSS-animated ring spinner for running research.
+function ResearchSpinner() {
+  return (
+    <svg className="research-spinner" width="14" height="14" viewBox="0 0 16 16" aria-hidden>
+      <circle cx="8" cy="8" r="6" stroke="currentColor" strokeWidth="1.6" fill="none" opacity="0.25" />
+      <path d="M8 2a6 6 0 0 1 6 6" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" fill="none" />
+    </svg>
+  )
+}
+
+// The small search glyph beside a report card's title.
+function ResearchGlyph() {
+  return (
+    <svg width="13" height="13" viewBox="0 0 14 14" fill="none" aria-hidden>
+      <circle cx="6" cy="6" r="4.2" stroke="currentColor" strokeWidth="1.3" />
+      <path d="M9 9l3.2 3.2" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
+    </svg>
   )
 }
 

@@ -11,6 +11,7 @@ export default defineConfig({
       input: {
         sidepanel: 'sidepanel.html',
         background: 'src/background.ts',
+        offscreen: 'offscreen.html',
       },
       output: {
         entryFileNames: '[name].js',

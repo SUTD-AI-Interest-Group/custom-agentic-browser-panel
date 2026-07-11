@@ -10,6 +10,7 @@ import {
   scrollPage,
   selectOption,
   typeIntoElement,
+  waitForStable,
   type ActionResult,
 } from '../platform/pageActions'
 
@@ -40,6 +41,7 @@ export type ControlAction =
   | 'highlight'
   | 'navigate'
   | 'press'
+  | 'wait'
 
 /** One action request from the model. */
 export interface ControlSpec {
@@ -53,6 +55,8 @@ export interface ControlSpec {
   label?: string
   sensitive?: boolean
   clear?: boolean
+  /** Max ms to wait for stability (action='wait'); also caps post-action auto-wait. */
+  timeoutMs?: number
 }
 
 const hostOf = (url: string): string => {
@@ -95,6 +99,13 @@ export interface ControlStepDeps {
   beforeAct?: (index: number | undefined) => Promise<void>
   /** Presence hook: play the click pulse after acting. */
   afterAct?: () => Promise<void>
+  /**
+   * Presence hook: re-establish the overlay after a navigation replaced the
+   * page's DOM (which wipes the injected overlay). Called once the new document
+   * has settled and been re-read, so the tint/frame/cursor return on the fresh
+   * page instead of vanishing for the rest of the session.
+   */
+  afterNav?: () => Promise<void>
 }
 
 export interface ControlStepResult extends ActionResult {
@@ -120,6 +131,11 @@ const runRaw = (tabId: number, spec: ControlSpec): Promise<ActionResult> => {
       return pressKey(tabId, spec.keys ?? 'Enter')
     case 'navigate':
       return navigateTab(tabId, spec.url ?? '')
+    case 'wait':
+      return waitForStable(tabId, {
+        selector: spec.text || undefined,
+        timeoutMs: spec.timeoutMs,
+      }).then((r) => ({ ok: r.ok, message: `waited (${r.reason})` }))
   }
 }
 
@@ -137,15 +153,23 @@ const clickElementOrHighlight = (tabId: number, spec: ControlSpec): Promise<Acti
 
 /** Run one action: presence glide → real action → pulse → re-snapshot. */
 export async function runControlStep(deps: ControlStepDeps): Promise<ControlStepResult> {
-  const { tabId, spec, beforeAct, afterAct } = deps
+  const { tabId, spec, beforeAct, afterAct, afterNav } = deps
   const needsTarget = spec.index !== undefined && spec.action !== 'navigate'
   if (beforeAct && needsTarget) await beforeAct(spec.index)
   const result = await runRaw(tabId, spec)
   // The ripple represents a click; only play it for clicks (not type/select/
   // scroll/navigate/press/highlight).
   if (afterAct && result.ok && spec.action === 'click') await afterAct()
-  // Navigation reloads the document; give it a beat before re-reading.
-  if (spec.action === 'navigate') await new Promise((r) => setTimeout(r, 600))
+  // chrome.tabs.update resolves once navigation is *initiated*, not once the
+  // new document exists, so waitForStable (which injects via executeScript)
+  // can otherwise race the frame transition and read the OLD document as
+  // instantly "quiet". Give navigation a brief head start before polling.
+  if (spec.action === 'navigate') await new Promise((r) => setTimeout(r, 300))
+  // Let async pages settle before re-reading, instead of a fixed delay. Skip
+  // for 'wait' (already waited) and 'highlight'/'scroll' (no state change).
+  if (['click', 'type', 'select', 'navigate', 'press'].includes(spec.action)) {
+    await waitForStable(tabId, { timeoutMs: spec.action === 'navigate' ? 8000 : 4000 })
+  }
   let registry = '(page not re-read)'
   let origin = ''
   try {
@@ -155,5 +179,12 @@ export async function runControlStep(deps: ControlStepDeps): Promise<ControlStep
   } catch {
     registry = '(could not re-read the page)'
   }
+  // A navigation replaces the page's DOM and so destroys the injected presence
+  // overlay. Re-establish it whenever this step navigated — the explicit
+  // navigate action (which may reload to the same origin), or any action that
+  // drifted the origin — so the tint/frame/cursor come back on the fresh page
+  // now, not on the next step (or never, if this was the last step).
+  if (afterNav && (spec.action === 'navigate' || (origin !== '' && origin !== deps.snapshot.origin)))
+    await afterNav()
   return { ...result, registry, origin }
 }

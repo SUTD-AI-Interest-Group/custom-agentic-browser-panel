@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { downloadImage } from '../platform/download'
 
-// Renders a run of image URLs (grouped by splitImageBlocks) as a full-width,
+// Renders a run of image URLs (grouped by splitBlocks) as a full-width,
 // horizontally side-scrollable carousel. Hovering a thumbnail tints it and
 // reveals a download icon; clicking downloads that image via the system Save As
 // dialog. Thumbnails that fail to load are dropped.

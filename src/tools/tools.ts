@@ -1,6 +1,6 @@
 import { tool, type ToolSet } from 'ai'
 import { z } from 'zod'
-import { saveMemory, searchMemories } from '../data/memory'
+import { saveMemory, searchMemories, getProfileMemories } from '../data/memory'
 import { getSkill, listSkillMetas, saveSkill } from '../data/skills'
 import type { ProviderConfig, TabAccess, ToolPolicy } from '../data/settings'
 import { getActiveTab, listOpenTabs, navigateTab, readTabContent, readTabDom } from '../platform/tabs'
@@ -10,6 +10,9 @@ import { snapshotPage, type PageSnapshot } from '../platform/domIndex'
 import { mountPresence, setTint, focusOn, pulse, setPresenceHidden } from '../platform/presence'
 import { ensureVisionCapability } from '../agent/vision'
 import { captureWithMarks } from '../platform/marks'
+import { createModel } from '../agent/provider'
+import { extractStructured } from '../agent/extract'
+import { createStartResearchTool } from './research'
 import {
   isPointOfNoReturn,
   runControlStep,
@@ -124,6 +127,8 @@ export function createAgentTools(
   imageQueue: string[],
   /** Resolves each tool's Never/Ask/Always policy; `never` tools are removed below. */
   policyFor: (name: string) => ToolPolicy,
+  /** The open conversation, tagged onto any background research launched this turn. */
+  conversationId: string,
 ): ToolSet {
   const tools: ToolSet = {
     ViewCurrentTab: tool({
@@ -202,6 +207,10 @@ export function createAgentTools(
         // never disturbs an already-mounted session (and warms the overlay
         // before a likely RequestPageControl). lookResult hides it for the shot.
         await mountPresence(tab.id)
+        // Mid-session re-read: if a session is controlling this tab, keep the
+        // tinted "active control" look. A navigation may have wiped the overlay,
+        // so the mount above re-created it in the ambient (untinted) state.
+        if (open && open.active && open.tabId === tab.id) await setTint(tab.id, true)
         try {
           const snap = await snapshotPage(tab.id)
           return await lookResult(tab, snap, {}, selected, imageQueue)
@@ -254,11 +263,11 @@ export function createAgentTools(
 
     ControlPage: tool({
       description:
-        'Perform ONE action on the active tab within an open page-control session: click, type, select, scroll, highlight, navigate, or press a key. Target elements by their [index] from InspectPage/RequestPageControl. Returns the refreshed element list.',
+        'Perform ONE action on the active tab within an open page-control session: click, type, select, scroll, highlight, navigate, press a key, or wait. Target elements by their [index] from InspectPage/RequestPageControl. wait: pause until the page settles or an optional CSS selector (passed in text) appears. Returns the refreshed element list.',
       inputSchema: z.object({
-        action: z.enum(['click', 'type', 'select', 'scroll', 'highlight', 'navigate', 'press']),
+        action: z.enum(['click', 'type', 'select', 'scroll', 'highlight', 'navigate', 'press', 'wait']),
         index: z.number().optional().describe('Target element index from the list.'),
-        text: z.string().optional().describe('Text to type (action=type).'),
+        text: z.string().optional().describe('Text to type (action=type), or a CSS selector to wait for (action=wait).'),
         value: z.string().optional().describe('Option value or label (action=select).'),
         url: z.string().optional().describe('URL to open (action=navigate).'),
         keys: z.string().optional().describe('Key to press: Enter, Tab, or Escape (action=press).'),
@@ -266,6 +275,7 @@ export function createAgentTools(
         label: z.string().optional().describe('Callout text to show on the page (action=highlight).'),
         clear: z.boolean().optional().describe('Replace existing text instead of appending (action=type).'),
         sensitive: z.boolean().optional().describe('Set true if this step is risky; forces a confirm.'),
+        timeoutMs: z.number().optional().describe('Max ms to wait for the page to settle (action=wait).'),
       }),
       execute: async (spec: ControlSpec) => {
         const session = pageControl.session()
@@ -278,6 +288,14 @@ export function createAgentTools(
         const tab = await getActiveTab()
         if (tab?.id === undefined || tab.id !== session.tabId)
           return { error: 'The controlled tab is no longer active.' }
+        // The presence overlay lives in the page's DOM, which any navigation
+        // wipes. For the life of a session the overlay must persist, so
+        // re-establish it at the top of every step: idempotent when it's still
+        // there, and it restores the tint/frame after a prior step's navigation
+        // (an explicit navigate, a click that loaded a new page, a cross-origin
+        // drift) destroyed them. Covers the drift branch's early returns too.
+        await mountPresence(tab.id)
+        await setTint(tab.id, true)
         const liveOrigin = (() => {
           try {
             return new URL(tab.url ?? '').origin
@@ -345,6 +363,10 @@ export function createAgentTools(
           snapshot: snap,
           beforeAct: (index) => (index === undefined ? Promise.resolve() : focusOn(tab.id!, index, spec.label)),
           afterAct: () => pulse(tab.id!),
+          afterNav: async () => {
+            await mountPresence(tab.id!)
+            await setTint(tab.id!, true)
+          },
         })
         // Handle an origin change this action caused. When the post-action
         // snapshot already shows the new origin (explicit navigate — which
@@ -378,6 +400,57 @@ export function createAgentTools(
         // Coerce to a real boolean: `urlChanged` is undefined for non-navigation
         // actions, and a tool result must not carry undefined into the history.
         return { ok, message, urlChanged: urlChanged === true, elements: registry, actionsLeft: session.maxActions - session.actionsUsed }
+      },
+    }),
+
+    /** Fills mapped, non-sensitive fields from saved profile memories inside an already-open page-control session; sensitive fields still raise a one-shot point-of-no-return card, and submit is never part of this tool. */
+    AutofillForm: tool({
+      description:
+        'Fill the form on the active tab from the user\'s saved profile memories, within an open page-control session. Maps profile details (name, email, address…) to the indexed fields you pass. Sensitive fields (passwords, payment) and any submit still ask each time. Never invents secrets.',
+      inputSchema: z.object({
+        fields: z.array(z.object({
+          index: z.number().describe('Target field [index] from InspectPage.'),
+          value: z.string().describe('The value to enter (you map this from profile memories).'),
+          sensitive: z.boolean().optional().describe('True for passwords/payment; forces a confirm and is skipped if not user-provided.'),
+        })).describe('The fields to fill and the values to enter.'),
+      }),
+      execute: async ({ fields }) => {
+        const session = pageControl.session()
+        if (!session || !session.active) return { error: 'No page-control session is open. Call RequestPageControl first.' }
+        const tab = await getActiveTab()
+        if (tab?.id === undefined || tab.id !== session.tabId) return { error: 'The controlled tab is no longer active.' }
+        const profile = await getProfileMemories()
+        const filled: number[] = []
+        let budgetHit = false
+        for (const f of fields) {
+          if (session.actionsUsed >= session.maxActions) { budgetHit = true; break }
+          let snap
+          try { snap = await snapshotPage(tab.id) } catch { return { error: 'Cannot read this page.' } }
+          if (snap.origin !== session.origin) {
+            pageControl.endSession()
+            return { filled, error: 'The page is now on a different site; autofill stopped and page control ended for safety.' }
+          }
+          const el = snap.elements[f.index]
+          const spec: ControlSpec = { action: 'type', index: f.index, text: f.value, clear: true, sensitive: f.sensitive }
+          if (isPointOfNoReturn(spec, el, session.origin)) {
+            const approved = await requestApproval({ toolName: 'AutofillForm', summary: `Fill a sensitive field (${el?.name ?? f.index})`, reason: 'This field is sensitive.', once: true })
+            if (!approved) continue
+          }
+          session.actionsUsed += 1
+          await runControlStep({
+            tabId: tab.id, spec, snapshot: snap,
+            beforeAct: (i) => (i === undefined ? Promise.resolve() : focusOn(tab.id!, i, undefined)),
+            afterAct: () => pulse(tab.id!),
+          })
+          filled.push(f.index)
+        }
+        return {
+          filled,
+          actionsLeft: session.maxActions - session.actionsUsed,
+          note: budgetHit
+            ? 'Action budget reached; ask the user to continue for more fields.'
+            : `Filled ${filled.length} field(s) from profile. Profile memories available: ${profile.length}. Submit is a separate, confirmed step.`,
+        }
       },
     }),
 
@@ -479,6 +552,37 @@ export function createAgentTools(
       },
     }),
 
+    ExtractData: tool({
+      description:
+        'Extract structured data from the active tab into a caller-defined JSON schema. Use when the user wants records pulled out — a table, a list of items, fields from a page — as clean JSON. Asks permission first.',
+      inputSchema: z.object({
+        reason: z.string().describe('Short reason shown to the user, e.g. "To pull the product table into a list"'),
+        instruction: z.string().describe('What to extract, e.g. "every product with name and price"'),
+        schema: z.record(z.any()).describe('A JSON Schema object describing the desired output shape.'),
+      }),
+      execute: async ({ reason, instruction, schema }, { abortSignal }) => {
+        const approved = await requestApproval({
+          toolName: 'ExtractData',
+          summary: 'Extract structured data from this page',
+          reason,
+        })
+        if (!approved) return DENIED
+        if (!selected) return { error: 'No model is configured.' }
+        const tab = await getActiveTab()
+        if (tab?.id === undefined) return { error: 'No active tab found.' }
+        const page = await readTabContent(tab.id)
+        if (page.error) return { error: page.error }
+        const source = page.text
+        const model = createModel(selected.provider, selected.modelId)
+        const prompt = `${instruction}\n\nSource page content:\n${source.slice(0, 40_000)}`
+        try {
+          return { data: await extractStructured(model, prompt, schema as Record<string, unknown>, abortSignal) }
+        } catch (err) {
+          return { error: `Could not extract structured data (${err instanceof Error ? err.message : String(err)}).` }
+        }
+      },
+    }),
+
     SaveMemory: tool({
       description:
         'Save a durable memory about the user to local long-term storage (the browser\'s IndexedDB). Use when the user shares something worth remembering across conversations — who they are, preferences, ongoing projects — or explicitly asks you to remember something. Asks the user for permission first. Do not store secrets like passwords or API keys.',
@@ -487,8 +591,10 @@ export function createAgentTools(
           .string()
           .describe('Short reason shown to the user, e.g. "So I remember your preferred format"'),
         kind: z
-          .enum(['fact', 'preference', 'project'])
-          .describe('fact: stable info about the user; preference: how they want you to behave; project: ongoing work or goals'),
+          .enum(['fact', 'preference', 'project', 'profile'])
+          .describe(
+            'fact: stable info about the user; preference: how they want you to behave; project: ongoing work or goals; profile: a reusable personal detail for filling forms (name, email, address)',
+          ),
         content: z
           .string()
           .describe('The memory as one self-contained sentence, understandable without this conversation'),
@@ -715,6 +821,11 @@ export function createAgentTools(
       },
     }),
   }
+
+  // Background web research: gated in the foreground (this card), then handed
+  // off to the offscreen research host, which runs the real (ungated) research
+  // tools headlessly — see src/tools/research.ts and src/agent/research.ts.
+  Object.assign(tools, createStartResearchTool(requestApproval, conversationId))
 
   // Honor the tab-visibility preference chosen in onboarding: in active-tab
   // mode the model never even sees a tool that could enumerate other tabs.
