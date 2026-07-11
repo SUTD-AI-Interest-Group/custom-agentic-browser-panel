@@ -11,8 +11,10 @@ import { copyElementAsPng } from '../platform/domImage'
 import { getConversation, renameConversation, saveConversation } from '../data/conversations'
 import { appendToEpisode, getMemoryContext } from '../data/memory'
 import { createModel, generateChatTitle } from '../agent/provider'
+import { getObserver } from '../agent/observability'
 import {
   getSelectedProvider,
+  observabilityConfig,
   toolPolicy,
   TOOL_CATALOG,
   GROUP_ORDER,
@@ -816,7 +818,7 @@ export default function Chat({
     // and applied whenever it resolves, so the title fills in on its own.
     if (isFirstMessage && text && selected) {
       const titleModel = createModel(selected.provider, selected.modelId)
-      void generateChatTitle(titleModel, text)
+      void generateChatTitle(titleModel, text, conversationId)
         .then((t) => (t ? renameConversation(conversationId, t).then(onConversationsChanged) : undefined))
         .catch(() => {})
     }
@@ -906,6 +908,24 @@ export default function Chat({
     setStreaming(true)
     const startedAt = Date.now()
     setTurnStartedAt(startedAt)
+    // Observability: one Langfuse trace per turn, grouped into the conversation's
+    // session. Model steps become generations and tool calls become spans (wired
+    // via runAgentTurn + createAgentTools). No-op when the beta toggle is off.
+    const observer = getObserver(observabilityConfig(settings))
+    const trace = observer.enabled
+      ? observer.startTrace({
+          name: text.split('\n')[0].slice(0, 80) || 'chat turn',
+          sessionId: conversationId,
+          input: text,
+          tags: ['chat'],
+          metadata: {
+            images: images.length || undefined,
+            syncedTabs: syncedTabs.length || undefined,
+            skill: activeSkill?.name,
+            memory: useMemory || undefined,
+          },
+        })
+      : undefined
     try {
       // Recalled memories are injected fresh each turn so mid-conversation
       // saves (SaveMemory) are visible on the very next turn.
@@ -947,10 +967,12 @@ export default function Chat({
           imageQueue,
           (name) => toolPolicy(settings, name),
           conversationId,
+          trace,
         ),
         abortSignal: controller.signal,
         onUpdate: updateAssistant,
         imageQueue,
+        trace,
       })
       updateAssistant(parts)
       historyRef.current.push(...responseMessages)
@@ -976,11 +998,13 @@ export default function Chat({
         { role: 'user', text: journalUserText, at: startedAt },
         { role: 'assistant', text: assistantText, at: Date.now() },
       ]).catch(() => {})
+      trace?.end({ output: assistantText })
     } catch (err) {
       if (controller.signal.aborted) {
         // Partial turn stays visible in the UI but is dropped from model
         // history so the next request starts from a consistent state.
         historyRef.current.pop()
+        trace?.end({ metadata: { aborted: true } })
       } else {
         const message = err instanceof Error ? err.message : String(err)
         setMessages((m) =>
@@ -991,6 +1015,7 @@ export default function Chat({
           ),
         )
         historyRef.current.pop()
+        trace?.end({ metadata: { error: message } })
       }
     } finally {
       settleApproval(false)
@@ -1003,6 +1028,8 @@ export default function Chat({
       setStreaming(false)
       setTurnStartedAt(null)
       setTurnSeq((n) => n + 1)
+      // Observability: deliver this turn's buffered events. Best-effort.
+      void observer.flush()
     }
   }
 

@@ -5,6 +5,7 @@
 
 import { generateText } from 'ai'
 import { createModel } from './provider'
+import { getObserver } from './observability'
 import type { ProviderConfig } from '../data/settings'
 
 const CACHE_KEY = 'visionProbe'
@@ -37,9 +38,14 @@ export async function ensureVisionCapability(
   if (key in cache) return cache[key]
   // A fixed 4-char code; varying it is unnecessary and would defeat the cache.
   const code = 'K7QX'
+  const observer = getObserver()
+  const trace = observer.enabled
+    ? observer.startTrace({ name: 'vision-probe', tags: ['vision'], metadata: { provider: provider.name } })
+    : undefined
+  const gen = trace?.generation({ name: 'vision-probe', model: modelId })
   let capable = false
   try {
-    const { text } = await generateText({
+    const { text, usage } = await generateText({
       model: createModel(provider, modelId),
       messages: [
         {
@@ -55,9 +61,13 @@ export async function ensureVisionCapability(
       abortSignal: AbortSignal.timeout(20_000),
     })
     capable = text.toUpperCase().includes(code)
-  } catch {
+    gen?.end({ output: text, usage })
+  } catch (err) {
     capable = false
+    gen?.end({ level: 'ERROR', statusMessage: err instanceof Error ? err.message : String(err) })
   }
+  trace?.end({ metadata: { capable } })
+  void observer.flush()
   cache[key] = capable
   await chrome.storage.local.set({ [CACHE_KEY]: cache })
   return capable

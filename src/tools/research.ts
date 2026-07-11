@@ -3,6 +3,7 @@ import { z } from 'zod'
 import type { ProviderConfig } from '../data/settings'
 import { createModel } from '../agent/provider'
 import { extractStructured } from '../agent/extract'
+import { instrumentToolset, type Trace } from '../agent/observability'
 import { searchDuckDuckGo, fetchReadable } from '../platform/webFetch'
 import type { ApprovalGate } from './tools'
 
@@ -14,8 +15,10 @@ import type { ApprovalGate } from './tools'
  */
 export function createResearchTools(deps: {
   selected: { provider: ProviderConfig; modelId: string } | null
+  /** Optional Langfuse trace for the research task; when set, tools become spans. */
+  trace?: Trace
 }): ToolSet {
-  return {
+  const tools: ToolSet = {
     WebSearch: tool({
       description: 'Search the web (DuckDuckGo) and return ranked {title,url,snippet} results.',
       inputSchema: z.object({
@@ -47,13 +50,15 @@ export function createResearchTools(deps: {
         const model = createModel(deps.selected.provider, deps.selected.modelId)
         const prompt = `${instruction}\n\nText:\n${text.slice(0, 40_000)}`
         try {
-          return { data: await extractStructured(model, prompt, schema as Record<string, unknown>, abortSignal) }
+          return { data: await extractStructured(model, prompt, schema as Record<string, unknown>, abortSignal, deps.trace) }
         } catch (err) {
           return { error: `Could not extract structured data (${err instanceof Error ? err.message : String(err)}).` }
         }
       },
     }),
   }
+  if (deps.trace) instrumentToolset(tools, deps.trace)
+  return tools
 }
 
 /**

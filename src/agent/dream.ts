@@ -11,7 +11,8 @@
 
 import { generateText } from 'ai'
 import { createModel } from './provider'
-import { getSelectedProvider, loadSettings } from '../data/settings'
+import { getObserver } from './observability'
+import { getSelectedProvider, loadSettings, observabilityConfig } from '../data/settings'
 import {
   deleteMemory,
   listMemories,
@@ -81,15 +82,38 @@ export async function runDream(): Promise<DreamOutcome> {
   if (episodes.length === 0) return { status: 'skipped', reason: 'Nothing new to consolidate.' }
   const memories = await listMemories()
 
-  const { text } = await generateText({
-    model: createModel(selected.provider, selected.modelId),
-    // v7 renamed `system` to `instructions` (`system` still works, deprecated).
-    instructions: DREAM_SYSTEM_PROMPT,
-    prompt: buildDreamPrompt(memories, episodes),
-  })
+  // Observability: the dream is a single generation, in its own trace (no chat
+  // session — it runs in the background service worker).
+  const observer = getObserver(observabilityConfig(settings))
+  const trace = observer.enabled
+    ? observer.startTrace({ name: 'dream', tags: ['dreaming'] })
+    : undefined
+  const prompt = buildDreamPrompt(memories, episodes)
+  const gen = trace?.generation({ name: 'dream', model: selected.modelId, input: prompt })
+
+  let text: string
+  try {
+    const res = await generateText({
+      model: createModel(selected.provider, selected.modelId),
+      // v7 renamed `system` to `instructions` (`system` still works, deprecated).
+      instructions: DREAM_SYSTEM_PROMPT,
+      prompt,
+    })
+    text = res.text
+    gen?.end({ output: text, usage: res.usage })
+  } catch (err) {
+    gen?.end({ level: 'ERROR', statusMessage: err instanceof Error ? err.message : String(err) })
+    trace?.end()
+    await observer.flush()
+    throw err
+  }
 
   const ops = parseDreamOps(text)
-  if (!ops) return { status: 'skipped', reason: 'Model returned unparseable output; will retry next cycle.' }
+  if (!ops) {
+    trace?.end({ metadata: { parseError: true } })
+    await observer.flush()
+    return { status: 'skipped', reason: 'Model returned unparseable output; will retry next cycle.' }
+  }
 
   let added = 0
   let updated = 0
@@ -116,6 +140,12 @@ export async function runDream(): Promise<DreamOutcome> {
   await markEpisodesConsolidated(episodes.map((e) => e.id))
   await pruneConsolidatedEpisodes()
   await setDreamState({ lastDreamAt: Date.now(), lastSummary: ops.daySummary })
+
+  trace?.end({
+    output: ops.daySummary ?? undefined,
+    metadata: { added, updated, deleted, episodes: episodes.length },
+  })
+  await observer.flush()
 
   return { status: 'dreamed', added, updated, deleted, episodes: episodes.length, summary: ops.daySummary }
 }

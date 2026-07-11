@@ -1,5 +1,6 @@
 import { createOpenAICompatible } from '@ai-sdk/openai-compatible'
 import { generateText, type LanguageModel } from 'ai'
+import { getObserver } from './observability'
 import type { ProviderConfig } from '../data/settings'
 
 // Any endpoint that speaks the OpenAI chat-completions protocol works here,
@@ -30,9 +31,20 @@ export interface TestResult {
 export async function generateChatTitle(
   model: LanguageModel,
   firstMessage: string,
+  /** Conversation id, so the title generation joins the chat's Langfuse session. */
+  sessionId?: string,
 ): Promise<string | null> {
+  const observer = getObserver()
+  const trace = observer.enabled
+    ? observer.startTrace({ name: 'chat-title', sessionId, tags: ['title'], input: firstMessage })
+    : undefined
+  const gen = trace?.generation({
+    name: 'chat-title',
+    model: (model as { modelId?: string }).modelId,
+    input: firstMessage,
+  })
   try {
-    const { text } = await generateText({
+    const { text, usage } = await generateText({
       model,
       prompt:
         'Write a concise title (3–6 words, Title Case, no quotes, no trailing punctuation) for a ' +
@@ -46,8 +58,14 @@ export async function generateChatTitle(
       .replace(/^["'“”]+|["'“”.]+$/g, '')
       .trim()
       .slice(0, 60)
+    gen?.end({ output: title, usage })
+    trace?.end({ output: title })
+    void observer.flush()
     return title || null
-  } catch {
+  } catch (err) {
+    gen?.end({ level: 'ERROR', statusMessage: err instanceof Error ? err.message : String(err) })
+    trace?.end()
+    void observer.flush()
     return null
   }
 }
