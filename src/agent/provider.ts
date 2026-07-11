@@ -12,6 +12,14 @@ export function createModel(config: ProviderConfig, modelId: string): LanguageMo
     name: config.name,
     baseURL: config.baseURL,
     apiKey: config.apiKey || undefined,
+    // Ask for a usage block on STREAMING responses. The adapter only sends
+    // `stream_options: { include_usage: true }` when this is set, and without it
+    // an OpenAI-compatible endpoint (LM Studio, OpenAI, OpenRouter, Groq, …)
+    // streams back no token counts at all — so every streamText turn would report
+    // empty usage, and token/cost tracking would silently show zero. Non-streaming
+    // generateText calls return usage regardless, which is why only chat turns
+    // were affected. Endpoints that don't understand stream_options ignore it.
+    includeUsage: true,
   })
   return provider(modelId)
 }

@@ -12,9 +12,11 @@ import { copyElementAsPng } from '../platform/domImage'
 import { getConversation, renameConversation, saveConversation } from '../data/conversations'
 import { appendToEpisode, getMemoryContext } from '../data/memory'
 import { createModel, generateChatTitle } from '../agent/provider'
-import { getObserver } from '../agent/observability'
+import { getObserver, type ModelUsage } from '../agent/observability'
+import { computeCost, formatTokens, formatUsd, hasTokens, sumUsage, totalTokens } from '../agent/usage'
 import {
   getSelectedProvider,
+  modelPrice,
   observabilityConfig,
   toolPolicy,
   TOOL_CATALOG,
@@ -1010,6 +1012,10 @@ export default function Chat({
     const patch = (id: string, base: UIPart[]) => (parts: UIPart[]) =>
       setMessages((m) => m.map((msg) => (msg.id === id ? { ...msg, parts: [...base, ...parts] } : msg)))
 
+    // Priced once for the chain: drives the panel's cost line and the explicit
+    // costDetails sent to Langfuse (which cannot price a local/custom model id).
+    const price = modelPrice(settings, model.modelId)
+
     const assistantTexts: string[] = []
     let pushedAny = false
     let assistantId = uid()
@@ -1043,10 +1049,25 @@ export default function Chat({
           imageQueue,
           activeNames,
           trace,
+          price,
         })
         patch(assistantId, base)(result.parts)
         historyRef.current.push(...result.responseMessages)
         pushedAny = true
+        // Attribute this cycle's tokens to the bubble it streamed into. When
+        // auto-continues merge into one bubble the cycles sum; when they don't,
+        // each new bubble carries its own.
+        if (result.usage) {
+          const id = assistantId
+          const cycleUsage = result.usage
+          setMessages((m) =>
+            m.map((msg) => {
+              if (msg.id !== id) return msg
+              const usage = sumUsage(msg.usage, cycleUsage)
+              return { ...msg, usage, costUsd: computeCost(usage, price)?.total }
+            }),
+          )
+        }
         if (MERGE_AUTO_CONTINUES) mergedParts = [...mergedParts, ...result.parts]
         assistantTexts.push(
           result.parts.map((p) => (p.type === 'text' ? p.text : `[used tool: ${p.toolName}]`)).join('\n'),
@@ -1428,6 +1449,7 @@ export default function Chat({
                 Set up a provider
               </button>
             )}
+            <ChatTotal messages={messages} />
             <div className="composer-btns">
               <div className="tools-menu-wrap" ref={toolsMenuRef}>
                 <button
@@ -1726,8 +1748,54 @@ function MessageToolbar({
   return (
     <div className="msg-toolbar">
       <CopyActions targetRef={targetRef} markdown={markdown} />
+      <UsageLine usage={message.usage} costUsd={message.costUsd} />
       <SourceBar sources={deriveSources(message)} />
     </div>
+  )
+}
+
+/**
+ * Running token (and cost) total for the whole conversation, shown beside the
+ * model selector. Sums what each reply recorded rather than re-deriving it, so a
+ * mid-chat model switch keeps every turn priced as it actually ran.
+ */
+function ChatTotal({ messages }: { messages: UIMessage[] }) {
+  const usage = messages.reduce<ModelUsage | undefined>((acc, m) => sumUsage(acc, m.usage), undefined)
+  if (!hasTokens(usage)) return null
+  const cost = messages.reduce((sum, m) => sum + (m.costUsd ?? 0), 0)
+  const inTok = usage?.inputTokens ?? 0
+  const outTok = usage?.outputTokens ?? 0
+  return (
+    <span
+      className="chat-total"
+      title={`This chat: ${inTok.toLocaleString('en-US')} in · ${outTok.toLocaleString('en-US')} out${
+        cost > 0 ? ` · ${formatUsd(cost)}` : ''
+      }`}
+    >
+      Σ {formatTokens(totalTokens(usage))} tok
+      {cost > 0 && <span className="usage-cost">{formatUsd(cost)}</span>}
+    </span>
+  )
+}
+
+/**
+ * Tokens (and cost, when the model is priced) for one reply. Silent when the
+ * endpoint reported no usage — an endpoint that omits token counts should show
+ * nothing rather than a misleading "0". The full in/out split is in the tooltip
+ * to keep the toolbar line short.
+ */
+function UsageLine({ usage, costUsd }: { usage?: ModelUsage; costUsd?: number }) {
+  if (!hasTokens(usage)) return null
+  const inTok = usage?.inputTokens ?? 0
+  const outTok = usage?.outputTokens ?? 0
+  const title =
+    `${inTok.toLocaleString('en-US')} in · ${outTok.toLocaleString('en-US')} out` +
+    (costUsd != null ? ` · ${formatUsd(costUsd)}` : '')
+  return (
+    <span className="usage-line" title={title}>
+      {formatTokens(totalTokens(usage))} tok
+      {costUsd != null && costUsd > 0 && <span className="usage-cost">{formatUsd(costUsd)}</span>}
+    </span>
   )
 }
 

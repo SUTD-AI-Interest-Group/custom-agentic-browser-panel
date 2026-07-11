@@ -2826,6 +2826,81 @@ body {
   color: var(--text);
 }
 
+/* Model pricing table (Settings → General). A model id can be long, so it gets
+   the flexible column and truncates; the two price inputs stay a fixed width. */
+.price-table {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+.price-row {
+  display: grid;
+  grid-template-columns: 1fr 92px 92px;
+  align-items: center;
+  gap: 8px;
+}
+.price-head {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+.price-head span:not(:first-child) {
+  text-align: right;
+}
+.price-model {
+  font-size: 12px;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.price-row input {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 5px 8px;
+  font: inherit;
+  font-size: 12px;
+  color: var(--text);
+  background: var(--bg);
+  outline: none;
+  width: 100%;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.price-row input:focus {
+  border-color: var(--text-muted);
+}
+
+/* Token/cost readout: per-reply (in the message toolbar) and the running chat
+   total (beside the model selector). Both stay quiet — muted, tabular, and
+   absent entirely when the endpoint reports no usage. */
+.usage-line,
+.chat-total {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  cursor: default;
+}
+.usage-line {
+  margin-left: 2px;
+}
+.chat-total {
+  margin-left: 8px;
+  padding: 2px 7px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--pill-bg);
+}
+.usage-cost::before {
+  content: '·';
+  margin-right: 5px;
+  opacity: 0.6;
+}
+
 /* Beta observability: master toggle switch + revealed config panel. */
 .switch-row {
   display: flex;

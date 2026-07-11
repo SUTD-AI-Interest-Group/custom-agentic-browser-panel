@@ -237,6 +237,7 @@ class LiveGeneration implements Generation {
         output: this.obs.content(o.output),
         model: o.model,
         usageDetails: o.usageDetails ?? mapUsage(o.usage),
+        costDetails: o.costDetails,
         level: o.level,
         statusMessage: o.statusMessage,
         metadata: mergeMeta(o.metadata, o.finishReason ? { finishReason: o.finishReason } : undefined),

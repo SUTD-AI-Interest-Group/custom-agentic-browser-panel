@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import {
   DEFAULT_SYSTEM_PROMPT,
   observabilityConfig,
+  type ModelPrice,
   type ObservabilityConfig,
   type ProviderConfig,
   type Settings,
@@ -158,8 +159,78 @@ export default function GeneralTab({
         ))}
       </div>
 
+      <ModelPricingSection draft={draft} buffer={buffer} commitDraft={commitDraft} />
+
       <ObservabilitySection draft={draft} buffer={buffer} commit={commit} commitDraft={commitDraft} />
     </div>
+  )
+}
+
+/**
+ * Optional per-model price, in USD per 1M tokens. Drives the cost shown next to
+ * each reply AND the explicit `costDetails` sent to Langfuse — which prices from
+ * its own table keyed on model name and so reports $0 for a custom/local id like
+ * `qwen/qwen3.6-35b-a3b`. Local models really are free, so 0 is the right default.
+ */
+function ModelPricingSection({
+  draft,
+  buffer,
+  commitDraft,
+}: {
+  draft: Settings
+  buffer: (next: Settings) => void
+  commitDraft: () => void
+}) {
+  // Every model the user has configured, across providers, de-duplicated.
+  const models = Array.from(
+    new Set(draft.providers.flatMap((p) => p.models.map((m) => m.trim()).filter(Boolean))),
+  )
+  if (models.length === 0) return null
+  const prices = draft.modelPrices ?? {}
+
+  const setPrice = (id: string, patch: Partial<ModelPrice>) => {
+    const current = prices[id] ?? { inputPer1M: 0, outputPer1M: 0 }
+    buffer({ ...draft, modelPrices: { ...prices, [id]: { ...current, ...patch } } })
+  }
+
+  return (
+    <>
+      <h2>Model pricing</h2>
+      <p className="hint">
+        USD per 1M tokens. Powers the cost shown beside each reply and the cost sent to Langfuse,
+        which cannot price a custom or local model id on its own. Local models are free — leave at 0.
+      </p>
+      <div className="price-table">
+        <div className="price-row price-head">
+          <span>Model</span>
+          <span>Input $/1M</span>
+          <span>Output $/1M</span>
+        </div>
+        {models.map((m) => (
+          <div className="price-row" key={m}>
+            <span className="price-model" title={m}>
+              {m}
+            </span>
+            <input
+              type="number"
+              min="0"
+              step="0.01"
+              value={prices[m]?.inputPer1M ?? 0}
+              onChange={(e) => setPrice(m, { inputPer1M: Number(e.target.value) || 0 })}
+              onBlur={commitDraft}
+            />
+            <input
+              type="number"
+              min="0"
+              step="0.01"
+              value={prices[m]?.outputPer1M ?? 0}
+              onChange={(e) => setPrice(m, { outputPer1M: Number(e.target.value) || 0 })}
+              onBlur={commitDraft}
+            />
+          </div>
+        ))}
+      </div>
+    </>
   )
 }
 

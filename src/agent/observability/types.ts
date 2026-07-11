@@ -42,6 +42,12 @@ export interface GenerationEnd {
   /** Raw AI SDK usage; mapped to Langfuse `usageDetails` unless one is given. */
   usage?: ModelUsage
   usageDetails?: Record<string, number>
+  /**
+   * Explicit USD cost per component ({ input, output, total }). Langfuse prices a
+   * generation from its own table keyed on model name, which knows nothing about
+   * local/custom ids — sending this makes their cost real instead of $0.
+   */
+  costDetails?: Record<string, number>
   model?: string
   finishReason?: string
   level?: ObservationLevel
