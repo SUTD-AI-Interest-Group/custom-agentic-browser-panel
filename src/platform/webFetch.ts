@@ -19,8 +19,9 @@ export function isFetchableUrl(raw: string): { ok: boolean; reason?: string } {
   let u: URL
   try { u = new URL(raw) } catch { return { ok: false, reason: 'invalid URL' } }
   if (u.protocol !== 'http:' && u.protocol !== 'https:') return { ok: false, reason: `blocked scheme ${u.protocol}` }
-  const h = u.hostname.toLowerCase()
-  if (h === 'localhost' || h.endsWith('.local') || h === '0.0.0.0' || h === '::1' || h === '[::1]') {
+  const h = u.hostname.toLowerCase().replace(/\.$/, '')
+  if (h.startsWith('[')) return { ok: false, reason: 'blocked IPv6 literal' }
+  if (h === 'localhost' || h.endsWith('.local') || h === '0.0.0.0') {
     return { ok: false, reason: 'blocked host' }
   }
   const m = h.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/)
@@ -50,7 +51,6 @@ export function parseDuckDuckGoLite(html: string): { title: string; url: string;
     let snippet = ''
     const row = a.closest('tr')
     const snipCell = row?.nextElementSibling?.querySelector('.result-snippet')
-      ?? row?.parentElement?.querySelector('.result-snippet')
     if (snipCell) snippet = (snipCell.textContent ?? '').trim()
     return { title: (a.textContent ?? '').trim(), url: resolve(a.getAttribute('href') ?? ''), snippet }
   }).filter((r) => r.title && r.url)
