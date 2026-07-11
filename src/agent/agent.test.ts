@@ -1,0 +1,140 @@
+import { describe, it, expect } from 'vitest'
+import { tool } from 'ai'
+import { MockLanguageModelV3 } from 'ai/test'
+import { z } from 'zod'
+import { runAgentTurn, type UIPart } from './agent'
+
+// Progressive disclosure means most tools are NOT in `activeTools` until the
+// model loads them with GetTool. If the model instead calls such a tool
+// directly (the system prompt names them, so weaker models do exactly this),
+// the AI SDK rejects the call with NoSuchToolError *before* execute() runs.
+// For a gated tool that is fatal: its approval card never appears and the model
+// has no way back — e.g. after denying page control it could never re-ask.
+// runAgentTurn repairs those calls into GetTool so the tool gets loaded.
+
+function toolCallThen(toolName: string, input: unknown) {
+  let call = 0
+  return new MockLanguageModelV3({
+    doStream: async () => {
+      call += 1
+      const first = call === 1
+      return {
+        // The mock's chunk shapes are exercised at runtime by the SDK; typing the
+        // controller loosely keeps the test focused on repair behavior.
+        stream: new ReadableStream({
+          start(controller: any) {
+            controller.enqueue({ type: 'stream-start', warnings: [] })
+            if (first) {
+              controller.enqueue({
+                type: 'tool-call',
+                toolCallId: 'c1',
+                toolName,
+                input: JSON.stringify(input),
+              })
+            } else {
+              controller.enqueue({ type: 'text-start', id: 't1' })
+              controller.enqueue({ type: 'text-delta', id: 't1', delta: 'done' })
+              controller.enqueue({ type: 'text-end', id: 't1' })
+            }
+            controller.enqueue({
+              type: 'finish',
+              finishReason: first ? 'tool-calls' : 'stop',
+              usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+            })
+            controller.close()
+          },
+        }),
+      }
+    },
+  })
+}
+
+/** The always-on core + a gated tool that starts unloaded, mirroring createAgentTools. */
+function makeTools(activeNames: Set<string>) {
+  return {
+    ReadPage: tool({
+      description: 'read the current tab',
+      inputSchema: z.object({}),
+      execute: async () => ({ ok: true }),
+    }),
+    ToolSearch: tool({
+      description: 'list the available tools',
+      inputSchema: z.object({ query: z.string().optional() }),
+      execute: async () => ({ tools: [{ name: 'RequestPageControl', description: 'control a page' }] }),
+    }),
+    GetTool: tool({
+      description: 'load tools by name',
+      inputSchema: z.object({ names: z.array(z.string()).min(1) }),
+      execute: async ({ names }) => {
+        names.forEach((n) => activeNames.add(n))
+        return { loaded: names, note: 'These tools are now available to call.' }
+      },
+    }),
+    RequestPageControl: tool({
+      description: 'ask the user for permission to control the page',
+      inputSchema: z.object({ plan: z.string() }),
+      execute: async () => ({ started: true }),
+    }),
+  }
+}
+
+async function run(model: MockLanguageModelV3, activeNames: Set<string>) {
+  const tools = makeTools(activeNames)
+  const parts: UIPart[] = []
+  const result = await runAgentTurn({
+    model,
+    system: 'test',
+    history: [{ role: 'user', content: 'control the page' }],
+    tools,
+    abortSignal: new AbortController().signal,
+    onUpdate: (p) => {
+      parts.length = 0
+      parts.push(...p)
+    },
+    activeNames,
+  })
+  return result
+}
+
+describe('runAgentTurn: unloaded-tool calls are repaired into GetTool', () => {
+  it('loads a real but unloaded gated tool instead of dead-ending, so its approval card can appear', async () => {
+    const activeNames = new Set<string>() // RequestPageControl is NOT loaded
+    const model = toolCallThen('RequestPageControl', { plan: 'search the site' })
+
+    const result = await run(model, activeNames)
+
+    const toolParts = result.parts.filter((p) => p.type === 'tool') as Extract<UIPart, { type: 'tool' }>[]
+    // The dead-end (a hard error on the tool) must NOT happen...
+    expect(toolParts.some((p) => p.toolName === 'RequestPageControl' && p.state === 'error')).toBe(false)
+    // ...instead the call is repaired into GetTool, which loads it.
+    const getTool = toolParts.find((p) => p.toolName === 'GetTool')
+    expect(getTool).toBeDefined()
+    expect(getTool?.state).toBe('done')
+    expect((getTool?.output as { loaded: string[] }).loaded).toEqual(['RequestPageControl'])
+    // Now active, so the model's next call actually reaches execute() → approval card.
+    expect(activeNames.has('RequestPageControl')).toBe(true)
+  })
+
+  it('still surfaces a genuinely hallucinated tool name as an error (does not mask real mistakes)', async () => {
+    const activeNames = new Set<string>()
+    const model = toolCallThen('TotallyMadeUpTool', { foo: 1 })
+
+    const result = await run(model, activeNames)
+
+    const toolParts = result.parts.filter((p) => p.type === 'tool') as Extract<UIPart, { type: 'tool' }>[]
+    expect(toolParts.some((p) => p.toolName === 'TotallyMadeUpTool' && p.state === 'error')).toBe(true)
+    expect(toolParts.some((p) => p.toolName === 'GetTool')).toBe(false)
+    expect(activeNames.has('TotallyMadeUpTool')).toBe(false)
+  })
+
+  it('does not treat a prototype key ("constructor") as a loadable tool', async () => {
+    const activeNames = new Set<string>()
+    const model = toolCallThen('constructor', {})
+
+    const result = await run(model, activeNames)
+
+    const toolParts = result.parts.filter((p) => p.type === 'tool') as Extract<UIPart, { type: 'tool' }>[]
+    expect(toolParts.some((p) => p.toolName === 'constructor' && p.state === 'error')).toBe(true)
+    expect(toolParts.some((p) => p.toolName === 'GetTool')).toBe(false)
+  })
+})

@@ -293,8 +293,35 @@ export async function runAgentTurn(options: {
     // function escalates to a ToolCallRepairError that would abort the whole
     // turn, so falling back to null preserves today's benign self-correction.
     repairToolCall: async ({ toolCall, tools: turnTools, error, messages: priorMessages, instructions: sys }) => {
-      // A hallucinated tool name can't be fixed by re-generating arguments.
-      if (NoSuchToolError.isInstance(error)) return null
+      if (NoSuchToolError.isInstance(error)) {
+        // Progressive disclosure: under `activeTools`, a tool the model has not
+        // loaded yet is *unavailable*, and the SDK rejects the call BEFORE
+        // execute() runs. For a gated tool that is fatal — its approval card
+        // never appears and the model has no way back (after denying page
+        // control it could never re-ask, because RequestPageControl is not in
+        // the always-on core and is only re-seeded while a session is open).
+        // The system prompt names these tools, so models routinely call them
+        // directly instead of going through GetTool.
+        //
+        // So: if the model named a REAL tool that is merely unloaded, rewrite
+        // the call into GetTool to load it. The model then calls it for real on
+        // the next step and reaches execute() — and its permission card. Tools
+        // removed by policy/permission/tab-access are absent from `tools`
+        // entirely, so they can never be resurrected this way.
+        // `Object.hasOwn`, not `in`: the latter also matches prototype keys, so a
+        // hallucinated "toString"/"constructor" would look loadable.
+        const name = toolCall.toolName
+        const loadable =
+          !!options.activeNames &&
+          name !== 'GetTool' &&
+          Object.hasOwn(tools, name) &&
+          Object.hasOwn(tools, 'GetTool')
+        if (loadable) {
+          return { ...toolCall, toolName: 'GetTool', input: JSON.stringify({ names: [name] }) }
+        }
+        // A genuinely hallucinated name can't be fixed by re-generating arguments.
+        return null
+      }
       try {
         const repaired = await generateText({
           model,
