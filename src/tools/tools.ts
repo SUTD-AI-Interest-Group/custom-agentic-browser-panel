@@ -455,7 +455,7 @@ export function createAgentTools(
         instruction: z.string().describe('What to extract, e.g. "every product with name and price"'),
         schema: z.record(z.any()).describe('A JSON Schema object describing the desired output shape.'),
       }),
-      execute: async ({ reason, instruction, schema }) => {
+      execute: async ({ reason, instruction, schema }, { abortSignal }) => {
         const approved = await requestApproval({
           toolName: 'ExtractData',
           summary: 'Extract structured data from this page',
@@ -471,7 +471,7 @@ export function createAgentTools(
         const model = createModel(selected.provider, selected.modelId)
         const prompt = `${instruction}\n\nSource page content:\n${source.slice(0, 40_000)}`
         try {
-          return { data: await extractStructured(model, prompt, schema as Record<string, unknown>) }
+          return { data: await extractStructured(model, prompt, schema as Record<string, unknown>, abortSignal) }
         } catch (err) {
           return { error: `Could not extract structured data (${err instanceof Error ? err.message : String(err)}).` }
         }

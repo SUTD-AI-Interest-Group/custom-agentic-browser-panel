@@ -42,12 +42,12 @@ export function createResearchTools(deps: {
         instruction: z.string(),
         schema: z.record(z.any()),
       }),
-      execute: async ({ text, instruction, schema }) => {
+      execute: async ({ text, instruction, schema }, { abortSignal }) => {
         if (!deps.selected) return { error: 'No model configured.' }
         const model = createModel(deps.selected.provider, deps.selected.modelId)
         const prompt = `${instruction}\n\nText:\n${text.slice(0, 40_000)}`
         try {
-          return { data: await extractStructured(model, prompt, schema as Record<string, unknown>) }
+          return { data: await extractStructured(model, prompt, schema as Record<string, unknown>, abortSignal) }
         } catch (err) {
           return { error: `Could not extract structured data (${err instanceof Error ? err.message : String(err)}).` }
         }

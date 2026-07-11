@@ -11,14 +11,16 @@ export async function extractStructured(
   model: LanguageModel,
   prompt: string,
   schema: Record<string, unknown>,
+  signal?: AbortSignal,
 ): Promise<unknown> {
   try {
-    const { object } = await generateObject({ model, schema: jsonSchema(schema as any), prompt })
+    const { object } = await generateObject({ model, schema: jsonSchema(schema as any), prompt, abortSignal: signal })
     return object
   } catch {
     const { text } = await generateText({
       model,
       prompt: `${prompt}\n\nReturn ONLY JSON matching this schema:\n${JSON.stringify(schema)}`,
+      abortSignal: signal,
     })
     return parseJsonLoose(text)
   }
