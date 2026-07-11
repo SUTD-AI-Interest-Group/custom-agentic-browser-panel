@@ -10,6 +10,17 @@
 > "AI SDK v7 delta" section for the API-name and semantics changes folded in, and
 > for the native v7 features considered and deliberately deferred (`toolApproval`,
 > `ToolLoopAgent`). Baseline typechecks clean on v7.
+>
+> **Re-verified against finalized main (HEAD `10546bb`).** The v7 upgrade is
+> settled — SDK stays at `ai@7.0.22` with no further breaking changes. Since the
+> revision above, only research-dock UI work landed (`10546bb`); its `agent.ts`
+> change is additive (a `UIMessage.research` field) and does not touch
+> `runAgentTurn` / `prepareStep` / `streamText`. All integration points this spec
+> relies on are intact: `tools.ts` and `settings.ts` (`TOOL_CATALOG`) are
+> unchanged (still 20 tools, same `createAgentTools` signature); the `agent.ts`
+> v7 `prepareStep` still returns `{ messages: base }` each step; the `Chat.tsx`
+> `runAgentTurn` call still creates a per-turn `imageQueue` (now ~line 937) that
+> the `activeNames` set mirrors. No further spec changes required — ready to plan.
 
 ## Problem
 
