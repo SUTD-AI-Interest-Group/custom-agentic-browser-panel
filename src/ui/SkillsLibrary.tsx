@@ -171,6 +171,7 @@ function SkillEditor({ mode, onBack }: { mode: EditorMode; onBack: () => void })
       source: initial?.source ?? 'user',
       userInvocable,
       modelInvocable,
+      enabled: initial?.enabled ?? true,
       createdAt: 0,
       updatedAt: 0,
     })

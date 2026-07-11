@@ -19,13 +19,76 @@ export interface SelectedModel {
 /** How much of the user's browsing the agent may see (chosen in onboarding). */
 export type TabAccess = 'active-tab' | 'all-tabs'
 
+/**
+ * Per-tool permission policy, chosen in Settings → Permissions.
+ * - `never`  the tool is removed from the agent's toolset entirely (the model never sees it).
+ * - `ask`    the agent must clear the per-call approval card before the tool runs (default).
+ * - `always` the tool runs without a card — except page-control point-of-no-return steps,
+ *            which always confirm regardless of policy.
+ */
+export type ToolPolicy = 'never' | 'ask' | 'always'
+
+/** UI grouping for the tool-permission matrix, in display order. */
+export type ToolGroup = 'reading' | 'control' | 'navigation' | 'memory' | 'insights' | 'skills'
+
+export interface ToolCatalogEntry {
+  /** The tool's key in `createAgentTools` — the id policies are stored under. */
+  name: string
+  group: ToolGroup
+  /** Human label for the matrix row. */
+  label: string
+  /** Default when the user has not chosen one (falls back to `ask`). */
+  defaultPolicy?: ToolPolicy
+}
+
+/**
+ * The single source of truth for which agent tools exist and how they group in
+ * the permission matrix. Kept here (not in tools.ts) so both the UI and the
+ * default-policy map derive from one list.
+ */
+export const TOOL_CATALOG: ToolCatalogEntry[] = [
+  { name: 'ViewCurrentTab', group: 'reading', label: 'Read the current tab' },
+  { name: 'ViewOpenedTabs', group: 'reading', label: 'List / read other open tabs' },
+  { name: 'InspectPage', group: 'reading', label: 'Inspect interactive elements' },
+  { name: 'GetActiveTabDOM', group: 'reading', label: "Read the current tab's DOM" },
+  { name: 'GetAllDOM', group: 'reading', label: "Read other tabs' DOM" },
+  { name: 'RequestPageControl', group: 'control', label: 'Start a page-control session' },
+  { name: 'ControlPage', group: 'control', label: 'Perform a page-control action' },
+  { name: 'NavigateTab', group: 'navigation', label: 'Switch / open / navigate tabs' },
+  { name: 'SaveMemory', group: 'memory', label: 'Save a long-term memory' },
+  { name: 'SearchMemory', group: 'memory', label: 'Search long-term memory' },
+  { name: 'GetBrowsingHistory', group: 'insights', label: 'Browsing history' },
+  { name: 'GetBookmarks', group: 'insights', label: 'Bookmarks' },
+  { name: 'GetTopSites', group: 'insights', label: 'Top sites' },
+  { name: 'GetDownloads', group: 'insights', label: 'Downloads' },
+  { name: 'ListAllSkills', group: 'skills', label: 'List available skills', defaultPolicy: 'always' },
+  { name: 'ReadSkill', group: 'skills', label: 'Load a skill', defaultPolicy: 'always' },
+  { name: 'SaveSkill', group: 'skills', label: 'Create / update a skill' },
+]
+
+/** Default policy per tool, derived from TOOL_CATALOG (unset → `ask`). */
+export const DEFAULT_TOOL_POLICIES: Record<string, ToolPolicy> = Object.fromEntries(
+  TOOL_CATALOG.map((t) => [t.name, t.defaultPolicy ?? 'ask']),
+)
+
 export interface Settings {
   providers: ProviderConfig[]
   selected: SelectedModel | null
   systemPrompt: string
   tabAccess: TabAccess
+  /**
+   * Per-tool Never/Ask/Always overrides. Sparse: a tool absent here uses its
+   * DEFAULT_TOOL_POLICIES entry, so old installs and newly-added tools migrate
+   * cleanly. Read via `toolPolicy()`.
+   */
+  toolPolicies?: Record<string, ToolPolicy>
   /** Set once the first-run onboarding wizard has completed. */
   onboarded: boolean
+}
+
+/** Resolve a tool's effective policy: user override → catalog default → `ask`. */
+export function toolPolicy(settings: Settings, name: string): ToolPolicy {
+  return settings.toolPolicies?.[name] ?? DEFAULT_TOOL_POLICIES[name] ?? 'ask'
 }
 
 export const DEFAULT_SYSTEM_PROMPT = `You are a helpful AI agent living in the user's browser side panel.

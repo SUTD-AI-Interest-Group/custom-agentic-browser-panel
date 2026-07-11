@@ -6,7 +6,7 @@ import { loadSettings, saveSettings, type Settings } from '../data/settings'
 import { relativeTime } from '../platform/time'
 import Chat from './Chat'
 import Onboarding from './Onboarding'
-import SettingsView from './Settings'
+import SettingsView from './settings/Settings'
 import SkillsLibrary from './SkillsLibrary'
 
 export default function App() {
@@ -182,10 +182,12 @@ export default function App() {
       {showSettings && (
         <SettingsView
           settings={settings}
-          onSave={(next) => {
-            updateSettings(next)
+          onChange={updateSettings}
+          onOpenSkills={() => {
+            setShowSkills(true)
             setShowSettings(false)
           }}
+          onClose={() => setShowSettings(false)}
         />
       )}
       {showSkills && <SkillsLibrary onClose={() => setShowSkills(false)} />}
