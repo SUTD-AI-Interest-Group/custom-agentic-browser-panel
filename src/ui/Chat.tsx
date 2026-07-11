@@ -3,6 +3,7 @@ import type { ModelMessage } from 'ai'
 import Markdown from './Markdown'
 import ImageCarousel from './ImageCarousel'
 import LinkCardStack from './LinkCard'
+import JsonTree from './JsonTree'
 import { splitBlocks } from './blocks'
 import { runAgentTurn, type MessageSource, type UIMessage, type UIPart } from '../agent/agent'
 import { captureRegion, type CapturedImage } from '../platform/capture'
@@ -1307,8 +1308,7 @@ function MessageView({ message, streaming }: { message: UIMessage; streaming: bo
 }
 
 // Renders one assistant text part as ordered blocks: image runs → carousel,
-// standalone links → cards, standalone JSON → tree, else markdown. (Link/JSON
-// components are wired in later tasks; until then they render as markdown.)
+// standalone links → cards, standalone JSON → collapsible tree, else markdown.
 function AssistantText({ text }: { text: string }) {
   const blocks = useMemo(() => splitBlocks(text), [text])
   return (
@@ -1316,8 +1316,8 @@ function AssistantText({ text }: { text: string }) {
       {blocks.map((b, i) => {
         if (b.type === 'images') return <ImageCarousel key={i} urls={b.urls} />
         if (b.type === 'links') return <LinkCardStack key={i} links={b.links} />
-        if (b.type === 'markdown') return <Markdown key={i} text={b.text} />
-        return <Markdown key={i} text={b.raw} /> // json → markdown until Task 7
+        if (b.type === 'json') return <JsonTree key={i} value={b.value} />
+        return <Markdown key={i} text={b.text} />
       })}
     </>
   )

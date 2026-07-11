@@ -2159,3 +2159,17 @@ body {
 .code-block.code-collapsed pre { max-height: 360px; overflow: hidden; }
 .code-block.code-collapsed.code-open pre { max-height: none; }
 .code-block-toggle { display: block; width: 100%; border-top: 1px solid var(--border); background: var(--pill-bg); }
+
+.json-tree {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px;
+  border: 1px solid var(--border); border-radius: 10px; padding: 8px; margin: 8px 0;
+  overflow-x: auto; background: var(--pill-bg);
+}
+.json-row { white-space: nowrap; line-height: 1.6; }
+.json-branch { cursor: pointer; user-select: none; }
+.json-caret { display: inline-block; width: 1em; opacity: 0.6; }
+.json-key { color: var(--accent, #7a7); margin-right: 6px; }
+.json-string { color: #4a8; }
+.json-number { color: #c86; }
+.json-boolean, .json-null { color: #a6a; }
+.json-brace { opacity: 0.7; }
