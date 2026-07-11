@@ -65,8 +65,9 @@ interface StepSink {
 }
 
 const GATHER_SYSTEM = `You are the GATHER phase of a background research agent. Your job THIS round is to close the open sub-questions you are given — nothing else.
-- Use WebSearch to find sources, then FetchUrl to read the most relevant ones (FetchUrl auto-renders JS/paywalled/PDF pages when needed).
+- Use WebSearch to find sources, then FetchUrl to read the most relevant ones (FetchUrl auto-renders JS/paywalled pages when needed). For scholarly/technical topics also use SearchAcademic (peer-reviewed papers).
 - For every substantive fact you will rely on, call Notebook.write with the claim, the exact source URL you read it from, and a short verbatim quote. This is how findings are recorded — text you type outside a Notebook.write is NOT saved.
+- When a visual would strengthen the report, use SearchImages (attributed, licensed images) or HarvestImages(url) on a useful page to collect charts/figures/photos; the best ones get embedded later. Use ExtractTable to pull structured data from a page's text.
 - Prefer primary/official/reference sources. If a source fails, move on.
 - Be efficient: a handful of searches and fetches. When you have covered the focus sub-questions, stop — do NOT write the report here (a later phase does that).`
 
@@ -322,11 +323,21 @@ async function synthesize(
 ): Promise<string> {
   const gen = trace?.generation({ name: 'synthesize', model: (model as { modelId?: string }).modelId, input: question })
   const outline = nb.plan.outline.join(' · ')
+  const imgs = nb.images.slice(0, 12)
+  const imageBlock = imgs.length
+    ? `\nAVAILABLE IMAGES — embed the ones that genuinely help the reader, each on its OWN line as \`![caption](url)\` immediately followed by an italic attribution line \`*Caption. Source — License*\`. Do NOT stack images on consecutive lines (that turns them into a bare gallery with no captions), and skip images that add nothing:\n` +
+      imgs
+        .map(
+          (im) =>
+            `- url: ${im.url}${im.caption ? ` | caption: ${im.caption}` : ''}${im.license ? ` | license: ${im.license}` : ''}${im.author ? ` | author: ${im.author}` : ''}`,
+        )
+        .join('\n')
+    : ''
   const prompt =
     `Write the final research report answering: ${question}\n\n` +
     `Use ONLY the findings and sources below. Cite each claim inline as [[n]] (DOUBLE square brackets) where n is the source number from the SOURCES list — e.g. "The market grew 12% [[3]]." End with a "Sources" section listing "[[n]] Title — URL" for every source you cite.\n` +
     (outline ? `Follow this section outline: ${outline}\n` : '') +
-    `\n${summarizeNotebook(nb, { maxFindings: 200 })}\n\n` +
+    `\n${summarizeNotebook(nb, { maxFindings: 200 })}\n${imageBlock}\n\n` +
     `Write a thorough, well-structured Markdown report. Do not invent facts or citations beyond the findings above.`
   try {
     const { text, usage } = await generateText({ model, prompt, abortSignal: signal })

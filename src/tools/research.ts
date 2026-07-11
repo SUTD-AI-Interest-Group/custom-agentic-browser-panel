@@ -5,6 +5,7 @@ import { createModel } from '../agent/provider'
 import { extractStructured } from '../agent/extract'
 import { instrumentToolset, type Trace } from '../agent/observability'
 import { searchDuckDuckGo, fetchReadable } from '../platform/webFetch'
+import { searchAcademic, searchImages, harvestImages, type ImageResult } from '../platform/researchSources'
 import { summarizeNotebook, type NotebookHandle } from '../agent/notebook'
 import type { ApprovalGate } from './tools'
 
@@ -24,6 +25,30 @@ export interface RenderBroker {
 /** A headless fetch whose text is this short is likely a JS-rendered shell — a
  *  candidate for tab escalation when a broker is available. */
 const THIN_TEXT = 400
+
+/** Record a batch of found images into the notebook (deduped); returns how many
+ *  were new. Caption falls back to the title; provenance carries through. */
+function recordImages(notebook: NotebookHandle, images: ImageResult[], relevanceNote?: string): number {
+  let n = 0
+  for (const img of images) {
+    const added = notebook.addImage({
+      url: img.url,
+      sourceUrl: img.sourcePageUrl,
+      caption: img.caption || img.title,
+      license: img.license,
+      author: img.author,
+      dims: img.dims,
+      relevanceNote,
+    })
+    if (added) n++
+  }
+  return n
+}
+
+/** A compact view of an image for a tool result (the model doesn't need all fields). */
+function briefImage(img: ImageResult) {
+  return { url: img.url, caption: img.caption || img.title, license: img.license, source: img.sourcePageUrl }
+}
 
 /**
  * Read-only, web-egress-only tools for the BACKGROUND research agent. Ungated by
@@ -106,6 +131,71 @@ export function createResearchTools(deps: {
           return { data: await extractStructured(model, prompt, schema as Record<string, unknown>, abortSignal, deps.trace) }
         } catch (err) {
           return { error: `Could not extract structured data (${err instanceof Error ? err.message : String(err)}).` }
+        }
+      },
+    }),
+
+    SearchAcademic: tool({
+      description:
+        'Search academic literature (OpenAlex) for papers on a topic. Returns {title, abstract, authors, year, url, pdfUrl}. Use for scholarly/technical questions; record facts with Notebook.write citing the paper url.',
+      inputSchema: z.object({
+        query: z.string().describe('Search query (topic, method, author…)'),
+        maxResults: z.number().optional().describe('Default 8, max 25'),
+      }),
+      execute: async ({ query, maxResults = 8 }, { abortSignal }) => {
+        const r = await searchAcademic(query, maxResults, abortSignal)
+        if ('error' in r) return r
+        return r.results.length ? { results: r.results } : { results: [], note: 'No papers found; try different terms.' }
+      },
+    }),
+
+    SearchImages: tool({
+      description:
+        'Search for relevant, attributed images (Wikimedia Commons + Openverse). Adds the results to the notebook so they can be embedded in the report with source + license. Returns the candidates it found.',
+      inputSchema: z.object({
+        query: z.string().describe('What the image should depict'),
+        maxResults: z.number().optional().describe('Default 6, max 20'),
+      }),
+      execute: async ({ query, maxResults = 6 }, { abortSignal }) => {
+        const r = await searchImages(query, maxResults, abortSignal)
+        if ('error' in r) return r
+        const added = recordImages(notebook, r.results, query)
+        return { found: r.results.length, added, images: r.results.map(briefImage) }
+      },
+    }),
+
+    HarvestImages: tool({
+      description:
+        'Collect the meaningful <img> assets (charts, figures, photos) from a page you found useful, so relevant ones can be embedded in the report. Returns the images found on that page.',
+      inputSchema: z.object({ url: z.string().describe('The page URL to harvest images from') }),
+      execute: async ({ url }, { abortSignal }) => {
+        const r = await harvestImages(url, abortSignal)
+        if ('error' in r) return r
+        const added = recordImages(notebook, r.results)
+        return { found: r.results.length, added, images: r.results.map(briefImage) }
+      },
+    }),
+
+    ExtractTable: tool({
+      description:
+        'Extract tabular/structured data from a block of text you fetched. Give an instruction describing the columns; returns an array of row objects.',
+      inputSchema: z.object({
+        text: z.string(),
+        instruction: z.string().describe('What table/rows to extract and which columns'),
+      }),
+      execute: async ({ text, instruction }, { abortSignal }) => {
+        if (!deps.selected) return { error: 'No model configured.' }
+        const model = createModel(deps.selected.provider, deps.selected.modelId)
+        const schema = {
+          type: 'object',
+          properties: { rows: { type: 'array', items: { type: 'object' } } },
+          required: ['rows'],
+        }
+        const prompt = `${instruction}\n\nReturn the rows as an array of objects.\n\nText:\n${text.slice(0, 40_000)}`
+        try {
+          return { data: await extractStructured(model, prompt, schema, abortSignal, deps.trace) }
+        } catch (err) {
+          return { error: `Could not extract table (${err instanceof Error ? err.message : String(err)}).` }
         }
       },
     }),
