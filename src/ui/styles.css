@@ -906,6 +906,53 @@ body {
   cursor: default;
 }
 
+.tools-menu-wrap {
+  position: relative;
+  display: inline-flex;
+}
+
+.tools-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.tools-btn:hover,
+.tools-btn[aria-expanded='true'] {
+  background: var(--pill-bg);
+  color: var(--text);
+}
+
+.tools-popover {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  right: 0;
+  width: 268px;
+  max-height: 340px;
+  overflow-y: auto;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.1);
+  padding: 8px 10px 10px;
+  z-index: 20;
+}
+
+.tools-popover-head {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+  padding: 2px 2px 4px;
+}
+
 /* ---- Screenshot attachments ---- */
 
 .attachment-row {

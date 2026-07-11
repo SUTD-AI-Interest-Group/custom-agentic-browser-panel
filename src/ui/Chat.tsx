@@ -221,6 +221,8 @@ export default function Chat({
   // so it isn't re-attached until they highlight something different.
   const [selection, setSelection] = useState<{ text: string; tabId: number } | null>(null)
   const [dismissedSelection, setDismissedSelection] = useState('')
+  const [toolsOpen, setToolsOpen] = useState(false)
+  const toolsMenuRef = useRef<HTMLDivElement>(null)
 
   // Bumped when a turn finishes, to trigger persistence of the transcript.
   const [turnSeq, setTurnSeq] = useState(0)
@@ -273,6 +275,25 @@ export default function Chat({
     // render that bumped it.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [turnSeq])
+
+  // Close the tools menu on outside-click or Esc; only listen while open.
+  useEffect(() => {
+    if (!toolsOpen) return
+    function onDown(e: MouseEvent) {
+      if (toolsMenuRef.current && !toolsMenuRef.current.contains(e.target as Node)) {
+        setToolsOpen(false)
+      }
+    }
+    function onKey(e: KeyboardEvent) {
+      if (e.key === 'Escape') setToolsOpen(false)
+    }
+    document.addEventListener('mousedown', onDown)
+    document.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('mousedown', onDown)
+      document.removeEventListener('keydown', onKey)
+    }
+  }, [toolsOpen])
 
   // Passive context pill (Dia-style): shows which tab the agent would see if
   // granted access. Purely informational — access still goes through tools.
@@ -1054,6 +1075,31 @@ export default function Chat({
               </button>
             )}
             <div className="composer-btns">
+              <div className="tools-menu-wrap" ref={toolsMenuRef}>
+                <button
+                  className="tools-btn"
+                  title="Tools & permissions"
+                  aria-haspopup="menu"
+                  aria-expanded={toolsOpen}
+                  onClick={() => setToolsOpen((o) => !o)}
+                >
+                  <svg width="15" height="15" viewBox="0 0 16 16" fill="none">
+                    <path
+                      d="M2.5 5h4.5M11.5 5h2M2.5 11h2M9 11h4.5"
+                      stroke="currentColor"
+                      strokeWidth="1.3"
+                      strokeLinecap="round"
+                    />
+                    <circle cx="9" cy="5" r="1.7" stroke="currentColor" strokeWidth="1.3" />
+                    <circle cx="6.5" cy="11" r="1.7" stroke="currentColor" strokeWidth="1.3" />
+                  </svg>
+                </button>
+                {toolsOpen && (
+                  <div className="tools-popover" role="menu">
+                    <div className="tools-popover-head">Tools</div>
+                  </div>
+                )}
+              </div>
               <button
                 className="cam-btn"
                 title="Screenshot part of the page"
