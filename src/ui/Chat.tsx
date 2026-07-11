@@ -749,7 +749,9 @@ export default function Chat({
       historyRef.current.push({
         role: 'user',
         content: [
-          ...images.map((i) => ({ type: 'image' as const, image: i.dataUrl })),
+          // v7: `file` part with an image mediaType replaces the deprecated
+          // `{ type: 'image', image }` part (the data URL carries its own type).
+          ...images.map((i) => ({ type: 'file' as const, mediaType: 'image', data: i.dataUrl })),
           ...(modelText ? [{ type: 'text' as const, text: modelText }] : []),
         ],
       })

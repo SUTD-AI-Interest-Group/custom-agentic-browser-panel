@@ -1,7 +1,7 @@
 import {
   streamText,
   generateText,
-  stepCountIs,
+  isStepCount,
   NoSuchToolError,
   type LanguageModel,
   type ModelMessage,
@@ -107,12 +107,15 @@ export async function runAgentTurn(options: {
 
   const result = streamText({
     model,
-    system,
+    // v7 renamed the top-level `system` option to `instructions` (`system`
+    // still works as a deprecated fallback). The app keeps its own `system`
+    // field on runAgentTurn's options and maps it here.
+    instructions: system,
     // Sanitize incoming history so a conversation already persisted with a
     // nested-undefined tool result (see toValidModelMessages) still runs.
     messages: toValidModelMessages(history),
     tools,
-    stopWhen: stepCountIs(MAX_STEPS),
+    stopWhen: isStepCount(MAX_STEPS),
     abortSignal,
     // Large tool inputs (a skill's Markdown body, a long typed string) make the
     // model occasionally emit malformed JSON arguments, which fail schema
@@ -125,13 +128,13 @@ export async function runAgentTurn(options: {
     // -output mode required. On ANY failure we return null: a thrown repair
     // function escalates to a ToolCallRepairError that would abort the whole
     // turn, so falling back to null preserves today's benign self-correction.
-    experimental_repairToolCall: async ({ toolCall, tools: turnTools, error, messages: priorMessages, system: sys }) => {
+    repairToolCall: async ({ toolCall, tools: turnTools, error, messages: priorMessages, instructions: sys }) => {
       // A hallucinated tool name can't be fixed by re-generating arguments.
       if (NoSuchToolError.isInstance(error)) return null
       try {
         const repaired = await generateText({
           model,
-          system: sys,
+          instructions: sys,
           messages: [
             ...priorMessages,
             {
@@ -168,21 +171,31 @@ export async function runAgentTurn(options: {
         return null
       }
     },
-    prepareStep: ({ messages }) => {
+    prepareStep: ({ initialMessages, responseMessages }) => {
+      // v7 changed prepareStep semantics: a `messages` override now carries
+      // forward as the base for all later steps (v6 applied it to one step
+      // only). Rebuild the base from initialMessages + responseMessages every
+      // step so an injected set-of-marks screenshot is shown only to the step
+      // that acts on the element list it matches, and stale shots don't stack
+      // across a control session (their [index] marks go wrong after an action).
+      const base = [...initialMessages, ...responseMessages]
       const queue = options.imageQueue
-      if (!queue || queue.length === 0) return undefined
+      if (!queue || queue.length === 0) return { messages: base }
       const imgs = queue.splice(0, queue.length)
       const injected: ModelMessage[] = imgs.map((dataUrl) => ({
         role: 'user',
         content: [
-          { type: 'image' as const, image: dataUrl },
+          // v7 deprecated the `{ type: 'image', image }` part in favor of a
+          // `file` part with an image mediaType (the data URL's own image/png
+          // type is extracted and takes precedence over this top-level 'image').
+          { type: 'file' as const, mediaType: 'image', data: dataUrl },
           {
             type: 'text' as const,
             text: 'Set-of-marks screenshot of the current page — the numbered boxes correspond to the [index] values in the element list you just read.',
           },
         ],
       }))
-      return { messages: [...messages, ...injected] }
+      return { messages: [...base, ...injected] }
     },
   })
 
@@ -191,9 +204,10 @@ export async function runAgentTurn(options: {
       | Extract<UIPart, { type: 'tool' }>
       | undefined
 
-  // Part shapes vary slightly across AI SDK v5 minor versions
-  // (text vs textDelta, input vs args, ...), so read them defensively.
-  for await (const part of result.fullStream as AsyncIterable<any>) {
+  // v7 renamed `fullStream` to `stream` (fullStream remains a deprecated
+  // alias). Part shapes have varied across SDK versions (text vs textDelta,
+  // input vs args, ...), so keep reading them defensively.
+  for await (const part of result.stream as AsyncIterable<any>) {
     switch (part.type) {
       case 'text-delta': {
         const delta: string = part.text ?? part.textDelta ?? ''
@@ -238,8 +252,13 @@ export async function runAgentTurn(options: {
     }
   }
 
-  const response = await result.response
-  // Keep persisted history valid for the next turn: strip any nested undefined
-  // a tool result carried before it lands in the conversation.
-  return { parts, responseMessages: toValidModelMessages(response.messages) }
+  // v7: top-level `result.response` is now final-step-only metadata (a
+  // deprecated alias for finalStep.response), and step messages no longer
+  // accumulate — so `result.response.messages` would drop this turn's earlier
+  // tool calls/results. `result.responseMessages` is the accumulated
+  // assistant/tool history across every step, which is what the next turn needs.
+  // Keep it valid for the next turn: strip any nested undefined a tool result
+  // carried before it lands in the conversation.
+  const responseMessages = await result.responseMessages
+  return { parts, responseMessages: toValidModelMessages(responseMessages) }
 }

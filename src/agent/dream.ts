@@ -83,7 +83,8 @@ export async function runDream(): Promise<DreamOutcome> {
 
   const { text } = await generateText({
     model: createModel(selected.provider, selected.modelId),
-    system: DREAM_SYSTEM_PROMPT,
+    // v7 renamed `system` to `instructions` (`system` still works, deprecated).
+    instructions: DREAM_SYSTEM_PROMPT,
     prompt: buildDreamPrompt(memories, episodes),
   })
 
