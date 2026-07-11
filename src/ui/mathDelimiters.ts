@@ -17,10 +17,13 @@
 const CODE_OR_MATH =
   /```[\s\S]*?```|~~~[\s\S]*?~~~|```[\s\S]*$|~~~[\s\S]*$|(`+)[\s\S]*?\1|\\\[([\s\S]+?)\\\]|\\\(([\s\S]+?)\\\)/g
 
-/** Convert `\(…\)` → `$…$` and `\[…\]` → `$$…$$`, but never inside code. */
+/** Convert `\(…\)` → `$…$` and `\[…\]` → a blank-line-isolated `$$` block
+ *  (so marked-katex-extension's block rule always tokenizes display math),
+ *  but never inside code. Literal `$$…$$` is intentionally left untouched to
+ *  avoid currency false-positives. */
 export function normalizeMathDelimiters(text: string): string {
   return text.replace(CODE_OR_MATH, (match, _backticks, display, inline) => {
-    if (display !== undefined) return `$$${display}$$`
+    if (display !== undefined) return `\n\n$$\n${display.trim()}\n$$\n\n`
     if (inline !== undefined) return `$${inline}$`
     return match
   })
