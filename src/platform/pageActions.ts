@@ -83,7 +83,18 @@ function injPress(keys: string) {
 // mutating for `quietMs`. Bounded by `timeoutMs` so a never-quiet page (ads,
 // polling) proceeds instead of hanging. Runs in the page's isolated world.
 function injWaitStable(selector: string, quietMs: number, timeoutMs: number) {
-  if (selector && document.querySelector(selector)) {
+  // selector is caller-supplied (e.g. spec.text) and may be malformed CSS;
+  // document.querySelector throws SyntaxError synchronously on a bad
+  // selector, so guard both call sites and treat "invalid" as "absent".
+  const matches = () => {
+    if (!selector) return false
+    try {
+      return !!document.querySelector(selector)
+    } catch {
+      return false
+    }
+  }
+  if (matches()) {
     return Promise.resolve({ ok: true, reason: 'selector-present' })
   }
   return new Promise<{ ok: boolean; reason: string }>((resolve) => {
@@ -96,7 +107,7 @@ function injWaitStable(selector: string, quietMs: number, timeoutMs: number) {
       resolve({ ok: true, reason })
     }
     const obs = new MutationObserver(() => {
-      if (selector && document.querySelector(selector)) return finish('selector-appeared')
+      if (matches()) return finish('selector-appeared')
       clearTimeout(quiet)
       quiet = setTimeout(() => finish('quiet'), quietMs) as unknown as number
     })

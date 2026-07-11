@@ -141,6 +141,11 @@ export async function runControlStep(deps: ControlStepDeps): Promise<ControlStep
   if (beforeAct && needsTarget) await beforeAct(spec.index)
   const result = await runRaw(tabId, spec)
   if (afterAct && result.ok) await afterAct()
+  // chrome.tabs.update resolves once navigation is *initiated*, not once the
+  // new document exists, so waitForStable (which injects via executeScript)
+  // can otherwise race the frame transition and read the OLD document as
+  // instantly "quiet". Give navigation a brief head start before polling.
+  if (spec.action === 'navigate') await new Promise((r) => setTimeout(r, 300))
   // Let async pages settle before re-reading, instead of a fixed delay. Skip
   // for 'wait' (already waited) and 'highlight'/'scroll' (no state change).
   if (['click', 'type', 'select', 'navigate', 'press'].includes(spec.action)) {
