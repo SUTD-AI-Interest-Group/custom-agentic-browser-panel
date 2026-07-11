@@ -878,7 +878,9 @@ body {
   border: 1px solid var(--border);
   border-radius: 14px;
   background: var(--surface);
-  overflow: hidden;
+  /* No overflow:hidden — the card grows to its full height (scrolls with the
+     messages list) and wide report content (tables/code) keeps its own
+     horizontal scroll. The header rounds its own top corners instead. */
 }
 
 .research-report__header {
@@ -888,6 +890,8 @@ body {
   padding: 10px 14px;
   border-bottom: 1px solid var(--border);
   background: var(--pill-bg);
+  border-top-left-radius: 13px;
+  border-top-right-radius: 13px;
   font-size: 12.5px;
   font-weight: 600;
   color: var(--text);
