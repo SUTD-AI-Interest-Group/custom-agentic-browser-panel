@@ -202,6 +202,10 @@ export function createAgentTools(
         // never disturbs an already-mounted session (and warms the overlay
         // before a likely RequestPageControl). lookResult hides it for the shot.
         await mountPresence(tab.id)
+        // Mid-session re-read: if a session is controlling this tab, keep the
+        // tinted "active control" look. A navigation may have wiped the overlay,
+        // so the mount above re-created it in the ambient (untinted) state.
+        if (open && open.active && open.tabId === tab.id) await setTint(tab.id, true)
         try {
           const snap = await snapshotPage(tab.id)
           return await lookResult(tab, snap, {}, selected, imageQueue)
@@ -278,6 +282,14 @@ export function createAgentTools(
         const tab = await getActiveTab()
         if (tab?.id === undefined || tab.id !== session.tabId)
           return { error: 'The controlled tab is no longer active.' }
+        // The presence overlay lives in the page's DOM, which any navigation
+        // wipes. For the life of a session the overlay must persist, so
+        // re-establish it at the top of every step: idempotent when it's still
+        // there, and it restores the tint/frame after a prior step's navigation
+        // (an explicit navigate, a click that loaded a new page, a cross-origin
+        // drift) destroyed them. Covers the drift branch's early returns too.
+        await mountPresence(tab.id)
+        await setTint(tab.id, true)
         const liveOrigin = (() => {
           try {
             return new URL(tab.url ?? '').origin
@@ -345,6 +357,10 @@ export function createAgentTools(
           snapshot: snap,
           beforeAct: (index) => (index === undefined ? Promise.resolve() : focusOn(tab.id!, index, spec.label)),
           afterAct: () => pulse(tab.id!),
+          afterNav: async () => {
+            await mountPresence(tab.id!)
+            await setTint(tab.id!, true)
+          },
         })
         // Handle an origin change this action caused. When the post-action
         // snapshot already shows the new origin (explicit navigate — which
