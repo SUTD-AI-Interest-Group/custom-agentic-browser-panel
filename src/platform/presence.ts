@@ -46,7 +46,9 @@ function injMount(rootId: string, tint: string) {
   frame.className = 'frame'
   frame.style.cssText =
     'position:absolute;inset:0;pointer-events:none;' +
-    'box-shadow:inset 0 0 0 2px rgba(122,184,255,.5),inset 0 0 46px rgba(122,184,255,.35);'
+    'box-shadow:inset 0 0 0 2.5px rgba(122,184,255,.8),' +
+    'inset 0 0 60px rgba(122,184,255,.6),' +
+    'inset 0 0 130px rgba(122,184,255,.32);'
 
   const cursor = document.createElement('div')
   cursor.className = 'cursor'
@@ -64,7 +66,7 @@ function injMount(rootId: string, tint: string) {
   document.documentElement.appendChild(root)
 
   frame.animate(
-    [{ opacity: 0.35 }, { opacity: 0.9 }, { opacity: 0.35 }],
+    [{ opacity: 0.55 }, { opacity: 1 }, { opacity: 0.55 }],
     { duration: 2600, iterations: Infinity, easing: 'ease-in-out' },
   )
 }
