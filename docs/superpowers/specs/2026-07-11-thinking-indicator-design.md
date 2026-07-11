@@ -142,12 +142,36 @@ be cleared, but MessageView only reads it when `showThinking` is true.
 
 ## Word pools (initial content — tune freely)
 
-- **thinking:** Thinking, Pondering, Percolating, Noodling, Cerebrating,
-  Ruminating, Marinating, Conjuring, Mulling, Puzzling, Brewing, Simmering,
-  Wrangling, Untangling, Musing, Cogitating, Scheming, Reticulating splines,
-  Computing, Contemplating.
-- **digesting:** Reviewing, Digesting, Parsing, Absorbing, Interpreting,
-  Synthesizing, Processing, Distilling, Piecing it together, Making sense of it.
+Two flavors are blended into each pool: **classic-whimsical** and **gen-z**. The
+random-per-mount pick means the register varies turn to turn — sometimes dry and
+witty, sometimes chronically online. Kept tasteful (no slurs, nothing NSFW, no
+words that imply the model *stopped* working like "touching grass").
+
+- **thinking** (initial wait):
+  - *classic:* Thinking, Pondering, Percolating, Noodling, Cerebrating,
+    Ruminating, Marinating, Conjuring, Mulling, Puzzling, Brewing, Simmering,
+    Wrangling, Untangling, Musing, Cogitating, Scheming, Reticulating splines,
+    Computing, Contemplating, Incubating, Concocting, Hatching, Churning,
+    Crunching, Formulating, Deliberating, Stewing, Tinkering, Whirring,
+    Spitballing, Ideating, Plotting, Daydreaming, Head-scratching.
+  - *gen-z:* Cooking, Locking in, Big braining, Galaxy braining, Manifesting,
+    Vibing, Sussing it out, Understanding the assignment, Lowkey grinding,
+    Deadass thinking, Cracked mode engaged, Cooking up something, In my thinking
+    era, Brain going brrr, Spinning up the neurons, Doing the thing, Locking in
+    fr, No thoughts just cooking, Chef's kiss incoming, Working on the glow-up.
+
+- **digesting** (after a completed tool):
+  - *classic:* Reviewing, Digesting, Parsing, Absorbing, Interpreting,
+    Synthesizing, Processing, Distilling, Piecing it together, Making sense of
+    it, Cross-referencing, Sifting, Connecting the dots, Untangling the results,
+    Weighing it up, Sorting it out.
+  - *gen-z:* Reading the receipts, Peeping the results, Reading the room, Doing
+    the math, Vibe-checking the output, Catching up on the tea, Fact-checking
+    the vibes, Putting the pieces together fr, Decoding the lore.
+
+Ordering within each pool doesn't matter (index is `% length`). Store each pool
+as a flat `string[]` constant near `ThinkingIndicator`; the classic/gen-z split
+is just for authoring — they live in one array per variant.
 
 ## Out of scope
 
