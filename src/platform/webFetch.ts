@@ -62,6 +62,9 @@ export function extractReadableText(html: string, maxChars = 20_000): { title: s
   const title = (doc.querySelector('title')?.textContent ?? '').trim()
   doc.querySelectorAll('script,style,noscript,nav,footer,header,aside,form,svg').forEach((n) => n.remove())
   const root = doc.querySelector('main') ?? doc.querySelector('article') ?? doc.body
+  // Block elements carry no separator between siblings, so adjacent blocks' text runs together
+  // (e.g. "<p>A</p><p>B</p>" -> "AB"). Insert a newline after each so words stay separated.
+  root?.querySelectorAll('p,div,section,article,h1,h2,h3,h4,h5,h6,li,br,tr,blockquote,pre').forEach((el) => el.after(document.createTextNode('\n')))
   const text = (root?.textContent ?? '').replace(/[ \t]+/g, ' ').replace(/\n\s*\n\s*/g, '\n\n').trim()
   return { title, text: text.slice(0, maxChars) }
 }
@@ -69,6 +72,33 @@ export function extractReadableText(html: string, maxChars = 20_000): { title: s
 const FETCH_TIMEOUT_MS = 15_000
 const MAX_BYTES = 2_000_000
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
+
+/** Read a response body up to `maxBytes`, then stop — bounds memory for hostile/huge responses. */
+async function readCapped(res: Response, maxBytes: number): Promise<string> {
+  if (!res.body) return (await res.text()).slice(0, maxBytes)
+  const reader = res.body.getReader()
+  const chunks: Uint8Array[] = []
+  let total = 0
+  try {
+    while (total < maxBytes) {
+      const { done, value } = await reader.read()
+      if (done) break
+      chunks.push(value)
+      total += value.byteLength
+    }
+  } finally {
+    reader.cancel().catch(() => {})
+  }
+  const out = new Uint8Array(Math.min(total, maxBytes))
+  let off = 0
+  for (const c of chunks) {
+    if (off >= out.byteLength) break
+    const take = Math.min(c.byteLength, out.byteLength - off)
+    out.set(c.subarray(0, take), off)
+    off += take
+  }
+  return new TextDecoder().decode(out)
+}
 
 /** Search DuckDuckGo (keyless lite endpoint) with retry/backoff. Never throws — returns {error} on failure so callers can react. */
 export async function searchDuckDuckGo(
@@ -113,7 +143,7 @@ export async function fetchReadable(
     if (!res.ok) return { error: `fetch failed: HTTP ${res.status}` }
     const ct = res.headers.get('content-type') ?? ''
     if (!/text\/html|text\/plain|application\/xhtml/i.test(ct)) return { error: `unsupported content-type: ${ct}` }
-    const body = (await res.text()).slice(0, MAX_BYTES)
+    const body = await readCapped(res, MAX_BYTES)
     const { title, text } = extractReadableText(body)
     return { url: res.url, title, text }
   } catch (err) {

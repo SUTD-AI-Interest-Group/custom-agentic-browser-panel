@@ -74,3 +74,8 @@ test('extractReadableText prefers main and strips chrome', () => {
   expect(text).not.toContain('menu')
   expect(text).not.toContain('foot')
 })
+
+test('extractReadableText inserts separators between adjacent block elements', () => {
+  const { text } = extractReadableText('<main><p>Alpha</p><p>Beta</p></main>')
+  expect(text).toMatch(/Alpha\s+Beta/)
+})
