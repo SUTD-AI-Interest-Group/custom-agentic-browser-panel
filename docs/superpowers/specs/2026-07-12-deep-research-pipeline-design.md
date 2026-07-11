@@ -1,7 +1,7 @@
 # Deep-Research Pipeline — Design
 
 - **Date:** 2026-07-12
-- **Status:** Approved (design); implementation pending
+- **Status:** Implemented on branch `deep-research-pipeline` (all 5 phases; `npm run build` + `npm test` green). Browser end-to-end run still pending.
 - **Branch / worktree:** `deep-research-pipeline` (`.claude/worktrees/deep-research-pipeline`), based on `main@47e7055`
 - **Supersedes/extends:** the current background research agent (`src/agent/research.ts`, `src/tools/research.ts`)
 
