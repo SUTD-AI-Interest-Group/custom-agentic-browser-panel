@@ -9,6 +9,11 @@
 // unchanged, so any \( / \[ inside it is consumed as part of the code and never
 // rewritten. Code alternatives cover closed and unterminated ``` / ~~~ fences
 // and backtick-balanced inline spans of any run length (`x`, ``x``, …).
+//
+// Caveat: an inline code span needs its *closing* backtick run to be
+// recognized, so a not-yet-terminated inline span mid-stream can briefly
+// convert a \( inside it. This self-heals the instant the closing backtick
+// streams in — the final rendered text is always correct.
 const CODE_OR_MATH =
   /```[\s\S]*?```|~~~[\s\S]*?~~~|```[\s\S]*$|~~~[\s\S]*$|(`+)[\s\S]*?\1|\\\[([\s\S]+?)\\\]|\\\(([\s\S]+?)\\\)/g
 

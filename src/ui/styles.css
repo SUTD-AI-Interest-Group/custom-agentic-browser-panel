@@ -565,6 +565,16 @@ body {
   padding: 0;
 }
 
+/* Wide display math (matrices, long aligned derivations) scrolls within its own
+   bubble instead of forcing the whole message list to scroll sideways in the
+   narrow side panel. overflow-y stays hidden so the horizontal scrollbar doesn't
+   introduce phantom vertical scroll. */
+.markdown .katex-display {
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
 .markdown a {
   color: inherit;
 }
