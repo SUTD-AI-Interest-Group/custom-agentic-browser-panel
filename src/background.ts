@@ -7,6 +7,8 @@ import { dreamIfDue } from './agent/dream'
 import type { ResearchMsg } from './data/researchTasks'
 import { saveTask, applyUpdate } from './data/researchTasks'
 import { loadSettings, getSelectedProvider, observabilityConfig } from './data/settings'
+import { isFetchableUrl } from './platform/webFetch'
+import { renderPage } from './platform/researchRender'
 
 chrome.sidePanel
   .setPanelBehavior({ openPanelOnActionClick: true })
@@ -188,6 +190,17 @@ chrome.runtime.onMessage.addListener((msg: ResearchMsg) => {
       await applyUpdate(msg.taskId, (cur) => (cur.status === 'cancelled' ? {} : { status: 'error', error: msg.error }))
     } else if (msg?.type === 'research.cancel') {
       await applyUpdate(msg.taskId, (cur) => (cur.status === 'running' ? { status: 'cancelled' } : {}))
+    } else if (msg?.type === 'research.renderPage') {
+      // Hybrid-escalation broker: the offscreen agent can't touch tabs, so it asks
+      // the SW to render a hard URL in an isolated tab and return the text/shot.
+      const guard = isFetchableUrl(msg.url)
+      const outcome = guard.ok ? await renderPage(msg.url, msg.want) : { error: `refused (${guard.reason})` }
+      chrome.runtime.sendMessage({
+        type: 'research.renderResult',
+        taskId: msg.taskId,
+        requestId: msg.requestId,
+        ...outcome,
+      } satisfies ResearchMsg)
     }
   })()
   return true
