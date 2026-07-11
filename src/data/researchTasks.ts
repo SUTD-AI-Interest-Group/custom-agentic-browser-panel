@@ -28,6 +28,10 @@ export type ResearchMsg =
 
 const KEY = 'researchTasks'
 
+// researchTasks shares the ~10MB chrome.storage.local namespace with settings/memory/
+// conversations; nothing else removes old task records, so cap growth on every insert.
+const MAX_TASKS = 50
+
 // Serialize read-modify-write so concurrent saveTask/applyUpdate calls (e.g. rapid
 // research.update bursts) can't interleave a stale get() over a prior set().
 let writeChain: Promise<unknown> = Promise.resolve()
@@ -42,11 +46,23 @@ async function all(): Promise<Record<string, ResearchTask>> {
   return (got[KEY] as Record<string, ResearchTask>) ?? {}
 }
 
+/** Keep the newest `max` tasks by startedAt, but never drop a still-running task. */
+export function pruneTasks(map: Record<string, ResearchTask>, max: number): Record<string, ResearchTask> {
+  const all = Object.values(map)
+  if (all.length <= max) return map
+  const running = all.filter((t) => t.status === 'running')
+  const rest = all
+    .filter((t) => t.status !== 'running')
+    .sort((a, b) => b.startedAt - a.startedAt)
+  const keep = [...running, ...rest.slice(0, Math.max(0, max - running.length))]
+  return Object.fromEntries(keep.map((t) => [t.id, t]))
+}
+
 export async function saveTask(t: ResearchTask): Promise<void> {
   await serialize(async () => {
     const map = await all()
     map[t.id] = t
-    await chrome.storage.local.set({ [KEY]: map })
+    await chrome.storage.local.set({ [KEY]: pruneTasks(map, MAX_TASKS) })
   })
 }
 
