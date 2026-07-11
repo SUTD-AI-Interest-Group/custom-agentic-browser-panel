@@ -1112,7 +1112,7 @@ export default function Chat({
                   </svg>
                 </button>
                 {toolsOpen && (
-                  <div className="tools-popover" role="menu">
+                  <div className="tools-popover" role="dialog" aria-label="Tools">
                     <div className="tools-popover-head">Tools</div>
                     {GROUP_ORDER.map((group) => {
                       const tools = TOOL_CATALOG.filter((t) => t.group === group)
@@ -1126,7 +1126,9 @@ export default function Chat({
                               <label className="tools-item" key={t.name}>
                                 <span className="tools-item-label">
                                   {t.label}
-                                  {policy === 'always' && <span className="tools-badge">auto</span>}
+                                  {policy === 'always' && (
+                                    <span className="tools-badge" aria-hidden="true">auto</span>
+                                  )}
                                 </span>
                                 <input
                                   type="checkbox"
