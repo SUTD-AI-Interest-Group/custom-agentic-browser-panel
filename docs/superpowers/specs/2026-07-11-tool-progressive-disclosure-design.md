@@ -1,5 +1,16 @@
 # Progressive tool disclosure + read-tool consolidation — design
 
+> **Revised 2026-07-11 for AI SDK v7.** The repo upgraded `ai@5.0.210 → 7.0.22`
+> (`@ai-sdk/openai-compatible@3.0.7`) after this spec's first draft. The design
+> mechanism (`activeTools` returned per step from `prepareStep`) is verified as
+> the **v7-recommended** pattern for exactly this use case — the model sees only
+> the tools it needs while all tools stay defined and executable. v7 ships **no**
+> built-in tool-search / tool-index / progressive-disclosure primitive, so the
+> `ToolSearch` + `GetTool` meta-tools below remain the correct approach. See the
+> "AI SDK v7 delta" section for the API-name and semantics changes folded in, and
+> for the native v7 features considered and deliberately deferred (`toolApproval`,
+> `ToolLoopAgent`). Baseline typechecks clean on v7.
+
 ## Problem
 
 Every agent turn hands the model the **entire** tool set. `Chat.tsx` calls
@@ -80,11 +91,13 @@ Confirmed decisions:
 
 ## The mechanism (activeTools + prepareStep)
 
-The Vercel AI SDK v5 (`ai@5.0.210`) supports **`activeTools`** — a per-step
-allow-list of tool names. `prepareStep` (already present in `runAgentTurn`,
-`src/agent/agent.ts`) may return `{ activeTools }` for the step. Only active
-tools' schemas are sent to the model that step; inactive-but-defined tools cost
-nothing and cannot be called.
+The Vercel AI SDK v7 (`ai@7.0.22`) supports **`activeTools`** — a per-step
+allow-list of tool names — both as a top-level option and as a `PrepareStepResult`
+field (verified in `node_modules/ai/dist/index.d.ts` and the v7 loop-control
+docs). `prepareStep` (already present in `runAgentTurn`, `src/agent/agent.ts`,
+and reworked by the v7 upgrade) may return `{ activeTools }` for the step. Only
+active tools' schemas are sent to the model that step; inactive-but-defined tools
+cost nothing and cannot be called (`filterActiveTools` internally).
 
 - Keep **one full `ToolSet`** defined (all real tools + the two meta-tools).
 - Maintain a per-turn **mutable `activeNames: Set<string>`**, created in
@@ -98,19 +111,28 @@ nothing and cannot be called.
   tools become callable from then on. (Timing: `execute` runs during step N;
   `prepareStep` runs before step N+1 — the ordering is correct.)
 
-`prepareStep` must merge with its existing job of draining `imageQueue`:
+**v7 integration point.** The upgrade already made `prepareStep` return
+`{ messages }` on every step: in v7 a returned `messages` override *carries
+forward* to later steps, so the existing code rebuilds the base each step from
+`initialMessages + responseMessages` and re-appends any queued screenshot. The
+`activeTools` hook folds directly into that same return — the set is computed
+every step and added to both the image and non-image branches:
 
 ```ts
-prepareStep: ({ messages }) => {
-  const active = [...ALWAYS_ON, ...activeNames]           // always compute
+prepareStep: ({ initialMessages, responseMessages }) => {
+  const activeTools = [...ALWAYS_ON, ...activeNames]     // always compute
+  const base = [...initialMessages, ...responseMessages] // v7 carry-forward rebuild
   const queue = options.imageQueue
-  if (queue && queue.length) {
-    const injected = /* existing image-message mapping */
-    return { activeTools: active, messages: [...messages, ...injected] }
-  }
-  return { activeTools: active }
+  if (!queue || queue.length === 0) return { messages: base, activeTools }
+  const injected = /* existing v7 file-part screenshot mapping */
+  return { messages: [...base, ...injected], activeTools }
 }
 ```
+
+The v7 `prepareStep` input also exposes `stepNumber` / `steps` if a future
+refinement wants step-phase logic, but the model-driven `activeNames` set (grown
+by `GetTool`) is preferred over hard-coded step gating — it matches the docs'
+"external catalog lookups" recommendation and doesn't assume a fixed step order.
 
 ### Example turn — "fill out this signup form"
 
@@ -245,8 +267,8 @@ Result: **14 real tools** + **2 meta-tools** defined; **3** active by default.
 - The catalog is derived after all deletions, so `never` / ungranted /
   active-tab-hidden tools are invisible to discovery and unloadable.
 - A hallucinated call to an inactive tool yields `NoSuchToolError`; the existing
-  `experimental_repairToolCall` already returns `null` for that case
-  (`agent.ts`), surfacing a benign error card — the model then discovers
+  `repairToolCall` (de-`experimental_`'d in v7) already returns `null` for that
+  case (`agent.ts`), surfacing a benign error card — the model then discovers
   properly. System-prompt guidance (below) minimizes this.
 
 ## System prompt changes
@@ -267,8 +289,11 @@ protocol. Approximate shape:
 
 Keep the existing `@mention` / `@memory` / skills / "never fabricate page
 content" guidance. `accessNote`, `browsingInsightsNote`, memory context, and the
-skills catalog append as they do today. `MAX_STEPS = 24` easily absorbs the
-extra 1–2 discovery steps.
+skills catalog append as they do today. The composed string is still passed to
+`runAgentTurn` as its `system` option; the turn loop maps that to the v7
+`instructions` parameter internally (already done by the upgrade), so no change
+is needed at the `Chat.tsx` call site. `MAX_STEPS = 24` easily absorbs the extra
+1–2 discovery steps.
 
 ## Settings / permission-matrix changes
 
@@ -288,14 +313,55 @@ A user who had set an old tool to `never` must re-set it on the merged tool.
 Acceptable for this project; note it in the changelog. `PermissionsTab` and the
 tools quick-menu re-derive from `TOOL_CATALOG`, so both update automatically.
 
+## AI SDK v7 delta (verified 2026-07-11 against `ai@7.0.22`)
+
+The v5→v7 upgrade (commit `cd5ee79`) already reworked `src/agent/agent.ts`. What
+that means for this design:
+
+- **Confirmed intact:** `activeTools` is a valid `PrepareStepResult` field in v7;
+  `stepCountIs` still exported (aliased to `isStepCount`); `tool({ description,
+  inputSchema, execute })` unchanged (`tools.ts` was untouched by the upgrade and
+  typechecks clean) — so the consolidated tools and meta-tools need no v7-specific
+  authoring changes.
+- **API renames to honor when editing** (`agent.ts` already uses these; new code
+  must match): `system` → `instructions`; `experimental_repairToolCall` →
+  `repairToolCall` (its callback arg is now `instructions`, not `system`);
+  `result.fullStream` → `result.stream`; `result.response.messages` →
+  `result.responseMessages`; the image message part `{ type:'image', image }` →
+  `{ type:'file', mediaType:'image', data }`.
+- **`prepareStep` semantics changed:** input is now `{ steps, stepNumber, model,
+  instructions, initialMessages, messages, responseMessages }`; a returned
+  `messages` override **carries forward** to later steps. The code already returns
+  `{ messages: base }` every step for this reason — the `activeTools` addition
+  rides along in the same object (see the mechanism section).
+- **No native tool-discovery primitive in v7.** The loop-control docs recommend
+  custom `activeTools` filtering in `prepareStep` for exactly this; there is no
+  `toolIndex` / tool-search helper. `ToolSearch` + `GetTool` stay hand-rolled.
+
+**Native v7 features considered and deferred (out of scope, noted for later):**
+
+- **`toolApproval` / `needsApproval`** — v7 has first-class human-in-the-loop tool
+  approval (approval request/response parts, `addToolApproveResponseFunction`).
+  It could eventually replace the custom `requestApproval` suspension model, but
+  that model encodes nuanced behavior (Never/Ask/Always policy, "Allow this chat",
+  one-shot point-of-no-return cards) and migrating it is orthogonal to tool
+  discovery and risky. Keep `requestApproval` as-is for this change.
+- **`ToolLoopAgent` / `Agent`** — v7's higher-level agent loop. The app drives
+  `streamText` directly to emit UI parts from the stream; not migrating here.
+- **`filterActiveTools`** — internal helper `activeTools` already uses; no direct
+  need.
+
 ## Files touched
 
 - `src/tools/tools.ts` — add `ReadPage`, `ReadTabs`, `QueryBrowserData`; remove
   the five merged read tools and four insight tools; add `ToolSearch` + `GetTool`
   meta-tools + catalog derivation; accept `activeNames` param; `RequestPageControl`
-  self-expands the control cluster.
-- `src/agent/agent.ts` — `runAgentTurn` accepts `activeNames`; `prepareStep`
-  returns `activeTools` (merged with the existing image injection).
+  self-expands the control cluster. (No v7 API changes needed here — `tool()` is
+  unchanged.)
+- `src/agent/agent.ts` — `runAgentTurn` accepts `activeNames`; extend the
+  **existing v7 `prepareStep`** (which already returns `{ messages: base }` and
+  handles the `file`-part screenshot injection) to also return `activeTools =
+  [...ALWAYS_ON, ...activeNames]`. No other v7 rename work — the upgrade did it.
 - `src/ui/Chat.tsx` — create `activeNames` per turn, seed conditional tools,
   pass to `createAgentTools` and `runAgentTurn`.
 - `src/data/settings.ts` — `TOOL_CATALOG` rows; `DEFAULT_SYSTEM_PROMPT` rewrite.
