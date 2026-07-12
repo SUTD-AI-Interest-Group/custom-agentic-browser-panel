@@ -1,17 +1,20 @@
 import { useRef, useState } from 'react'
 import type { Settings } from '../../data/settings'
 import GeneralTab from './GeneralTab'
+import ProvidersTab from './ProvidersTab'
 import PermissionsTab from './PermissionsTab'
 import MemoryTab from './MemoryTab'
 import SkillsTab from './SkillsTab'
 
-type TabKey = 'general' | 'permissions' | 'memory' | 'skills'
+type TabKey = 'general' | 'providers' | 'permissions' | 'memory' | 'skills' | 'data'
 
 const TABS: Array<{ key: TabKey; label: string }> = [
   { key: 'general', label: 'General' },
+  { key: 'providers', label: 'Providers' },
   { key: 'permissions', label: 'Permissions' },
   { key: 'memory', label: 'Memory' },
   { key: 'skills', label: 'Skills' },
+  { key: 'data', label: 'Data' },
 ]
 
 /**
@@ -119,6 +122,9 @@ export default function SettingsView({
       <div className="settings-body">
         {tab === 'general' && (
           <GeneralTab draft={draft} buffer={buffer} commit={commit} commitDraft={commitDraft} />
+        )}
+        {tab === 'providers' && (
+          <ProvidersTab draft={draft} buffer={buffer} commit={commit} commitDraft={commitDraft} />
         )}
         {tab === 'permissions' && (
           <PermissionsTab draft={draft} commit={commit} onSaved={flashSaved} />
