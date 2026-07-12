@@ -88,6 +88,23 @@ export interface UIMessage {
 export type TurnStopReason = 'completed' | 'checkpoint' | 'budget'
 
 /**
+ * An image waiting to be shown to the model, with the words that explain it.
+ *
+ * The caption is not decoration. It rides WITH the image because the queue now
+ * carries two very different things — `ReadPage`'s set-of-marks shot, whose
+ * numbered boxes map to the click registry's `[index]` values, and `Screenshot`'s
+ * plain crops and tiles, which have no boxes on them at all. A single hardcoded
+ * caption would tell the model to look for numbered boxes on an unmarked photo of
+ * a bar chart, and it would duly hallucinate them.
+ */
+export interface QueuedImage {
+  /** PNG data URL. */
+  dataUrl: string
+  /** What this image is, in the model's own reading order. */
+  caption: string
+}
+
+/**
  * The model's structured hand-off when it runs out of step budget before
  * finishing, captured from a `Checkpoint` tool call. It rides in the message
  * history (so a continuation re-reads the model's own reflection) and is shown
@@ -187,15 +204,15 @@ export async function runAgentTurn(options: {
   abortSignal: AbortSignal
   onUpdate: (parts: UIPart[]) => void
   /**
-   * Data URLs of marked screenshots awaiting delivery to the model. The
-   * OpenAI-compatible adapter serializes a tool result's `media` part to
-   * plain text, so images never reach the model that way — perception
-   * tools (ReadPage mode "elements", RequestPageControl) stash their set-of-marks
-   * screenshot here instead, and prepareStep injects it as a `user` image
-   * message right before the next step, the one channel the adapter
-   * actually turns into an `image_url`.
+   * Captioned images awaiting delivery to the model. The OpenAI-compatible
+   * adapter serializes a tool result's `media` part to plain text, so images
+   * never reach the model that way — perception tools (ReadPage modes
+   * "elements"/"regions", RequestPageControl, Screenshot) stash their capture
+   * here instead, and prepareStep injects it as a `user` image message right
+   * before the next step, the one channel the adapter actually turns into an
+   * `image_url`.
    */
-  imageQueue?: string[]
+  imageQueue?: QueuedImage[]
   /**
    * Per-turn set of tool names the model has loaded (via GetTool) or the app
    * has seeded from context. When present, each step's `activeTools` is the
@@ -383,22 +400,21 @@ export async function runAgentTurn(options: {
       // wrong after an action), and so the wrap-up nudge below never lingers.
       const base = [...initialMessages, ...responseMessages]
       const injected: ModelMessage[] = []
-      // Drain any queued set-of-marks screenshots (see imageQueue doc).
+      // Drain any queued images (see imageQueue / QueuedImage docs). Each carries
+      // its own caption — what the image IS differs per producer, and telling the
+      // model the wrong thing about a picture is worse than showing it none.
       const queue = options.imageQueue
       if (queue && queue.length > 0) {
         const imgs = queue.splice(0, queue.length)
         injected.push(
-          ...imgs.map((dataUrl): ModelMessage => ({
+          ...imgs.map((img): ModelMessage => ({
             role: 'user',
             content: [
               // v7 deprecated the `{ type: 'image', image }` part in favor of a
               // `file` part with an image mediaType (the data URL's own image/png
               // type is extracted and takes precedence over this top-level 'image').
-              { type: 'file' as const, mediaType: 'image', data: dataUrl },
-              {
-                type: 'text' as const,
-                text: 'Set-of-marks screenshot of the current page — the numbered boxes correspond to the [index] values in the element list you just read.',
-              },
+              { type: 'file' as const, mediaType: 'image', data: img.dataUrl },
+              { type: 'text' as const, text: img.caption },
             ],
           })),
         )

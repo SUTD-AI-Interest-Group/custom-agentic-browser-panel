@@ -1,4 +1,7 @@
-// Arc/Dia-style region screenshots.
+// Arc/Dia-style region screenshots — the HUMAN picker (the camera button).
+// The agent's own screenshotting lives in screenshot.ts + regionIndex.ts; the two
+// share one definition of "a component" (SEMANTIC_TAG_SOURCE) so hovering and
+// agent targeting snap to the same boxes.
 //
 // Flow: the camera button injects selectRegionInPage() into the active tab.
 // The page tints, the cursor becomes a sniper: hovering auto-snaps to the DOM
@@ -9,6 +12,8 @@
 // chrome.tabs.captureVisibleTab() shot is clean. The side panel then crops
 // the shot to the rect on a canvas and returns a data URL ready to attach to
 // the next user message as an image part.
+
+import { SEMANTIC_TAG_SOURCE } from './regionIndex'
 
 export interface CapturedImage {
   id: string
@@ -37,6 +42,10 @@ export async function captureRegion(): Promise<CapturedImage | null> {
   const [injection] = await chrome.scripting.executeScript({
     target: { tabId: tab.id },
     func: selectRegionInPage,
+    // Passed in rather than inlined so the human picker and the agent's region
+    // index snap to the same definition of "a component" — see regionIndex.ts.
+    // (An injected function cannot close over an import, so it travels as an arg.)
+    args: [SEMANTIC_TAG_SOURCE],
   })
   const region = (injection?.result ?? null) as SelectedRegion | null
   if (!region) return null
@@ -90,7 +99,7 @@ async function cropShot(shotDataUrl: string, region: SelectedRegion): Promise<Ca
 // chrome.scripting.executeScript and runs in the page's isolated world.
 // ---------------------------------------------------------------------------
 
-function selectRegionInPage(): Promise<{
+function selectRegionInPage(semanticSource: string): Promise<{
   x: number
   y: number
   width: number
@@ -151,8 +160,10 @@ function selectRegionInPage(): Promise<{
     // being dramatically larger, snap to that instead — this is what makes
     // hovering feel like it lands on designed components rather than
     // arbitrary leaf nodes.
-    const SEMANTIC =
-      /^(SECTION|ARTICLE|NAV|HEADER|FOOTER|MAIN|ASIDE|FIGURE|TABLE|FORM|UL|OL|PRE|BLOCKQUOTE|DIALOG|VIDEO|IMG|CANVAS|svg)$/
+    // Shared with the agent's region index (passed in as `semanticSource`) so both
+    // agree on what counts as a component. Matched against an UPPERCASED tagName —
+    // SVG elements are XML-cased, so `svg.tagName` is 'svg', not 'SVG'.
+    const SEMANTIC = new RegExp(semanticSource)
     const componentAt = (cx: number, cy: number): Rect | null => {
       root.style.pointerEvents = 'none'
       const leaf = document.elementFromPoint(cx, cy)
@@ -173,7 +184,7 @@ function selectRegionInPage(): Promise<{
           base = { rect: r!, area }
         } else if (qualifies && base) {
           hopsPastBase++
-          if (SEMANTIC.test(node.tagName) && area <= base.area * 3.5) return r
+          if (SEMANTIC.test(node.tagName.toUpperCase()) && area <= base.area * 3.5) return r
           if (hopsPastBase >= 3 || area > base.area * 3.5) break
         }
         node = node.parentElement

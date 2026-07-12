@@ -3323,3 +3323,68 @@ body {
     border-color: #4ade80;
   }
 }
+
+/* The screenshot the agent took, shown under its tool pill. Clicking downloads
+   the full-resolution image (the card itself only ever renders the thumbnail). */
+.shot-card {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  margin: 4px 0 8px;
+  padding: 6px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--pill-bg);
+  cursor: pointer;
+  text-align: left;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+
+.shot-card:hover:not(:disabled) {
+  border-color: var(--accent, #7ab8ff);
+  background: var(--hover-bg, var(--pill-bg));
+}
+
+.shot-card:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.shot-card img {
+  flex: 0 0 auto;
+  width: 64px;
+  height: 64px;
+  object-fit: cover;
+  object-position: top center;
+  border-radius: 6px;
+  display: block;
+  background: var(--border);
+}
+
+.shot-card-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.shot-card-label {
+  font-size: 12px;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.shot-card-dim {
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.shot-card-missing {
+  margin: 4px 0 8px;
+  font-size: 11px;
+  color: var(--text-dim);
+  font-style: italic;
+}
