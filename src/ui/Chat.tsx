@@ -1278,27 +1278,33 @@ export default function Chat({
 
     for (const id of ids) {
       const msg = messagesRef.current.find((m) => m.id === id)
-      const partIdx = msg?.parts.findIndex((p) => p.type === 'text') ?? -1
-      if (!msg || partIdx < 0) continue
-      const part = msg.parts[partIdx]
-      if (part.type !== 'text') continue
-      const original = part.text
-      if (validateMath(original).invalid.length === 0) continue
+      if (!msg) continue
+      // A bubble can hold several text parts — a tool call interleaved between
+      // prose splits the reply, and merged auto-continues append more — so repair
+      // every text part with uncompilable math, not just the first.
+      const targets = msg.parts.flatMap((p, i) =>
+        p.type === 'text' && validateMath(p.text).invalid.length > 0 ? [{ i, text: p.text }] : [],
+      )
+      if (targets.length === 0) continue
 
       setMessages((m) => m.map((x) => (x.id === id ? { ...x, fixingMath: true } : x)))
-      let fixed = original
-      try {
-        fixed = await repairMessageText(original, complete)
-      } catch {
-        fixed = original
+      const fixes = new Map<number, string>()
+      for (const t of targets) {
+        let fixed = t.text
+        try {
+          fixed = await repairMessageText(t.text, complete)
+        } catch {
+          fixed = t.text
+        }
+        if (fixed !== t.text) fixes.set(t.i, fixed)
       }
       setMessages((m) =>
         m.map((x) => {
           if (x.id !== id) return x
           const parts =
-            fixed === original
+            fixes.size === 0
               ? x.parts
-              : x.parts.map((p, i) => (i === partIdx && p.type === 'text' ? { ...p, text: fixed } : p))
+              : x.parts.map((p, i) => (fixes.has(i) && p.type === 'text' ? { ...p, text: fixes.get(i) as string } : p))
           return { ...x, parts, fixingMath: false }
         }),
       )
