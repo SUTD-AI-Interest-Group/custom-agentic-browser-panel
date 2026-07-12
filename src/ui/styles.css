@@ -3801,3 +3801,109 @@ body {
   color: var(--text-dim);
   font-style: italic;
 }
+
+/* ---- Settings → Data ---- */
+
+.usage-head {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.usage-total {
+  font-size: 20px;
+  font-weight: 600;
+}
+
+.usage-quota {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.usage-bar {
+  height: 6px;
+  margin: 8px 0 14px;
+  border-radius: 999px;
+  background: var(--user-bubble);
+  overflow: hidden;
+}
+
+.usage-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: var(--accent);
+}
+
+.data-row,
+.danger-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 10px 0;
+}
+
+.data-row + .data-row,
+.danger-row + .danger-row {
+  border-top: 1px solid var(--border);
+}
+
+.data-row-main {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
+}
+
+.data-label {
+  font-size: 13px;
+}
+
+.data-detail {
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.data-bytes {
+  flex: none;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* The armed row's consequence, spelled out only once the button is hot. */
+.data-warn {
+  flex-basis: 100%;
+  margin: 6px 0 0;
+  color: var(--danger);
+  font-size: 11px;
+}
+
+.btn.danger-solid {
+  background: var(--danger);
+  border-color: var(--danger);
+  color: #fff;
+}
+
+.btn.danger-solid:hover:not(:disabled) {
+  filter: brightness(1.08);
+}
+
+.erase-confirm {
+  display: flex;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.erase-confirm input {
+  flex: 1;
+  min-width: 0;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+}

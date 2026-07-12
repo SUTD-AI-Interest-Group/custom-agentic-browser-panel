@@ -5,6 +5,7 @@ import ProvidersTab from './ProvidersTab'
 import PermissionsTab from './PermissionsTab'
 import MemoryTab from './MemoryTab'
 import SkillsTab from './SkillsTab'
+import DataTab from './DataTab'
 
 type TabKey = 'general' | 'providers' | 'permissions' | 'memory' | 'skills' | 'data'
 
@@ -52,11 +53,14 @@ export default function SettingsView({
   onChange,
   onOpenSkills,
   onClose,
+  onErased,
 }: {
   settings: Settings
   onChange: (next: Settings) => void
   onOpenSkills: () => void
   onClose: () => void
+  /** Called after a full erase — App reloads settings, which re-enters onboarding. */
+  onErased: () => void
 }) {
   const [tab, setTab] = useState<TabKey>('general')
   const [draft, setDraft] = useState<Settings>(() => structuredClone(settings))
@@ -131,6 +135,7 @@ export default function SettingsView({
         )}
         {tab === 'memory' && <MemoryTab />}
         {tab === 'skills' && <SkillsTab onOpenSkills={onOpenSkills} onSaved={flashSaved} />}
+        {tab === 'data' && <DataTab draft={draft} commit={commit} onErased={onErased} />}
       </div>
     </div>
   )

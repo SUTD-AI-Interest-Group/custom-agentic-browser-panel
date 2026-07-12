@@ -210,6 +210,17 @@ export default function App() {
           onChange={updateSettings}
           onOpenSkills={openSkills}
           onClose={() => setShowSettings(false)}
+          onErased={() => {
+            // eraseAllData() has already emptied chrome.storage.local, so re-reading
+            // yields an un-onboarded config and the gate above renders the wizard.
+            // The stale conversation is dropped too, or onboarding would finish into
+            // a transcript whose stored copy no longer exists.
+            setShowSettings(false)
+            setLibraryTab(null)
+            setConversations([])
+            setConversationId(crypto.randomUUID())
+            void loadSettings().then(setSettings)
+          }}
         />
       )}
       {libraryTab && (
