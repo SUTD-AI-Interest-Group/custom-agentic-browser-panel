@@ -2,9 +2,12 @@ import { useEffect, useState } from 'react'
 import {
   TOOL_CATALOG,
   toolPolicy,
+  groupPolicy,
+  setGroupPolicy,
   GROUP_ORDER,
   GROUP_LABELS,
   type Settings,
+  type ToolGroup,
   type ToolPolicy,
 } from '../../data/settings'
 import {
@@ -14,6 +17,7 @@ import {
   requestCapabilities,
   removeCapabilities,
 } from '../../platform/permissions'
+import { Section } from './primitives'
 
 const POLICIES: ToolPolicy[] = ['never', 'ask', 'always']
 const POLICY_LABELS: Record<ToolPolicy, string> = {
@@ -23,10 +27,23 @@ const POLICY_LABELS: Record<ToolPolicy, string> = {
 }
 
 /**
- * Permissions tab: tab visibility, browsing insights, and the per-tool
- * Never/Ask/Always matrix. Tab visibility and tool policies live in Settings and
- * commit instantly; browsing insights are Chrome optional permissions so they
- * act immediately on their own (and flash "Saved ✓" via onSaved).
+ * Plain-English state of one tool's gate.
+ *
+ * Tab visibility and Browsing insights used to *assert* that reads "still ask for
+ * permission" — which was simply false whenever that tool's policy was `always`.
+ * Rendering the sentence *from* the policy rather than alongside it is the actual
+ * fix: the copy cannot drift from the behaviour, because it is the behaviour.
+ */
+function policySentence(policy: ToolPolicy, noun: string): string {
+  if (policy === 'never') return `${noun} are turned off.`
+  if (policy === 'always') return `${noun} run without asking.`
+  return `${noun} ask for approval each time.`
+}
+
+/**
+ * Permissions tab: tab visibility, browsing insights, and the tool-permission
+ * accordion. Settings-backed controls commit instantly; browsing capabilities are
+ * Chrome optional permissions and act on their own (flashing "Saved ✓" via onSaved).
  */
 export default function PermissionsTab({
   draft,
@@ -37,84 +54,176 @@ export default function PermissionsTab({
   commit: (next: Settings) => void
   onSaved: () => void
 }) {
-  function setPolicy(name: string, policy: ToolPolicy) {
+  // Which groups are expanded. Local, never persisted: the matrix opens fully
+  // collapsed every time, which is the whole point of the redesign.
+  const [openGroups, setOpenGroups] = useState<Set<ToolGroup>>(new Set())
+
+  function toggleGroup(group: ToolGroup) {
+    setOpenGroups((prev) => {
+      const next = new Set(prev)
+      if (next.has(group)) next.delete(group)
+      else next.add(group)
+      return next
+    })
+  }
+
+  /** Open a group and scroll to it — the target of the "Change" links above. */
+  function revealGroup(group: ToolGroup) {
+    setOpenGroups((prev) => new Set(prev).add(group))
+    requestAnimationFrame(() => {
+      document.getElementById(`toolgroup-${group}`)?.scrollIntoView({ block: 'center' })
+    })
+  }
+
+  function setToolPolicy(name: string, policy: ToolPolicy) {
     commit({ ...draft, toolPolicies: { ...draft.toolPolicies, [name]: policy } })
   }
 
   return (
     <div className="settings-tabpane">
-      <h2>Tab visibility</h2>
-      <p className="hint">
-        How much of your browsing the agent may see. Individual reads still ask for permission.
-      </p>
-      <label className={`access-option ${draft.tabAccess === 'active-tab' ? 'chosen' : ''}`}>
-        <input
-          type="radio"
-          name="tabAccessSetting"
-          checked={draft.tabAccess === 'active-tab'}
-          onChange={() => commit({ ...draft, tabAccess: 'active-tab' })}
-        />
-        <div>
-          <div className="access-title">Only my current tab</div>
-          <div className="access-desc">
-            The agent can only see the tab you're on; @mentions offer just the current tab.
+      <Section title="Tab visibility" hint="How much of your browsing the agent may see.">
+        <label className={`access-option ${draft.tabAccess === 'active-tab' ? 'chosen' : ''}`}>
+          <input
+            type="radio"
+            name="tabAccessSetting"
+            checked={draft.tabAccess === 'active-tab'}
+            onChange={() => commit({ ...draft, tabAccess: 'active-tab' })}
+          />
+          <div>
+            <div className="access-title">Only my current tab</div>
+            <div className="access-desc">@mentions offer just the tab you're on.</div>
           </div>
-        </div>
-      </label>
-      <label className={`access-option ${draft.tabAccess === 'all-tabs' ? 'chosen' : ''}`}>
-        <input
-          type="radio"
-          name="tabAccessSetting"
-          checked={draft.tabAccess === 'all-tabs'}
-          onChange={() => commit({ ...draft, tabAccess: 'all-tabs' })}
-        />
-        <div>
-          <div className="access-title">All open tabs</div>
-          <div className="access-desc">
-            The agent can list and (with permission) read any open tab; @mention any of them.
+        </label>
+        <label className={`access-option ${draft.tabAccess === 'all-tabs' ? 'chosen' : ''}`}>
+          <input
+            type="radio"
+            name="tabAccessSetting"
+            checked={draft.tabAccess === 'all-tabs'}
+            onChange={() => commit({ ...draft, tabAccess: 'all-tabs' })}
+          />
+          <div>
+            <div className="access-title">All open tabs</div>
+            <div className="access-desc">The agent can list and read any open tab.</div>
           </div>
-        </div>
-      </label>
+        </label>
+        <p className="derived-state">
+          {policySentence(toolPolicy(draft, 'ReadPage'), 'Page reads')}{' '}
+          <button className="link-btn" onClick={() => revealGroup('reading')}>
+            Change
+          </button>
+        </p>
+      </Section>
 
-      <BrowsingInsightsSection onSaved={onSaved} />
+      <BrowsingInsightsSection
+        draft={draft}
+        onSaved={onSaved}
+        onChangePolicy={() => revealGroup('insights')}
+      />
 
-      <h2>Tool permissions</h2>
-      <p className="hint">
-        Set how each agent tool is gated. <strong>Never</strong> hides it from the agent
-        entirely; <strong>Ask</strong> shows an approval card each time; <strong>Always</strong>{' '}
-        runs it without asking. Risky page-control steps (form submits, cross-site navigation,
-        passwords) still confirm even on Always.
-      </p>
-      {GROUP_ORDER.map((group) => {
-        const tools = TOOL_CATALOG.filter((t) => t.group === group)
-        if (tools.length === 0) return null
-        return (
-          <div className="tool-group" key={group}>
-            <div className="tool-group-title">{GROUP_LABELS[group]}</div>
-            {tools.map((t) => {
-              const current = toolPolicy(draft, t.name)
-              return (
-                <div className="tool-row" key={t.name}>
-                  <span className="tool-label">{t.label}</span>
-                  <div className="policy-seg" role="radiogroup" aria-label={t.label}>
+      <Section title="Tool permissions">
+        <ul className="policy-legend">
+          <li>
+            <strong>Never</strong> — the agent never sees the tool.
+          </li>
+          <li>
+            <strong>Ask</strong> — approve each call, or allow it for the rest of the chat.
+          </li>
+          <li>
+            <strong>Always</strong> — runs without asking.
+          </li>
+        </ul>
+
+        {GROUP_ORDER.map((group) => {
+          const tools = TOOL_CATALOG.filter((t) => t.group === group)
+          if (tools.length === 0) return null
+          const current = groupPolicy(draft, group)
+          const expanded = openGroups.has(group)
+          return (
+            <div
+              className={`tool-group ${expanded ? 'open' : ''}`}
+              id={`toolgroup-${group}`}
+              key={group}
+            >
+              <div className="tool-group-head">
+                <button
+                  className="tool-group-toggle"
+                  aria-expanded={expanded}
+                  onClick={() => toggleGroup(group)}
+                >
+                  <svg
+                    className="disclosure-chevron"
+                    width="10"
+                    height="10"
+                    viewBox="0 0 10 10"
+                    fill="none"
+                  >
+                    <path
+                      d="M3 1l4 4-4 4"
+                      stroke="currentColor"
+                      strokeWidth="1.5"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    />
+                  </svg>
+                  <span className="tool-group-title">{GROUP_LABELS[group]}</span>
+                  <span className="tool-group-count">{tools.length}</span>
+                </button>
+                {current === 'mixed' ? (
+                  <button className="mixed-pill" onClick={() => toggleGroup(group)}>
+                    Mixed
+                  </button>
+                ) : (
+                  <div className="policy-seg" role="radiogroup" aria-label={GROUP_LABELS[group]}>
                     {POLICIES.map((policy) => (
                       <button
                         key={policy}
                         role="radio"
                         aria-checked={current === policy}
                         className={`policy-opt ${policy} ${current === policy ? 'active' : ''}`}
-                        onClick={() => setPolicy(t.name, policy)}
+                        onClick={() => commit(setGroupPolicy(draft, group, policy))}
                       >
                         {POLICY_LABELS[policy]}
                       </button>
                     ))}
                   </div>
+                )}
+              </div>
+
+              {expanded && (
+                <div className="tool-group-body">
+                  {group === 'control' && (
+                    <p className="hint">
+                      Form submits, cross-site navigation and password fields always confirm — even
+                      on Always.
+                    </p>
+                  )}
+                  {tools.map((t) => {
+                    const toolCurrent = toolPolicy(draft, t.name)
+                    return (
+                      <div className="tool-row" key={t.name}>
+                        <span className="tool-label">{t.label}</span>
+                        <div className="policy-seg" role="radiogroup" aria-label={t.label}>
+                          {POLICIES.map((policy) => (
+                            <button
+                              key={policy}
+                              role="radio"
+                              aria-checked={toolCurrent === policy}
+                              className={`policy-opt ${policy} ${toolCurrent === policy ? 'active' : ''}`}
+                              onClick={() => setToolPolicy(t.name, policy)}
+                            >
+                              {POLICY_LABELS[policy]}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    )
+                  })}
                 </div>
-              )
-            })}
-          </div>
-        )
-      })}
+              )}
+            </div>
+          )
+        })}
+      </Section>
     </div>
   )
 }
@@ -130,7 +239,15 @@ const CAPABILITY_LABELS: Record<BrowsingCapability, string> = {
   downloads: 'Downloads',
 }
 
-function BrowsingInsightsSection({ onSaved }: { onSaved: () => void }) {
+function BrowsingInsightsSection({
+  draft,
+  onSaved,
+  onChangePolicy,
+}: {
+  draft: Settings
+  onSaved: () => void
+  onChangePolicy: () => void
+}) {
   const [granted, setGranted] = useState<Set<BrowsingCapability>>(new Set())
 
   useEffect(() => {
@@ -160,12 +277,10 @@ function BrowsingInsightsSection({ onSaved }: { onSaved: () => void }) {
   const missing = BROWSING_CAPABILITIES.filter((c) => !granted.has(c))
 
   return (
-    <>
-      <h2>Browsing insights</h2>
-      <p className="hint">
-        Let the agent look up your history, bookmarks, top sites and downloads to enrich answers.
-        Each lookup still asks for permission. Granting happens here and can be revoked anytime.
-      </p>
+    <Section
+      title="Browsing insights"
+      hint="Let the agent look up your history, bookmarks, top sites and downloads."
+    >
       <label className="toggle-row master">
         <div className="access-title">Enable all browsing insights</div>
         <input
@@ -186,6 +301,12 @@ function BrowsingInsightsSection({ onSaved }: { onSaved: () => void }) {
           />
         </label>
       ))}
-    </>
+      <p className="derived-state">
+        {policySentence(toolPolicy(draft, 'QueryBrowserData'), 'Lookups')}{' '}
+        <button className="link-btn" onClick={onChangePolicy}>
+          Change
+        </button>
+      </p>
+    </Section>
   )
 }

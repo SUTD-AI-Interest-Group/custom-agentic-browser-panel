@@ -3,26 +3,15 @@ import {
   DEFAULT_SYSTEM_PROMPT,
   observabilityConfig,
   type ObservabilityConfig,
-  type ProviderConfig,
   type Settings,
 } from '../../data/settings'
 import { testLangfuseConnection } from '../../agent/observability'
-
-// Common OpenAI-compatible endpoints, offered as one-click starting points.
-// Anything not listed still works via "Custom".
-const PRESETS: Array<Pick<ProviderConfig, 'name' | 'baseURL'> & { models: string[] }> = [
-  { name: 'OpenAI', baseURL: 'https://api.openai.com/v1', models: ['gpt-4o-mini'] },
-  { name: 'Anthropic', baseURL: 'https://api.anthropic.com/v1', models: ['claude-sonnet-5'] },
-  { name: 'OpenRouter', baseURL: 'https://openrouter.ai/api/v1', models: [] },
-  { name: 'Groq', baseURL: 'https://api.groq.com/openai/v1', models: [] },
-  { name: 'Ollama (local)', baseURL: 'http://localhost:11434/v1', models: ['llama3.1'] },
-  { name: 'Custom', baseURL: '', models: [] },
-]
+import { Disclosure, Section } from './primitives'
 
 /**
- * General tab: system prompt, keyboard shortcut, providers. Text fields buffer
- * on keystroke (`buffer`) and persist on blur (`commitDraft`); structural
- * changes (add/remove/reset) persist immediately (`commit`).
+ * General tab: system prompt, keyboard shortcut, privacy, observability. Text
+ * fields buffer on keystroke (`buffer`) and persist on blur (`commitDraft`);
+ * toggles persist immediately (`commit`). Providers live in their own tab.
  */
 export default function GeneralTab({
   draft,
@@ -35,128 +24,47 @@ export default function GeneralTab({
   commit: (next: Settings) => void
   commitDraft: () => void
 }) {
-  function updateProvider(id: string, patch: Partial<ProviderConfig>) {
-    buffer({
-      ...draft,
-      providers: draft.providers.map((p) => (p.id === id ? { ...p, ...patch } : p)),
-    })
-  }
-
-  function addProvider(preset: (typeof PRESETS)[number]) {
-    const provider: ProviderConfig = {
-      id: crypto.randomUUID(),
-      name: preset.name === 'Custom' ? '' : preset.name,
-      baseURL: preset.baseURL,
-      apiKey: '',
-      models: [...preset.models],
-    }
-    commit({ ...draft, providers: [...draft.providers, provider] })
-  }
-
-  function removeProvider(id: string) {
-    commit({
-      ...draft,
-      providers: draft.providers.filter((p) => p.id !== id),
-      selected: draft.selected?.providerId === id ? null : draft.selected,
-    })
-  }
+  const customPrompt = draft.systemPrompt !== DEFAULT_SYSTEM_PROMPT
 
   return (
     <div className="settings-tabpane">
-      <h2>System prompt</h2>
-      <textarea
-        className="system-prompt"
-        rows={8}
-        value={draft.systemPrompt}
-        onChange={(e) => buffer({ ...draft, systemPrompt: e.target.value })}
-        onBlur={commitDraft}
-      />
-      <button
-        className="link-btn"
-        onClick={() => commit({ ...draft, systemPrompt: DEFAULT_SYSTEM_PROMPT })}
+      <Section
+        title="System prompt"
+        action={
+          // Only offer the reset when there is something to reset — an
+          // always-visible "Reset to default" beside an untouched default is noise.
+          customPrompt ? (
+            <button
+              className="link-btn"
+              onClick={() => commit({ ...draft, systemPrompt: DEFAULT_SYSTEM_PROMPT })}
+            >
+              Reset to default
+            </button>
+          ) : undefined
+        }
       >
-        Reset to default
-      </button>
+        <textarea
+          className="system-prompt"
+          rows={5}
+          value={draft.systemPrompt}
+          onChange={(e) => buffer({ ...draft, systemPrompt: e.target.value })}
+          onBlur={commitDraft}
+        />
+      </Section>
 
       <ShortcutSection />
 
-      <h2>Privacy</h2>
-      <label className="check">
-        <input
-          type="checkbox"
-          checked={draft.fetchLinkPreviews !== false}
-          onChange={(e) => commit({ ...draft, fetchLinkPreviews: e.target.checked })}
-        />
-        Fetch link previews (contacts linked sites for title/description/image)
-      </label>
-
-      <h2>Providers</h2>
-      <p className="hint">
-        Any OpenAI-compatible endpoint works. Keys are stored locally in your browser and sent
-        only to the endpoint you configure.
-      </p>
-
-      {draft.providers.map((p) => (
-        <div className="provider-card" key={p.id}>
-          <div className="field-row">
-            <label>
-              Name
-              <input
-                value={p.name}
-                placeholder="e.g. OpenRouter"
-                onChange={(e) => updateProvider(p.id, { name: e.target.value })}
-                onBlur={commitDraft}
-              />
-            </label>
-            <button
-              className="icon-btn danger"
-              title="Remove provider"
-              onClick={() => removeProvider(p.id)}
-            >
-              <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-                <path d="M3 3l8 8M11 3l-8 8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-              </svg>
-            </button>
-          </div>
-          <label>
-            Base URL
-            <input
-              value={p.baseURL}
-              placeholder="https://api.example.com/v1"
-              onChange={(e) => updateProvider(p.id, { baseURL: e.target.value })}
-              onBlur={commitDraft}
-            />
-          </label>
-          <label>
-            API key
-            <input
-              type="password"
-              value={p.apiKey}
-              placeholder="sk-…"
-              onChange={(e) => updateProvider(p.id, { apiKey: e.target.value })}
-              onBlur={commitDraft}
-            />
-          </label>
-          <label>
-            Models (one per line)
-            <textarea
-              rows={3}
-              value={p.models.join('\n')}
-              placeholder={'gpt-4o-mini\ngpt-4o'}
-              onChange={(e) => updateProvider(p.id, { models: e.target.value.split('\n') })}
-              onBlur={commitDraft}
-            />
-          </label>
-        </div>
-      ))}
-
-      <div className="preset-row">
-        {PRESETS.map((preset) => (
-          <button key={preset.name} className="btn ghost small" onClick={() => addProvider(preset)}>
-            + {preset.name}
-          </button>
-        ))}
-      </div>
+      <Section title="Privacy">
+        <label className="check">
+          <input
+            type="checkbox"
+            checked={draft.fetchLinkPreviews !== false}
+            onChange={(e) => commit({ ...draft, fetchLinkPreviews: e.target.checked })}
+          />
+          Fetch link previews
+        </label>
+        <p className="hint">Contacts linked sites for their title, description and image.</p>
+      </Section>
 
       <ObservabilitySection draft={draft} buffer={buffer} commit={commit} commitDraft={commitDraft} />
     </div>
@@ -164,10 +72,12 @@ export default function GeneralTab({
 }
 
 /**
- * Beta: opt-in Langfuse observability. A master toggle reveals key/host inputs
- * and capture options. Text fields buffer on keystroke and persist on blur (like
- * the provider fields); toggles/checkboxes persist immediately. Local `test`
- * state drives the "Test connection" button. Nothing is sent unless enabled.
+ * Beta: opt-in Langfuse observability. Collapsed by default — it is beta, niche and
+ * six controls deep, and it used to dominate the General tab. The closed summary
+ * still reports whether it is on, so folding it away never hides that.
+ *
+ * Text fields buffer on keystroke and persist on blur (like the provider fields);
+ * toggles persist immediately. Nothing is sent unless enabled.
  */
 function ObservabilitySection({
   draft,
@@ -190,18 +100,17 @@ function ObservabilitySection({
   const patch = (p: Partial<ObservabilityConfig>, persist: (next: Settings) => void) =>
     persist({ ...draft, observability: { ...obs, ...p } })
 
+  const host = obs.host.replace(/^https?:\/\//, '')
+
   return (
-    <>
-      <h2>
-        Observability<span className="beta-tag">Beta</span>
-      </h2>
+    <Section title="Observability">
+      <Disclosure summary="Langfuse tracing (beta)" status={obs.enabled ? `On · ${host}` : 'Off'}>
       <p className="hint">
-        Send a trace of every model call — turns, tool use, token counts and cost — to your own{' '}
+        Trace every model call — turns, tools, tokens, cost — to your own{' '}
         <a href="https://langfuse.com" target="_blank" rel="noreferrer">
           Langfuse
         </a>{' '}
-        project. Off by default; nothing is tracked until you turn this on. Keys are stored locally in
-        your browser and sent only to your Langfuse host.
+        project. Nothing leaves the browser until you turn this on.
       </p>
       <div className="switch-row">
         <span className="switch-label">Enable Langfuse observability</span>
@@ -252,7 +161,7 @@ function ObservabilitySection({
               checked={obs.captureContent}
               onChange={(e) => patch({ captureContent: e.target.checked }, commit)}
             />
-            Capture prompt &amp; response content (off = token/timing metadata only)
+            Capture prompt &amp; response content
           </label>
           <label className="check sub">
             <input
@@ -261,7 +170,7 @@ function ObservabilitySection({
               disabled={!obs.captureContent}
               onChange={(e) => patch({ captureScreenshots: e.target.checked }, commit)}
             />
-            Include screenshots (heavy; page images leave the browser)
+            Include screenshots (heavy)
           </label>
           <div className="obs-actions">
             <button
@@ -283,7 +192,8 @@ function ObservabilitySection({
           </div>
         </div>
       )}
-    </>
+      </Disclosure>
+    </Section>
   )
 }
 
@@ -310,13 +220,10 @@ function ShortcutSection() {
   }, [])
 
   return (
-    <>
-      <h2>Keyboard shortcut</h2>
-      <p className="hint">
-        Toggle this side panel from anywhere in the browser (default Ctrl/Cmd + E). Chrome
-        manages global shortcuts, so rebinding opens Chrome's shortcuts page; your choice is
-        saved there.
-      </p>
+    <Section
+      title="Keyboard shortcut"
+      hint="Chrome owns global shortcuts, so rebinding opens its shortcuts page."
+    >
       <div className="shortcut-row">
         <span className="shortcut-label">Toggle sidebar</span>
         <kbd className="shortcut-key">{loaded ? shortcut ?? 'Not set' : '…'}</kbd>
@@ -324,9 +231,9 @@ function ShortcutSection() {
           className="btn ghost small"
           onClick={() => void chrome.tabs.create({ url: 'chrome://extensions/shortcuts' })}
         >
-          Change shortcut ↗
+          Change ↗
         </button>
       </div>
-    </>
+    </Section>
   )
 }

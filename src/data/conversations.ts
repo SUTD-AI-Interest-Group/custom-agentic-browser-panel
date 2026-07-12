@@ -6,6 +6,7 @@
 
 import type { ModelMessage } from 'ai'
 import type { UIMessage } from '../agent/agent'
+import { estimateBytes, type StoreUsage } from './usage'
 
 export interface StoredConversation {
   id: string
@@ -26,7 +27,7 @@ export interface ConversationSummary {
   messageCount: number
 }
 
-const DB_NAME = 'agent-chat-conversations'
+const DB_NAME = 'lychee-conversations'
 const DB_VERSION = 1
 const STORE = 'conversations'
 
@@ -116,4 +117,22 @@ export async function renameConversation(id: string, title: string): Promise<voi
 
 export async function deleteConversation(id: string): Promise<void> {
   await requestOf('readwrite', (s) => s.delete(id))
+}
+
+/**
+ * Wipe every stored conversation. Screenshots are keyed by conversation but live
+ * in their own database, so the caller (`storage.ts`) clears them alongside.
+ */
+export async function clearConversations(): Promise<void> {
+  await requestOf('readwrite', (s) => s.clear())
+}
+
+/** Byte/row estimate for the Data tab. */
+export async function conversationsUsage(): Promise<StoreUsage> {
+  const all = await requestOf<StoredConversation[]>('readonly', (s) => s.getAll())
+  return {
+    bytes: estimateBytes(all),
+    count: all.length,
+    detail: all.length === 1 ? '1 chat' : `${all.length} chats`,
+  }
 }

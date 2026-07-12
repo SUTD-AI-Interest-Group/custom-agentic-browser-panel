@@ -10,6 +10,8 @@
 // Episodes become memories through "dreaming" (see dream.ts): the model
 // periodically reviews unconsolidated episodes and rewrites the memory store.
 
+import { estimateBytes, type StoreUsage } from './usage'
+
 export type MemoryKind = 'fact' | 'preference' | 'project' | 'summary' | 'profile'
 export type MemorySource = 'dream' | 'agent' | 'user'
 
@@ -41,7 +43,7 @@ export interface EpisodeRecord {
   messages: EpisodeMessage[]
 }
 
-const DB_NAME = 'agent-chat-memory'
+const DB_NAME = 'lychee-memory'
 const DB_VERSION = 1
 const MEMORIES = 'memories'
 const EPISODES = 'episodes'
@@ -229,5 +231,23 @@ export async function pruneConsolidatedEpisodes(olderThanMs = 14 * 86_400_000): 
     if (e.consolidated && e.updatedAt < cutoff) {
       await requestOf(EPISODES, 'readwrite', (s) => s.delete(e.id))
     }
+  }
+}
+
+/** Wipe long-term memory *and* the episode log the dreamer consolidates from. */
+export async function clearMemory(): Promise<void> {
+  await requestOf(MEMORIES, 'readwrite', (s) => s.clear())
+  await requestOf(EPISODES, 'readwrite', (s) => s.clear())
+}
+
+/** Byte/row estimate for the Data tab, counting both object stores. */
+export async function memoryUsage(): Promise<StoreUsage> {
+  const memories = await requestOf<MemoryRecord[]>(MEMORIES, 'readonly', (s) => s.getAll())
+  const episodes = await requestOf<EpisodeRecord[]>(EPISODES, 'readonly', (s) => s.getAll())
+  const eps = episodes.length === 1 ? '1 episode' : `${episodes.length} episodes`
+  return {
+    bytes: estimateBytes(memories) + estimateBytes(episodes),
+    count: memories.length,
+    detail: `${memories.length} memories · ${eps}`,
   }
 }

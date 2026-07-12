@@ -2,6 +2,7 @@
 import type { ObservabilityConfig, ProviderConfig } from './settings'
 import type { ResearchNotebook } from '../agent/notebook'
 import type { BrowseAction } from '../tools/browsePolicy'
+import { estimateBytes, type StoreUsage } from './usage'
 
 export type ResearchStatus = 'running' | 'done' | 'error' | 'cancelled'
 
@@ -213,4 +214,26 @@ export async function applyUpdate(
     await chrome.storage.local.set({ [KEY]: map })
     return next
   })
+}
+
+/**
+ * Drop every saved research task and report. Goes through the same `serialize`
+ * chain as the writers, so an in-flight saveTask cannot resurrect the map we just
+ * removed by racing its read-modify-write against ours.
+ */
+export async function clearTasks(): Promise<void> {
+  await serialize(async () => {
+    await chrome.storage.local.remove(KEY)
+  })
+}
+
+/** Byte/row estimate for the Data tab. */
+export async function tasksUsage(): Promise<StoreUsage> {
+  const map = await all()
+  const tasks = Object.values(map)
+  return {
+    bytes: estimateBytes(map),
+    count: tasks.length,
+    detail: tasks.length === 1 ? '1 report' : `${tasks.length} reports`,
+  }
 }

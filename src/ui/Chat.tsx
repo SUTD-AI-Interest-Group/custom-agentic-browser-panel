@@ -1791,12 +1791,53 @@ const DIGESTING_WORDS = [
 ]
 
 /**
- * Whimsical waiting-state indicator: three bouncing dots, a rotating word, and
- * a whole-turn elapsed timer. Rendered by MessageView while the turn is
- * streaming but nothing is visibly appearing. `startedAt` is the turn start
- * (ms) so the timer stays continuous across tool steps; `variant` picks the
- * word pool. A fresh random offset per mount makes successive gaps in one turn
- * read differently.
+ * The waiting mascot — a hopping lychee. Geometry only; the hop, squash, leaf
+ * wiggle and shadow all live in styles.css (`.lychee-*`), which also handles
+ * prefers-reduced-motion. The nested `lychee-hop` > `lychee-squash` groups are
+ * load-bearing: one carries the arc, the other the deform, and collapsing them
+ * into a single element makes the scale drag the translate with it.
+ */
+function LycheeLoader() {
+  return (
+    <svg
+      className="thinking-lychee"
+      viewBox="0 0 24 24"
+      aria-hidden="true"
+      focusable="false"
+    >
+      <ellipse className="lychee-shadow" cx="12" cy="22" rx="6" ry="1.6" fill="var(--text)" />
+      <g className="lychee-hop">
+        <g className="lychee-squash">
+          <path
+            d="M12 7.8 Q12.1 6.2 12.9 5.3"
+            stroke="var(--lychee-shade)"
+            strokeWidth="1.2"
+            strokeLinecap="round"
+            fill="none"
+          />
+          <path
+            className="lychee-leaf"
+            d="M12.9 5.5 C14.7 3.4 17.7 3.3 18.7 3.9 C18.1 6 15.6 7.4 13.2 6.7 Z"
+            fill="var(--lychee-leaf)"
+          />
+          <circle cx="12" cy="13.6" r="7" fill="var(--lychee)" />
+          {/* Three scales, a nod to the faceted shell — any more turns to mush at 18px. */}
+          <circle cx="9.4" cy="12" r="1.05" fill="var(--lychee-shade)" opacity="0.45" />
+          <circle cx="13.6" cy="11.3" r="1.05" fill="var(--lychee-shade)" opacity="0.45" />
+          <circle cx="11.6" cy="15.7" r="1.05" fill="var(--lychee-shade)" opacity="0.45" />
+        </g>
+      </g>
+    </svg>
+  )
+}
+
+/**
+ * Whimsical waiting-state indicator: a hopping lychee, a rotating word, and a
+ * whole-turn elapsed timer. Rendered by MessageView while the turn is streaming
+ * but nothing is visibly appearing. `startedAt` is the turn start (ms) so the
+ * timer stays continuous across tool steps; `variant` picks the word pool. A
+ * fresh random offset per mount makes successive gaps in one turn read
+ * differently.
  */
 function ThinkingIndicator({
   startedAt,
@@ -1820,11 +1861,7 @@ function ThinkingIndicator({
 
   return (
     <div className="thinking-indicator" role="status" aria-label="Assistant is working">
-      <span className="thinking-dots" aria-hidden="true">
-        <span className="thinking-dot" />
-        <span className="thinking-dot" />
-        <span className="thinking-dot" />
-      </span>
+      <LycheeLoader />
       <span aria-hidden="true">{word}…</span>
       {elapsed >= 1 && (
         <span className="thinking-elapsed" aria-hidden="true">

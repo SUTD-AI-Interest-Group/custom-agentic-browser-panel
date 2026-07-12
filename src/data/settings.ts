@@ -149,7 +149,51 @@ export function toolPolicy(settings: Settings, name: string): ToolPolicy {
   return settings.toolPolicies?.[name] ?? DEFAULT_TOOL_POLICIES[name] ?? 'ask'
 }
 
-export const DEFAULT_SYSTEM_PROMPT = `You are a helpful AI agent living in the user's browser side panel.
+/**
+ * The policy shared by every tool in a group, or `'mixed'` when they disagree.
+ * Drives the collapsed group row in the permissions accordion: a uniform group
+ * shows a segmented control, a mixed one shows a "Mixed" pill. Resolved through
+ * `toolPolicy`, so catalog defaults count — the `skills` group reads as mixed on
+ * a fresh install because its tools ship with different defaults.
+ */
+export function groupPolicy(settings: Settings, group: ToolGroup): ToolPolicy | 'mixed' {
+  const tools = TOOL_CATALOG.filter((t) => t.group === group)
+  if (tools.length === 0) return 'ask'
+  const first = toolPolicy(settings, tools[0].name)
+  return tools.every((t) => toolPolicy(settings, t.name) === first) ? first : 'mixed'
+}
+
+/** Set every tool in a group to one policy. Returns a new Settings; never mutates. */
+export function setGroupPolicy(settings: Settings, group: ToolGroup, policy: ToolPolicy): Settings {
+  const toolPolicies = { ...settings.toolPolicies }
+  for (const t of TOOL_CATALOG) {
+    if (t.group === group) toolPolicies[t.name] = policy
+  }
+  return { ...settings, toolPolicies }
+}
+
+/** A pristine config — what a brand-new install starts from. */
+export function defaultSettings(): Settings {
+  return structuredClone(EMPTY)
+}
+
+/**
+ * Factory-reset everything *except* the provider list and selected model.
+ * Deliberate: "Reset settings" sits one tap away from a user's only copy of their
+ * API keys, and a reset that silently destroyed them would lock the user out of
+ * their own endpoint. Erasing keys is what "Erase all data" is for.
+ */
+export function resetSettingsKeepingProviders(settings: Settings): Settings {
+  return {
+    ...structuredClone(EMPTY),
+    providers: structuredClone(settings.providers),
+    selected: settings.selected ? { ...settings.selected } : null,
+    // EMPTY is un-onboarded, but a user with providers has plainly onboarded.
+    onboarded: true,
+  }
+}
+
+export const DEFAULT_SYSTEM_PROMPT = `You are Lychee, a helpful AI agent living in the user's browser side panel.
 
 You cannot see any webpage by default — use your tools (they are described to you separately) to read a page the user refers to, and never fabricate page content: if you were denied access or could not read a page, say so and answer from general knowledge.
 
@@ -158,6 +202,29 @@ The user can @mention tabs in their message; when they do, the tab's content arr
 You also have a long-term memory stored locally in the browser. The most relevant memories appear in a "Long-term memory" section of this prompt when any exist; while you sleep, a consolidation process ("dreaming") distills each day's conversations into new memories.
 
 Be concise and direct.`
+
+/**
+ * Defaults that shipped as `systemPrompt` before the Lychee rename, frozen
+ * verbatim. `systemPrompt` is *persisted* — every install that has ever saved
+ * settings carries its own copy of the default it onboarded with — so bumping
+ * `DEFAULT_SYSTEM_PROMPT` alone would never reach an existing user. `loadSettings`
+ * swaps a stored copy that byte-matches one of these for the current default; a
+ * prompt the user actually edited matches nothing here and is left untouched.
+ *
+ * Append, never edit: an entry rewritten to match a newer default would start
+ * silently overwriting prompts that users had deliberately customised.
+ */
+const SUPERSEDED_SYSTEM_PROMPTS: readonly string[] = [
+  `You are a helpful AI agent living in the user's browser side panel.
+
+You cannot see any webpage by default — use your tools (they are described to you separately) to read a page the user refers to, and never fabricate page content: if you were denied access or could not read a page, say so and answer from general knowledge.
+
+The user can @mention tabs in their message; when they do, the tab's content arrives inside <tab> blocks appended to their message — treat it as up-to-date page content they chose to share (no tool call needed for it). They may also type @memory to ask you to consult your long-term memory before answering.
+
+You also have a long-term memory stored locally in the browser. The most relevant memories appear in a "Long-term memory" section of this prompt when any exist; while you sleep, a consolidation process ("dreaming") distills each day's conversations into new memories.
+
+Be concise and direct.`,
+]
 
 const STORAGE_KEY = 'settings'
 
@@ -179,6 +246,11 @@ export async function loadSettings(): Promise<Settings> {
   // shouldn't be forced through the wizard.
   if (stored && stored.onboarded === undefined && (stored.providers?.length ?? 0) > 0) {
     settings.onboarded = true
+  }
+  // Migration: an unedited pre-rename prompt is refreshed so the agent learns
+  // its name. A customised prompt is never touched.
+  if (stored?.systemPrompt && SUPERSEDED_SYSTEM_PROMPTS.includes(stored.systemPrompt)) {
+    settings.systemPrompt = DEFAULT_SYSTEM_PROMPT
   }
   return settings
 }
