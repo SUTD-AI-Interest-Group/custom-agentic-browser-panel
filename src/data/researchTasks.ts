@@ -1,21 +1,70 @@
 /** Persisted research-task state + the SW↔offscreen↔panel message protocol. Runs in SW/panel only (never offscreen). */
 import type { ObservabilityConfig, ProviderConfig } from './settings'
 import type { ResearchNotebook } from '../agent/notebook'
+import type { BrowseAction } from '../tools/browsePolicy'
 
 export type ResearchStatus = 'running' | 'done' | 'error' | 'cancelled'
 
 export interface ResearchSource { title: string; url: string }
 
-/** One tool call in a research run: a collapsed one-liner plus expandable
+/**
+ * What produced a step. The log is not only tool calls: the model's own text
+ * between calls is its reasoning, and dropping it (as the log used to) left the
+ * sheet showing a wall of anonymous searches with no visible thinking.
+ */
+export type ResearchStepKind = 'tool' | 'thought' | 'phase'
+
+/** One entry in a research run's live log: a collapsed one-liner plus expandable
  *  detail (bounded input + result) so the sheet can show what was fetched. */
 export interface ResearchStep {
-  /** Tool that ran, e.g. 'WebSearch' | 'FetchUrl' | 'ExtractDataText'. */
+  /** Tool that ran, e.g. 'WebSearch' | 'FetchUrl' — or the phase/thought label. */
   tool: string
   /** Collapsed one-liner shown in the log (tool + short input preview). */
   summary: string
   /** Expanded detail: bounded, pretty-printed input + result. */
   detail: string
   status: 'running' | 'done' | 'error'
+  /** Defaults to 'tool' when absent (legacy tasks predate this field). */
+  kind?: ResearchStepKind
+  /** Indent level: 0 = the research agent, 1 = a nested BrowseSite sub-agent. */
+  depth?: number
+}
+
+// ---------------------------------------------------------------------------
+// Interactive browse protocol (offscreen sub-agent → SW → the isolated tab).
+// The offscreen host cannot touch tabs, so every step of a browse session is a
+// round-trip. See src/platform/researchBrowse.ts for the SW side.
+// ---------------------------------------------------------------------------
+
+/** One step the browse sub-agent asks the SW to take in the research tab. */
+export type BrowseOp =
+  | { kind: 'open'; url: string }
+  | { kind: 'act'; action: BrowseAction }
+  | { kind: 'read' }
+  | { kind: 'close' }
+
+/** What the sub-agent sees after a step: where it is, and what it can act on. */
+export interface BrowseObservation {
+  url: string
+  title: string
+  /** The numbered interactive elements, in the compact form the model reads. */
+  elements: string
+  /** The head of the page's readable text — `read` returns the whole thing. */
+  excerpt: string
+  /** True when the page has more text than the excerpt shows. */
+  more: boolean
+}
+
+export interface BrowseResult {
+  ok: boolean
+  /** Human/model-readable outcome — on refusal, WHY the policy said no. */
+  message: string
+  observation?: BrowseObservation
+  /** Full readable text, for a `read` op. */
+  text?: string
+  url?: string
+  title?: string
+  error?: string
 }
 
 export interface ResearchTask {
@@ -87,6 +136,10 @@ export type ResearchMsg =
       screenshotDataUrl?: string
       error?: string
     }
+  // Interactive browse session (offscreen → SW → offscreen): drive the isolated
+  // tab one step at a time — open, act (policy-checked), read, close.
+  | { type: 'research.browse'; taskId: string; requestId: string; sessionId: string; op: BrowseOp }
+  | { type: 'research.browseResult'; taskId: string; requestId: string; result: BrowseResult }
 
 const KEY = 'researchTasks'
 

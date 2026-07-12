@@ -1371,18 +1371,111 @@ body {
   color: var(--text-muted);
 }
 
+/* A nested step: one action inside a BrowseSite page walk. */
+.research-sheet__steps li.nested {
+  padding-left: 16px;
+  border-left: 1px solid var(--border);
+  margin-left: 5px;
+}
+
+/* The model's reasoning between calls — prose, not a tool call, so it reads as
+   text rather than as another status row. */
+.research-sheet__steps li.kind-thought .research-step__text {
+  font-style: italic;
+  color: var(--text-muted);
+}
+
+.research-sheet__steps li.kind-thought .research-step__mark::before {
+  background: transparent;
+  border: 1.5px solid var(--border);
+  box-sizing: border-box;
+}
+
+/* A pipeline beat (Plan / Reflect / Synthesize / Verify) — the run's spine. */
+.research-sheet__steps li.kind-phase .research-step__text {
+  font-weight: 600;
+}
+
+.research-sheet__findings {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-bottom: 12px;
+  margin-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.research-findings {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.research-finding {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding-left: 8px;
+  border-left: 2px solid var(--border);
+}
+
+.research-finding.conf-high {
+  border-left-color: var(--success);
+}
+
+.research-finding.conf-low {
+  border-left-color: #d19a2a;
+}
+
+.research-finding__claim {
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: var(--text);
+}
+
+.research-finding__quote {
+  margin: 0;
+  font-size: 11.5px;
+  line-height: 1.4;
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+.research-finding__source {
+  font-size: 11.5px;
+  color: var(--accent);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .research-sheet__sources {
   display: flex;
   flex-direction: column;
   gap: 6px;
 }
 
+.research-sheet__section-title,
 .research-sheet__sources-title {
   font-size: 11px;
   font-weight: 600;
   letter-spacing: 0.04em;
   text-transform: uppercase;
   color: var(--text-muted);
+}
+
+.research-sheet__count {
+  display: inline-block;
+  margin-left: 4px;
+  padding: 0 5px;
+  border-radius: 8px;
+  background: var(--border);
+  color: var(--text-muted);
+  font-size: 10px;
+  letter-spacing: 0;
 }
 
 .research-sheet__sources a {

@@ -7,7 +7,11 @@ import { instrumentToolset, type Trace } from '../agent/observability'
 import { searchDuckDuckGo, fetchReadable } from '../platform/webFetch'
 import { searchAcademic, searchImages, harvestImages, type ImageResult } from '../platform/researchSources'
 import { summarizeNotebook, type NotebookHandle } from '../agent/notebook'
+import { runBrowseSession, type BrowseBroker } from '../agent/browseAgent'
+import type { UIPart } from '../agent/agent'
 import type { ApprovalGate } from './tools'
+
+export type { BrowseBroker } from '../agent/browseAgent'
 
 /**
  * Escalation broker: render a hard URL (JS-heavy / paywalled / PDF / needs a
@@ -25,6 +29,14 @@ export interface RenderBroker {
 /** A headless fetch whose text is this short is likely a JS-rendered shell — a
  *  candidate for tab escalation when a broker is available. */
 const THIN_TEXT = 400
+
+/** Page walks are the expensive tool; cap how many one task may spend. */
+export interface BrowseBudget {
+  remaining: number
+}
+
+// Session ids only need to be unique within the offscreen host's lifetime.
+let browseSeq = 0
 
 /** Record a batch of found images into the notebook (deduped); returns how many
  *  were new. Caption falls back to the title; provenance carries through. */
@@ -63,10 +75,20 @@ export function createResearchTools(deps: {
   notebook: NotebookHandle
   /** Optional tab-escalation broker for hard pages (Phase 4). */
   renderBroker?: RenderBroker
+  /** Optional interactive-tab broker; absent = no BrowseSite tool. */
+  browseBroker?: BrowseBroker
+  /** Page-walk budget, shared across the task's gather rounds. */
+  browseBudget?: BrowseBudget
+  /** The task id, so browse sessions are namespaced per task. */
+  taskId?: string
+  /** Streams a page walk's inner steps up to the sheet, nested under its call. */
+  onBrowseStep?: (toolCallId: string, parts: UIPart[]) => void
   /** Optional Langfuse trace for the research task; when set, tools become spans. */
   trace?: Trace
+  /** Cancellation for the whole task. */
+  signal?: AbortSignal
 }): ToolSet {
-  const { notebook, renderBroker } = deps
+  const { notebook, renderBroker, browseBroker, browseBudget } = deps
   const tools: ToolSet = {
     WebSearch: tool({
       description: 'Search the web (DuckDuckGo) and return ranked {title,url,snippet} results.',
@@ -110,7 +132,17 @@ export function createResearchTools(deps: {
             return { url: finalUrl, title: rr.title ?? finalUrl, text: rr.text, rendered: true }
           }
         }
-        if ('error' in r) return r
+        // A page that refuses a plain fetch (403 / bot wall / non-HTML) is not a
+        // dead end — it is exactly what the real browser tab is for. Say so, or
+        // the model just runs another WebSearch and the source is lost.
+        if ('error' in r) {
+          return browseBroker
+            ? {
+                ...r,
+                hint: `A plain fetch of this page was refused (${r.error}). Call BrowseSite({url, objective}) to open it in a real browser tab and read it there.`,
+              }
+            : r
+        }
         notebook.addSource({ url: r.url, title: r.title, fetchedVia: 'headless' })
         return r
       },
@@ -232,6 +264,49 @@ export function createResearchTools(deps: {
       execute: async () => ({ notebook: summarizeNotebook(notebook.get(), { maxFindings: 60 }) }),
     }),
   }
+
+  // Only offered when the controller supplied a tab broker (the SW side). Absent
+  // in a headless-only host, where there is no tab to browse in.
+  if (browseBroker) {
+    tools.BrowseSite = tool({
+      description:
+        'Open a page in a REAL browser tab and browse it autonomously to meet an objective — clicking links, expanding sections, paginating, and using the site\'s own search box. Use this when FetchUrl is refused (403/bot wall), when the content you need is behind navigation rather than at a URL you can guess, or when a site\'s own index beats a web search. It reads the pages it visits and records what it finds in the notebook itself. It is logged-out and cannot log in, buy, or submit anything but a search.',
+      inputSchema: z.object({
+        url: z.string().describe('The page to start from'),
+        objective: z
+          .string()
+          .describe('Specifically what to find there, e.g. "the 2024 pricing table" or "the methodology section of the linked paper"'),
+      }),
+      execute: async ({ url, objective }, { toolCallId, abortSignal }) => {
+        if (!deps.selected) return { error: 'No model configured.' }
+        if (browseBudget && browseBudget.remaining <= 0) {
+          return {
+            error: 'The page-walk budget for this task is used up. Rely on WebSearch/FetchUrl and what is already in the notebook.',
+          }
+        }
+        if (browseBudget) browseBudget.remaining--
+
+        const outcome = await runBrowseSession({
+          sessionId: `${deps.taskId ?? 'research'}:browse:${++browseSeq}`,
+          url,
+          objective,
+          broker: browseBroker,
+          model: createModel(deps.selected.provider, deps.selected.modelId),
+          notebook,
+          signal: deps.signal ?? abortSignal ?? new AbortController().signal,
+          trace: deps.trace,
+          onStep: (parts) => deps.onBrowseStep?.(toolCallId, parts),
+        })
+        return {
+          visited: outcome.visited,
+          findingsRecorded: outcome.findingsAdded,
+          stopped: outcome.stoppedBecause,
+          summary: outcome.digest,
+        }
+      },
+    })
+  }
+
   if (deps.trace) instrumentToolset(tools, deps.trace)
   return tools
 }

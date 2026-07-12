@@ -18,6 +18,13 @@ export interface IndexedElement {
   sensitive: boolean
   /** Absolute URL for anchor elements. */
   href?: string
+  /**
+   * Lowercased `method` of the closest ancestor <form>, absent when the element
+   * is not in one. Raw DOM fact, not a judgement: the background research
+   * browser's policy (src/tools/browsePolicy.ts) reads it to tell an idempotent
+   * GET search submit from a state-creating POST submit.
+   */
+  formMethod?: string
 }
 
 /** A full read of the current page: the registry plus a compact text form. */
@@ -95,6 +102,7 @@ function buildInteractiveIndex(attr: string, maxElements: number) {
     rect: { x: number; y: number; width: number; height: number }
     sensitive: boolean
     href?: string
+    formMethod?: string
   }> = []
   const all = Array.from(document.querySelectorAll('*'))
   let index = 0
@@ -113,6 +121,7 @@ function buildInteractiveIndex(attr: string, maxElements: number) {
       type === 'password' ||
       /^cc-/i.test(el.getAttribute('autocomplete') ?? '') ||
       SENSITIVE_RE.test(nameId)
+    const form = el.closest('form')
     el.setAttribute(attr, String(index))
     out.push({
       index,
@@ -124,6 +133,8 @@ function buildInteractiveIndex(attr: string, maxElements: number) {
       rect: { x: r.left, y: r.top, width: r.width, height: r.height },
       sensitive,
       href: el.tagName === 'A' ? (el as HTMLAnchorElement).href : undefined,
+      // `.method` normalizes to 'get' when the attribute is absent or invalid.
+      formMethod: form ? form.method.toLowerCase() : undefined,
     })
     index++
   }

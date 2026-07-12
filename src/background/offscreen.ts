@@ -1,42 +1,93 @@
 // Offscreen document: the headless research host. Only chrome.runtime messaging
 // + Web APIs are available here — NO chrome.storage/tabs/notifications.
-import type { ResearchMsg } from '../data/researchTasks'
+import type { BrowseOp, BrowseResult, ResearchMsg } from '../data/researchTasks'
 import { runResearch } from '../agent/research'
-import type { RenderBroker } from '../tools/research'
+import type { BrowseBroker, RenderBroker } from '../tools/research'
 
 const running = new Map<string, AbortController>()
 
-// Hybrid-escalation broker (offscreen side): send research.renderPage to the SW
-// (the only tier that can drive a tab) and resolve on the matching renderResult.
+// Tab brokers (offscreen side): the offscreen host cannot touch tabs, so both the
+// one-shot render and the interactive browse session are round-trips to the SW —
+// send a request, resolve on the matching result by requestId.
 const RENDER_TIMEOUT_MS = 45_000
-let renderSeq = 0
+// A browse op includes a navigation + settle + snapshot, so it gets more runway.
+const BROWSE_TIMEOUT_MS = 60_000
+let requestSeq = 0
 const pendingRenders = new Map<string, (r: Extract<ResearchMsg, { type: 'research.renderResult' }>) => void>()
+const pendingBrowses = new Map<string, (r: BrowseResult) => void>()
+
+/**
+ * Shared request/response plumbing for both brokers: correlate on a fresh
+ * requestId, resolve with `onTimeout`'s value if the SW never answers, and settle
+ * immediately on abort so a cancelled task doesn't hang on a dead tab.
+ */
+function roundTrip<T>(
+  pending: Map<string, (r: any) => void>,
+  taskId: string,
+  signal: AbortSignal,
+  timeoutMs: number,
+  send: (requestId: string) => void,
+  timedOut: T,
+  aborted: T,
+): Promise<T> {
+  return new Promise<T>((resolve) => {
+    const requestId = `${taskId}:${++requestSeq}`
+    const cleanup = () => {
+      pending.delete(requestId)
+      clearTimeout(timer)
+      signal.removeEventListener('abort', onAbort)
+    }
+    const timer = setTimeout(() => {
+      cleanup()
+      resolve(timedOut)
+    }, timeoutMs)
+    const onAbort = () => {
+      cleanup()
+      resolve(aborted)
+    }
+    signal.addEventListener('abort', onAbort, { once: true })
+    pending.set(requestId, (r) => {
+      cleanup()
+      resolve(r)
+    })
+    send(requestId)
+  })
+}
 
 function makeRenderBroker(taskId: string, signal: AbortSignal): RenderBroker {
   return {
     render(url, want) {
-      return new Promise((resolve) => {
-        const requestId = `${taskId}:${++renderSeq}`
-        const cleanup = () => {
-          pendingRenders.delete(requestId)
-          clearTimeout(timer)
-          signal.removeEventListener('abort', onAbort)
-        }
-        const timer = setTimeout(() => {
-          cleanup()
-          resolve({ error: 'render timed out' })
-        }, RENDER_TIMEOUT_MS)
-        const onAbort = () => {
-          cleanup()
-          resolve({ error: 'aborted' })
-        }
-        signal.addEventListener('abort', onAbort, { once: true })
-        pendingRenders.set(requestId, (r) => {
-          cleanup()
-          resolve({ text: r.text, title: r.title, finalUrl: r.finalUrl, screenshotDataUrl: r.screenshotDataUrl, error: r.error })
-        })
-        chrome.runtime.sendMessage({ type: 'research.renderPage', taskId, requestId, url, want } satisfies ResearchMsg)
-      })
+      return roundTrip(
+        pendingRenders,
+        taskId,
+        signal,
+        RENDER_TIMEOUT_MS,
+        (requestId) =>
+          chrome.runtime.sendMessage({ type: 'research.renderPage', taskId, requestId, url, want } satisfies ResearchMsg),
+        { error: 'render timed out' },
+        { error: 'aborted' },
+      ).then((r: any) =>
+        r.error !== undefined && r.text === undefined
+          ? { error: r.error }
+          : { text: r.text, title: r.title, finalUrl: r.finalUrl, screenshotDataUrl: r.screenshotDataUrl, error: r.error },
+      )
+    },
+  }
+}
+
+function makeBrowseBroker(taskId: string, signal: AbortSignal): BrowseBroker {
+  return {
+    step(sessionId: string, op: BrowseOp) {
+      return roundTrip<BrowseResult>(
+        pendingBrowses,
+        taskId,
+        signal,
+        BROWSE_TIMEOUT_MS,
+        (requestId) =>
+          chrome.runtime.sendMessage({ type: 'research.browse', taskId, requestId, sessionId, op } satisfies ResearchMsg),
+        { ok: false, message: 'the browser did not respond in time' },
+        { ok: false, message: 'the research task was cancelled' },
+      )
     },
   }
 }
@@ -54,6 +105,7 @@ chrome.runtime.onMessage.addListener((msg: ResearchMsg) => {
       observability: msg.observability,
       signal: ctrl.signal,
       renderBroker: makeRenderBroker(msg.taskId, ctrl.signal),
+      browseBroker: makeBrowseBroker(msg.taskId, ctrl.signal),
       onUpdate: (steps, notebook) =>
         chrome.runtime.sendMessage({ type: 'research.update', taskId: msg.taskId, steps, notebook } satisfies ResearchMsg),
     })
@@ -80,6 +132,8 @@ chrome.runtime.onMessage.addListener((msg: ResearchMsg) => {
     running.delete(msg.taskId)
   } else if (msg?.type === 'research.renderResult') {
     pendingRenders.get(msg.requestId)?.(msg)
+  } else if (msg?.type === 'research.browseResult') {
+    pendingBrowses.get(msg.requestId)?.(msg.result)
   }
 })
 console.info('[offscreen] research host loaded')

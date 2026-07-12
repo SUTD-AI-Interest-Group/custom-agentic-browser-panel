@@ -9,6 +9,8 @@ import { saveTask, applyUpdate } from './data/researchTasks'
 import { loadSettings, getSelectedProvider, observabilityConfig } from './data/settings'
 import { isFetchableUrl } from './platform/webFetch'
 import { renderPage } from './platform/researchRender'
+import { closeAllSessions, handleBrowseOp } from './platform/researchBrowse'
+import { sweepOrphanWindow } from './platform/researchTab'
 
 chrome.sidePanel
   .setPanelBehavior({ openPanelOnActionClick: true })
@@ -22,6 +24,11 @@ function scheduleDreamAlarm() {
 
 chrome.runtime.onInstalled.addListener(scheduleDreamAlarm)
 chrome.runtime.onStartup.addListener(scheduleDreamAlarm)
+
+// MV3 can kill this worker at any time, which drops the research tab's handle and
+// strands its (minimized, invisible) window. Sweep any leftover on every wake —
+// module scope runs on each worker start, not just at install/startup.
+void sweepOrphanWindow()
 
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name !== DREAM_ALARM) return
@@ -190,6 +197,19 @@ chrome.runtime.onMessage.addListener((msg: ResearchMsg) => {
       await applyUpdate(msg.taskId, (cur) => (cur.status === 'cancelled' ? {} : { status: 'error', error: msg.error }))
     } else if (msg?.type === 'research.cancel') {
       await applyUpdate(msg.taskId, (cur) => (cur.status === 'running' ? { status: 'cancelled' } : {}))
+      // A cancelled task's browse session would otherwise hold the research tab
+      // until its TTL expired, blocking the next task's first fetch.
+      closeAllSessions()
+    } else if (msg?.type === 'research.browse') {
+      // Interactive browse: the offscreen sub-agent drives the isolated tab one
+      // policy-checked step at a time (see platform/researchBrowse.ts).
+      const result = await handleBrowseOp(msg.sessionId, msg.op)
+      chrome.runtime.sendMessage({
+        type: 'research.browseResult',
+        taskId: msg.taskId,
+        requestId: msg.requestId,
+        result,
+      } satisfies ResearchMsg)
     } else if (msg?.type === 'research.renderPage') {
       // Hybrid-escalation broker: the offscreen agent can't touch tabs, so it asks
       // the SW to render a hard URL in an isolated tab and return the text/shot.

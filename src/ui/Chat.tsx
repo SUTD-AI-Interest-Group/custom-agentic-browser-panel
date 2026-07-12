@@ -2369,8 +2369,16 @@ function ResearchSheet({
           <ul className="research-sheet__steps">
             {task.steps.map((step, i) => {
               const open = expanded.has(i)
+              // 'thought' rows are the model's reasoning between calls; 'phase'
+              // rows are the pipeline's own beats. Both read very differently from
+              // a tool call, so they get their own styling.
+              const kind = step.kind ?? 'tool'
+              const nested = (step.depth ?? 0) > 0
               return (
-                <li key={i} className={`${step.status}${open ? ' open' : ''}`}>
+                <li
+                  key={i}
+                  className={`${step.status} kind-${kind}${nested ? ' nested' : ''}${open ? ' open' : ''}`}
+                >
                   <button className="research-step__row" onClick={() => toggle(i)} aria-expanded={open}>
                     <span className="research-step__mark" aria-hidden />
                     <span className="research-step__text">{step.summary}</span>
@@ -2384,16 +2392,8 @@ function ResearchSheet({
             })}
             {task.steps.length === 0 && <li className="muted">Starting…</li>}
           </ul>
-          {task.sources && task.sources.length > 0 && (
-            <div className="research-sheet__sources">
-              <div className="research-sheet__sources-title">Sources so far</div>
-              {task.sources.map((s) => (
-                <a key={s.url} href={s.url} target="_blank" rel="noreferrer">
-                  {s.title || s.url}
-                </a>
-              ))}
-            </div>
-          )}
+          <ResearchFindings task={task} />
+          <ResearchSources task={task} />
         </div>
         {task.status === 'running' && (
           <div className="research-sheet__foot">
@@ -2404,6 +2404,63 @@ function ResearchSheet({
         )}
       </div>
     </>
+  )
+}
+
+/**
+ * What the research has actually LEARNED so far — the whole point of the run.
+ * The notebook streams to the panel throughout, but the sheet never rendered it,
+ * so a running task showed a wall of searches and nothing else.
+ */
+function ResearchFindings({ task }: { task: ResearchTask }) {
+  const nb = task.notebook
+  if (!nb || nb.findings.length === 0) return null
+  const sourceOf = (n?: number) => (n ? nb.sources.find((s) => s.n === n) : undefined)
+  return (
+    <div className="research-sheet__findings">
+      <div className="research-sheet__section-title">
+        Findings <span className="research-sheet__count">{nb.findings.length}</span>
+      </div>
+      <ul className="research-findings">
+        {nb.findings.map((f) => {
+          const src = sourceOf(f.sourceN)
+          return (
+            <li key={f.id} className={`research-finding conf-${f.confidence}`}>
+              <div className="research-finding__claim">{f.claim}</div>
+              {f.quote && <blockquote className="research-finding__quote">{f.quote}</blockquote>}
+              {src && (
+                <a className="research-finding__source" href={src.url} target="_blank" rel="noreferrer">
+                  [{src.n}] {src.title || src.url}
+                </a>
+              )}
+            </li>
+          )
+        })}
+      </ul>
+    </div>
+  )
+}
+
+/**
+ * Sources, live. `task.sources` is only written when the task COMPLETES, so it is
+ * empty for the entire run — read the notebook (which streams) while it is going
+ * and fall back to the persisted list afterwards.
+ */
+function ResearchSources({ task }: { task: ResearchTask }) {
+  const live = task.notebook?.sources.map((s) => ({ title: s.title, url: s.url, n: s.n })) ?? []
+  const sources = live.length ? live : (task.sources ?? []).map((s, i) => ({ ...s, n: i + 1 }))
+  if (sources.length === 0) return null
+  return (
+    <div className="research-sheet__sources">
+      <div className="research-sheet__section-title">
+        Sources <span className="research-sheet__count">{sources.length}</span>
+      </div>
+      {sources.map((s) => (
+        <a key={s.url} href={s.url} target="_blank" rel="noreferrer">
+          {s.title || s.url}
+        </a>
+      ))}
+    </div>
   )
 }
 

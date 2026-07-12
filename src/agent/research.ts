@@ -12,7 +12,7 @@ import {
   type ResearchNotebook,
   type ResearchPlan,
 } from './notebook'
-import { createResearchTools, type RenderBroker } from '../tools/research'
+import { createResearchTools, type BrowseBroker, type RenderBroker } from '../tools/research'
 import type { ObservabilityConfig, ProviderConfig } from '../data/settings'
 import type { ResearchSource, ResearchStep, ResearchVerification } from '../data/researchTasks'
 
@@ -50,12 +50,23 @@ function stepDetail(p: Extract<UIPart, { type: 'tool' }>): string {
   return `${input}\n\n${result}`
 }
 
+/** First line of the model's thinking, for the collapsed row. */
+function firstLine(text: string, max = 140): string {
+  const line = text.trim().split('\n').find((l) => l.trim()) ?? ''
+  return line.length > max ? `${line.slice(0, max)}…` : line
+}
+
 // The research loop is a phased state machine over a structured notebook:
 //   Scope&Plan → (Gather → Reflect)* → Synthesize → Verify.
 // Each gather round starts FRESH (question + notebook summary + current focus)
 // rather than growing one ever-larger message history — the notebook is the
 // long-horizon memory, which keeps context bounded on big topics.
 const MAX_GATHER_ROUNDS = 5
+
+// Page walks (BrowseSite) are the most expensive thing the agent can do — a whole
+// nested agent loop against a live tab. Bound how many one task may spend, across
+// all its gather rounds.
+const MAX_BROWSE_SESSIONS = 6
 
 /** A minimal sink for the live step log: append a step, or replace the last one
  *  in place (used to flip a "running" phase step to its "done" state). */
@@ -66,10 +77,12 @@ interface StepSink {
 
 const GATHER_SYSTEM = `You are the GATHER phase of a background research agent. Your job THIS round is to close the open sub-questions you are given — nothing else.
 - Use WebSearch to find sources, then FetchUrl to read the most relevant ones (FetchUrl auto-renders JS/paywalled pages when needed). For scholarly/technical topics also use SearchAcademic (peer-reviewed papers).
+- When FetchUrl is REFUSED (403, bot wall, login wall), do NOT just search again — that loses the source. Call BrowseSite({url, objective}) to open the page in a real browser tab and read it there. Also use BrowseSite when what you need is behind navigation rather than at a guessable URL (a docs site's own search, a table behind a tab, results behind pagination). It browses the site autonomously and records what it finds.
 - For every substantive fact you will rely on, call Notebook.write with the claim, the exact source URL you read it from, and a short verbatim quote. This is how findings are recorded — text you type outside a Notebook.write is NOT saved.
 - When a visual would strengthen the report, use SearchImages (attributed, licensed images) or HarvestImages(url) on a useful page to collect charts/figures/photos; the best ones get embedded later. Use ExtractTable to pull structured data from a page's text.
-- Prefer primary/official/reference sources. If a source fails, move on.
-- Be efficient: a handful of searches and fetches. When you have covered the focus sub-questions, stop — do NOT write the report here (a later phase does that).`
+- Prefer primary/official/reference sources. Searching repeatedly for the same thing is a dead end — if two searches have not produced a readable source, read the best candidate with BrowseSite instead.
+- Think out loud briefly before each tool call: say what you are looking for and why. The user watches this log.
+- Be efficient. When you have covered the focus sub-questions, stop — do NOT write the report here (a later phase does that).`
 
 /** Run one background research task to completion. Headless: no user, no user data. */
 export async function runResearch(opts: {
@@ -83,6 +96,8 @@ export async function runResearch(opts: {
   observability?: ObservabilityConfig
   /** Escalate a hard URL to a real controlled tab via the SW broker (Phase 4). */
   renderBroker?: RenderBroker
+  /** Drive a real tab interactively (BrowseSite). Absent = no page walks. */
+  browseBroker?: BrowseBroker
   /** Emits the live step log + notebook snapshot for the sheet. */
   onUpdate: (steps: ResearchStep[], notebook: ResearchNotebook) => void
   signal: AbortSignal
@@ -107,8 +122,11 @@ export async function runResearch(opts: {
   let lastSig = ''
   const emit = () => {
     const nb = notebook.get()
+    // summary.length is in the signature so a STREAMING thought row keeps
+    // redrawing as its text arrives — tool+status alone would freeze it at its
+    // first token until the next tool call landed.
     const sig =
-      allSteps.map((s) => `${s.tool}:${s.status}`).join('|') +
+      allSteps.map((s) => `${s.tool}:${s.status}:${s.summary.length}`).join('|') +
       `#${nb.findings.length}/${nb.sources.length}/${nb.images.length}/${Object.keys(nb.coverage).length}`
     if (sig === lastSig) return
     lastSig = sig
@@ -130,21 +148,52 @@ export async function runResearch(opts: {
 
   const notebook: NotebookHandle = createNotebook(undefined, emit)
 
-  const stepsOf = (parts: UIPart[]): ResearchStep[] =>
-    parts
-      .filter((p): p is Extract<UIPart, { type: 'tool' }> => p.type === 'tool')
-      .map((p) => ({
+  // A BrowseSite call runs a whole nested agent loop against a live tab. Its inner
+  // steps are kept per tool-call id and spliced in under their BrowseSite row, so
+  // the user can watch the page walk instead of staring at one opaque row for a
+  // minute. Keyed by call id, not a single list, so two walks in one round don't
+  // overwrite each other.
+  const innerByCall = new Map<string, ResearchStep[]>()
+
+  /**
+   * Turn one turn's parts into log rows. The model's TEXT parts are its reasoning
+   * — the log used to drop them, which is why the sheet showed a wall of anonymous
+   * searches with no visible thinking. They are rows now, in call order.
+   */
+  const stepsOf = (parts: UIPart[], depth = 0): ResearchStep[] =>
+    parts.flatMap((p): ResearchStep[] => {
+      if (p.type === 'text') {
+        const text = p.text.trim()
+        if (!text) return []
+        return [{ tool: 'Thinking', summary: firstLine(text), detail: text, status: 'done', kind: 'thought', depth }]
+      }
+      const step: ResearchStep = {
         tool: p.toolName,
         summary: `${p.toolName}: ${compact(p.input).slice(0, 120)}`,
         detail: stepDetail(p),
         status: p.state === 'done' ? 'done' : p.state === 'error' ? 'error' : 'running',
-      }))
+        kind: 'tool',
+        depth,
+      }
+      return [step, ...(innerByCall.get(p.toolCallId) ?? [])]
+    })
+
+  /** Streams a page walk's inner steps into the log, nested under its call. */
+  const onBrowseStep = (toolCallId: string, parts: UIPart[]) => {
+    innerByCall.set(toolCallId, stepsOf(parts, 1))
+    rebuildRound()
+  }
+
+  // Set by each gather round so onBrowseStep (which fires from inside a tool
+  // execute, between the round's own updates) can redraw the round's rows.
+  let rebuildRound: () => void = () => {}
 
   try {
     // ---- Phase 1: Scope & Plan ------------------------------------------------
     const plan = await planResearch(opts.question, model, opts.signal, trace)
     notebook.setPlan(plan)
     pushStep({
+      kind: 'phase',
       tool: 'Plan',
       summary: `Planned ${plan.subQuestions.length} sub-question${plan.subQuestions.length === 1 ? '' : 's'}`,
       detail: `Sub-questions:\n${plan.subQuestions.map((q, i) => `  ${i + 1}. ${q}`).join('\n')}\n\nOutline: ${plan.outline.join(' · ')}`,
@@ -152,18 +201,39 @@ export async function runResearch(opts: {
     })
 
     // ---- Phase 2: Gather ↔ Reflect loop --------------------------------------
+    // Page walks are budgeted across the whole task, not per round — one gnarly
+    // site can legitimately eat several, and a later round should feel that.
+    const browseBudget = { remaining: MAX_BROWSE_SESSIONS }
+
     for (let round = 0; round < MAX_GATHER_ROUNDS; round++) {
       if (opts.signal.aborted) break
       const gaps = openGaps(notebook.get())
       if (gaps.length === 0) break
 
       const focus = gaps.slice(0, 3) // deepen a few at a time
-      const tools = createResearchTools({ selected, trace, notebook, renderBroker: opts.renderBroker })
+      const tools = createResearchTools({
+        selected,
+        trace,
+        notebook,
+        renderBroker: opts.renderBroker,
+        browseBroker: opts.browseBroker,
+        browseBudget,
+        taskId: opts.taskId,
+        onBrowseStep,
+        signal: opts.signal,
+      })
       const roundStart = allSteps.length
-      const onTurnUpdate = (parts: UIPart[]) => {
-        allSteps.length = roundStart // this round's steps replace, not append
-        allSteps.push(...stepsOf(parts))
+      let roundParts: UIPart[] = []
+      // Rebuilding (not appending) keeps the round's rows in sync as tool results
+      // land, and lets a nested browse step redraw the round from inside a tool.
+      rebuildRound = () => {
+        allSteps.length = roundStart
+        allSteps.push(...stepsOf(roundParts))
         emit()
+      }
+      const onTurnUpdate = (parts: UIPart[]) => {
+        roundParts = parts
+        rebuildRound()
       }
       const gatherPrompt =
         `Research question: ${opts.question}\n\n` +
@@ -180,9 +250,9 @@ export async function runResearch(opts: {
         trace,
       })
       // Freeze this round's steps at their final state.
-      allSteps.length = roundStart
-      allSteps.push(...stepsOf(result.parts))
-      emit()
+      roundParts = result.parts
+      rebuildRound()
+      rebuildRound = () => {} // the round is over; a late browse callback must not redraw it
 
       if (opts.signal.aborted) break
 
@@ -197,6 +267,7 @@ export async function runResearch(opts: {
       })
       const covered = notebook.get().plan.subQuestions.filter((q) => notebook.get().coverage[q]?.supported).length
       pushStep({
+        kind: 'phase',
         tool: 'Reflect',
         summary: `Coverage: ${covered}/${notebook.get().plan.subQuestions.length} sub-questions`,
         detail: reflection.assessments
@@ -208,9 +279,9 @@ export async function runResearch(opts: {
     }
 
     // ---- Phase 3: Synthesize --------------------------------------------------
-    pushStep({ tool: 'Synthesize', summary: 'Writing the report…', detail: '', status: 'running' })
+    pushStep({ kind: 'phase', tool: 'Synthesize', summary: 'Writing the report…', detail: '', status: 'running' })
     const draft = await synthesize(opts.question, notebook.get(), model, opts.signal, trace)
-    stepSink.replaceTail({ tool: 'Synthesize', summary: 'Report drafted', detail: '', status: 'done' })
+    stepSink.replaceTail({ kind: 'phase', tool: 'Synthesize', summary: 'Report drafted', detail: '', status: 'done' })
 
     // ---- Phase 4: Verify — grounding + adversarial, then revise --------------
     const { report, verification } = await verifyReport(draft, notebook, model, opts.signal, trace, stepSink)
@@ -409,7 +480,7 @@ async function verifyReport(
   trace: Trace | undefined,
   steps: StepSink,
 ): Promise<{ report: string; verification?: ResearchVerification }> {
-  steps.push({ tool: 'Verify', summary: 'Checking citations & claims…', detail: '', status: 'running' })
+  steps.push({ kind: 'phase', tool: 'Verify', summary: 'Checking citations & claims…', detail: '', status: 'running' })
   const nb = notebook.get()
   const evidence = summarizeNotebook(nb, { maxFindings: 200 })
   try {
@@ -477,6 +548,7 @@ async function verifyReport(
     }
 
     steps.replaceTail({
+      kind: 'phase',
       tool: 'Verify',
       summary: `Verified: ${verification.confirmed} ok · ${verification.hedged} hedged · ${verification.removed} removed`,
       detail: verification.notes?.length ? verification.notes.join('\n') : 'No issues found.',
@@ -485,7 +557,7 @@ async function verifyReport(
     return { report, verification }
   } catch {
     // Verification is best-effort — never fail the whole task over it.
-    steps.replaceTail({ tool: 'Verify', summary: 'Verification skipped (unavailable)', detail: '', status: 'done' })
+    steps.replaceTail({ kind: 'phase', tool: 'Verify', summary: 'Verification skipped (unavailable)', detail: '', status: 'done' })
     return { report: draft }
   }
 }

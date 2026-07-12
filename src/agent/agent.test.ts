@@ -138,3 +138,80 @@ describe('runAgentTurn: unloaded-tool calls are repaired into GetTool', () => {
     expect(toolParts.some((p) => p.toolName === 'GetTool')).toBe(false)
   })
 })
+
+// A turn cut off at the step ceiling must report stop.reason 'budget', not
+// 'completed' — runTurnChain BREAKS the continuation chain on 'completed', so
+// mislabelling a cut-off silently truncates long-horizon work. The trap: the AI
+// SDK's top-level finishReason is 'other' (not 'tool-calls') when stopWhen halts
+// the loop, so the obvious check is the wrong one.
+describe('step-budget stop reason', () => {
+  /** A model that never stops asking for another tool call. */
+  function alwaysCallsATool() {
+    let call = 0
+    return new MockLanguageModelV3({
+      doStream: async () => {
+        call += 1
+        return {
+          stream: new ReadableStream({
+            start(controller: any) {
+              controller.enqueue({ type: 'stream-start', warnings: [] })
+              controller.enqueue({ type: 'tool-call', toolCallId: `c${call}`, toolName: 'ReadPage', input: '{}' })
+              controller.enqueue({
+                type: 'finish',
+                finishReason: 'tool-calls',
+                usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+              })
+              controller.close()
+            },
+          }),
+        }
+      },
+    })
+  }
+
+  it("reports 'budget' when the model is cut off at the ceiling mid-tool-call", async () => {
+    const result = await runAgentTurn({
+      model: alwaysCallsATool(),
+      system: 's',
+      history: [{ role: 'user', content: 'go' }],
+      tools: makeTools(new Set()),
+      abortSignal: new AbortController().signal,
+      maxSteps: 3,
+      onUpdate: () => {},
+    })
+
+    expect(result.stop.stepsUsed).toBe(3)
+    expect(result.stop.reason).toBe('budget')
+  })
+
+  it("reports 'completed' when the model finishes on its own before the ceiling", async () => {
+    const result = await runAgentTurn({
+      model: new MockLanguageModelV3({
+        doStream: async () => ({
+          stream: new ReadableStream({
+            start(controller: any) {
+              controller.enqueue({ type: 'stream-start', warnings: [] })
+              controller.enqueue({ type: 'text-start', id: 't1' })
+              controller.enqueue({ type: 'text-delta', id: 't1', delta: 'all done' })
+              controller.enqueue({ type: 'text-end', id: 't1' })
+              controller.enqueue({
+                type: 'finish',
+                finishReason: 'stop',
+                usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+              })
+              controller.close()
+            },
+          }),
+        }),
+      }),
+      system: 's',
+      history: [{ role: 'user', content: 'go' }],
+      tools: makeTools(new Set()),
+      abortSignal: new AbortController().signal,
+      maxSteps: 3,
+      onUpdate: () => {},
+    })
+
+    expect(result.stop.reason).toBe('completed')
+  })
+})

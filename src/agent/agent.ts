@@ -211,6 +211,12 @@ export async function runAgentTurn(options: {
    */
   wrapUpNudge?: string
   /**
+   * Overrides the turn's step ceiling (default MAX_STEPS). Nested sub-agents run
+   * on a much shorter leash than a foreground turn — the browse sub-agent
+   * (src/agent/browseAgent.ts) gets a dozen clicks, not two dozen.
+   */
+  maxSteps?: number
+  /**
    * Optional Langfuse trace for this turn (created by the caller). When present,
    * each model step is recorded as a generation with token usage; when absent,
    * observability is off and nothing here runs. Tool spans are emitted separately
@@ -220,6 +226,7 @@ export async function runAgentTurn(options: {
 }): Promise<AgentTurnResult> {
   const { model, system, history, tools, abortSignal, onUpdate } = options
   const wrapUpNudge = options.wrapUpNudge ?? DEFAULT_WRAP_UP_NUDGE
+  const maxSteps = options.maxSteps ?? MAX_STEPS
   const trace = options.trace
   const modelId = (model as { modelId?: string }).modelId
   // Per-step latency: attribute the wall-clock between step boundaries to each
@@ -247,7 +254,7 @@ export async function runAgentTurn(options: {
     tools: { ...tools, [CHECKPOINT_TOOL]: checkpointTool } as ToolSet,
     // Two ways to stop: the hard step ceiling (v7's isStepCount), or the model
     // choosing to hand off via Checkpoint (OR semantics — whichever fires first).
-    stopWhen: [isStepCount(MAX_STEPS), hasToolCall(CHECKPOINT_TOOL)],
+    stopWhen: [isStepCount(maxSteps), hasToolCall(CHECKPOINT_TOOL)],
     abortSignal,
     // Observability: record one Langfuse generation per model step (tokens,
     // finish reason, tool calls) and roll the turn totals onto the trace. All
@@ -407,7 +414,7 @@ export async function runAgentTurn(options: {
       // model to wrap up / checkpoint instead of getting cut off mid-action. base
       // is rebuilt each step (no stacking), so re-injecting per step keeps the
       // wrap-up pressure on across the final steps.
-      if (wrapUpNudge && stepNumber >= MAX_STEPS - NUDGE_LEAD) {
+      if (wrapUpNudge && stepNumber >= maxSteps - NUDGE_LEAD) {
         injected.push({ role: 'user', content: wrapUpNudge })
       }
       // Progressive disclosure: expose only the always-on core plus whatever the
@@ -493,9 +500,15 @@ export async function runAgentTurn(options: {
   // are distinguished by the caller's catch.
   const stepsUsed = (await result.steps).length
   const finishReason = await result.finishReason
+  // The AI SDK resolves the TOP-LEVEL finishReason to 'other' when a `stopWhen`
+  // condition halts the loop — the *step's* own reason was 'tool-calls', but that
+  // is not what surfaces here. Testing for 'tool-calls' therefore never matched,
+  // so a turn cut off at the ceiling was mislabelled 'completed' and runTurnChain
+  // broke out of the continuation chain instead of auto-continuing. A turn the
+  // model ended by itself reports 'stop'; anything else at the ceiling is a cut-off.
   const reason: TurnStopReason = checkpoint
     ? 'checkpoint'
-    : stepsUsed >= MAX_STEPS && finishReason === 'tool-calls'
+    : stepsUsed >= maxSteps && finishReason !== 'stop'
       ? 'budget'
       : 'completed'
   // v7: use result.responseMessages (accumulated assistant/tool history across
