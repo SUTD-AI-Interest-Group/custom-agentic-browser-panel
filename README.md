@@ -1,10 +1,27 @@
-# Agent Chat — Chrome Extension
+<p align="center">
+  <img src="assets/banner.png" alt="Lychee AI" width="100%" />
+</p>
 
-A plain, model-agnostic AI agent chat in Chrome's side panel (Manifest V3). The
-agent can ask for your permission to see your tabs and answer questions about
-the pages you have open. All AI workflows are built on the
-[Vercel AI SDK](https://ai-sdk.dev) (v5) and run entirely inside the extension —
-no backend server.
+<p align="center">
+  <strong>A model-agnostic AI agent that lives in Chrome's side panel.</strong><br />
+  It reads the pages you're on, controls them with your permission, and runs
+  long web research in the background — entirely client-side, with no server.
+</p>
+
+---
+
+Lychee AI is a Manifest V3 Chrome extension (React 18 + Vite 6 + TypeScript,
+built on the [Vercel AI SDK](https://ai-sdk.dev) v5). **There is no backend.**
+The panel talks directly to whatever OpenAI-compatible endpoint you configure,
+and your API key never leaves `chrome.storage.local`.
+
+Two ideas run through the whole design:
+
+- **Every capability is gated.** Any tool that touches a page, the network, or
+  your data stops on a human-in-the-loop approval card before it runs.
+- **The agent only sees what it asks for.** Tools are progressively disclosed —
+  a typical turn ships a handful of tool schemas, not the whole set — and the
+  agent cannot see a webpage at all until you let it.
 
 ## Setup
 
@@ -14,35 +31,31 @@ npm run build
 ```
 
 Then in Chrome: `chrome://extensions` → enable **Developer mode** → **Load
-unpacked** → select the `dist/` folder. Click the extension's toolbar icon to
-open the side panel.
+unpacked** → select the `dist/` folder. Click the lychee in your toolbar (or
+press <kbd>⌘E</kbd> / <kbd>Ctrl+E</kbd>) to open the panel.
 
-During development, `npm run dev` rebuilds on change (click the extension's
-reload button in `chrome://extensions` to pick up changes).
+During development, `npm run dev` rebuilds on change — there's no hot reload, so
+click the extension's reload button in `chrome://extensions` to pick changes up.
+
+| Command | What it does |
+| --- | --- |
+| `npm run dev` | `vite build --watch` — rebuild `dist/` on change |
+| `npm run build` | Typecheck, then build |
+| `npm run typecheck` | `tsc --noEmit` |
+| `npm test` | Vitest suite over the pure, Chrome-independent logic |
 
 ## Onboarding
 
-First run walks through a three-step wizard: pick/configure an
-OpenAI-compatible endpoint, **test it live** (one tiny completion proves the
-base URL + key + model id work before you can continue), and choose the
-agent's **tab visibility** — *only my current tab* or *all open tabs*. In
-active-tab mode the `ReadTabs` tool is never exposed to the model and
-@mentions offer only the current tab. Both the endpoint and the visibility
-preference can be changed later in Settings.
+First run is a three-step wizard: configure an OpenAI-compatible endpoint,
+**test it live** (one tiny completion proves the base URL, key, and model id
+work before you can continue), and choose the agent's **tab visibility** —
+*only my current tab* or *all open tabs*. In active-tab mode the `ReadTabs` tool
+is never even exposed to the model. Both settings can be changed later.
 
-## @mentioning tabs
+## Providers
 
-Type `@` in the composer to open a tab picker (filtered as you type, arrow
-keys + Enter to select). Mentioned tabs' contents are read at send time and
-appended to your message inside `<tab>` blocks — an explicit share, so no
-permission card is involved. Which tabs are offered respects the visibility
-preference above.
-
-## Configuring providers
-
-The extension is provider-agnostic: any **OpenAI-compatible** endpoint works.
-Open settings (gear icon) and add a provider with a base URL, API key, and the
-model ids you want. One-click presets are included for:
+Any **OpenAI-compatible** endpoint works. Add one in Settings with a base URL,
+API key, and the model ids you want; one-click presets are included for:
 
 | Provider | Base URL |
 | --- | --- |
@@ -52,185 +65,235 @@ model ids you want. One-click presets are included for:
 | Groq | `https://api.groq.com/openai/v1` |
 | Ollama (local) | `http://localhost:11434/v1` |
 
-API keys are stored in `chrome.storage.local` and sent only to the endpoint you
-configure. The extension's `host_permissions` exempt these requests from CORS,
-which is why no proxy server is needed.
+The manifest's `host_permissions` are what exempt these calls from CORS — which
+is why no proxy server is needed.
+
+## The composer
+
+- **`@` mentions a tab.** A picker opens (filter as you type, arrow keys +
+  Enter). Mentioned tabs are read at send time and appended inside `<tab>`
+  blocks — an explicit share, so no permission card is involved. `@memory` asks
+  the agent to consult long-term memory before answering.
+- **`/` invokes a skill** by name, with the same autocomplete behaviour.
+- **The camera button** starts an Arc/Dia-style region capture: the page tints,
+  the cursor becomes a sniper that snaps to the component under it, click to
+  capture or drag for an arbitrary area. The shot lands as a thumbnail on the
+  composer and rides along as an image part of your next message.
+
+Answers render as rich Markdown — syntax-highlit code, KaTeX math, link
+previews, image carousels, and collapsible JSON trees.
 
 ## Agent tools
 
-Tools are **progressively disclosed**, so a typical turn ships only a handful of
-tool schemas instead of the whole set. Only an always-on core is active by
-default — `ReadPage` (read the current tab) plus two meta-tools, `ToolSearch`
-(list the available tools) and `GetTool` (load some by name). Everything else is
-loaded on demand: the model searches the catalog, loads what it needs, and those
-tools stay available for the rest of the turn. The active set is computed each
-step in `runAgentTurn`'s `prepareStep` (`activeTools`) from a per-turn
-`activeNames` set that `GetTool` grows; the pure catalog/search/active-set logic
-lives in `src/tools/toolDiscovery.ts`. Loaded tools are all still gated by a
-human-in-the-loop permission card (`ToolSearch`/`GetTool` are the only ungated
-tools — they touch no page, network, or user data).
+Only an always-on core is active by default: `ReadPage`, plus the two meta-tools
+`ToolSearch` (list what exists) and `GetTool` (load some by name). Everything
+else is loaded on demand — the model searches the catalog, loads what it needs,
+and those tools stay live for the rest of the turn. The pure catalog/search
+logic lives in `src/tools/toolDiscovery.ts`.
 
-- **ReadPage** — reads the active tab: `mode:"text"` (title, URL, selection, visible text), `mode:"dom"` (HTML structure), or `mode:"elements"` (numbered interactive elements, used before controlling a page).
-- **ReadTabs** — lists all open tabs; optionally reads specific tabs by id (`mode:"text"` or `"dom"`).
-- **QueryBrowserData** — the user's history, bookmarks, top sites, or downloads (`source:…`, only enabled sources).
-- **SaveMemory / SearchMemory** — long-term memory: save a durable fact/preference/project, or keyword-search older context.
-- **RequestPageControl** — asks once to control the tab for a task, then the agent acts.
-- **ControlPage** — performs one action (click / type / select / scroll / highlight / navigate / press).
-- **NavigateTab · ExtractData · AutofillForm · ListAllSkills / ReadSkill / SaveSkill · StartResearch** — loaded on demand like the rest.
+| Tool | What it does |
+| --- | --- |
+| `ReadPage` | Read the active tab — text, DOM, or numbered interactive elements |
+| `ReadTabs` | List all open tabs; read specific ones by id |
+| `Screenshot` | Look at the page — viewport, a single element, or a stitched full page |
+| `ExtractData` | Pull structured data off the current page |
+| `RequestPageControl` / `ControlPage` | Open a control session, then act (click / type / select / scroll / press / navigate) |
+| `AutofillForm` | Fill a form from your saved profile |
+| `NavigateTab` | Switch, open, or navigate tabs |
+| `SaveMemory` / `SearchMemory` | Long-term memory |
+| `QueryBrowserData` | History, bookmarks, top sites, downloads (only the sources you enable) |
+| `ListAllSkills` / `ReadSkill` / `SaveSkill` | Skills |
+| `StartResearch` | Kick off a background research task |
 
-## Screenshots
-
-The camera button beside Send starts an Arc/Dia-style capture on the active
-tab (`src/platform/capture.ts`): the page tints and the cursor becomes a sniper —
-hovering auto-snaps to the component under the cursor (the snapped area lights
-up), clicking captures it, click-hold-drag captures an arbitrary area, Esc
-cancels. The selection overlay removes itself before
-`chrome.tabs.captureVisibleTab` fires, the shot is cropped on a canvas
-(downscaled to ≤1400 px), and the result lands as a removable thumbnail on the
-composer. Screenshots are sent as image parts of your next message, so any
-vision-capable model can read them; multiple attachments per message are
-supported.
-
-The tool's `execute()` simply suspends on an approval promise until you click
-Allow / Allow this chat / Deny, so the AI SDK's multi-step agent loop
-(`streamText` + `stopWhen: stepCountIs(n)`) needs no special handling. Page
-content is extracted via `chrome.scripting.executeScript` function injection —
-there is no persistent content script.
+`ToolSearch` and `GetTool` are the only ungated tools — they list and load, but
+the tool they load still stops on its own card. **Settings → Permissions** lets
+you set each tool to *ask* (default), *always*, or *never*; *never* removes it
+from the toolset entirely, so the model never learns it existed.
 
 ## Page control
 
-Beyond reading pages, the agent can act on one: click, type, select, scroll,
-highlight, navigate, or press a key — the "browser-use" capability, built
-entirely on the manifest's existing `scripting`/`tabs`/`activeTab`
-permissions (no `chrome.debugger`, no extra host permissions).
+The agent can act on a page — click, type, select, scroll, press, navigate —
+built entirely on the manifest's existing `scripting`/`tabs` permissions. No
+`chrome.debugger`, no extra host permissions.
 
-- **Indexed-DOM registry** (`src/platform/domIndex.ts`) — `ReadPage` (mode
-  `"elements"`) and `RequestPageControl` inject a walker that finds visible interactive
-  elements (links, buttons, inputs, ARIA-interactive roles), stamps each with
-  a `data-agent-idx` attribute so a later, separate injection can re-find it
-  (`chrome.scripting` calls share no JS state, only the DOM), and returns a
-  numbered registry. `ControlPage` addresses elements by that `[index]`, and
-  every action re-snapshots the page afterward so the model always sees the
-  current state.
-- **Adaptive perception** — every model gets the indexed registry as a
-  compact text list (`[index]<tag role=...> "name" = "value"`); that's the
-  primary channel regardless of model. For vision-capable models, a
-  set-of-marks screenshot (the same registry drawn as numbered boxes over a
-  fresh tab capture, `src/platform/marks.ts`) is captured too and delivered
-  as a `user`-role image message injected by `streamText`'s `prepareStep`
-  right before the model's next step (`src/agent/agent.ts`) — an
-  OpenAI-compatible tool result cannot carry image content, so the image
-  can't ride along on the tool's own response. Whether a model can actually
-  read images is decided by a cheap runtime probe (`src/agent/vision.ts`): a
-  tiny canvas image with a random code is sent once per provider+model, and
-  the model is judged vision-capable only if it echoes the code back; the
-  result is cached in `chrome.storage.local` so the probe runs at most once
-  per model. Non-vision models, and models where the probe fails, rely on
-  the text registry alone.
-- **Per-task session grant** (`src/tools/pageControl.ts`) —
-  `RequestPageControl` shows one approval card naming the page and the
-  agent's stated plan; approving opens a `ControlSession` scoped to that tab
-  and origin with a budget of `MAX_SESSION_ACTIONS` (20) `ControlPage` calls,
-  after which the session closes and the agent must ask again. Within a
-  granted session, individual steps still run through
-  `isPointOfNoReturn()` — form submits, cross-origin navigation, an Enter
-  keypress, or a field flagged sensitive (passwords, payment inputs) — each
-  of which pops its own one-shot confirmation card (no "Allow this chat")
-  before it executes. The chat's Stop control aborts the turn and always
-  tears the session down.
-- **On-page presence overlay** (`src/platform/presence.ts`) — while a
-  session is open the page gets a translucent tint with a spotlight cutout
-  and a small cursor that glides to each element before it's acted on and
-  pulses on click, so the user can watch the agent work. It's hidden for the
-  instant a set-of-marks screenshot is taken (so the tint doesn't pollute
-  what the model sees) and always restored afterward, and is fully removed
-  when the session ends.
+- **Indexed-DOM registry** (`src/platform/domIndex.ts`) — an injected walker
+  finds visible interactive elements, stamps each with `data-agent-idx` so a
+  later injection can re-find it, and returns a numbered registry. `ControlPage`
+  addresses elements by that `[index]`, and every action re-snapshots the page
+  so the model always sees current state.
+- **Two nested gates.** `RequestPageControl` shows one card naming the page and
+  the agent's stated plan; approving opens a session scoped to that tab and
+  origin. Within it, individual steps *still* confirm one-shot when
+  `isPointOfNoReturn()` flags them — form submits, cross-origin navigation,
+  Enter keypresses, password and payment fields — every time, with no "allow
+  this chat" escape hatch.
+- **On-page presence** (`src/platform/presence.ts`) — while a session is open
+  the page carries a translucent tint with a spotlight cutout and a small cursor
+  that glides to each element and pulses on click, so you can watch the agent
+  work. It is always torn down when the turn ends, errors, or is stopped.
+
+## Seeing the page
+
+Whether a model can *actually* read images is decided by a cheap runtime probe
+(`src/agent/vision.ts`): a tiny canvas image containing a random code is sent
+once per provider+model, and the model counts as vision-capable only if it
+echoes the code back. The verdict is cached, and `Screenshot` is deleted from
+the toolset entirely for text-only models — a tool whose whole product is an
+image is worse than absent for a model that cannot see.
+
+Two registries stay deliberately separate: `domIndex` answers *"what can I
+click?"* (interactive, viewport-only, addressed `[3]`), while `regionIndex`
+answers *"what can I look at?"* (charts, figures, tables, media — whole-document,
+addressed `[r3]`). Tall pages reach you as one stitched strip but reach the model
+as sequential full-resolution tiles, because a downscaled full-page strip is an
+illegible smear on exactly the pages where seeing matters.
+
+## Background research
+
+`StartResearch` hands a question to a phased pipeline that runs in an offscreen
+document, so it survives you closing the panel: **Scope & Plan → (Gather ↔
+Reflect) → Synthesize → Verify**, over a structured notebook (plan, sources,
+findings, images, coverage) that serves as its long-horizon memory. Each gather
+round is a fresh turn seeded from a notebook *summary* rather than a growing
+transcript.
+
+Its tools — `WebSearch`, `FetchUrl`, `ExtractTable`, `SearchAcademic`,
+`SearchImages`, `HarvestImages`, `Notebook.read/write` — are read-only and
+ungated, because no user is present to approve anything. When a page refuses to
+be fetched (403, bot wall, login wall), the agent escalates to **`BrowseSite`**:
+a nested sub-agent drives a real, isolated, minimized browser tab, and every
+action it attempts is checked against a pure policy (`src/tools/browsePolicy.ts`)
+that permits reading, SSRF-guarded navigation, and site-search — and never a
+login, a purchase, or a non-search form submit. That policy *is* the security
+model here, so it's exhaustively unit-tested.
+
+Finished reports cite their sources as inline favicon chips, and a system
+notification tells you when one lands.
+
+## Long-horizon turns
+
+A turn is a continuation chain: one 24-step budget bounds *all* activity. As it
+nears the ceiling the model is nudged to call `Checkpoint`, which ends the turn
+with a structured hand-off — what's done, what remains, what to avoid, the next
+action — instead of getting cut off mid-action. The panel auto-continues a few
+times with a fresh budget (the control session and overlay survive), then
+surfaces a Continue card and hands the decision back to you.
 
 ## Memory & dreaming
 
-The extension has a two-tier memory housed in IndexedDB (`src/data/memory.ts`):
+A two-tier memory in IndexedDB:
 
-- **Episodes** — a raw journal of every conversation, appended turn by turn
-  from `Chat.tsx`. Never shown to the model during normal chat.
+- **Episodes** — a raw journal of every conversation. Never shown to the model
+  during normal chat.
 - **Memories** — small, durable, distilled facts (`fact` / `preference` /
-  `project` / `summary`). The top memories are injected into the system prompt
-  each turn, and the model can `SaveMemory` / `SearchMemory` on demand.
+  `project` / `summary`). The most relevant are injected into the system prompt
+  each turn.
 
 Episodes become memories through **dreaming** (`src/agent/dream.ts`): the model
-re-reads unconsolidated episodes alongside its current memories and emits JSON
-operations — add, update (merge duplicates), delete (forget stale entries) —
-plus a compact day summary. Dreaming is fully automatic — no user action
-involved: the background service worker checks an hourly `chrome.alarms` tick
-(and the panel re-checks on open), dreaming at most once per ~20 h and only
-after 30+ minutes of user inactivity. The Memory panel (moon icon) is a
-read-only window into the memory store and the last dream; individual memories
-can be forgotten there.
+re-reads unconsolidated episodes alongside its current memories and emits add /
+update / delete operations plus a day summary. It's fully automatic — an hourly
+alarm, firing at most once per ~20h and only after 30+ minutes of inactivity.
+The Memory panel (moon icon) is a read-only window onto the store and the last
+dream; you can forget individual memories there.
 
 ## Skills
 
-Skills are reusable instruction bundles — single-file `SKILL.md` records (a
-YAML-ish frontmatter block plus a Markdown body) stored in their own IndexedDB
-database, independent of the memory/conversation stores (`src/data/skills.ts`).
+Skills are reusable instruction bundles — single-file `SKILL.md` records
+(frontmatter + Markdown body) in their own IndexedDB store.
 
-- **Invoke by name**: type `/name` in the composer (e.g. `/summarizing-pages`) —
-  a `/` menu opens and autocompletes matching skills as you type, arrow keys +
-  Enter to pick one, mirroring the `@`-mention tab picker above.
-- **Autonomous loading**: an always-present catalog (name + description of
-  every model-invocable skill) is appended to the system prompt every turn.
-  When a request matches one, the agent calls `ReadSkill` to load its full body
-  before proceeding, or `ListAllSkills` to see the complete current list.
-- **Skills Library**: the archival-box icon in the top bar, left of the
-  settings gear, opens a masonry grid of skill cards with an inline editor —
-  create, edit, or delete custom skills, and export the current draft as
-  `SKILL.md` text (copied to your clipboard) or import one from a `.md` file.
-  Built-in skills are read-only in the Library; duplicate one to customize it.
-- **`/create-skill`** is a built-in meta-skill (`src/data/builtinSkills.ts`)
-  that interviews you — task, triggers, inputs, output, strictness — then
-  saves the result with `SaveSkill`.
-- **Approval policy**: `SaveSkill` mutates the store and always shows the
-  human-in-the-loop permission card. `ReadSkill` and `ListAllSkills` only read
-  your own local skills — as benign as `SearchMemory` — so they auto-approve
-  without a card.
+- **Invoke by name** with `/name`, or let the agent load one itself: a catalog
+  of every skill's name and description is appended to the system prompt, and
+  the agent calls `ReadSkill` when a request matches.
+- **`/create-skill`** is a built-in meta-skill that interviews you — task,
+  triggers, inputs, output, strictness — then saves the result.
+- `SaveSkill` mutates the store and always shows a card. `ReadSkill` and
+  `ListAllSkills` only read your own local skills, so they auto-approve.
+
+## Library
+
+The archival-box icon in the top bar opens a tabbed library:
+
+- **Chats** — saved conversation history.
+- **Skills** — a masonry grid of skill cards with an inline editor; create,
+  edit, duplicate, delete, import a `.md`, or export one to your clipboard.
+  Built-in skills are read-only — duplicate one to customize it.
+- **Research** — past and in-flight background research tasks and their reports.
+
+## Observability (optional)
+
+Turns can be exported to [Langfuse](https://langfuse.com) — traces, spans per
+tool call, and token usage — configured in Settings and off by default.
+Ingestion failures surface in the UI rather than being swallowed.
 
 ## Architecture
 
 ```
-public/manifest.json        MV3 manifest (sidePanel, scripting, tabs, storage)
-src/background.ts           Service worker: side panel behavior + dream alarm
-src/ui/                     React UI: Onboarding, Chat, Memory, Settings, Markdown
-src/ui/SkillsLibrary.tsx    Skills Library masonry UI + editor
-src/tools/tools.ts          Tool registry + approval gate + ToolSearch/GetTool meta-tools
-src/tools/toolDiscovery.ts  Pure catalog / search / active-set logic (progressive disclosure)
-src/tools/pageControl.ts    Control session, point-of-no-return rules, action dispatch
-src/agent/agent.ts          One agent turn: streamText → UI part stream
-src/agent/provider.ts       Config → AI SDK model (createOpenAICompatible)
-src/agent/dream.ts          Dream cycle: episodes + memories → memory ops
-src/agent/vision.ts         Runtime probe: does this model actually read images?
-src/data/settings.ts        Provider/model/system-prompt storage (chrome.storage)
-src/data/memory.ts          IndexedDB: episodes journal + long-term memories
-src/data/conversations.ts   IndexedDB: saved chat history
-src/data/skills.ts          IndexedDB: skills store + SKILL.md parse/serialize
-src/data/builtinSkills.ts   /create-skill meta-skill + example seeds
-src/platform/tabs.ts        Tab listing + page-content extraction
-src/platform/capture.ts     Region screenshots: snipe overlay + crop
-src/platform/domImage.ts    DOM element → PNG (copy/attach a component)
-src/platform/domIndex.ts    Indexed-DOM registry (data-agent-idx) for page control
-src/platform/pageActions.ts Real DOM mutations: click/type/select/scroll/press/navigate
-src/platform/presence.ts    On-page overlay: tint + gliding cursor + spotlight
-src/platform/marks.ts       Set-of-marks screenshot (numbered boxes over a tab capture)
-src/platform/panelPort.ts   Side-panel ↔ background messaging port
-src/platform/time.ts        Relative-time formatting
+public/manifest.json          MV3 manifest + extension icons
+src/background.ts             Service worker: panel toggle, dream alarm, research broker
+src/background/offscreen.ts   Offscreen host: runs background research
+
+src/ui/App.tsx                Shell: top bar, routing between panels
+src/ui/Chat.tsx               Turn chain, approval cards, page-control gate, composer
+src/ui/Markdown.tsx           Rich rendering: code, KaTeX, citations, link cards
+src/ui/library/               Tabbed library: Chats / Skills / Research
+src/ui/settings/              General, Permissions, Memory, Skills tabs
+src/ui/Onboarding.tsx         Three-step first-run wizard
+
+src/tools/tools.ts            Tool registry + the requestApproval gate
+src/tools/toolDiscovery.ts    Pure catalog / search / active-set (progressive disclosure)
+src/tools/pageControl.ts      Control session, point-of-no-return rules, dispatch
+src/tools/research.ts         Research toolset (ungated, all-active)
+src/tools/browsePolicy.ts     Pure policy: what a research browse session may do
+
+src/agent/agent.ts            One turn: streamText → UI part stream; Checkpoint; repair
+src/agent/provider.ts         Config → AI SDK model (createOpenAICompatible)
+src/agent/research.ts         Research state machine
+src/agent/notebook.ts         Structured research notebook
+src/agent/browseAgent.ts      Nested sub-agent that walks a real tab
+src/agent/dream.ts            Episodes + memories → memory ops
+src/agent/vision.ts           Runtime probe: does this model actually read images?
+src/agent/usage.ts            Token accounting
+src/agent/observability/      Optional Langfuse export
+
+src/data/settings.ts          Providers, system prompt, tool policies (chrome.storage)
+src/data/memory.ts            IndexedDB: episode journal + long-term memories
+src/data/conversations.ts     IndexedDB: chat history
+src/data/skills.ts            IndexedDB: skills + SKILL.md parse/serialize
+src/data/screenshots.ts       IndexedDB: captured images (kept out of model history)
+src/data/researchTasks.ts     IndexedDB: research tasks + reports
+
+src/platform/domIndex.ts      "What can I click?" — interactive registry
+src/platform/regionIndex.ts   "What can I look at?" — visual-region registry
+src/platform/screenshot.ts    Capture engine: viewport / element / stitched full page
+src/platform/capture.ts       The human's camera-button region picker
+src/platform/pageActions.ts   Real DOM mutations: click/type/select/scroll/press/navigate
+src/platform/presence.ts      On-page overlay: tint + gliding cursor + spotlight
+src/platform/marks.ts         Set-of-marks screenshot (numbered boxes over a capture)
+src/platform/researchTab.ts   Leased, isolated, minimized tab for research
+src/platform/webFetch.ts      Fetch + readability extraction (SSRF-guarded)
 ```
 
-## Extending (planned surfaces)
+Functions injected via `chrome.scripting.executeScript` run in the page's
+isolated world with no shared JS state between injections — each is fully
+self-contained and re-finds elements via `data-agent-idx` / `data-agent-region`.
 
-- **More tools** (form autofill, richer control actions): add an entry in
-  `createAgentTools()` in `src/tools/tools.ts`. Route anything that mutates a page
-  through the same `requestApproval` gate; write-actions can use
-  `chrome.scripting.executeScript` with args, like `extractPageContent` does.
-- **Cross-tab orchestration**: `src/background.ts` is intentionally minimal and
-  is the place for work that must outlive the side panel.
+## Brand
 
-Skills (named, reusable instruction bundles) and page control (act on the
-active tab, not just read it) were on this list and are now implemented —
-see [Skills](#skills) and [Page control](#page-control) above.
+| Asset | Where |
+| --- | --- |
+| Extension icons (16/32/48/128) | `public/icons/` — shipped in the bundle |
+| Full-resolution mark, 512px store icon, banner | `assets/` — repo only |
+
+The palette is deliberately narrow: a quiet neutral canvas (the panel is dense,
+and a warm cast on every surface makes long transcripts harder to read) with
+brand red reserved for the accent and the loader.
+
+| Token | Light | Dark |
+| --- | --- | --- |
+| `--accent` | `#c9304a` | `#f2687e` |
+| `--lychee` (loader) | `#c9304a` | `#f2687e` |
+| `--lychee-leaf` | `#3e9e52` | `#5fbf74` |
+
+Both accents clear WCAG AA in both roles the token plays — as text on the canvas
+*and* as a fill under `--accent-text`. The logo's brighter crimson (`#d93a54`)
+does not, which is why the UI red is a shade deeper than the mark's.

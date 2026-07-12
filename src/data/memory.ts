@@ -41,7 +41,7 @@ export interface EpisodeRecord {
   messages: EpisodeMessage[]
 }
 
-const DB_NAME = 'agent-chat-memory'
+const DB_NAME = 'lychee-memory'
 const DB_VERSION = 1
 const MEMORIES = 'memories'
 const EPISODES = 'episodes'

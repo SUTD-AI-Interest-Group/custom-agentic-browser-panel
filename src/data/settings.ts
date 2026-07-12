@@ -149,7 +149,7 @@ export function toolPolicy(settings: Settings, name: string): ToolPolicy {
   return settings.toolPolicies?.[name] ?? DEFAULT_TOOL_POLICIES[name] ?? 'ask'
 }
 
-export const DEFAULT_SYSTEM_PROMPT = `You are a helpful AI agent living in the user's browser side panel.
+export const DEFAULT_SYSTEM_PROMPT = `You are Lychee, a helpful AI agent living in the user's browser side panel.
 
 You cannot see any webpage by default — use your tools (they are described to you separately) to read a page the user refers to, and never fabricate page content: if you were denied access or could not read a page, say so and answer from general knowledge.
 
@@ -158,6 +158,29 @@ The user can @mention tabs in their message; when they do, the tab's content arr
 You also have a long-term memory stored locally in the browser. The most relevant memories appear in a "Long-term memory" section of this prompt when any exist; while you sleep, a consolidation process ("dreaming") distills each day's conversations into new memories.
 
 Be concise and direct.`
+
+/**
+ * Defaults that shipped as `systemPrompt` before the Lychee rename, frozen
+ * verbatim. `systemPrompt` is *persisted* — every install that has ever saved
+ * settings carries its own copy of the default it onboarded with — so bumping
+ * `DEFAULT_SYSTEM_PROMPT` alone would never reach an existing user. `loadSettings`
+ * swaps a stored copy that byte-matches one of these for the current default; a
+ * prompt the user actually edited matches nothing here and is left untouched.
+ *
+ * Append, never edit: an entry rewritten to match a newer default would start
+ * silently overwriting prompts that users had deliberately customised.
+ */
+const SUPERSEDED_SYSTEM_PROMPTS: readonly string[] = [
+  `You are a helpful AI agent living in the user's browser side panel.
+
+You cannot see any webpage by default — use your tools (they are described to you separately) to read a page the user refers to, and never fabricate page content: if you were denied access or could not read a page, say so and answer from general knowledge.
+
+The user can @mention tabs in their message; when they do, the tab's content arrives inside <tab> blocks appended to their message — treat it as up-to-date page content they chose to share (no tool call needed for it). They may also type @memory to ask you to consult your long-term memory before answering.
+
+You also have a long-term memory stored locally in the browser. The most relevant memories appear in a "Long-term memory" section of this prompt when any exist; while you sleep, a consolidation process ("dreaming") distills each day's conversations into new memories.
+
+Be concise and direct.`,
+]
 
 const STORAGE_KEY = 'settings'
 
@@ -179,6 +202,11 @@ export async function loadSettings(): Promise<Settings> {
   // shouldn't be forced through the wizard.
   if (stored && stored.onboarded === undefined && (stored.providers?.length ?? 0) > 0) {
     settings.onboarded = true
+  }
+  // Migration: an unedited pre-rename prompt is refreshed so the agent learns
+  // its name. A customised prompt is never touched.
+  if (stored?.systemPrompt && SUPERSEDED_SYSTEM_PROMPTS.includes(stored.systemPrompt)) {
+    settings.systemPrompt = DEFAULT_SYSTEM_PROMPT
   }
   return settings
 }

@@ -1,5 +1,16 @@
-/* Dia-inspired: quiet neutrals, bubble-less assistant text, floating rounded
-   composer, inline permission cards. Light + dark via prefers-color-scheme. */
+/* Lychee AI — quiet neutrals, bubble-less assistant text, floating rounded
+   composer, inline permission cards. Light + dark via prefers-color-scheme.
+
+   The neutral ramp is deliberately untinted: this panel is dense, and a warm
+   cast on every surface makes long transcripts harder to read. Brand lives in
+   --accent (and the lychee loader) only.
+
+   --accent does double duty — a *fill* under --accent-text (send button, primary
+   buttons) and a *text/icon colour* on --bg/--surface. Both jobs must clear WCAG
+   AA (4.5:1), which is what picks these two reds: #c9304a is 5.05:1 as text on
+   --bg and 5.25:1 under white; #f2687e is 5.72:1 as text on the dark --bg and
+   5.16:1 under the dark --accent-text. A brighter red (e.g. the logo's #d93a54)
+   fails the text job at 4.3:1 — do not "simplify" these to one value. */
 
 :root {
   --bg: #fafafa;
@@ -8,11 +19,16 @@
   --text-muted: #71717a;
   --border: #e4e4e7;
   --user-bubble: #ececee;
-  --accent: #1a1a1a;
+  --accent: #c9304a;
   --accent-text: #ffffff;
   --danger: #dc2626;
   --success: #16a34a;
-  --pill-bg: #f4f4f5;
+  --pill-bg: #fdf3f4;
+  /* The loader's fruit. Kept separate from --accent so the mark stays on-brand
+     even if the accent is ever retuned for contrast. */
+  --lychee: #c9304a;
+  --lychee-shade: #a8253c;
+  --lychee-leaf: #3e9e52;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -23,11 +39,14 @@
     --text-muted: #9d9da6;
     --border: #35353b;
     --user-bubble: #2e2e34;
-    --accent: #ececee;
-    --accent-text: #1a1a1a;
+    --accent: #f2687e;
+    --accent-text: #1f1114;
     --danger: #f87171;
     --success: #4ade80;
-    --pill-bg: #2a2a2f;
+    --pill-bg: #2b2429;
+    --lychee: #f2687e;
+    --lychee-shade: #c9304a;
+    --lychee-leaf: #5fbf74;
   }
 }
 
@@ -597,39 +616,100 @@ body {
   font-size: 13px;
 }
 
-.thinking-dots {
-  display: inline-flex;
-  align-items: flex-end;
-  gap: 3px;
+/* The waiting mascot: a lychee that hops. Drawn as inline SVG rather than a GIF
+   so it stays crisp at any DPI and recolours with the theme tokens.
+
+   Squash-and-stretch needs two nested transforms — one group translates (the
+   arc), the one inside it scales (the deform) — because a single element cannot
+   carry both without the scale dragging the translate around. Every animated
+   node sets `transform-box: fill-box`, or SVG transform-origin resolves against
+   the viewport instead of the shape and the fruit swings off-screen. */
+.thinking-lychee {
+  width: 18px;
+  height: 18px;
+  flex: none;
+  overflow: visible;
 }
 
-.thinking-dot {
-  width: 5px;
-  height: 5px;
-  border-radius: 50%;
-  background: var(--text-muted);
-  animation: thinking-bounce 1.2s ease-in-out infinite;
+.lychee-hop {
+  transform-box: fill-box;
+  transform-origin: 50% 100%;
+  animation: lychee-hop 1.15s cubic-bezier(0.45, 0, 0.55, 1) infinite;
 }
 
-/* Stagger the three dots so the bounce ripples left-to-right. */
-.thinking-dot:nth-child(2) {
-  animation-delay: 0.16s;
+.lychee-squash {
+  transform-box: fill-box;
+  transform-origin: 50% 100%;
+  animation: lychee-squash 1.15s ease-in-out infinite;
 }
 
-.thinking-dot:nth-child(3) {
-  animation-delay: 0.32s;
+/* Anchored at the stem so the leaf pivots like it's hinged, not sliding. */
+.lychee-leaf {
+  transform-box: fill-box;
+  transform-origin: 0% 100%;
+  animation: lychee-leaf 1.15s ease-in-out infinite;
 }
 
-@keyframes thinking-bounce {
+.lychee-shadow {
+  transform-box: fill-box;
+  transform-origin: 50% 50%;
+  /* Base opacity, not just a keyframe value — under reduced motion the animation
+     is off and the shadow would otherwise render at full strength. */
+  opacity: 0.16;
+  animation: lychee-shadow 1.15s ease-in-out infinite;
+}
+
+@keyframes lychee-hop {
   0%,
-  60%,
+  18%,
   100% {
     transform: translateY(0);
-    opacity: 0.35;
   }
-  30% {
-    transform: translateY(-4px);
-    opacity: 1;
+  50% {
+    transform: translateY(-5px);
+  }
+  80% {
+    transform: translateY(0);
+  }
+}
+
+/* Compress on the crouch and the landing, stretch at the apex. */
+@keyframes lychee-squash {
+  0%,
+  92%,
+  100% {
+    transform: scale(1, 1);
+  }
+  16% {
+    transform: scale(1.16, 0.84);
+  }
+  50% {
+    transform: scale(0.94, 1.07);
+  }
+  82% {
+    transform: scale(1.16, 0.84);
+  }
+}
+
+@keyframes lychee-leaf {
+  0%,
+  100% {
+    transform: rotate(0deg);
+  }
+  50% {
+    transform: rotate(-18deg);
+  }
+}
+
+@keyframes lychee-shadow {
+  0%,
+  100% {
+    transform: scale(1);
+    opacity: 0.16;
+  }
+  50% {
+    transform: scale(0.62);
+    opacity: 0.07;
   }
 }
 
@@ -638,10 +718,14 @@ body {
   font-variant-numeric: tabular-nums;
 }
 
+/* Reduced motion gets the fruit, just still — the indicator's job (a turn is
+   live) is carried by the rotating word and elapsed counter regardless. */
 @media (prefers-reduced-motion: reduce) {
-  .thinking-dot {
+  .lychee-hop,
+  .lychee-squash,
+  .lychee-leaf,
+  .lychee-shadow {
     animation: none;
-    opacity: 0.6;
   }
 }
 

@@ -43,7 +43,7 @@ export interface ShotThumb {
   label: string
 }
 
-const DB_NAME = 'agent-chat-screenshots'
+const DB_NAME = 'lychee-screenshots'
 const DB_VERSION = 1
 const STORE = 'shots'
 const THUMBS = 'thumbs'

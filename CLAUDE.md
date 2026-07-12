@@ -4,7 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-A Chrome Extension (Manifest V3) that renders a model-agnostic AI agent chat in Chrome's native side panel. React 18 + Vite 6 + TypeScript (strict), built on the Vercel AI SDK v5. Runs entirely client-side — **there is no backend**; the panel calls whatever OpenAI-compatible endpoint the user configures directly. See `README.md` for the feature-level tour and the file→responsibility architecture map.
+**Lychee AI** — a Chrome Extension (Manifest V3) that renders a model-agnostic AI agent chat in Chrome's native side panel. React 18 + Vite 6 + TypeScript (strict), built on the Vercel AI SDK v5. Runs entirely client-side — **there is no backend**; the panel calls whatever OpenAI-compatible endpoint the user configures directly. See `README.md` for the feature-level tour and the file→responsibility architecture map.
+
+The product is "Lychee AI"; the agent calls itself "Lychee" (`DEFAULT_SYSTEM_PROMPT`, `src/data/settings.ts`). Brand red is `#c9304a` (light) / `#f2687e` (dark) — see the `--accent` and `--lychee-*` tokens at the top of `src/ui/styles.css`, whose comment explains why the UI red is a shade deeper than the logo's. Icons ship from `public/icons/`; `assets/` holds repo-only art (full-res mark, 512px store icon, README banner) and is deliberately outside `public/` so it never bloats the extension bundle.
 
 ## Source layout
 
