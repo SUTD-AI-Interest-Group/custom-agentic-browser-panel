@@ -67,3 +67,22 @@ export function spliceFixes(
   }
   return out
 }
+
+/** Validate `text`; if any math won't compile, ask `complete` to fix just those
+ *  fragments and splice the corrected LaTeX back. Returns the original text on
+ *  any failure or when the splice would not reduce the number of broken spans —
+ *  so it can only ever improve the message, never regress it, and never throws. */
+export async function repairMessageText(text: string, complete: Complete): Promise<string> {
+  const { invalid } = validateMath(text)
+  if (invalid.length === 0) return text
+  let reply: string
+  try {
+    reply = await complete(buildRepairPrompt(invalid))
+  } catch {
+    return text
+  }
+  const fixes = parseFixes(reply, invalid)
+  if (fixes.size === 0) return text
+  const spliced = spliceFixes(text, invalid, fixes)
+  return validateMath(spliced).invalid.length < invalid.length ? spliced : text
+}
