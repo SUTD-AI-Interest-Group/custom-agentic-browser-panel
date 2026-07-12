@@ -57,7 +57,7 @@ export interface SaveSkillInput {
 // IndexedDB (mirrors src/data/conversations.ts single-store shape)
 // ---------------------------------------------------------------------------
 
-const DB_NAME = 'agent-chat-skills'
+const DB_NAME = 'lychee-skills'
 const DB_VERSION = 1
 const STORE = 'skills'
 

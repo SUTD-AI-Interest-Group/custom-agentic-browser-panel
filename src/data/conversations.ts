@@ -26,7 +26,7 @@ export interface ConversationSummary {
   messageCount: number
 }
 
-const DB_NAME = 'agent-chat-conversations'
+const DB_NAME = 'lychee-conversations'
 const DB_VERSION = 1
 const STORE = 'conversations'
 

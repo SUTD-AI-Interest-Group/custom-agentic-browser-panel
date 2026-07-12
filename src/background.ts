@@ -1,4 +1,4 @@
-// MV3 service worker. Agent chat logic lives in the side panel; this worker
+// MV3 service worker. The agent loop lives in the side panel; this worker
 // hosts work that must outlive the panel — today that is the "dreaming"
 // memory-consolidation cycle, which runs on an hourly alarm and only fires
 // when the user has been idle for a while (see dream.ts).
@@ -110,31 +110,11 @@ function ensureOffscreen(): Promise<void> {
   return creatingOffscreen
 }
 
-/** Draw a small notification icon at runtime — no bundled icon asset exists — and return it as a data URL. */
-async function researchIconDataUrl(): Promise<string> {
-  const c = new OffscreenCanvas(128, 128)
-  const ctx = c.getContext('2d')!
-  ctx.fillStyle = '#4f46e5'
-  ctx.fillRect(0, 0, 128, 128)
-  ctx.fillStyle = '#fff'
-  ctx.font = 'bold 72px sans-serif'
-  ctx.textAlign = 'center'
-  ctx.textBaseline = 'middle'
-  ctx.fillText('R', 64, 70)
-  const blob = await c.convertToBlob({ type: 'image/png' })
-  return await new Promise((resolve) => {
-    const fr = new FileReader()
-    fr.onload = () => resolve(fr.result as string)
-    fr.readAsDataURL(blob)
-  })
-}
-
 /** Fire a system notification announcing a research task finished. */
 async function notifyDone(taskId: string, question: string): Promise<void> {
-  const iconUrl = await researchIconDataUrl()
   chrome.notifications.create(`research-${taskId}`, {
     type: 'basic',
-    iconUrl,
+    iconUrl: chrome.runtime.getURL('icons/icon-128.png'),
     title: 'Research complete',
     message: question.slice(0, 120),
     priority: 1,
