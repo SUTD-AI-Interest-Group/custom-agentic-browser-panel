@@ -1589,8 +1589,16 @@ body {
   color: var(--text);
 }
 
-.btn:hover {
+.btn:hover:not(:disabled) {
   background: var(--pill-bg);
+}
+
+/* There was no disabled state at all, so a disabled .btn looked identical to a
+   live one — harmless for "Test connection", actively misleading for the solid-red
+   Erase button, which sits there looking armed until you type the word. */
+.btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 
 .btn.primary {
@@ -2268,11 +2276,21 @@ body {
   border-bottom: 1px solid var(--border);
 }
 
+/* Six tabs do not fit the ~400px panel. Scroll horizontally rather than wrap to a
+   second row (which would cost vertical space on every pane), and mask the right
+   edge so the overflow is visibly there rather than silently cut off. */
 .settings-tabs {
   display: flex;
   gap: 2px;
   min-width: 0;
   overflow-x: auto;
+  scrollbar-width: none;
+  -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 20px), transparent 100%);
+  mask-image: linear-gradient(to right, #000 calc(100% - 20px), transparent 100%);
+}
+
+.settings-tabs::-webkit-scrollbar {
+  display: none;
 }
 
 .settings-tab {
@@ -2285,6 +2303,7 @@ body {
   border-radius: 8px;
   cursor: pointer;
   white-space: nowrap;
+  flex: none;
 }
 
 .settings-tab:hover {
@@ -2327,16 +2346,113 @@ body {
 /* ---- tool-permission matrix ---- */
 
 .tool-group {
-  margin-bottom: 8px;
+  margin-bottom: 2px;
 }
 
+.tool-group + .tool-group {
+  border-top: 1px solid var(--border);
+}
+
+/* Sits inside the flex head now, so it must not carry its own block margins. */
 .tool-group-title {
   font-size: 11px;
   text-transform: uppercase;
   letter-spacing: 0.04em;
   color: var(--text-muted);
   font-weight: 600;
-  margin: 14px 0 4px;
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tool-group-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.tool-group-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1;
+  min-width: 0;
+  padding: 8px 0;
+  background: none;
+  border: 0;
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.tool-group.open .disclosure-chevron {
+  transform: rotate(90deg);
+}
+
+.tool-group-count {
+  flex: none;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--user-bubble);
+  color: var(--text-muted);
+  font-size: 10px;
+  line-height: 15px;
+}
+
+/* A group whose tools disagree cannot show one active segment without lying about
+   the others, so it shows this instead — and it is a button, because the only
+   useful next move is to open the group and look. */
+.mixed-pill {
+  flex: none;
+  padding: 4px 10px;
+  border: 1px dashed var(--border);
+  border-radius: 999px;
+  background: none;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.mixed-pill:hover {
+  color: var(--text);
+  border-color: var(--text-muted);
+}
+
+.tool-group-body {
+  padding: 2px 0 10px 16px;
+}
+
+/* The sentence under Tab visibility / Browsing insights, rendered from the real
+   tool policy rather than asserted next to it. */
+.derived-state {
+  margin: 10px 0 0;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.derived-state .link-btn {
+  font-size: 12px;
+}
+
+.policy-legend {
+  margin: 0 0 10px;
+  padding: 0;
+  list-style: none;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.policy-legend li + li {
+  margin-top: 3px;
+}
+
+.policy-legend strong {
+  color: var(--text);
+  font-weight: 600;
 }
 
 .tool-row {
@@ -2505,15 +2621,143 @@ body {
   margin: 0 0 12px;
 }
 
+/* ---- shared settings primitives (Section / Disclosure) ---- */
+
+.settings-section-block + .settings-section-block {
+  margin-top: 22px;
+}
+
+.settings-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+/* The section owns its spacing now, so the heading inside it must not add its
+   own top margin on top of .settings-section-block's. */
+.settings-section-head h2 {
+  margin: 0 0 8px;
+}
+
+/* Collapsible block. The chevron rotates rather than swapping glyphs, so open and
+   closed read as one control rather than two. */
+.disclosure {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface);
+  overflow: hidden;
+}
+
+.disclosure-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 10px 12px;
+  background: none;
+  border: 0;
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.disclosure-head:hover {
+  background: var(--bg);
+}
+
+.disclosure-chevron {
+  flex: none;
+  color: var(--text-muted);
+  transition: transform 0.15s ease;
+}
+
+.disclosure.open .disclosure-chevron {
+  transform: rotate(90deg);
+}
+
+.disclosure-summary {
+  flex: 1;
+  font-weight: 500;
+}
+
+.disclosure-status {
+  flex: none;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.disclosure-body {
+  padding: 12px;
+  border-top: 1px solid var(--border);
+}
+
+/* A configured provider collapses to its head; the body only exists when open. So
+   the card itself carries no padding or gap — head and body own their own. */
 .provider-card {
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 14px;
-  padding: 12px;
-  margin-bottom: 10px;
+  margin-bottom: 8px;
+  overflow: hidden;
+}
+
+.provider-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 10px 12px;
+  background: none;
+  border: 0;
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.provider-head:hover {
+  background: var(--bg);
+}
+
+.provider-card.open .disclosure-chevron {
+  transform: rotate(90deg);
+}
+
+.provider-name {
+  flex: none;
+  font-weight: 500;
+}
+
+.provider-active {
+  flex: none;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--pill-bg);
+  color: var(--accent);
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.provider-meta {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: right;
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.provider-body {
   display: flex;
   flex-direction: column;
   gap: 10px;
+  padding: 4px 12px 12px;
 }
 
 /* Field labels stack their caption above the control. `.check` rows (a checkbox
@@ -3564,4 +3808,110 @@ body {
   font-size: 11px;
   color: var(--text-dim);
   font-style: italic;
+}
+
+/* ---- Settings → Data ---- */
+
+.usage-head {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.usage-total {
+  font-size: 20px;
+  font-weight: 600;
+}
+
+.usage-quota {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.usage-bar {
+  height: 6px;
+  margin: 8px 0 14px;
+  border-radius: 999px;
+  background: var(--user-bubble);
+  overflow: hidden;
+}
+
+.usage-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: var(--accent);
+}
+
+.data-row,
+.danger-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 10px 0;
+}
+
+.data-row + .data-row,
+.danger-row + .danger-row {
+  border-top: 1px solid var(--border);
+}
+
+.data-row-main {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
+}
+
+.data-label {
+  font-size: 13px;
+}
+
+.data-detail {
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.data-bytes {
+  flex: none;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* The armed row's consequence, spelled out only once the button is hot. */
+.data-warn {
+  flex-basis: 100%;
+  margin: 6px 0 0;
+  color: var(--danger);
+  font-size: 11px;
+}
+
+.btn.danger-solid {
+  background: var(--danger);
+  border-color: var(--danger);
+  color: #fff;
+}
+
+.btn.danger-solid:hover:not(:disabled) {
+  filter: brightness(1.08);
+}
+
+.erase-confirm {
+  display: flex;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.erase-confirm input {
+  flex: 1;
+  min-width: 0;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
 }

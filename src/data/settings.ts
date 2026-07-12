@@ -149,6 +149,50 @@ export function toolPolicy(settings: Settings, name: string): ToolPolicy {
   return settings.toolPolicies?.[name] ?? DEFAULT_TOOL_POLICIES[name] ?? 'ask'
 }
 
+/**
+ * The policy shared by every tool in a group, or `'mixed'` when they disagree.
+ * Drives the collapsed group row in the permissions accordion: a uniform group
+ * shows a segmented control, a mixed one shows a "Mixed" pill. Resolved through
+ * `toolPolicy`, so catalog defaults count — the `skills` group reads as mixed on
+ * a fresh install because its tools ship with different defaults.
+ */
+export function groupPolicy(settings: Settings, group: ToolGroup): ToolPolicy | 'mixed' {
+  const tools = TOOL_CATALOG.filter((t) => t.group === group)
+  if (tools.length === 0) return 'ask'
+  const first = toolPolicy(settings, tools[0].name)
+  return tools.every((t) => toolPolicy(settings, t.name) === first) ? first : 'mixed'
+}
+
+/** Set every tool in a group to one policy. Returns a new Settings; never mutates. */
+export function setGroupPolicy(settings: Settings, group: ToolGroup, policy: ToolPolicy): Settings {
+  const toolPolicies = { ...settings.toolPolicies }
+  for (const t of TOOL_CATALOG) {
+    if (t.group === group) toolPolicies[t.name] = policy
+  }
+  return { ...settings, toolPolicies }
+}
+
+/** A pristine config — what a brand-new install starts from. */
+export function defaultSettings(): Settings {
+  return structuredClone(EMPTY)
+}
+
+/**
+ * Factory-reset everything *except* the provider list and selected model.
+ * Deliberate: "Reset settings" sits one tap away from a user's only copy of their
+ * API keys, and a reset that silently destroyed them would lock the user out of
+ * their own endpoint. Erasing keys is what "Erase all data" is for.
+ */
+export function resetSettingsKeepingProviders(settings: Settings): Settings {
+  return {
+    ...structuredClone(EMPTY),
+    providers: structuredClone(settings.providers),
+    selected: settings.selected ? { ...settings.selected } : null,
+    // EMPTY is un-onboarded, but a user with providers has plainly onboarded.
+    onboarded: true,
+  }
+}
+
 export const DEFAULT_SYSTEM_PROMPT = `You are Lychee, a helpful AI agent living in the user's browser side panel.
 
 You cannot see any webpage by default — use your tools (they are described to you separately) to read a page the user refers to, and never fabricate page content: if you were denied access or could not read a page, say so and answer from general knowledge.
