@@ -6,6 +6,7 @@ import {
   type Settings,
 } from '../../data/settings'
 import { testLangfuseConnection } from '../../agent/observability'
+import { Disclosure, Section } from './primitives'
 
 /**
  * General tab: system prompt, keyboard shortcut, privacy, observability. Text
@@ -23,34 +24,47 @@ export default function GeneralTab({
   commit: (next: Settings) => void
   commitDraft: () => void
 }) {
+  const customPrompt = draft.systemPrompt !== DEFAULT_SYSTEM_PROMPT
+
   return (
     <div className="settings-tabpane">
-      <h2>System prompt</h2>
-      <textarea
-        className="system-prompt"
-        rows={8}
-        value={draft.systemPrompt}
-        onChange={(e) => buffer({ ...draft, systemPrompt: e.target.value })}
-        onBlur={commitDraft}
-      />
-      <button
-        className="link-btn"
-        onClick={() => commit({ ...draft, systemPrompt: DEFAULT_SYSTEM_PROMPT })}
+      <Section
+        title="System prompt"
+        action={
+          // Only offer the reset when there is something to reset — an
+          // always-visible "Reset to default" beside an untouched default is noise.
+          customPrompt ? (
+            <button
+              className="link-btn"
+              onClick={() => commit({ ...draft, systemPrompt: DEFAULT_SYSTEM_PROMPT })}
+            >
+              Reset to default
+            </button>
+          ) : undefined
+        }
       >
-        Reset to default
-      </button>
+        <textarea
+          className="system-prompt"
+          rows={5}
+          value={draft.systemPrompt}
+          onChange={(e) => buffer({ ...draft, systemPrompt: e.target.value })}
+          onBlur={commitDraft}
+        />
+      </Section>
 
       <ShortcutSection />
 
-      <h2>Privacy</h2>
-      <label className="check">
-        <input
-          type="checkbox"
-          checked={draft.fetchLinkPreviews !== false}
-          onChange={(e) => commit({ ...draft, fetchLinkPreviews: e.target.checked })}
-        />
-        Fetch link previews (contacts linked sites for title/description/image)
-      </label>
+      <Section title="Privacy">
+        <label className="check">
+          <input
+            type="checkbox"
+            checked={draft.fetchLinkPreviews !== false}
+            onChange={(e) => commit({ ...draft, fetchLinkPreviews: e.target.checked })}
+          />
+          Fetch link previews
+        </label>
+        <p className="hint">Contacts linked sites for their title, description and image.</p>
+      </Section>
 
       <ObservabilitySection draft={draft} buffer={buffer} commit={commit} commitDraft={commitDraft} />
     </div>
@@ -58,10 +72,12 @@ export default function GeneralTab({
 }
 
 /**
- * Beta: opt-in Langfuse observability. A master toggle reveals key/host inputs
- * and capture options. Text fields buffer on keystroke and persist on blur (like
- * the provider fields); toggles/checkboxes persist immediately. Local `test`
- * state drives the "Test connection" button. Nothing is sent unless enabled.
+ * Beta: opt-in Langfuse observability. Collapsed by default — it is beta, niche and
+ * six controls deep, and it used to dominate the General tab. The closed summary
+ * still reports whether it is on, so folding it away never hides that.
+ *
+ * Text fields buffer on keystroke and persist on blur (like the provider fields);
+ * toggles persist immediately. Nothing is sent unless enabled.
  */
 function ObservabilitySection({
   draft,
@@ -84,18 +100,17 @@ function ObservabilitySection({
   const patch = (p: Partial<ObservabilityConfig>, persist: (next: Settings) => void) =>
     persist({ ...draft, observability: { ...obs, ...p } })
 
+  const host = obs.host.replace(/^https?:\/\//, '')
+
   return (
-    <>
-      <h2>
-        Observability<span className="beta-tag">Beta</span>
-      </h2>
+    <Section title="Observability">
+      <Disclosure summary="Langfuse tracing (beta)" status={obs.enabled ? `On · ${host}` : 'Off'}>
       <p className="hint">
-        Send a trace of every model call — turns, tool use, token counts and cost — to your own{' '}
+        Trace every model call — turns, tools, tokens, cost — to your own{' '}
         <a href="https://langfuse.com" target="_blank" rel="noreferrer">
           Langfuse
         </a>{' '}
-        project. Off by default; nothing is tracked until you turn this on. Keys are stored locally in
-        your browser and sent only to your Langfuse host.
+        project. Nothing leaves the browser until you turn this on.
       </p>
       <div className="switch-row">
         <span className="switch-label">Enable Langfuse observability</span>
@@ -146,7 +161,7 @@ function ObservabilitySection({
               checked={obs.captureContent}
               onChange={(e) => patch({ captureContent: e.target.checked }, commit)}
             />
-            Capture prompt &amp; response content (off = token/timing metadata only)
+            Capture prompt &amp; response content
           </label>
           <label className="check sub">
             <input
@@ -155,7 +170,7 @@ function ObservabilitySection({
               disabled={!obs.captureContent}
               onChange={(e) => patch({ captureScreenshots: e.target.checked }, commit)}
             />
-            Include screenshots (heavy; page images leave the browser)
+            Include screenshots (heavy)
           </label>
           <div className="obs-actions">
             <button
@@ -177,7 +192,8 @@ function ObservabilitySection({
           </div>
         </div>
       )}
-    </>
+      </Disclosure>
+    </Section>
   )
 }
 
@@ -204,13 +220,10 @@ function ShortcutSection() {
   }, [])
 
   return (
-    <>
-      <h2>Keyboard shortcut</h2>
-      <p className="hint">
-        Toggle this side panel from anywhere in the browser (default Ctrl/Cmd + E). Chrome
-        manages global shortcuts, so rebinding opens Chrome's shortcuts page; your choice is
-        saved there.
-      </p>
+    <Section
+      title="Keyboard shortcut"
+      hint="Chrome owns global shortcuts, so rebinding opens its shortcuts page."
+    >
       <div className="shortcut-row">
         <span className="shortcut-label">Toggle sidebar</span>
         <kbd className="shortcut-key">{loaded ? shortcut ?? 'Not set' : '…'}</kbd>
@@ -218,9 +231,9 @@ function ShortcutSection() {
           className="btn ghost small"
           onClick={() => void chrome.tabs.create({ url: 'chrome://extensions/shortcuts' })}
         >
-          Change shortcut ↗
+          Change ↗
         </button>
       </div>
-    </>
+    </Section>
   )
 }
