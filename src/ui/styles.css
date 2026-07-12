@@ -2338,16 +2338,113 @@ body {
 /* ---- tool-permission matrix ---- */
 
 .tool-group {
-  margin-bottom: 8px;
+  margin-bottom: 2px;
 }
 
+.tool-group + .tool-group {
+  border-top: 1px solid var(--border);
+}
+
+/* Sits inside the flex head now, so it must not carry its own block margins. */
 .tool-group-title {
   font-size: 11px;
   text-transform: uppercase;
   letter-spacing: 0.04em;
   color: var(--text-muted);
   font-weight: 600;
-  margin: 14px 0 4px;
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tool-group-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.tool-group-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1;
+  min-width: 0;
+  padding: 8px 0;
+  background: none;
+  border: 0;
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.tool-group.open .disclosure-chevron {
+  transform: rotate(90deg);
+}
+
+.tool-group-count {
+  flex: none;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--user-bubble);
+  color: var(--text-muted);
+  font-size: 10px;
+  line-height: 15px;
+}
+
+/* A group whose tools disagree cannot show one active segment without lying about
+   the others, so it shows this instead — and it is a button, because the only
+   useful next move is to open the group and look. */
+.mixed-pill {
+  flex: none;
+  padding: 4px 10px;
+  border: 1px dashed var(--border);
+  border-radius: 999px;
+  background: none;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.mixed-pill:hover {
+  color: var(--text);
+  border-color: var(--text-muted);
+}
+
+.tool-group-body {
+  padding: 2px 0 10px 16px;
+}
+
+/* The sentence under Tab visibility / Browsing insights, rendered from the real
+   tool policy rather than asserted next to it. */
+.derived-state {
+  margin: 10px 0 0;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.derived-state .link-btn {
+  font-size: 12px;
+}
+
+.policy-legend {
+  margin: 0 0 10px;
+  padding: 0;
+  list-style: none;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.policy-legend li + li {
+  margin-top: 3px;
+}
+
+.policy-legend strong {
+  color: var(--text);
+  font-weight: 600;
 }
 
 .tool-row {
