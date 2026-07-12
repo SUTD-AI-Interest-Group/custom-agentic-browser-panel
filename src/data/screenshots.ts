@@ -16,6 +16,8 @@
 // Same one-DB-per-store shape as conversations.ts / memory.ts, so neither module
 // has to coordinate schema versions with the others.
 
+import { estimateBytes, type StoreUsage } from './usage'
+
 /** A stored capture. `dataUrl` is the full-resolution PNG. */
 export interface StoredShot {
   id: string
@@ -216,4 +218,28 @@ export async function pruneShots(): Promise<{ deleted: number }> {
 
   await Promise.all([...doomed].map(remove))
   return { deleted: doomed.size }
+}
+
+/** Wipe every screenshot and its thumbnail. */
+export async function clearShots(): Promise<void> {
+  await requestOf('readwrite', (s) => s.clear())
+  await requestOn(THUMBS, 'readwrite', (s) => s.clear())
+}
+
+/**
+ * Byte/row estimate for the Data tab.
+ *
+ * Measured from the base64 `dataUrl` string, not each shot's `bytes` field: that
+ * field is the *decoded* PNG size, while what IndexedDB actually holds is the
+ * base64 text — a third larger. This is the store that dominates the total, so
+ * the honest number is the one the user came here to see.
+ */
+export async function shotsUsage(): Promise<StoreUsage> {
+  const shots = await requestOf<StoredShot[]>('readonly', (s) => s.getAll())
+  const thumbs = await requestOn<ShotThumb[]>(THUMBS, 'readonly', (s) => s.getAll())
+  return {
+    bytes: estimateBytes(shots) + estimateBytes(thumbs),
+    count: shots.length,
+    detail: shots.length === 1 ? '1 image' : `${shots.length} images`,
+  }
 }

@@ -5,6 +5,8 @@
 // Kept in its own DB (not the memory/conversation DBs) so schema versions stay
 // independent.
 
+import { estimateBytes, type StoreUsage } from './usage'
+
 export type SkillSource = 'builtin' | 'user'
 
 export interface Skill {
@@ -282,4 +284,25 @@ export async function setSkillEnabled(name: string, enabled: boolean): Promise<v
   const existing = await getSkill(name)
   if (!existing) return
   await requestOf('readwrite', (s) => s.put({ ...existing, enabled, updatedAt: Date.now() }))
+}
+
+/**
+ * Wipe the whole skills store — built-ins included. Deliberately raw: re-seeding
+ * lives in `storage.ts`, because importing `seedBuiltinSkills` here would close an
+ * import cycle (builtinSkills.ts already imports saveSkill/listSkills from this
+ * module).
+ */
+export async function clearSkills(): Promise<void> {
+  await requestOf('readwrite', (s) => s.clear())
+}
+
+/** Byte/row estimate for the Data tab. */
+export async function skillsUsage(): Promise<StoreUsage> {
+  const all = await requestOf<Skill[]>('readonly', (s) => s.getAll())
+  const custom = all.filter((s) => s.source === 'user').length
+  return {
+    bytes: estimateBytes(all),
+    count: all.length,
+    detail: `${all.length} skills · ${custom} custom`,
+  }
 }
