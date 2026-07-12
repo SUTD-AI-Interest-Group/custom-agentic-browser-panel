@@ -2268,11 +2268,21 @@ body {
   border-bottom: 1px solid var(--border);
 }
 
+/* Six tabs do not fit the ~400px panel. Scroll horizontally rather than wrap to a
+   second row (which would cost vertical space on every pane), and mask the right
+   edge so the overflow is visibly there rather than silently cut off. */
 .settings-tabs {
   display: flex;
   gap: 2px;
   min-width: 0;
   overflow-x: auto;
+  scrollbar-width: none;
+  -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 20px), transparent 100%);
+  mask-image: linear-gradient(to right, #000 calc(100% - 20px), transparent 100%);
+}
+
+.settings-tabs::-webkit-scrollbar {
+  display: none;
 }
 
 .settings-tab {
@@ -2285,6 +2295,7 @@ body {
   border-radius: 8px;
   cursor: pointer;
   white-space: nowrap;
+  flex: none;
 }
 
 .settings-tab:hover {
@@ -2503,6 +2514,79 @@ body {
   font-size: 12px;
   color: var(--text-muted);
   margin: 0 0 12px;
+}
+
+/* ---- shared settings primitives (Section / Disclosure) ---- */
+
+.settings-section-block + .settings-section-block {
+  margin-top: 22px;
+}
+
+.settings-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+/* The section owns its spacing now, so the heading inside it must not add its
+   own top margin on top of .settings-section-block's. */
+.settings-section-head h2 {
+  margin: 0 0 8px;
+}
+
+/* Collapsible block. The chevron rotates rather than swapping glyphs, so open and
+   closed read as one control rather than two. */
+.disclosure {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface);
+  overflow: hidden;
+}
+
+.disclosure-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 10px 12px;
+  background: none;
+  border: 0;
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.disclosure-head:hover {
+  background: var(--bg);
+}
+
+.disclosure-chevron {
+  flex: none;
+  color: var(--text-muted);
+  transition: transform 0.15s ease;
+}
+
+.disclosure.open .disclosure-chevron {
+  transform: rotate(90deg);
+}
+
+.disclosure-summary {
+  flex: 1;
+  font-weight: 500;
+}
+
+.disclosure-status {
+  flex: none;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.disclosure-body {
+  padding: 12px;
+  border-top: 1px solid var(--border);
 }
 
 .provider-card {
