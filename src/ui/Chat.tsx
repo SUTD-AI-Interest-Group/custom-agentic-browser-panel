@@ -517,9 +517,13 @@ export default function Chat({
   // App refresh its history list.
   useEffect(() => {
     if (turnSeq === 0) return
-    void saveConversation({ id: conversationId, messages, history: historyRef.current }).then(
-      onConversationsChanged,
-    )
+    // Never persist the transient `fixingMath: true` — a save that races an
+    // in-flight repair would otherwise show a stuck spinner on reload.
+    void saveConversation({
+      id: conversationId,
+      messages: messages.map((m) => (m.fixingMath ? { ...m, fixingMath: false } : m)),
+      history: historyRef.current,
+    }).then(onConversationsChanged)
     // Persist is driven solely by turnSeq; messages is read fresh from the
     // render that bumped it.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1276,6 +1280,7 @@ export default function Chat({
         abortSignal: AbortSignal.timeout(20_000),
       }).then((r) => r.text)
 
+    let changed = false
     for (const id of ids) {
       const msg = messagesRef.current.find((m) => m.id === id)
       if (!msg) continue
@@ -1286,6 +1291,7 @@ export default function Chat({
         p.type === 'text' && validateMath(p.text).invalid.length > 0 ? [{ i, text: p.text }] : [],
       )
       if (targets.length === 0) continue
+      changed = true
 
       setMessages((m) => m.map((x) => (x.id === id ? { ...x, fixingMath: true } : x)))
       const fixes = new Map<number, string>()
@@ -1309,6 +1315,9 @@ export default function Chat({
         }),
       )
     }
+    // The turn's own save fired before repair finished, so re-persist to save
+    // the correction and the cleared spinner. turnSeq drives only persistence.
+    if (changed) setTurnSeq((n) => n + 1)
   }
 
   // Resume a checkpointed task from the Continue card. The model's hand-off is

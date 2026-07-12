@@ -40,6 +40,11 @@ describe('parseFixes', () => {
     const fixes = parseFixes('Here you go:\n[{"index":1,"fixed":"$\\\\sigma$"}]\nDone', spans)
     expect(fixes.get('$|sigma$')).toBe('$\\sigma$')
   })
+
+  it('drops a fix that dropped its $ delimiters (would leak raw LaTeX)', () => {
+    const fixes = parseFixes('[{"index":1,"fixed":"\\\\sigma"}]', spans)
+    expect(fixes.size).toBe(0)
+  })
 })
 
 describe('spliceFixes', () => {
@@ -96,5 +101,10 @@ describe('repairMessageText', () => {
     // A "fix" that parses+compiles individually but we simulate no improvement:
     // return an empty array so no fix applies -> original preserved.
     expect(await repairMessageText(text, async () => '[]')).toBe(text)
+  })
+
+  it('keeps the original when the model drops the delimiters', async () => {
+    const text = 'width $\\frac{a}{$ here'
+    expect(await repairMessageText(text, async () => '[{"index":1,"fixed":"\\\\sigma"}]')).toBe(text)
   })
 })

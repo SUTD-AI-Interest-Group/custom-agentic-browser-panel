@@ -23,6 +23,19 @@ export function buildRepairPrompt(spans: MathSpan[]): string {
   ].join('\n')
 }
 
+/** True iff `f` is exactly one `$…$` or `$$…$$` span (no surrounding text, no
+ *  extra delimiters) that compiles clean. Guards the repair against a model
+ *  reply that dropped its delimiters and would otherwise splice raw LaTeX into
+ *  prose — turning safe inert-code back into a leak. */
+function isWholeMathSpan(f: string): boolean {
+  const display = f.startsWith('$$') && f.endsWith('$$') && f.length > 4
+  const inline = !display && f.startsWith('$') && f.endsWith('$') && f.length > 2
+  if (!display && !inline) return false
+  const inner = display ? f.slice(2, -2) : f.slice(1, -1)
+  if (!inner.trim() || inner.includes('$')) return false
+  return validateMath(f).invalid.length === 0
+}
+
 /** Parse the model's JSON reply into a map of originalRaw → fixedLatex, keeping
  *  only fixes that themselves compile clean. Any malformed output ⇒ empty map. */
 export function parseFixes(raw: string, spans: MathSpan[]): Map<string, string> {
@@ -45,7 +58,7 @@ export function parseFixes(raw: string, spans: MathSpan[]): Map<string, string> 
     const span = spans[idx - 1]
     if (!span) continue
     const f = fixed.trim()
-    if (!f || validateMath(f).invalid.length > 0) continue // accept only clean fixes
+    if (!isWholeMathSpan(f)) continue // accept only a single, delimited, clean span
     out.set(span.raw, f)
   }
   return out
