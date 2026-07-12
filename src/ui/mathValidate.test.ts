@@ -52,4 +52,19 @@ describe('validateMath', () => {
     expect(cleaned).toContain('$$Q = \\int_{-\\infty}^{\\infty}')
     expect(invalid.some((s) => s.raw.includes('\\frac{x}{'))).toBe(true)
   })
+
+  it('records offsets that slice the original text back to raw', () => {
+    const text = 'a $x=1$ then $\\frac{a}{$ tail'
+    const { invalid } = validateMath(text)
+    expect(invalid).toHaveLength(1)
+    expect(text.slice(invalid[0].start, invalid[0].end)).toBe(invalid[0].raw)
+  })
+
+  it('neutralizes a structurally-invalid display block and flags display: true', () => {
+    const { cleaned, invalid } = validateMath('$$\\frac{a}{$$')
+    expect(invalid).toHaveLength(1)
+    expect(invalid[0].display).toBe(true)
+    expect(invalid[0].raw).toBe('$$\\frac{a}{$$')
+    expect(cleaned).toBe('`$$\\frac{a}{$$`')
+  })
 })
