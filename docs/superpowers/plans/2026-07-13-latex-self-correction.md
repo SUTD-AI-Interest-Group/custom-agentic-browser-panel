@@ -14,6 +14,7 @@
 - **No backend, client-side only.** The repair uses the same OpenAI-compatible endpoint the turn used (`createModel`), as a side-call — like `generateChatTitle`/`testModel` in `src/agent/provider.ts`.
 - **Not an agent tool.** The repair is a direct model side-call, so it does **not** route through `requestApproval`/`createAgentTools` (that gate is only for page/network/data tools). Do not add it there.
 - **`katex` is already a dependency** (`^0.17.0`); `katex.renderToString(tex, { throwOnError: true, displayMode })` throws `ParseError` on invalid input.
+- **KaTeX is lenient — this bounds the contract.** Verified against the installed KaTeX 0.17: it throws only on *structural* errors (unbalanced braces `\frac{a}{`, undefined control sequences `\notacommand`, dangling `a^`/`\sqrt{`), and silently renders loose text such as `|sigma is bad`, `x=5`, or `) and ` as implicit-multiplication variables **without throwing**. So `validateMath` neutralizes/flags only *structurally-invalid* LaTeX; a renderable-but-semantically-wrong span (e.g. a `\sigma` typed as `sigma`) is NOT caught and is out of scope. The primary anti-cascade guarantee comes from **balanced-delimiter pairing + escaping unpaired `$`**, which does not depend on KaTeX rejecting anything. Use genuinely-uncompilable LaTeX (unbalanced brace `$\frac{a}{$`) in tests that assert neutralization — never loose text.
 - **Vitest env is `jsdom`** (see `vitest.config.ts`); tests run in Node with `DOMParser` available.
 - **Scope: chat replies only.** The deterministic layer covers everything rendered by `Markdown.tsx` (chat + research reports) for free; the automatic model re-emit runs only for interactive chat turns.
 
@@ -48,20 +49,22 @@ describe('validateMath', () => {
     expect(cleaned).toBe(text)
   })
 
-  it('neutralizes an uncompilable inline span as inline code and records it', () => {
-    const { cleaned, invalid } = validateMath('width $|sigma is bad$ here')
+  it('neutralizes a structurally-invalid inline span as inline code and records it', () => {
+    // KaTeX throws on an unbalanced brace (unlike loose text such as `|sigma`,
+    // which it renders without error — see the notes on KaTeX leniency).
+    const { cleaned, invalid } = validateMath('width $\\frac{a}{$ here')
     expect(invalid).toHaveLength(1)
-    expect(invalid[0].raw).toBe('$|sigma is bad$')
+    expect(invalid[0].raw).toBe('$\\frac{a}{$')
     expect(invalid[0].display).toBe(false)
-    expect(cleaned).toBe('width `$|sigma is bad$` here')
+    expect(cleaned).toBe('width `$\\frac{a}{$` here')
   })
 
-  it('a stray unpaired $ does not desync a later valid pair', () => {
-    // Four $ pair as (a,b) invalid and (c,d) valid — the valid one survives.
-    const { cleaned, invalid } = validateMath('(x=0$) and $|sigma bad. Later $x=5$ ok.')
+  it('an uncompilable span is neutralized without stopping a later valid one', () => {
+    const { cleaned, invalid } = validateMath('bad $\\frac{a}{$ then good $x=5$ end')
     expect(invalid).toHaveLength(1)
-    expect(cleaned).toContain('$x=5$') // the valid pair is kept as math
-    expect(cleaned).toContain('`') // the bad pair is neutralized to code
+    expect(invalid[0].raw).toBe('$\\frac{a}{$')
+    expect(cleaned).toContain('$x=5$') // the valid pair survives as math
+    expect(cleaned).toContain('`$\\frac{a}{$`') // the bad one becomes inert code
   })
 
   it('escapes a lone trailing $ that never closes', () => {
@@ -78,16 +81,16 @@ describe('validateMath', () => {
     expect(validateMath(literal).cleaned).toBe(literal)
   })
 
-  it('reports every broken span from the reported screenshot text', () => {
+  it('keeps a valid display integral while flagging a genuinely broken span', () => {
     const text = [
-      'Where $\\lambda_0$ is the peak density at the center (x=0$) and $|sigma is the width.',
+      'Peak density $\\lambda_0$ and a broken bit $\\frac{x}{$ here.',
       '',
       'Total charge: $$Q = \\int_{-\\infty}^{\\infty} \\lambda_0 e^{-\\frac{x^2}{2\\sigma^2}} dx$$',
     ].join('\n')
     const { invalid, cleaned } = validateMath(text)
-    // The valid display integral survives; the malformed inline pieces are caught.
+    // The valid display integral survives; the structurally-broken span is caught.
     expect(cleaned).toContain('$$Q = \\int_{-\\infty}^{\\infty}')
-    expect(invalid.length).toBeGreaterThanOrEqual(1)
+    expect(invalid.some((s) => s.raw.includes('\\frac{x}{'))).toBe(true)
   })
 })
 ```
@@ -246,11 +249,11 @@ describe('markdown math render (with validateMath)', () => {
     expect(displayCount(render('$$Q = \\lambda_0 \\sigma \\sqrt{2\\pi}$$'))).toBe(1)
   })
 
-  it('a malformed inline span does not stop a later valid display equation', () => {
-    const text = 'width $|sigma bad here\n\n$$Q = \\lambda_0 \\sigma$$'
+  it('an uncompilable inline span does not stop a later valid display equation', () => {
+    const text = 'width $\\frac{a}{$ then\n\n$$Q = \\lambda_0 \\sigma$$'
     const html = render(text)
     expect(displayCount(html)).toBe(1) // the display equation still renders
-    // the bad inline span is inert code, not a broken half-math node
+    // the structurally-broken inline span is inert code, not a half-math node
     expect(html).toContain('<code>')
   })
 })
@@ -356,7 +359,8 @@ describe('parseFixes', () => {
   })
 
   it('drops a fix that itself will not compile', () => {
-    const fixes = parseFixes('[{"index":1,"fixed":"$|still bad$"}]', spans)
+    // The returned "fix" has an unbalanced brace, so validateMath rejects it.
+    const fixes = parseFixes('[{"index":1,"fixed":"$\\\\frac{a}{$"}]', spans)
     expect(fixes.size).toBe(0)
   })
 
@@ -514,18 +518,18 @@ describe('repairMessageText', () => {
   })
 
   it('splices in a valid fix from the model', async () => {
-    const text = 'width $|sigma bad$ here'
+    const text = 'width $\\frac{a}{$ here'
     const complete = async () => '[{"index":1,"fixed":"$\\\\sigma$"}]'
     expect(await repairMessageText(text, complete)).toBe('width $\\sigma$ here')
   })
 
   it('keeps the original when the model output is unusable', async () => {
-    const text = 'width $|sigma bad$ here'
+    const text = 'width $\\frac{a}{$ here'
     expect(await repairMessageText(text, async () => 'no json here')).toBe(text)
   })
 
   it('keeps the original when the model call throws', async () => {
-    const text = 'width $|sigma bad$ here'
+    const text = 'width $\\frac{a}{$ here'
     const complete = async () => {
       throw new Error('network')
     }
@@ -533,7 +537,7 @@ describe('repairMessageText', () => {
   })
 
   it('does not regress: rejects a splice that leaves more broken spans', async () => {
-    const text = 'width $|sigma bad$ here'
+    const text = 'width $\\frac{a}{$ here'
     // A "fix" that parses+compiles individually but we simulate no improvement:
     // return an empty array so no fix applies -> original preserved.
     expect(await repairMessageText(text, async () => '[]')).toBe(text)

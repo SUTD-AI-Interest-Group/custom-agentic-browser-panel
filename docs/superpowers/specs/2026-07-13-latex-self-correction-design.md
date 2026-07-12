@@ -31,9 +31,21 @@ cannot reach *always clean*. We need a correction mechanism below the model.
 
 ## Goal
 
-Guarantee that the panel **never renders garbled or cascaded half-math**, and
-transparently repair broken LaTeX so the user sees correct equations — without
-depending on the model getting it right the first time.
+Guarantee that a stray or malformed `$` **can never cascade-break other
+equations**, show **structurally-invalid LaTeX as inert code** (never as garbled
+half-math), and transparently repair that broken LaTeX so the user sees correct
+equations — without depending on the model getting it right the first time.
+
+**Bounded by KaTeX leniency (verified, KaTeX 0.17).** The deterministic oracle
+is "does KaTeX compile it," and KaTeX throws only on *structural* errors
+(unbalanced braces, undefined control sequences, dangling `^`/`_`, unclosed
+`\sqrt{`). It silently renders loose text like `|sigma is bad` or `) and ` as
+implicit-multiplication variables **without error**. So the layer catches the
+common structural mistakes weak models make (bad `\frac`, unclosed braces,
+unknown commands) but does **not** catch renderable-but-semantically-wrong spans
+(a `\sigma` mistyped as `sigma`). The anti-cascade guarantee itself does not
+depend on KaTeX rejecting anything — it comes from balanced-delimiter pairing
+plus escaping unpaired `$`.
 
 ## Decisions (from brainstorming)
 
