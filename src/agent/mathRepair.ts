@@ -1,0 +1,69 @@
+// Surgical, silent LaTeX self-correction. When the deterministic validator
+// (validateMath) cannot compile a math span, these helpers ask the model to fix
+// ONLY the broken fragments and splice the corrected LaTeX back into the message
+// — no answer content is regenerated. Every failure mode degrades to a no-op.
+import { validateMath, type MathSpan } from '../ui/mathValidate'
+
+/** A thin model call: prompt in, completion text out. Injected so this module
+ *  stays pure/testable and unaware of the provider adapter. */
+export type Complete = (prompt: string) => Promise<string>
+
+/** Build the correction prompt for a set of broken fragments. */
+export function buildRepairPrompt(spans: MathSpan[]): string {
+  const list = spans.map((s, i) => `${i + 1}. ${s.raw}`).join('\n')
+  return [
+    'The following LaTeX math expressions from an assistant message are INVALID and will not render.',
+    'Return corrected, valid LaTeX for each, keeping the same delimiters ($…$ for inline, $$…$$ for display).',
+    'Fix only the LaTeX syntax — do not change the mathematical meaning, add commentary, or reorder.',
+    'Respond with ONLY a JSON array, one object per item, in order:',
+    '[{"index": 1, "fixed": "$$...$$"}]',
+    '',
+    'Expressions:',
+    list,
+  ].join('\n')
+}
+
+/** Parse the model's JSON reply into a map of originalRaw → fixedLatex, keeping
+ *  only fixes that themselves compile clean. Any malformed output ⇒ empty map. */
+export function parseFixes(raw: string, spans: MathSpan[]): Map<string, string> {
+  const out = new Map<string, string>()
+  const start = raw.indexOf('[')
+  const end = raw.lastIndexOf(']')
+  if (start < 0 || end <= start) return out
+  let arr: unknown
+  try {
+    arr = JSON.parse(raw.slice(start, end + 1))
+  } catch {
+    return out
+  }
+  if (!Array.isArray(arr)) return out
+  for (const item of arr) {
+    if (!item || typeof item !== 'object') continue
+    const idx = (item as { index?: unknown }).index
+    const fixed = (item as { fixed?: unknown }).fixed
+    if (typeof idx !== 'number' || typeof fixed !== 'string') continue
+    const span = spans[idx - 1]
+    if (!span) continue
+    const f = fixed.trim()
+    if (!f || validateMath(f).invalid.length > 0) continue // accept only clean fixes
+    out.set(span.raw, f)
+  }
+  return out
+}
+
+/** Splice fixes into `text` at each span's recorded offsets, right-to-left so
+ *  earlier offsets remain valid as later spans are replaced. */
+export function spliceFixes(
+  text: string,
+  spans: MathSpan[],
+  fixes: Map<string, string>,
+): string {
+  const ordered = [...spans].sort((a, b) => b.start - a.start)
+  let out = text
+  for (const s of ordered) {
+    const fix = fixes.get(s.raw)
+    if (fix === undefined) continue
+    out = out.slice(0, s.start) + fix + out.slice(s.end)
+  }
+  return out
+}
