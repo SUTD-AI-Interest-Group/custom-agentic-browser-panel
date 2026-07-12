@@ -127,32 +127,6 @@ export interface Settings {
   fetchLinkPreviews?: boolean
   /** Beta Langfuse observability. Absent on old installs → treated as disabled. */
   observability?: ObservabilityConfig
-  /**
-   * Optional per-model price, keyed by model id. Sparse: a model absent here is
-   * priced at zero (correct for local runtimes like LM Studio / Ollama). Read via
-   * `modelPrice()`.
-   */
-  modelPrices?: Record<string, ModelPrice>
-}
-
-/**
- * What a model costs, in USD per 1M tokens. Langfuse prices a generation from its
- * own table keyed on the model NAME, so a local/custom id (`qwen/qwen3.6-35b-a3b`)
- * is unknown to it and would report $0 forever. Stating the price here gives real
- * cost both in the panel and on the Langfuse generation (via `costDetails`).
- * Local models are genuinely free — leaving these at 0 is the right answer.
- */
-export interface ModelPrice {
-  inputPer1M: number
-  outputPer1M: number
-}
-
-/** The configured price for a model, or undefined when it has none (→ free). */
-export function modelPrice(settings: Settings, modelId: string): ModelPrice | undefined {
-  const p = settings.modelPrices?.[modelId]
-  if (!p) return undefined
-  if (!p.inputPer1M && !p.outputPer1M) return undefined
-  return p
 }
 
 /** Default (disabled) observability config; also the shape onboarding starts from. */

@@ -1664,6 +1664,10 @@ body {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 8px;
+  /* Without this the row cannot shrink below its content's intrinsic width and
+     the buttons get pushed outside the composer's rounded box. */
+  min-width: 0;
   margin-top: 6px;
 }
 
@@ -1673,8 +1677,16 @@ body {
   background: transparent;
   color: var(--text-muted);
   font-size: 12px;
-  max-width: 70%;
   cursor: pointer;
+  /* A <select>'s intrinsic min-content width is its LONGEST option, so a long
+     model id (google/gemma-4-26b-a4b) would otherwise refuse to shrink and shove
+     the action buttons out of the composer. Let it shrink and ellipsize instead. */
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .send-btn {
@@ -1706,6 +1718,68 @@ body {
   display: flex;
   align-items: center;
   gap: 6px;
+  /* The actions never shrink; the model select absorbs the slack instead. */
+  flex: none;
+}
+
+/* Hybrid overflow behaviour for the composer actions.
+   Wide panel  → tools + screenshot as two separate buttons ("…" hidden).
+   Narrow panel → both collapse into the single "…" menu, which houses the
+   screenshot action AND the tool permissions, so nothing is lost or clipped. */
+.more-menu-wrap {
+  position: relative;
+  display: none;
+}
+.more-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.more-btn:hover {
+  color: var(--text);
+}
+/* The screenshot entry at the top of the "…" menu. */
+.more-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 6px;
+  margin-bottom: 2px;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 12.5px;
+  text-align: left;
+  cursor: pointer;
+}
+.more-item:hover:not(:disabled) {
+  background: var(--pill-bg);
+}
+.more-item:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+@media (max-width: 360px) {
+  .composer-btns > .tools-menu-wrap,
+  .composer-btns > .cam-btn {
+    display: none;
+  }
+  .composer-btns > .more-menu-wrap {
+    display: inline-flex;
+  }
 }
 
 .cam-btn {
@@ -1761,7 +1835,9 @@ body {
   position: absolute;
   bottom: calc(100% + 8px);
   right: 0;
-  width: 288px;
+  /* Never wider than the panel: on a narrow side panel a fixed 288px would spill
+     past the viewport edge. Anchored right, so it stays inside either way. */
+  width: min(288px, calc(100vw - 24px));
   max-height: 340px;
   overflow-y: auto;
   background: var(--surface);
@@ -2826,79 +2902,17 @@ body {
   color: var(--text);
 }
 
-/* Model pricing table (Settings → General). A model id can be long, so it gets
-   the flexible column and truncates; the two price inputs stay a fixed width. */
-.price-table {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  margin-bottom: 6px;
-}
-.price-row {
-  display: grid;
-  grid-template-columns: 1fr 92px 92px;
-  align-items: center;
-  gap: 8px;
-}
-.price-head {
-  font-size: 11px;
-  color: var(--text-muted);
-}
-.price-head span:not(:first-child) {
-  text-align: right;
-}
-.price-model {
-  font-size: 12px;
-  color: var(--text);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.price-row input {
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 5px 8px;
-  font: inherit;
-  font-size: 12px;
-  color: var(--text);
-  background: var(--bg);
-  outline: none;
-  width: 100%;
-  text-align: right;
-  font-variant-numeric: tabular-nums;
-}
-.price-row input:focus {
-  border-color: var(--text-muted);
-}
-
-/* Token/cost readout: per-reply (in the message toolbar) and the running chat
-   total (beside the model selector). Both stay quiet — muted, tabular, and
-   absent entirely when the endpoint reports no usage. */
-.usage-line,
-.chat-total {
+/* Per-reply token count, in the message toolbar. Stays quiet — muted, tabular,
+   and absent entirely when the endpoint reports no usage. */
+.usage-line {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
+  margin-left: 2px;
   font-size: 11px;
   color: var(--text-muted);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
   cursor: default;
-}
-.usage-line {
-  margin-left: 2px;
-}
-.chat-total {
-  margin-left: 8px;
-  padding: 2px 7px;
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  background: var(--pill-bg);
-}
-.usage-cost::before {
-  content: '·';
-  margin-right: 5px;
-  opacity: 0.6;
 }
 
 /* Beta observability: master toggle switch + revealed config panel. */

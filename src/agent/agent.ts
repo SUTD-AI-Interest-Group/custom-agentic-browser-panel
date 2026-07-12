@@ -12,8 +12,6 @@ import {
 import { z } from 'zod'
 import { resolveActiveTools } from '../tools/toolDiscovery'
 import type { ModelUsage, Trace } from './observability'
-import { computeCost } from './usage'
-import type { ModelPrice } from '../data/settings'
 import type { ResearchVerification } from '../data/researchTasks'
 
 // UI-facing representation of one assistant turn. A turn is an ordered list
@@ -75,12 +73,6 @@ export interface UIMessage {
    * user messages and when the endpoint reports no usage.
    */
   usage?: ModelUsage
-  /**
-   * USD cost of this turn, computed at turn time from the model's configured
-   * price. Stored (not derived at render) so switching models later cannot
-   * retroactively misprice an old reply. Absent for unpriced/local models.
-   */
-  costUsd?: number
 }
 
 /**
@@ -225,16 +217,10 @@ export async function runAgentTurn(options: {
    * by the instrumented toolset — see `createAgentTools`.
    */
   trace?: Trace
-  /**
-   * The selected model's price, so each step's generation carries a real USD cost
-   * to Langfuse. Omitted for models with no price (local runtimes are free).
-   */
-  price?: ModelPrice
 }): Promise<AgentTurnResult> {
   const { model, system, history, tools, abortSignal, onUpdate } = options
   const wrapUpNudge = options.wrapUpNudge ?? DEFAULT_WRAP_UP_NUDGE
   const trace = options.trace
-  const price = options.price
   const modelId = (model as { modelId?: string }).modelId
   // Per-step latency: attribute the wall-clock between step boundaries to each
   // generation (model call + any tool execution in that step).
@@ -282,13 +268,9 @@ export async function runAgentTurn(options: {
               startTime: start,
               metadata: toolNames?.length ? { toolCalls: toolNames } : undefined,
             })
-            // Langfuse can only price models it knows by name, so send an explicit
-            // cost when the user has priced this model (local ids are free → none).
-            const cost = computeCost(step?.usage, price)
             gen.end({
               output: step?.content ?? { text: step?.text, toolCalls: step?.toolCalls },
               usage: step?.usage,
-              costDetails: cost ? { input: cost.input, output: cost.output, total: cost.total } : undefined,
               finishReason: step?.finishReason,
             })
           } catch {

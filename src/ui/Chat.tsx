@@ -13,10 +13,9 @@ import { getConversation, renameConversation, saveConversation } from '../data/c
 import { appendToEpisode, getMemoryContext } from '../data/memory'
 import { createModel, generateChatTitle } from '../agent/provider'
 import { getObserver, type ModelUsage } from '../agent/observability'
-import { computeCost, formatTokens, formatUsd, hasTokens, sumUsage, totalTokens } from '../agent/usage'
+import { formatTokens, hasTokens, sumUsage, totalTokens } from '../agent/usage'
 import {
   getSelectedProvider,
-  modelPrice,
   observabilityConfig,
   toolPolicy,
   TOOL_CATALOG,
@@ -227,6 +226,110 @@ function detectSlash(value: string, caret: number): { query: string } | null {
   return m ? { query: m[1] } : null
 }
 
+function ToolsIcon() {
+  return (
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <path
+        d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  )
+}
+
+function CameraIcon() {
+  return (
+    <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+      <path
+        d="M2.5 5.8A1.3 1.3 0 0 1 3.8 4.5h1.3l.83-1.24a1 1 0 0 1 .83-.46h2.48a1 1 0 0 1 .83.46l.83 1.24h1.3a1.3 1.3 0 0 1 1.3 1.3v4.9a1.3 1.3 0 0 1-1.3 1.3H3.8a1.3 1.3 0 0 1-1.3-1.3v-4.9Z"
+        stroke="currentColor"
+        strokeWidth="1.3"
+        strokeLinejoin="round"
+      />
+      <circle cx="8" cy="8.2" r="2.1" stroke="currentColor" strokeWidth="1.3" />
+    </svg>
+  )
+}
+
+/**
+ * The tool checkboxes + "Open full permissions" footer. Shared by the wide
+ * layout's tools popover and the narrow layout's "…" menu, so the two can never
+ * drift apart.
+ */
+function ToolsMenuBody({
+  settings,
+  toggleTool,
+  onOpenFull,
+}: {
+  settings: Settings
+  toggleTool: (name: string, on: boolean) => void
+  onOpenFull: () => void
+}) {
+  return (
+    <>
+      {GROUP_ORDER.map((group) => {
+        const tools = TOOL_CATALOG.filter((t) => t.group === group)
+        if (tools.length === 0) return null
+        return (
+          <div className="tools-group" key={group}>
+            <div className="tools-group-title">{GROUP_LABELS[group]}</div>
+            {tools.map((t) => {
+              const policy = toolPolicy(settings, t.name)
+              return (
+                <label className="tools-item" key={t.name}>
+                  <span className="tools-item-label">
+                    {t.label}
+                    {policy === 'always' && (
+                      <span className="tools-badge" aria-hidden="true">
+                        auto
+                      </span>
+                    )}
+                  </span>
+                  <input
+                    type="checkbox"
+                    checked={policy !== 'never'}
+                    onChange={(e) => toggleTool(t.name, e.target.checked)}
+                  />
+                </label>
+              )
+            })}
+          </div>
+        )
+      })}
+      <button className="tools-popover-foot" onClick={onOpenFull}>
+        Open full permissions →
+      </button>
+    </>
+  )
+}
+
+/** Close a popover on outside-click or Esc. Listens only while it is open. */
+function useDismissOnOutside(
+  open: boolean,
+  ref: React.RefObject<HTMLElement | null>,
+  close: () => void,
+) {
+  useEffect(() => {
+    if (!open) return
+    function onDown(e: MouseEvent) {
+      if (ref.current && !ref.current.contains(e.target as Node)) close()
+    }
+    function onKey(e: KeyboardEvent) {
+      if (e.key === 'Escape') close()
+    }
+    document.addEventListener('mousedown', onDown)
+    document.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('mousedown', onDown)
+      document.removeEventListener('keydown', onKey)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open])
+}
+
 export default function Chat({
   conversationId,
   settings,
@@ -288,6 +391,9 @@ export default function Chat({
   const [allTabs, setAllTabs] = useState<TabSummary[]>([])
   const [toolsOpen, setToolsOpen] = useState(false)
   const toolsMenuRef = useRef<HTMLDivElement>(null)
+  // Narrow panels collapse the tools + screenshot buttons into one "…" menu.
+  const [moreOpen, setMoreOpen] = useState(false)
+  const moreMenuRef = useRef<HTMLDivElement>(null)
 
   // Bumped when a turn finishes, to trigger persistence of the transcript.
   const [turnSeq, setTurnSeq] = useState(0)
@@ -387,24 +493,9 @@ export default function Chat({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [turnSeq])
 
-  // Close the tools menu on outside-click or Esc; only listen while open.
-  useEffect(() => {
-    if (!toolsOpen) return
-    function onDown(e: MouseEvent) {
-      if (toolsMenuRef.current && !toolsMenuRef.current.contains(e.target as Node)) {
-        setToolsOpen(false)
-      }
-    }
-    function onKey(e: KeyboardEvent) {
-      if (e.key === 'Escape') setToolsOpen(false)
-    }
-    document.addEventListener('mousedown', onDown)
-    document.addEventListener('keydown', onKey)
-    return () => {
-      document.removeEventListener('mousedown', onDown)
-      document.removeEventListener('keydown', onKey)
-    }
-  }, [toolsOpen])
+  // Close each composer popover on outside-click or Esc; only listens while open.
+  useDismissOnOutside(toolsOpen, toolsMenuRef, () => setToolsOpen(false))
+  useDismissOnOutside(moreOpen, moreMenuRef, () => setMoreOpen(false))
 
   // Passive context pill (Dia-style): shows which tab the agent would see if
   // granted access. Purely informational — access still goes through tools.
@@ -1012,10 +1103,6 @@ export default function Chat({
     const patch = (id: string, base: UIPart[]) => (parts: UIPart[]) =>
       setMessages((m) => m.map((msg) => (msg.id === id ? { ...msg, parts: [...base, ...parts] } : msg)))
 
-    // Priced once for the chain: drives the panel's cost line and the explicit
-    // costDetails sent to Langfuse (which cannot price a local/custom model id).
-    const price = modelPrice(settings, model.modelId)
-
     const assistantTexts: string[] = []
     let pushedAny = false
     let assistantId = uid()
@@ -1049,7 +1136,6 @@ export default function Chat({
           imageQueue,
           activeNames,
           trace,
-          price,
         })
         patch(assistantId, base)(result.parts)
         historyRef.current.push(...result.responseMessages)
@@ -1061,11 +1147,7 @@ export default function Chat({
           const id = assistantId
           const cycleUsage = result.usage
           setMessages((m) =>
-            m.map((msg) => {
-              if (msg.id !== id) return msg
-              const usage = sumUsage(msg.usage, cycleUsage)
-              return { ...msg, usage, costUsd: computeCost(usage, price)?.total }
-            }),
+            m.map((msg) => (msg.id === id ? { ...msg, usage: sumUsage(msg.usage, cycleUsage) } : msg)),
           )
         }
         if (MERGE_AUTO_CONTINUES) mergedParts = [...mergedParts, ...result.parts]
@@ -1449,8 +1531,10 @@ export default function Chat({
                 Set up a provider
               </button>
             )}
-            <ChatTotal messages={messages} />
             <div className="composer-btns">
+              {/* Wide panel: tools and screenshot as their own buttons. Below the
+                  breakpoint these two are hidden and the "…" menu below takes over
+                  (see .composer-btns in styles.css) — same actions, one control. */}
               <div className="tools-menu-wrap" ref={toolsMenuRef}>
                 <button
                   className="tools-btn"
@@ -1459,55 +1543,19 @@ export default function Chat({
                   aria-expanded={toolsOpen}
                   onClick={() => setToolsOpen((o) => !o)}
                 >
-                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none">
-                    <path
-                      d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"
-                      stroke="currentColor"
-                      strokeWidth="2"
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                    />
-                  </svg>
+                  <ToolsIcon />
                 </button>
                 {toolsOpen && (
                   <div className="tools-popover" role="dialog" aria-label="Tools">
                     <div className="tools-popover-head">Tools</div>
-                    {GROUP_ORDER.map((group) => {
-                      const tools = TOOL_CATALOG.filter((t) => t.group === group)
-                      if (tools.length === 0) return null
-                      return (
-                        <div className="tools-group" key={group}>
-                          <div className="tools-group-title">{GROUP_LABELS[group]}</div>
-                          {tools.map((t) => {
-                            const policy = toolPolicy(settings, t.name)
-                            return (
-                              <label className="tools-item" key={t.name}>
-                                <span className="tools-item-label">
-                                  {t.label}
-                                  {policy === 'always' && (
-                                    <span className="tools-badge" aria-hidden="true">auto</span>
-                                  )}
-                                </span>
-                                <input
-                                  type="checkbox"
-                                  checked={policy !== 'never'}
-                                  onChange={(e) => toggleTool(t.name, e.target.checked)}
-                                />
-                              </label>
-                            )
-                          })}
-                        </div>
-                      )
-                    })}
-                    <button
-                      className="tools-popover-foot"
-                      onClick={() => {
+                    <ToolsMenuBody
+                      settings={settings}
+                      toggleTool={toggleTool}
+                      onOpenFull={() => {
                         setToolsOpen(false)
                         onOpenSettings()
                       }}
-                    >
-                      Open full permissions →
-                    </button>
+                    />
                   </div>
                 )}
               </div>
@@ -1517,16 +1565,50 @@ export default function Chat({
                 disabled={!selected || capturing}
                 onClick={() => void capture()}
               >
-                <svg width="15" height="15" viewBox="0 0 16 16" fill="none">
-                  <path
-                    d="M2.5 5.8A1.3 1.3 0 0 1 3.8 4.5h1.3l.83-1.24a1 1 0 0 1 .83-.46h2.48a1 1 0 0 1 .83.46l.83 1.24h1.3a1.3 1.3 0 0 1 1.3 1.3v4.9a1.3 1.3 0 0 1-1.3 1.3H3.8a1.3 1.3 0 0 1-1.3-1.3v-4.9Z"
-                    stroke="currentColor"
-                    strokeWidth="1.3"
-                    strokeLinejoin="round"
-                  />
-                  <circle cx="8" cy="8.2" r="2.1" stroke="currentColor" strokeWidth="1.3" />
-                </svg>
+                <CameraIcon />
               </button>
+
+              {/* Narrow panel: both of the above collapse into this one menu. */}
+              <div className="more-menu-wrap" ref={moreMenuRef}>
+                <button
+                  className="more-btn"
+                  title="Tools & screenshot"
+                  aria-haspopup="menu"
+                  aria-expanded={moreOpen}
+                  onClick={() => setMoreOpen((o) => !o)}
+                >
+                  <svg width="15" height="15" viewBox="0 0 16 16" aria-hidden="true">
+                    <circle cx="3" cy="8" r="1.4" fill="currentColor" />
+                    <circle cx="8" cy="8" r="1.4" fill="currentColor" />
+                    <circle cx="13" cy="8" r="1.4" fill="currentColor" />
+                  </svg>
+                </button>
+                {moreOpen && (
+                  <div className="tools-popover" role="dialog" aria-label="Tools & screenshot">
+                    <button
+                      className="more-item"
+                      disabled={!selected || capturing}
+                      onClick={() => {
+                        setMoreOpen(false)
+                        void capture()
+                      }}
+                    >
+                      <CameraIcon />
+                      Screenshot part of the page
+                    </button>
+                    <div className="tools-popover-head">Tools</div>
+                    <ToolsMenuBody
+                      settings={settings}
+                      toggleTool={toggleTool}
+                      onOpenFull={() => {
+                        setMoreOpen(false)
+                        onOpenSettings()
+                      }}
+                    />
+                  </div>
+                )}
+              </div>
+
               {streaming ? (
                 <button className="send-btn stop" title="Stop" onClick={stop}>
                   <svg width="12" height="12" viewBox="0 0 12 12">
@@ -1748,53 +1830,29 @@ function MessageToolbar({
   return (
     <div className="msg-toolbar">
       <CopyActions targetRef={targetRef} markdown={markdown} />
-      <UsageLine usage={message.usage} costUsd={message.costUsd} />
+      <UsageLine usage={message.usage} />
       <SourceBar sources={deriveSources(message)} />
     </div>
   )
 }
 
 /**
- * Running token (and cost) total for the whole conversation, shown beside the
- * model selector. Sums what each reply recorded rather than re-deriving it, so a
- * mid-chat model switch keeps every turn priced as it actually ran.
+ * Tokens used by one reply. Silent when the endpoint reported no usage — an
+ * endpoint that omits token counts should show nothing rather than a misleading
+ * "0". The in/out split is in the tooltip to keep the toolbar line short. Cost is
+ * deliberately not shown here: Langfuse prices generations from its own model
+ * table, so pricing lives there rather than being duplicated in the panel.
  */
-function ChatTotal({ messages }: { messages: UIMessage[] }) {
-  const usage = messages.reduce<ModelUsage | undefined>((acc, m) => sumUsage(acc, m.usage), undefined)
+function UsageLine({ usage }: { usage?: ModelUsage }) {
   if (!hasTokens(usage)) return null
-  const cost = messages.reduce((sum, m) => sum + (m.costUsd ?? 0), 0)
   const inTok = usage?.inputTokens ?? 0
   const outTok = usage?.outputTokens ?? 0
   return (
     <span
-      className="chat-total"
-      title={`This chat: ${inTok.toLocaleString('en-US')} in · ${outTok.toLocaleString('en-US')} out${
-        cost > 0 ? ` · ${formatUsd(cost)}` : ''
-      }`}
+      className="usage-line"
+      title={`${inTok.toLocaleString('en-US')} in · ${outTok.toLocaleString('en-US')} out`}
     >
-      Σ {formatTokens(totalTokens(usage))} tok
-      {cost > 0 && <span className="usage-cost">{formatUsd(cost)}</span>}
-    </span>
-  )
-}
-
-/**
- * Tokens (and cost, when the model is priced) for one reply. Silent when the
- * endpoint reported no usage — an endpoint that omits token counts should show
- * nothing rather than a misleading "0". The full in/out split is in the tooltip
- * to keep the toolbar line short.
- */
-function UsageLine({ usage, costUsd }: { usage?: ModelUsage; costUsd?: number }) {
-  if (!hasTokens(usage)) return null
-  const inTok = usage?.inputTokens ?? 0
-  const outTok = usage?.outputTokens ?? 0
-  const title =
-    `${inTok.toLocaleString('en-US')} in · ${outTok.toLocaleString('en-US')} out` +
-    (costUsd != null ? ` · ${formatUsd(costUsd)}` : '')
-  return (
-    <span className="usage-line" title={title}>
       {formatTokens(totalTokens(usage))} tok
-      {costUsd != null && costUsd > 0 && <span className="usage-cost">{formatUsd(costUsd)}</span>}
     </span>
   )
 }
