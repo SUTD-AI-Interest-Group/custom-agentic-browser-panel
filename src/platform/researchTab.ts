@@ -82,15 +82,23 @@ async function ensureTab(): Promise<number> {
     }
   }
   // Prefer an isolated incognito window (clean cookie jar); fall back to a normal
-  // background window when the extension is not allowed in incognito.
-  let win: chrome.windows.Window
+  // background window when the extension is not allowed in incognito. When that
+  // permission is off, `windows.create({incognito:true})` does not reliably
+  // reject — on some Chrome builds it RESOLVES with null instead — so a bare
+  // try/catch isn't enough; treat a null/idless window as "incognito unavailable"
+  // and fall through, or `win.id` throws "reading 'id' of null".
+  let win: chrome.windows.Window | undefined
   try {
     win = await chrome.windows.create({ incognito: true, focused: false, state: 'minimized' })
     usingIncognito = true
   } catch {
+    win = undefined
+  }
+  if (!win || win.id === undefined) {
     win = await chrome.windows.create({ focused: false, state: 'minimized' })
     usingIncognito = false
   }
+  if (!win || win.id === undefined) throw new Error('could not open a research window')
   renderWindowId = win.id
   renderTabId = win.tabs?.[0]?.id
   if (renderTabId === undefined) throw new Error('could not open a research tab')

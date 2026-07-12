@@ -140,6 +140,16 @@ export type ResearchMsg =
   // tab one step at a time — open, act (policy-checked), read, close.
   | { type: 'research.browse'; taskId: string; requestId: string; sessionId: string; op: BrowseOp }
   | { type: 'research.browseResult'; taskId: string; requestId: string; result: BrowseResult }
+  // Tab-search fallback (offscreen → SW → offscreen): when the keyless search is
+  // rate-limited, run it in a real tab that can clear the bot wall.
+  | { type: 'research.searchTab'; taskId: string; requestId: string; query: string; maxResults: number }
+  | {
+      type: 'research.searchTabResult'
+      taskId: string
+      requestId: string
+      results?: { title: string; url: string; snippet: string }[]
+      error?: string
+    }
 
 const KEY = 'researchTasks'
 

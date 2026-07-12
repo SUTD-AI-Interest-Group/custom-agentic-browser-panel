@@ -2,7 +2,7 @@
 // + Web APIs are available here — NO chrome.storage/tabs/notifications.
 import type { BrowseOp, BrowseResult, ResearchMsg } from '../data/researchTasks'
 import { runResearch } from '../agent/research'
-import type { BrowseBroker, RenderBroker } from '../tools/research'
+import type { BrowseBroker, RenderBroker, SearchBroker } from '../tools/research'
 
 const running = new Map<string, AbortController>()
 
@@ -12,9 +12,12 @@ const running = new Map<string, AbortController>()
 const RENDER_TIMEOUT_MS = 45_000
 // A browse op includes a navigation + settle + snapshot, so it gets more runway.
 const BROWSE_TIMEOUT_MS = 60_000
+// A tab search is one navigation + settle + scrape.
+const SEARCH_TIMEOUT_MS = 45_000
 let requestSeq = 0
 const pendingRenders = new Map<string, (r: Extract<ResearchMsg, { type: 'research.renderResult' }>) => void>()
 const pendingBrowses = new Map<string, (r: BrowseResult) => void>()
+const pendingSearches = new Map<string, (r: Extract<ResearchMsg, { type: 'research.searchTabResult' }>) => void>()
 
 /**
  * Shared request/response plumbing for both brokers: correlate on a fresh
@@ -92,6 +95,23 @@ function makeBrowseBroker(taskId: string, signal: AbortSignal): BrowseBroker {
   }
 }
 
+function makeSearchBroker(taskId: string, signal: AbortSignal): SearchBroker {
+  return {
+    search(query: string, maxResults: number) {
+      return roundTrip(
+        pendingSearches,
+        taskId,
+        signal,
+        SEARCH_TIMEOUT_MS,
+        (requestId) =>
+          chrome.runtime.sendMessage({ type: 'research.searchTab', taskId, requestId, query, maxResults } satisfies ResearchMsg),
+        { error: 'tab search timed out' },
+        { error: 'aborted' },
+      ).then((r: any) => (r.error !== undefined ? { error: r.error } : { results: r.results ?? [] }))
+    },
+  }
+}
+
 chrome.runtime.onMessage.addListener((msg: ResearchMsg) => {
   if (msg?.type === 'research.start') {
     const ctrl = new AbortController()
@@ -106,6 +126,7 @@ chrome.runtime.onMessage.addListener((msg: ResearchMsg) => {
       signal: ctrl.signal,
       renderBroker: makeRenderBroker(msg.taskId, ctrl.signal),
       browseBroker: makeBrowseBroker(msg.taskId, ctrl.signal),
+      searchBroker: makeSearchBroker(msg.taskId, ctrl.signal),
       onUpdate: (steps, notebook) =>
         chrome.runtime.sendMessage({ type: 'research.update', taskId: msg.taskId, steps, notebook } satisfies ResearchMsg),
     })
@@ -134,6 +155,8 @@ chrome.runtime.onMessage.addListener((msg: ResearchMsg) => {
     pendingRenders.get(msg.requestId)?.(msg)
   } else if (msg?.type === 'research.browseResult') {
     pendingBrowses.get(msg.requestId)?.(msg.result)
+  } else if (msg?.type === 'research.searchTabResult') {
+    pendingSearches.get(msg.requestId)?.(msg)
   }
 })
 console.info('[offscreen] research host loaded')

@@ -12,7 +12,7 @@ import {
   type ResearchNotebook,
   type ResearchPlan,
 } from './notebook'
-import { createResearchTools, type BrowseBroker, type RenderBroker } from '../tools/research'
+import { createResearchTools, type BrowseBroker, type RenderBroker, type SearchBroker } from '../tools/research'
 import type { ObservabilityConfig, ProviderConfig } from '../data/settings'
 import type { ResearchSource, ResearchStep, ResearchVerification } from '../data/researchTasks'
 
@@ -98,6 +98,8 @@ export async function runResearch(opts: {
   renderBroker?: RenderBroker
   /** Drive a real tab interactively (BrowseSite). Absent = no page walks. */
   browseBroker?: BrowseBroker
+  /** Run a search in a real tab when the keyless fetch is throttled. */
+  searchBroker?: SearchBroker
   /** Emits the live step log + notebook snapshot for the sheet. */
   onUpdate: (steps: ResearchStep[], notebook: ResearchNotebook) => void
   signal: AbortSignal
@@ -217,6 +219,7 @@ export async function runResearch(opts: {
         notebook,
         renderBroker: opts.renderBroker,
         browseBroker: opts.browseBroker,
+        searchBroker: opts.searchBroker,
         browseBudget,
         taskId: opts.taskId,
         onBrowseStep,

@@ -34,26 +34,56 @@ export function isFetchableUrl(raw: string): { ok: boolean; reason?: string } {
   return { ok: true }
 }
 
+export interface SearchResultRow { title: string; url: string; snippet: string }
+
+/** DuckDuckGo wraps every outbound link as `//duckduckgo.com/l/?uddg=<real>`;
+ *  unwrap it back to the real destination. Tolerant of a bare or protocol-less href. */
+export function resolveDdgHref(href: string): string {
+  try {
+    const abs = href.startsWith('//') ? `https:${href}` : href
+    const u = new URL(abs, 'https://duckduckgo.com')
+    const uddg = u.searchParams.get('uddg')
+    return uddg ? decodeURIComponent(uddg) : abs
+  } catch {
+    return href
+  }
+}
+
 /** Parse the lite.duckduckgo.com/lite result table into ranked rows. Fragile by nature — tolerant of missing snippets. */
-export function parseDuckDuckGoLite(html: string): { title: string; url: string; snippet: string }[] {
+export function parseDuckDuckGoLite(html: string): SearchResultRow[] {
   const doc = new DOMParser().parseFromString(html, 'text/html')
   const links = Array.from(doc.querySelectorAll('a.result-link')) as HTMLAnchorElement[]
-  const resolve = (href: string): string => {
-    try {
-      const abs = href.startsWith('//') ? `https:${href}` : href
-      const u = new URL(abs, 'https://duckduckgo.com')
-      const uddg = u.searchParams.get('uddg')
-      return uddg ? decodeURIComponent(uddg) : abs
-    } catch { return href }
-  }
   return links.map((a) => {
     // The snippet cell is the next .result-snippet after this link's row.
     let snippet = ''
     const row = a.closest('tr')
     const snipCell = row?.nextElementSibling?.querySelector('.result-snippet')
     if (snipCell) snippet = (snipCell.textContent ?? '').trim()
-    return { title: (a.textContent ?? '').trim(), url: resolve(a.getAttribute('href') ?? ''), snippet }
+    return { title: (a.textContent ?? '').trim(), url: resolveDdgHref(a.getAttribute('href') ?? ''), snippet }
   }).filter((r) => r.title && r.url)
+}
+
+/**
+ * Parse the html.duckduckgo.com/html result page (`.result__a` links) into rows.
+ * This is the endpoint the tab-search fallback loads, since its per-result markup
+ * carries the snippet inline — simpler and less positional than the lite table.
+ */
+export function parseDuckDuckGoHtml(html: string): SearchResultRow[] {
+  const doc = new DOMParser().parseFromString(html, 'text/html')
+  const results = Array.from(doc.querySelectorAll('.result, .web-result'))
+  const rows: SearchResultRow[] = []
+  for (const r of results) {
+    const a = r.querySelector('a.result__a') as HTMLAnchorElement | null
+    if (!a) continue
+    // An ad row carries the same class but a `y.js` tracking href — skip it.
+    const href = a.getAttribute('href') ?? ''
+    if (!href || href.includes('duckduckgo.com/y.js')) continue
+    const snippet = (r.querySelector('.result__snippet')?.textContent ?? '').trim()
+    const title = (a.textContent ?? '').trim()
+    const url = resolveDdgHref(href)
+    if (title && url) rows.push({ title, url, snippet })
+  }
+  return rows
 }
 
 /** Reduce a fetched HTML document to readable text: strip chrome, prefer <main>/<article>, collapse whitespace, cap length. */
@@ -112,9 +142,17 @@ export async function searchDuckDuckGo(
       const res = await fetch(url, {
         method: 'GET',
         credentials: 'omit',
-        headers: { 'User-Agent': 'Mozilla/5.0' },
+        // NB: `User-Agent` is a forbidden header for fetch() — the browser drops
+        // any value we set and sends its own, so there is no point trying to spoof
+        // it here. `Accept-Language` IS honored and nudges DDG toward an English
+        // result page. When this keyless path is rate-limited (202/429), the real
+        // fix is the tab-search fallback (searchInTab), not a header tweak.
+        headers: { 'Accept-Language': 'en-US,en;q=0.9' },
         signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(FETCH_TIMEOUT_MS)]) : AbortSignal.timeout(FETCH_TIMEOUT_MS),
       })
+      // 202/429 is DDG's "prove you're a real browser" throttle — a plain fetch
+      // can't clear it, so surface a distinct, recognizable error the caller can
+      // escalate on (rather than the generic one, which reads as a dead end).
       if (res.status === 202 || res.status === 429) { await sleep(400 * (attempt + 1)); continue }
       if (!res.ok) return { error: `search failed: HTTP ${res.status}` }
       const results = parseDuckDuckGoLite(await res.text()).slice(0, Math.min(maxResults, 20))
@@ -124,8 +162,12 @@ export async function searchDuckDuckGo(
       await sleep(400 * (attempt + 1))
     }
   }
-  return { error: 'search failed after retries' }
+  return { error: SEARCH_RATE_LIMITED }
 }
+
+/** Sentinel error from searchDuckDuckGo when the keyless endpoint throttled every
+ *  attempt (202/429) — the caller escalates to a real tab on exactly this. */
+export const SEARCH_RATE_LIMITED = 'search rate-limited (bot protection)'
 
 /** Fetch a public page and return its readable text. SSRF-guarded, credentials omitted, timed, size-capped. Never throws. */
 export async function fetchReadable(

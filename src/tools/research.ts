@@ -4,7 +4,7 @@ import type { ProviderConfig } from '../data/settings'
 import { createModel } from '../agent/provider'
 import { extractStructured } from '../agent/extract'
 import { instrumentToolset, type Trace } from '../agent/observability'
-import { searchDuckDuckGo, fetchReadable } from '../platform/webFetch'
+import { searchDuckDuckGo, fetchReadable, type SearchResultRow } from '../platform/webFetch'
 import { searchAcademic, searchImages, harvestImages, type ImageResult } from '../platform/researchSources'
 import { summarizeNotebook, type NotebookHandle } from '../agent/notebook'
 import { runBrowseSession, type BrowseBroker } from '../agent/browseAgent'
@@ -24,6 +24,16 @@ export interface RenderBroker {
     url: string,
     want: 'text' | 'screenshot' | 'both',
   ): Promise<{ text?: string; title?: string; finalUrl?: string; screenshotDataUrl?: string; error?: string }>
+}
+
+/**
+ * Search broker: run a web search in a real controlled tab via the service
+ * worker. The keyless DuckDuckGo fetch is often throttled (202/429) because it
+ * looks like a bot; a genuine tab clears that wall. Injected by the controller;
+ * absent = keyless-only (searches just fail when throttled).
+ */
+export interface SearchBroker {
+  search(query: string, maxResults: number): Promise<{ results: SearchResultRow[] } | { error: string }>
 }
 
 /** A headless fetch whose text is this short is likely a JS-rendered shell — a
@@ -77,6 +87,8 @@ export function createResearchTools(deps: {
   renderBroker?: RenderBroker
   /** Optional interactive-tab broker; absent = no BrowseSite tool. */
   browseBroker?: BrowseBroker
+  /** Optional tab-search broker; absent = keyless search only (fails when throttled). */
+  searchBroker?: SearchBroker
   /** Page-walk budget, shared across the task's gather rounds. */
   browseBudget?: BrowseBudget
   /** The task id, so browse sessions are namespaced per task. */
@@ -88,7 +100,7 @@ export function createResearchTools(deps: {
   /** Cancellation for the whole task. */
   signal?: AbortSignal
 }): ToolSet {
-  const { notebook, renderBroker, browseBroker, browseBudget } = deps
+  const { notebook, renderBroker, browseBroker, searchBroker, browseBudget } = deps
   const tools: ToolSet = {
     WebSearch: tool({
       description: 'Search the web (DuckDuckGo) and return ranked {title,url,snippet} results.',
@@ -98,8 +110,20 @@ export function createResearchTools(deps: {
       }),
       execute: async ({ query, maxResults = 8 }, { abortSignal }) => {
         const r = await searchDuckDuckGo(query, maxResults, abortSignal)
+        if (!('error' in r) && r.results.length) return { results: r.results }
+        // The keyless endpoint was throttled or parsed nothing. If a tab broker is
+        // available, retry the search in a REAL browser tab — that clears the bot
+        // wall a plain fetch can't. This is what turns "search failed after
+        // retries" into actual results.
+        if (searchBroker) {
+          const t = await searchBroker.search(query, maxResults)
+          if (!('error' in t) && t.results.length) return { results: t.results, via: 'tab' }
+          // Both paths failed — surface the more informative error.
+          if ('error' in r) return { error: r.error, note: 'error' in t ? `tab fallback also failed: ${t.error}` : undefined }
+          return { results: [], note: 'No results from the web search or the tab fallback; try a different query.' }
+        }
         if ('error' in r) return r
-        return r.results.length ? { results: r.results } : { results: [], note: 'No results parsed; try a different query.' }
+        return { results: [], note: 'No results parsed; try a different query.' }
       },
     }),
 

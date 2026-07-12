@@ -10,6 +10,7 @@ import { loadSettings, getSelectedProvider, observabilityConfig } from './data/s
 import { isFetchableUrl } from './platform/webFetch'
 import { renderPage } from './platform/researchRender'
 import { closeAllSessions, handleBrowseOp } from './platform/researchBrowse'
+import { searchInTab } from './platform/researchSearch'
 import { sweepOrphanWindow } from './platform/researchTab'
 
 chrome.sidePanel
@@ -209,6 +210,17 @@ chrome.runtime.onMessage.addListener((msg: ResearchMsg) => {
         taskId: msg.taskId,
         requestId: msg.requestId,
         result,
+      } satisfies ResearchMsg)
+    } else if (msg?.type === 'research.searchTab') {
+      // Tab-search fallback: the keyless fetch was throttled, so run the search in
+      // a real tab that can clear the bot wall (see platform/researchSearch.ts).
+      const { results, error } = await searchInTab(msg.query, msg.maxResults)
+      chrome.runtime.sendMessage({
+        type: 'research.searchTabResult',
+        taskId: msg.taskId,
+        requestId: msg.requestId,
+        results,
+        error,
       } satisfies ResearchMsg)
     } else if (msg?.type === 'research.renderPage') {
       // Hybrid-escalation broker: the offscreen agent can't touch tabs, so it asks
