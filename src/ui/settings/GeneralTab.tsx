@@ -205,7 +205,7 @@ function ObservabilitySection({
       </p>
       <div className="switch-row">
         <span className="switch-label">Enable Langfuse observability</span>
-        <label className="switch">
+        <label className="switch-toggle">
           <input
             type="checkbox"
             checked={obs.enabled}
