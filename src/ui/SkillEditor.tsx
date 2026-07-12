@@ -1,9 +1,7 @@
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import {
-  accentColor,
   deleteSkill,
   getSkill,
-  listSkills,
   parseSkillMarkdown,
   saveSkill,
   serializeSkill,
@@ -11,85 +9,15 @@ import {
   type Skill,
 } from '../data/skills'
 
-// The Skills Library: a masonry grid of skill cards plus an inline editor.
-// Overlays the mounted Chat exactly like Settings does (see App.tsx).
+// The skill create/edit/view form, extracted from the old SkillsLibrary so the
+// Library's Skills tab (src/ui/library/SkillsList.tsx) can reuse it unchanged.
 
-type EditorMode =
+export type EditorMode =
   | { kind: 'new' }
   | { kind: 'edit'; skill: Skill }
   | { kind: 'view'; skill: Skill } // built-in: read-only, duplicate to customize
 
-export default function SkillsLibrary({ onClose }: { onClose: () => void }) {
-  const [skills, setSkills] = useState<Skill[]>([])
-  const [editor, setEditor] = useState<EditorMode | null>(null)
-
-  function refresh() {
-    void listSkills().then(setSkills)
-  }
-  useEffect(refresh, [])
-
-  if (editor) {
-    return (
-      <SkillEditor
-        mode={editor}
-        onBack={() => {
-          setEditor(null)
-          refresh()
-        }}
-      />
-    )
-  }
-
-  return (
-    <div className="skills">
-      <div className="skills-header">
-        <h2>Skills</h2>
-        <div className="skills-header-actions">
-          <button className="btn primary small" onClick={() => setEditor({ kind: 'new' })}>
-            New skill
-          </button>
-          <button className="icon-btn" title="Close" onClick={onClose}>
-            <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-              <path d="M3 3l8 8M11 3l-8 8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-            </svg>
-          </button>
-        </div>
-      </div>
-      <p className="hint">
-        Skills are reusable instruction sets. Run one by typing <code>/name</code> in chat, or let the
-        agent load a relevant one on its own. Tip: type <code>/create-skill</code> in chat to build one
-        with the agent.
-      </p>
-      {skills.length === 0 ? (
-        <p className="hint">No skills yet — click “New skill” to create your first.</p>
-      ) : (
-        <div className="skills-grid">
-          {skills.map((s) => (
-            <button
-              key={s.id}
-              className="skill-card"
-              style={{ ['--accent' as string]: accentColor(s) } as React.CSSProperties}
-              onClick={() =>
-                setEditor(s.source === 'builtin' ? { kind: 'view', skill: s } : { kind: 'edit', skill: s })
-              }
-            >
-              <div className="skill-card-top">
-                <span className="skill-icon">{s.icon ?? '🧩'}</span>
-                <span className={`skill-badge ${s.source}`}>
-                  {s.source === 'builtin' ? 'Built-in' : 'Custom'}
-                </span>
-              </div>
-              <div className="skill-name">{s.name}</div>
-              <div className="skill-desc">{s.description}</div>
-            </button>
-          ))}
-        </div>
-      )}
-    </div>
-  )
-}
-
-function SkillEditor({ mode, onBack }: { mode: EditorMode; onBack: () => void }) {
+export default function SkillEditor({ mode, onBack }: { mode: EditorMode; onBack: () => void }) {
   const initial = mode.kind === 'new' ? null : mode.skill
   const readOnly = mode.kind === 'view'
   const [name, setName] = useState(initial?.name ?? '')

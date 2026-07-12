@@ -337,6 +337,8 @@ export default function Chat({
   onOpenSettings,
   onOpenSkills,
   onConversationsChanged,
+  pendingResearchId,
+  onPendingResearchHandled,
 }: {
   conversationId: string
   settings: Settings
@@ -344,6 +346,10 @@ export default function Chat({
   onOpenSettings: () => void
   onOpenSkills: () => void
   onConversationsChanged: () => void
+  /** A research task the Library asked to reveal in this (now-mounted) chat. */
+  pendingResearchId?: string | null
+  /** Called once the pending research has been revealed, so App clears it. */
+  onPendingResearchHandled?: () => void
 }) {
   const [messages, setMessages] = useState<UIMessage[]>([])
   const [input, setInput] = useState('')
@@ -480,6 +486,24 @@ export default function Chat({
     const t = researchTasks.find((r) => r.id === openSheetTaskId)
     if (t && t.status !== 'running') setOpenSheetTaskId(null)
   }, [researchTasks, openSheetTaskId])
+
+  // A research row clicked in the Library navigates here (App has switched this
+  // chat to the research's conversation) and hands over the task id to reveal.
+  // A running task opens its live sheet; a finished one scrolls to its report
+  // card — but only after that card has been injected into `messages` by the
+  // effect above, so we wait for the DOM node before scrolling. Reuses
+  // openDockTask (hoisted below), then clears the pending id so it fires once.
+  useEffect(() => {
+    if (!pendingResearchId) return
+    const t = researchTasks.find((r) => r.id === pendingResearchId)
+    if (!t) return // task map not loaded yet; re-runs when researchTasks arrives
+    const hasCard = (t.status === 'done' && t.report) || (t.status === 'error' && t.error)
+    // A card-bearing task must wait for its node so the scroll lands; a running
+    // task (opens the sheet) or a cancelled one (no card) resolves immediately.
+    if (hasCard && !document.getElementById(`research-${t.id}`)) return
+    openDockTask(t)
+    onPendingResearchHandled?.()
+  }, [pendingResearchId, researchTasks, messages, onPendingResearchHandled])
 
   // Persist after each finished turn (not on restore or mid-stream), then let
   // App refresh its history list.

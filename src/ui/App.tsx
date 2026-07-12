@@ -3,19 +3,27 @@ import { listConversations, type ConversationSummary } from '../data/conversatio
 import { dreamIfDue } from '../agent/dream'
 import { seedBuiltinSkills } from '../data/builtinSkills'
 import { loadSettings, saveSettings, type Settings } from '../data/settings'
+import type { ResearchTask } from '../data/researchTasks'
 import { relativeTime } from '../platform/time'
 import Chat from './Chat'
+import Library, { type LibraryTab } from './library/Library'
 import Onboarding from './Onboarding'
 import SettingsView from './settings/Settings'
-import SkillsLibrary from './SkillsLibrary'
 
 export default function App() {
   const [settings, setSettings] = useState<Settings | null>(null)
   const [showSettings, setShowSettings] = useState(false)
-  const [showSkills, setShowSkills] = useState(false)
+  // The Library overlay's open tab, or null when closed. Opened to
+  // 'conversations' from the archival-box icon, or 'skills' from the "browse
+  // skills" affordances (slash menu / Settings link).
+  const [libraryTab, setLibraryTab] = useState<LibraryTab | null>(null)
   // A conversation id keys the Chat: changing it loads a different chat, while
   // toggling settings leaves it untouched so the transcript is never lost.
   const [conversationId, setConversationId] = useState<string>(() => crypto.randomUUID())
+  // Set when a research row in the Library is clicked: after Chat (re)mounts on
+  // the research's conversation, it reveals that task (live sheet or report
+  // card) and clears this back to null. See openResearch / Chat's effect.
+  const [pendingResearchId, setPendingResearchId] = useState<string | null>(null)
   const [conversations, setConversations] = useState<ConversationSummary[]>([])
   const [menuOpen, setMenuOpen] = useState(false)
   const menuRef = useRef<HTMLDivElement>(null)
@@ -55,14 +63,32 @@ export default function App() {
   function newChat() {
     setConversationId(crypto.randomUUID())
     setShowSettings(false)
-    setShowSkills(false)
+    setLibraryTab(null)
     setMenuOpen(false)
   }
 
   function openConversation(id: string) {
     if (id !== conversationId) setConversationId(id)
     setShowSettings(false)
-    setShowSkills(false)
+    setLibraryTab(null)
+    setMenuOpen(false)
+  }
+
+  function openSkills() {
+    setLibraryTab('skills')
+    setShowSettings(false)
+  }
+
+  // Navigate to the research's originating conversation, then hand Chat the task
+  // id so it reveals the live sheet (running) or scrolls to the report card
+  // (finished). Library only surfaces this for tasks that have a conversationId.
+  function openResearch(task: ResearchTask) {
+    if (task.conversationId && task.conversationId !== conversationId) {
+      setConversationId(task.conversationId)
+    }
+    setPendingResearchId(task.id)
+    setShowSettings(false)
+    setLibraryTab(null)
     setMenuOpen(false)
   }
 
@@ -127,10 +153,10 @@ export default function App() {
             </svg>
           </button>
           <button
-            className={`icon-btn ${showSkills ? 'active' : ''}`}
-            title="Skills library"
+            className={`icon-btn ${libraryTab ? 'active' : ''}`}
+            title="Library"
             onClick={() => {
-              setShowSkills((s) => !s)
+              setLibraryTab((t) => (t ? null : 'conversations'))
               setShowSettings(false)
             }}
           >
@@ -145,7 +171,7 @@ export default function App() {
             title="Settings"
             onClick={() => {
               setShowSettings((s) => !s)
-              setShowSkills(false)
+              setLibraryTab(null)
             }}
           >
             <svg
@@ -165,32 +191,37 @@ export default function App() {
         </div>
       </header>
 
-      <div className={`view-host ${showSettings || showSkills ? 'is-hidden' : ''}`}>
+      <div className={`view-host ${showSettings || libraryTab ? 'is-hidden' : ''}`}>
         <Chat
           key={conversationId}
           conversationId={conversationId}
           settings={settings}
           onUpdateSettings={updateSettings}
           onOpenSettings={() => setShowSettings(true)}
-          onOpenSkills={() => {
-            setShowSkills(true)
-            setShowSettings(false)
-          }}
+          onOpenSkills={openSkills}
           onConversationsChanged={refreshConversations}
+          pendingResearchId={pendingResearchId}
+          onPendingResearchHandled={() => setPendingResearchId(null)}
         />
       </div>
       {showSettings && (
         <SettingsView
           settings={settings}
           onChange={updateSettings}
-          onOpenSkills={() => {
-            setShowSkills(true)
-            setShowSettings(false)
-          }}
+          onOpenSkills={openSkills}
           onClose={() => setShowSettings(false)}
         />
       )}
-      {showSkills && <SkillsLibrary onClose={() => setShowSkills(false)} />}
+      {libraryTab && (
+        <Library
+          initialTab={libraryTab}
+          currentConversationId={conversationId}
+          onOpenConversation={openConversation}
+          onOpenResearch={openResearch}
+          onConversationsChanged={refreshConversations}
+          onClose={() => setLibraryTab(null)}
+        />
+      )}
     </div>
   )
 }
