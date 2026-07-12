@@ -6,10 +6,13 @@ import LinkCardStack from './LinkCard'
 import JsonTree from './JsonTree'
 import { splitBlocks } from './blocks'
 import { citationsToPlain } from './citations'
-import { runAgentTurn, type Checkpoint, type MessageSource, type UIMessage, type UIPart } from '../agent/agent'
+import { runAgentTurn, type Checkpoint, type MessageSource, type QueuedImage, type UIMessage, type UIPart } from '../agent/agent'
 import { captureRegion, type CapturedImage } from '../platform/capture'
+import { ensureVisionCapability } from '../agent/vision'
 import { copyElementAsPng } from '../platform/domImage'
 import { getConversation, renameConversation, saveConversation } from '../data/conversations'
+import { getShot, getShotThumb, type ShotThumb } from '../data/screenshots'
+import { downloadImage } from '../platform/download'
 import { appendToEpisode, getMemoryContext } from '../data/memory'
 import { createModel, generateChatTitle } from '../agent/provider'
 import { getObserver, type ModelUsage } from '../agent/observability'
@@ -1120,7 +1123,16 @@ export default function Chat({
       activeNames.add('RequestPageControl')
       activeNames.add('ControlPage')
       activeNames.add('AutofillForm')
+      activeNames.add('Screenshot')
     }
+
+    // Does this model actually read images? Screenshot is useless (worse than
+    // useless — it loops) against a text-only endpoint, so it is removed from the
+    // toolset entirely when the answer is no. Probed once per provider+model and
+    // cached in chrome.storage.local, so this is free after the first turn. A
+    // failed probe means "assume blind": better to withhold a camera than to hand
+    // one to a model that cannot use it.
+    const visionCapable = await ensureVisionCapability(model.provider, model.modelId).catch(() => false)
 
     // Patch one assistant bubble: its parts are `base` (prior cycles, in merge
     // mode) followed by this cycle's streamed parts.
@@ -1137,7 +1149,7 @@ export default function Chat({
       while (true) {
         // Fresh per cycle: the queue is drained during the turn, and the tools
         // must share the same instance so what they push, prepareStep injects.
-        const imageQueue: string[] = []
+        const imageQueue: QueuedImage[] = []
         const base = MERGE_AUTO_CONTINUES ? mergedParts : []
         const result = await runAgentTurn({
           model: createModel(model.provider, model.modelId),
@@ -1149,6 +1161,7 @@ export default function Chat({
             granted,
             pageControl,
             model,
+            visionCapable,
             imageQueue,
             (name) => toolPolicy(settings, name),
             conversationId,
@@ -2190,26 +2203,103 @@ function ToolPill({ part }: { part: Extract<UIPart, { type: 'tool' }> }) {
     label = output?.started ? 'Started background research' : 'Research not started'
   else if (part.toolName === 'AutofillForm')
     label = output?.error ? 'Autofill stopped' : `Filled ${output?.filled?.length ?? 0} form field${(output?.filled?.length ?? 0) === 1 ? '' : 's'}`
+  else if (part.toolName === 'Screenshot')
+    label = output?.error
+      ? 'Could not take a screenshot'
+      : `Took a screenshot · ${output?.label ?? 'the page'}`
   else if (part.toolName === 'Checkpoint') {
     const cp = part.input as Partial<Checkpoint> | undefined
     label = `Checkpointed progress — ${cp?.done?.length ?? 0} done, ${cp?.remaining?.length ?? 0} remaining`
   } else label = part.toolName
 
+  // A screenshot is the one tool result that is worth seeing rather than reading,
+  // so the image hangs below the pill instead of hiding inside it.
+  const shotId: string | undefined =
+    part.toolName === 'Screenshot' && part.state === 'done' && !denied ? output?.shotId : undefined
+
   return (
-    <details className={`tool-pill ${part.state} ${denied ? 'denied' : ''}`}>
-      <summary>
-        <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
-          <path
-            d="M1.5 6s1.7-3.2 4.5-3.2S10.5 6 10.5 6 8.8 9.2 6 9.2 1.5 6 1.5 6Z"
-            stroke="currentColor"
-            strokeWidth="1.2"
-          />
-          <circle cx="6" cy="6" r="1.4" stroke="currentColor" strokeWidth="1.2" />
-        </svg>
-        <span>{label}</span>
-      </summary>
-      <pre>{JSON.stringify({ input: part.input, output: part.output }, null, 2)}</pre>
-    </details>
+    <>
+      <details className={`tool-pill ${part.state} ${denied ? 'denied' : ''}`}>
+        <summary>
+          <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+            <path
+              d="M1.5 6s1.7-3.2 4.5-3.2S10.5 6 10.5 6 8.8 9.2 6 9.2 1.5 6 1.5 6Z"
+              stroke="currentColor"
+              strokeWidth="1.2"
+            />
+            <circle cx="6" cy="6" r="1.4" stroke="currentColor" strokeWidth="1.2" />
+          </svg>
+          <span>{label}</span>
+        </summary>
+        <pre>{JSON.stringify({ input: part.input, output: part.output }, null, 2)}</pre>
+      </details>
+      {shotId && <ShotCard shotId={shotId} />}
+    </>
+  )
+}
+
+/**
+ * The screenshot the agent took, shown to the user.
+ *
+ * Only the `shotId` lives in the transcript (an inline image there would also
+ * ride in the model's history, costing tokens on every later step for a picture
+ * it has already been shown properly). So the preview is read from IndexedDB on
+ * mount — the thumbnail store, which is kilobytes, not the full-resolution one,
+ * which for a stitched page is megabytes. The full image is fetched only if the
+ * user actually clicks to download it.
+ */
+function ShotCard({ shotId }: { shotId: string }) {
+  const [thumb, setThumb] = useState<ShotThumb | null>(null)
+  const [missing, setMissing] = useState(false)
+  const [busy, setBusy] = useState(false)
+
+  useEffect(() => {
+    let alive = true
+    getShotThumb(shotId)
+      .then((t) => {
+        if (!alive) return
+        if (t) setThumb(t)
+        else setMissing(true)
+      })
+      .catch(() => alive && setMissing(true))
+    return () => {
+      alive = false
+    }
+  }, [shotId])
+
+  // Shots are pruned by age and total size, so an old chat can outlive its images.
+  // Say so plainly rather than rendering a broken frame.
+  if (missing) return <div className="shot-card-missing">This screenshot is no longer stored.</div>
+  if (!thumb) return null
+
+  const download = async () => {
+    setBusy(true)
+    try {
+      const full = await getShot(shotId)
+      if (full) await downloadImage(full.dataUrl)
+      else setMissing(true)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <button
+      type="button"
+      className="shot-card"
+      onClick={() => void download()}
+      disabled={busy}
+      title={`Download screenshot — ${thumb.label}`}
+      aria-label={`Download screenshot of ${thumb.label}`}
+    >
+      <img src={thumb.thumb} alt={`Screenshot of ${thumb.label}`} />
+      <span className="shot-card-meta">
+        <span className="shot-card-label">{thumb.label}</span>
+        <span className="shot-card-dim">
+          {thumb.width}×{thumb.height}
+        </span>
+      </span>
+    </button>
   )
 }
 

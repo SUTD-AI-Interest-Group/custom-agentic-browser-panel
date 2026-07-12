@@ -3020,7 +3020,11 @@ body {
 .switch-row .switch-label {
   flex: 1;
 }
-.switch {
+/* The label-based toggle used by the observability switch. Deliberately NOT
+   named `.switch` — that class is the bare-input toggle (SkillsTab), whose
+   `appearance`/`::after`/`background` rules would otherwise bleed onto this
+   label and collide with the .track/.thumb spans. */
+.switch-toggle {
   position: relative;
   display: inline-block;
   flex: none;
@@ -3028,14 +3032,14 @@ body {
   height: 20px;
   cursor: pointer;
 }
-.switch input {
+.switch-toggle input {
   position: absolute;
   inset: 0;
   opacity: 0;
   margin: 0;
   cursor: pointer;
 }
-.switch .track {
+.switch-toggle .track {
   display: block;
   width: 100%;
   height: 100%;
@@ -3043,7 +3047,7 @@ body {
   background: var(--border);
   transition: background 0.15s ease;
 }
-.switch .thumb {
+.switch-toggle .thumb {
   position: absolute;
   top: 2px;
   left: 2px;
@@ -3054,13 +3058,13 @@ body {
   transition: transform 0.15s ease;
   pointer-events: none;
 }
-.switch input:checked + .track {
+.switch-toggle input:checked + .track {
   background: var(--accent);
 }
-.switch input:checked ~ .thumb {
+.switch-toggle input:checked ~ .thumb {
   transform: translateX(14px);
 }
-.switch input:focus-visible + .track {
+.switch-toggle input:focus-visible + .track {
   box-shadow: 0 0 0 2px var(--bg), 0 0 0 4px var(--accent);
 }
 .obs-panel {
@@ -3411,4 +3415,69 @@ body {
     color: #4ade80;
     border-color: #4ade80;
   }
+}
+
+/* The screenshot the agent took, shown under its tool pill. Clicking downloads
+   the full-resolution image (the card itself only ever renders the thumbnail). */
+.shot-card {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  margin: 4px 0 8px;
+  padding: 6px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--pill-bg);
+  cursor: pointer;
+  text-align: left;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+
+.shot-card:hover:not(:disabled) {
+  border-color: var(--accent, #7ab8ff);
+  background: var(--hover-bg, var(--pill-bg));
+}
+
+.shot-card:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.shot-card img {
+  flex: 0 0 auto;
+  width: 64px;
+  height: 64px;
+  object-fit: cover;
+  object-position: top center;
+  border-radius: 6px;
+  display: block;
+  background: var(--border);
+}
+
+.shot-card-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.shot-card-label {
+  font-size: 12px;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.shot-card-dim {
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.shot-card-missing {
+  margin: 4px 0 8px;
+  font-size: 11px;
+  color: var(--text-dim);
+  font-style: italic;
 }

@@ -7,8 +7,11 @@ import { getActiveTab, listOpenTabs, navigateTab, readTabContent, readTabDom } f
 import { getBrowsingHistory, getBookmarks, getTopSites, getDownloads } from '../platform/browsingData'
 import type { BrowsingCapability } from '../platform/permissions'
 import { snapshotPage, type PageSnapshot } from '../platform/domIndex'
+import { snapshotRegions } from '../platform/regionIndex'
+import { capture, tileShot, ShotError } from '../platform/screenshot'
+import { saveShot } from '../data/screenshots'
+import type { QueuedImage } from '../agent/agent'
 import { mountPresence, setTint, focusOn, pulse, setPresenceHidden } from '../platform/presence'
-import { ensureVisionCapability } from '../agent/vision'
 import { captureWithMarks } from '../platform/marks'
 import { createModel } from '../agent/provider'
 import { extractStructured } from '../agent/extract'
@@ -84,21 +87,21 @@ export interface PageControlGate {
 // of being attached to the tool result: the OpenAI-compatible adapter
 // serializes a tool result's `media` part to plain text, so the model never
 // sees it that way. The turn loop (runAgentTurn's prepareStep) drains the
-// queue and injects the image as a `user` message before the next step. The
-// presence overlay is hidden for the shot so the tint doesn't pollute what
-// the model sees, and is always restored — on the success path and on any
-// capture failure.
+// queue and injects the image as a `user` message before the next step, with
+// the caption each image carries. The presence overlay is hidden for the shot
+// so the tint doesn't pollute what the model sees, and is always restored — on
+// the success path and on any capture failure.
 async function lookResult(
   tab: chrome.tabs.Tab,
   snap: PageSnapshot,
   base: Record<string, unknown>,
   selected: { provider: ProviderConfig; modelId: string } | null,
-  imageQueue: string[],
+  /** Already resolved by the caller — see createAgentTools's `visionCapable`. */
+  vision: boolean,
+  imageQueue: QueuedImage[],
 ) {
   const value = { ...base, url: snap.url, title: snap.title, elements: snap.text }
-  if (!selected || tab.id === undefined || tab.windowId === undefined) return value
-  const vision = await ensureVisionCapability(selected.provider, selected.modelId).catch(() => false)
-  if (!vision) return value
+  if (!selected || !vision || tab.id === undefined || tab.windowId === undefined) return value
   try {
     await setPresenceHidden(tab.id, true)
     const [live] = await chrome.tabs.query({ active: true, windowId: tab.windowId })
@@ -108,7 +111,11 @@ async function lookResult(
     }
     const dataUrl = await captureWithMarks(tab.id, tab.windowId, snap.elements, snap.dpr)
     await setPresenceHidden(tab.id, false)
-    imageQueue.push(dataUrl)
+    imageQueue.push({
+      dataUrl,
+      caption:
+        'Set-of-marks screenshot of the current page — the numbered boxes correspond to the [index] values in the element list you just read.',
+    })
   } catch {
     await setPresenceHidden(tab.id, false).catch(() => {})
   }
@@ -119,13 +126,27 @@ async function lookResult(
 const MAX_DOM_CHARS = 40_000 // single active tab (ReadPage mode "dom")
 const MAX_DOM_CHARS_PER_TAB = 15_000 // per tab in ReadTabs mode "dom", to bound aggregate size
 
+// Image budgets. A stitched page is handed to the model as several legible tiles
+// rather than one illegible squashed strip (see planTiles), so one Screenshot call
+// can cost several images — hence a per-call cap and a per-turn cap.
+const MAX_TILES_PER_CALL = 6
+const MAX_SHOT_IMAGES_PER_TURN = 12
+
 export function createAgentTools(
   requestApproval: ApprovalGate,
   tabAccess: TabAccess,
   granted: Set<BrowsingCapability>,
   pageControl: PageControlGate,
   selected: { provider: ProviderConfig; modelId: string } | null,
-  imageQueue: string[],
+  /**
+   * Whether the selected model actually reads images (probed + cached by
+   * ensureVisionCapability, resolved by the caller before this runs). When false
+   * the Screenshot tool is removed entirely — a tool whose entire output is an
+   * image the model cannot see is worse than no tool, because the model will call
+   * it, get an empty-handed text result, and try again.
+   */
+  visionCapable: boolean,
+  imageQueue: QueuedImage[],
   /** Resolves each tool's Never/Ask/Always policy; `never` tools are removed below. */
   policyFor: (name: string) => ToolPolicy,
   /** The open conversation, tagged onto any background research launched this turn. */
@@ -143,14 +164,22 @@ export function createAgentTools(
   // surface tools that survive tabAccess / permission / policy gating.
   let catalog: CatalogEntry[] = []
 
+  // Images are by far the most expensive thing this agent can spend tokens on, and
+  // a model that can see tends to want to look at everything. createAgentTools is
+  // called fresh for each cycle of the continuation chain, so this closure counter
+  // is exactly a per-turn budget with no plumbing.
+  let shotImagesUsed = 0
+
   const tools: ToolSet = {
     ReadPage: tool({
       description:
-        'Read the tab the user is currently viewing. mode="text": title, URL, selected text and full visible text. mode="dom": the cleaned HTML structure (tags, attributes, links, form fields) when you need page structure rather than visible text. mode="elements": a numbered list of interactive elements (buttons, links, inputs) each with an [index] — use before controlling a page, or to re-read after it changes. Asks the user for permission first (except mode="elements" while a page-control session already owns this tab).',
+        'Read the tab the user is currently viewing. mode="text": title, URL, selected text and full visible text. mode="dom": the cleaned HTML structure (tags, attributes, links, form fields) when you need page structure rather than visible text. mode="elements": a numbered list of interactive elements (buttons, links, inputs) each with an [index] — use before controlling a page, or to re-read after it changes. mode="regions": a numbered list of VISUAL regions (charts, figures, tables, images, cards, sections) each with an [rN] — use to find something worth looking at, then pass its number to Screenshot. Asks the user for permission first (except while a page-control session already owns this tab).',
       inputSchema: z.object({
         mode: z
-          .enum(['text', 'dom', 'elements'])
-          .describe('text = visible text; dom = HTML structure; elements = indexed interactive elements'),
+          .enum(['text', 'dom', 'elements', 'regions'])
+          .describe(
+            'text = visible text; dom = HTML structure; elements = indexed interactive elements to act on; regions = indexed visual regions to screenshot',
+          ),
         reason: z
           .string()
           .describe('Short reason shown to the user, e.g. "To summarize this article"'),
@@ -158,6 +187,31 @@ export function createAgentTools(
       execute: async ({ mode, reason }) => {
         const tab = await getActiveTab()
         if (tab?.id === undefined) return { error: 'No active tab found.' }
+        // Both perception modes are read-only, and both are exempt from the card
+        // while a control session already owns this tab — the session grant covers
+        // looking at the page it is already driving.
+        if (mode === 'regions') {
+          const open = pageControl.session()
+          if (!open || !open.active || open.tabId !== tab.id) {
+            const approved = await requestApproval({
+              toolName: 'ReadPage',
+              summary: 'List the visual regions on this page (charts, tables, figures)',
+              reason,
+            })
+            if (!approved) return DENIED
+          }
+          try {
+            const snap = await snapshotRegions(tab.id)
+            return {
+              url: snap.url,
+              title: snap.title,
+              regions: snap.text,
+              note: 'Pass a region number to Screenshot as `region` (e.g. region: 2 for [r2]) to look at it.',
+            }
+          } catch (err) {
+            return { error: `Cannot read this page (${err instanceof Error ? err.message : String(err)}).` }
+          }
+        }
         if (mode === 'elements') {
           const open = pageControl.session()
           if (!open || !open.active || open.tabId !== tab.id) {
@@ -177,7 +231,7 @@ export function createAgentTools(
           if (open && open.active && open.tabId === tab.id) await setTint(tab.id, true)
           try {
             const snap = await snapshotPage(tab.id)
-            return await lookResult(tab, snap, {}, selected, imageQueue)
+            return await lookResult(tab, snap, {}, selected, visionCapable, imageQueue)
           } catch (err) {
             return { error: `Cannot read this page (${err instanceof Error ? err.message : String(err)}).` }
           }
@@ -193,6 +247,115 @@ export function createAgentTools(
         if (!approved) return DENIED
         if (mode === 'dom') return await readTabDom(tab.id, MAX_DOM_CHARS)
         return await readTabContent(tab.id)
+      },
+    }),
+
+    Screenshot: tool({
+      description:
+        'LOOK at the active tab as an image. Use when the page has to be SEEN rather than read: a chart, diagram, map, photo, rendered layout, or anything whose meaning is visual and would be lost as text. Also use it to check your own work after a ControlPage action — to confirm a click landed, or to spot a modal, error, or CAPTCHA the element list does not convey. target="element" needs a `region` number from ReadPage(mode:"regions") (preferred) or a CSS `selector`; target="viewport" shoots what is on screen; target="fullpage" scrolls and stitches the whole page. Prefer element or viewport: a full page costs several images. Asks the user for permission first (except while a page-control session already owns this tab).',
+      inputSchema: z.object({
+        target: z
+          .enum(['viewport', 'element', 'fullpage'])
+          .describe('viewport = what is on screen; element = one region/selector; fullpage = the whole scrolled page'),
+        region: z
+          .number()
+          .optional()
+          .describe('For target="element": the region number from ReadPage(mode:"regions"), e.g. 2 for [r2].'),
+        selector: z
+          .string()
+          .optional()
+          .describe('For target="element": a CSS selector, if you have no region number.'),
+        reason: z
+          .string()
+          .describe('Short reason shown to the user, e.g. "To read the revenue chart"'),
+      }),
+      execute: async ({ target, region, selector, reason }) => {
+        const tab = await getActiveTab()
+        if (tab?.id === undefined) return { error: 'No active tab found.' }
+
+        // Same exemption as ReadPage's perception modes: inside an open control
+        // session the user has already granted this agent sight of this tab, and a
+        // card between every click and its verification shot would be unusable.
+        const open = pageControl.session()
+        const owned = !!open && open.active && open.tabId === tab.id
+        if (!owned) {
+          const what =
+            target === 'fullpage'
+              ? 'Take a screenshot of this whole page'
+              : target === 'element'
+                ? 'Take a screenshot of one element on this page'
+                : 'Take a screenshot of this page'
+          const approved = await requestApproval({ toolName: 'Screenshot', summary: what, reason })
+          if (!approved) return DENIED
+        }
+
+        try {
+          const { shot, meta } = await capture(tab, { kind: target, region, selector })
+          // Saved for the user regardless of whether the model can afford to look
+          // at it — the artifact and the perception are different products.
+          const shotId = await saveShot({
+            dataUrl: shot.dataUrl,
+            width: shot.width,
+            height: shot.height,
+            url: meta.url,
+            title: meta.title,
+            label: meta.label,
+            conversationId,
+          })
+
+          const host = hostLabel(meta.url)
+          const truncatedNote = meta.truncated
+            ? ' The page was taller than the capture limit, so this stops partway down.'
+            : ''
+
+          const budget = Math.max(0, MAX_SHOT_IMAGES_PER_TURN - shotImagesUsed)
+          if (budget === 0) {
+            return {
+              ok: true,
+              shotId,
+              width: shot.width,
+              height: shot.height,
+              note: `Captured ${meta.label} on ${host} and saved it for the user, but this turn's image budget is spent, so it was not sent to you. Work from the page text instead.`,
+            }
+          }
+
+          const { tiles, dropped } = await tileShot(shot, Math.min(MAX_TILES_PER_CALL, budget))
+          tiles.forEach((t, i) => {
+            const where =
+              tiles.length > 1 ? ` — tile ${i + 1} of ${tiles.length}, top to bottom` : ''
+            imageQueue.push({
+              dataUrl: t.dataUrl,
+              caption: `Screenshot of ${meta.label} on ${host}${where}. This is a photograph of the page: there are no numbered boxes on it.`,
+            })
+          })
+          shotImagesUsed += tiles.length
+
+          // Say what was dropped. A silently truncated capture reads to the model
+          // as "I have seen the whole thing", which is how it ends up confidently
+          // describing a page section it was never shown.
+          const droppedNote = dropped
+            ? ` The page was too long to send in full: you are seeing the first ${tiles.length} of ${tiles.length + dropped} sections. Scroll and shoot again if you need the rest.`
+            : ''
+
+          return {
+            ok: true,
+            shotId,
+            target,
+            label: meta.label,
+            width: shot.width,
+            height: shot.height,
+            images: tiles.length,
+            note: `Captured ${meta.label} on ${host}.${truncatedNote}${droppedNote} The image follows.`,
+          }
+        } catch (err) {
+          // A ShotError is an expected, explainable condition (restricted page, tab
+          // no longer active, region gone) — hand the model the sentence so it can
+          // adapt, rather than an opaque failure it will just retry.
+          if (err instanceof ShotError) return { error: err.message }
+          return {
+            error: `Could not take the screenshot (${err instanceof Error ? err.message : String(err)}).`,
+          }
+        }
       },
     }),
 
@@ -286,16 +449,21 @@ export function createAgentTools(
         const granted = await pageControl.requestSession({ plan, host, origin, tabId: tab.id })
         if (!granted) return DENIED
         // Load the control cluster so the model can act without a second GetTool
-        // round-trip once a session is open.
+        // round-trip once a session is open. Screenshot joins it so the model can
+        // check its own work — confirm a click landed, catch a modal the element
+        // list does not convey — without breaking stride. (Harmless when the model
+        // is text-only: the tool is absent from the ToolSet, and prepareStep
+        // intersects activeNames with the turn's real tools.)
         activeNames.add('ControlPage')
         activeNames.add('AutofillForm')
+        activeNames.add('Screenshot')
         await mountPresence(tab.id)
         // Entering active control: turn the soft dark tint on (ambient shows the
         // frame only). The spotlight/cursor come alive on the first ControlPage.
         await setTint(tab.id, true)
         try {
           const snap = await snapshotPage(tab.id)
-          return await lookResult(tab, snap, { started: true }, selected, imageQueue)
+          return await lookResult(tab, snap, { started: true }, selected, visionCapable, imageQueue)
         } catch (err) {
           pageControl.endSession()
           return { error: `Cannot control this page (${err instanceof Error ? err.message : String(err)}).` }
@@ -748,6 +916,14 @@ export function createAgentTools(
   // off to the offscreen research host, which runs the real (ungated) research
   // tools headlessly — see src/tools/research.ts and src/agent/research.ts.
   Object.assign(tools, createStartResearchTool(requestApproval, conversationId))
+
+  // A blind model must not be handed a camera. Screenshot's entire product is an
+  // image; against a text-only endpoint the model would call it, receive a result
+  // that promises "the image follows", never see one, and loop. Removing the tool
+  // outright (rather than failing at execute) is the same mechanism a "never"
+  // policy uses, so it is absent from the catalog and ToolSearch/GetTool cannot
+  // resurrect it.
+  if (!visionCapable) delete tools.Screenshot
 
   // Honor the tab-visibility preference chosen in onboarding: in active-tab
   // mode the model never even sees a tool that could enumerate other tabs.
