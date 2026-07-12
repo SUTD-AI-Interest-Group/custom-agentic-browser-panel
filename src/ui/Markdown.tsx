@@ -4,6 +4,7 @@ import markedKatex from 'marked-katex-extension'
 import DOMPurify from 'dompurify'
 import 'katex/dist/katex.min.css'
 import { normalizeMathDelimiters } from './mathDelimiters'
+import { validateMath } from './mathValidate'
 import { enhanceCodeBlocks, highlightAll, wrapTables } from './codeEnhance'
 import { faviconUrl } from './favicon'
 import { encodeCitations, replaceCitationSentinels, escapeAttr } from './citations'
@@ -46,7 +47,11 @@ export default function Markdown({
     // AFTER sanitize (their chrome-extension:// img src must dodge DOMPurify).
     const src = citations ? encodeCitations(text) : text
     const normalized = normalizeMathDelimiters(src)
-    const raw = marked.parse(normalized, { async: false }) as string
+    // On the FINAL render, neutralize any LaTeX that won't compile so a stray
+    // `$` can't cascade-break the rest. Mid-stream stays lenient (a closing `$`
+    // may not have streamed yet); it self-heals when the stream completes.
+    const safe = streaming ? normalized : validateMath(normalized).cleaned
+    const raw = marked.parse(safe, { async: false }) as string
     // KaTeX (output:'htmlAndMathml') emits a screen-reader MathML tree using
     // <semantics>/<annotation> alongside the visible HTML. DOMPurify's default
     // MathML profile forbids those two tags — it would unwrap them, orphaning
@@ -58,7 +63,7 @@ export default function Markdown({
       ADD_ATTR: ['encoding'],
     })
     return citations ? replaceCitationSentinels(clean, (n) => citationHtml(n, citations)) : clean
-  }, [text, citations])
+  }, [text, citations, streaming])
   useEffect(() => {
     if (!ref.current) return
     enhanceCodeBlocks(ref.current)
