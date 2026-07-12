@@ -1589,8 +1589,16 @@ body {
   color: var(--text);
 }
 
-.btn:hover {
+.btn:hover:not(:disabled) {
   background: var(--pill-bg);
+}
+
+/* There was no disabled state at all, so a disabled .btn looked identical to a
+   live one — harmless for "Test connection", actively misleading for the solid-red
+   Erase button, which sits there looking armed until you type the word. */
+.btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 
 .btn.primary {
