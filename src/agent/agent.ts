@@ -54,6 +54,9 @@ export interface UIMessage {
    * bar. Absent on user messages and turns with no attached tabs.
    */
   sources?: MessageSource[]
+  /** True while the silent LaTeX self-correction pass is re-asking the model to
+   *  fix math this bubble contains; drives the "fixing math…" indicator. */
+  fixingMath?: boolean
   /**
    * When set, this assistant bubble is an auto-continuation of a long task
    * (the Nth cycle), rendered with a "↻ Continued automatically" divider above

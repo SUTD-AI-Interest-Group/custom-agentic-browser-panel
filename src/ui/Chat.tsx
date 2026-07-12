@@ -1,5 +1,6 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
 import type { ModelMessage } from 'ai'
+import { generateText } from 'ai'
 import Markdown from './Markdown'
 import ImageCarousel from './ImageCarousel'
 import LinkCardStack from './LinkCard'
@@ -7,6 +8,8 @@ import JsonTree from './JsonTree'
 import { splitBlocks } from './blocks'
 import { citationsToPlain } from './citations'
 import { runAgentTurn, type Checkpoint, type MessageSource, type QueuedImage, type UIMessage, type UIPart } from '../agent/agent'
+import { validateMath } from './mathValidate'
+import { repairMessageText, type Complete } from '../agent/mathRepair'
 import { captureRegion, type CapturedImage } from '../platform/capture'
 import { ensureVisionCapability } from '../agent/vision'
 import { copyElementAsPng } from '../platform/domImage'
@@ -24,6 +27,7 @@ import {
   TOOL_CATALOG,
   GROUP_ORDER,
   GROUP_LABELS,
+  type ProviderConfig,
   type Settings,
 } from '../data/settings'
 import { getActiveTab, listOpenTabs, readTabContent, type TabContent, type TabSummary } from '../platform/tabs'
@@ -408,6 +412,7 @@ export default function Chat({
   const [turnSeq, setTurnSeq] = useState(0)
 
   const historyRef = useRef<ModelMessage[]>([])
+  const messagesRef = useRef<UIMessage[]>([])
   // One episode per conversation: the raw journal that nightly "dreaming"
   // later distills into long-term memories. Sharing the conversation id keeps
   // the journal aligned with the chat it came from.
@@ -519,6 +524,12 @@ export default function Chat({
     // render that bumped it.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [turnSeq])
+
+  // Mirror the latest transcript into a ref so the async, fire-and-forget math
+  // repair can read final bubble text without racing React state.
+  useEffect(() => {
+    messagesRef.current = messages
+  }, [messages])
 
   // Close each composer popover on outside-click or Esc; only listens while open.
   useDismissOnOutside(toolsOpen, toolsMenuRef, () => setToolsOpen(false))
@@ -1140,10 +1151,12 @@ export default function Chat({
       setMessages((m) => m.map((msg) => (msg.id === id ? { ...msg, parts: [...base, ...parts] } : msg)))
 
     const assistantTexts: string[] = []
+    const assistantIds = new Set<string>()
     let pushedAny = false
     let assistantId = uid()
     let mergedParts: UIPart[] = []
     setMessages((m) => [...m, { id: assistantId, role: 'assistant', parts: [], sources: ctx.attachedSources }])
+    assistantIds.add(assistantId)
 
     try {
       while (true) {
@@ -1204,6 +1217,7 @@ export default function Chat({
           assistantId = uid()
           const cycle = autoContinuesRef.current
           setMessages((m) => [...m, { id: assistantId, role: 'assistant', parts: [], autoContinue: cycle }])
+          assistantIds.add(assistantId)
         }
       }
 
@@ -1213,6 +1227,9 @@ export default function Chat({
         { role: 'assistant', text: assistantTexts.join('\n').trim(), at: Date.now() },
       ]).catch(() => {})
       trace?.end({ output: assistantTexts.join('\n').trim() })
+      // Silent LaTeX self-correction: after the turn settles, repair any math the
+      // deterministic render layer could not compile. Fire-and-forget.
+      void repairAssistantMath([...assistantIds], model)
     } catch (err) {
       if (controller.signal.aborted) {
         // Keep completed cycles; only drop a dangling trailing user message (a
@@ -1244,6 +1261,47 @@ export default function Chat({
       setTurnSeq((n) => n + 1)
       // Observability: deliver this turn's buffered events. Best-effort.
       void observer.flush()
+    }
+  }
+
+  // For each assistant bubble this turn produced, validate its text and, if any
+  // math is uncompilable, silently re-ask the model to fix just those fragments
+  // and splice the result in. Never throws; degrades to the deterministic
+  // best-effort (inert code) on any failure.
+  async function repairAssistantMath(ids: string[], model: { provider: ProviderConfig; modelId: string }) {
+    const complete: Complete = (prompt) =>
+      generateText({
+        model: createModel(model.provider, model.modelId),
+        prompt,
+        abortSignal: AbortSignal.timeout(20_000),
+      }).then((r) => r.text)
+
+    for (const id of ids) {
+      const msg = messagesRef.current.find((m) => m.id === id)
+      const partIdx = msg?.parts.findIndex((p) => p.type === 'text') ?? -1
+      if (!msg || partIdx < 0) continue
+      const part = msg.parts[partIdx]
+      if (part.type !== 'text') continue
+      const original = part.text
+      if (validateMath(original).invalid.length === 0) continue
+
+      setMessages((m) => m.map((x) => (x.id === id ? { ...x, fixingMath: true } : x)))
+      let fixed = original
+      try {
+        fixed = await repairMessageText(original, complete)
+      } catch {
+        fixed = original
+      }
+      setMessages((m) =>
+        m.map((x) => {
+          if (x.id !== id) return x
+          const parts =
+            fixed === original
+              ? x.parts
+              : x.parts.map((p, i) => (i === partIdx && p.type === 'text' ? { ...p, text: fixed } : p))
+          return { ...x, parts, fixingMath: false }
+        }),
+      )
     }
   }
 
@@ -1817,6 +1875,12 @@ function MessageView({
               variant={digesting ? 'digesting' : 'thinking'}
             />
           )}
+        {message.fixingMath && !streaming && (
+          <div className="fixing-math" aria-live="polite">
+            <span className="fixing-math-spinner" aria-hidden="true" />
+            fixing math…
+          </div>
+        )}
       </div>
       {message.parts.length > 0 && !streaming && (
         <MessageToolbar message={message} targetRef={bodyRef} />
