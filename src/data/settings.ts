@@ -112,6 +112,13 @@ export interface ObservabilityConfig {
 export interface Settings {
   providers: ProviderConfig[]
   selected: SelectedModel | null
+  /**
+   * Optional model for naming chats. Unset (the default) means "same as the chat
+   * model". Worth pointing at a small non-reasoning model: a reasoning model
+   * spends ~2k tokens of chain-of-thought and 12–25s writing four words, whereas
+   * a small one answers in about a second. Read via `getTitleProvider()`.
+   */
+  titleModel?: SelectedModel | null
   systemPrompt: string
   tabAccess: TabAccess
   /**
@@ -268,4 +275,19 @@ export function getSelectedProvider(
   )
   if (!provider) return null
   return { provider, modelId: settings.selected.modelId }
+}
+
+/**
+ * The model that names chats: the user's `titleModel` if set, else the chat
+ * model. Falls back the same way when the chosen provider has since been
+ * deleted, so a stale pick degrades to a working namer rather than none.
+ */
+export function getTitleProvider(
+  settings: Settings,
+): { provider: ProviderConfig; modelId: string } | null {
+  if (settings.titleModel) {
+    const provider = settings.providers.find((p) => p.id === settings.titleModel!.providerId)
+    if (provider) return { provider, modelId: settings.titleModel.modelId }
+  }
+  return getSelectedProvider(settings)
 }

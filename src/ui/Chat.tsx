@@ -22,6 +22,7 @@ import { getObserver, type ModelUsage } from '../agent/observability'
 import { formatTokens, hasTokens, sumUsage, totalTokens } from '../agent/usage'
 import {
   getSelectedProvider,
+  getTitleProvider,
   observabilityConfig,
   toolPolicy,
   TOOL_CATALOG,
@@ -106,6 +107,12 @@ const MAX_ALL_TABS = 25
 
 // Cap how much highlighted text we forward as context.
 const SELECTION_MAX = 4000
+
+// How many finished turns may attempt to auto-name an untitled chat before we
+// give up on it. Retrying at all is the point (one slow reply must not strand a
+// chat on "New chat" for good), but a namer that keeps failing is telling us
+// something is wrong with the model, not with the luck — so stop asking.
+const MAX_TITLE_TRIES = 3
 
 // Long-horizon continuation: when a turn ends because the model checkpointed or
 // hit the step budget (see runAgentTurn's TurnStopReason), the chat auto-continues
@@ -411,6 +418,13 @@ export default function Chat({
   // Bumped when a turn finishes, to trigger persistence of the transcript.
   const [turnSeq, setTurnSeq] = useState(0)
 
+  // Auto-naming state, per mounted conversation (Chat is keyed by conversationId,
+  // so both reset when the user switches chats). `titled` stops the namer once a
+  // title exists — seeded from the restored row so reopening an old chat never
+  // re-names it; `titleTries` bounds the retries below.
+  const titledRef = useRef(false)
+  const titleTriesRef = useRef(0)
+
   const historyRef = useRef<ModelMessage[]>([])
   const messagesRef = useRef<UIMessage[]>([])
   // One episode per conversation: the raw journal that nightly "dreaming"
@@ -448,6 +462,7 @@ export default function Chat({
       if (c) {
         setMessages(c.messages)
         historyRef.current = c.history
+        titledRef.current = c.title !== null
       }
       setRestored(true)
     })
@@ -526,6 +541,46 @@ export default function Chat({
     }).then(onConversationsChanged)
     // Persist is driven solely by turnSeq; messages is read fresh from the
     // render that bumped it.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [turnSeq])
+
+  // Name the chat from its opening message, once a turn has finished.
+  //
+  // Deliberately *after* the turn rather than fired alongside it: a local runtime
+  // (LM Studio, Ollama) serves requests essentially one at a time, so a namer
+  // racing the turn it belongs to just queues behind that turn's model calls
+  // while its own timeout burns down — which is why long, tool-heavy turns were
+  // the ones that lost their titles.
+  //
+  // And it retries: every finished turn re-attempts the name while the chat is
+  // still untitled, up to MAX_TITLE_TRIES. Naming used to get exactly one shot
+  // (on the first message, silently swallowing failure), so a single slow reply
+  // left the chat reading "New chat" forever. Failure must be transient, not
+  // terminal. Untouched if the turn produced no user text to name it from.
+  useEffect(() => {
+    if (turnSeq === 0 || titledRef.current || titleTriesRef.current >= MAX_TITLE_TRIES) return
+    // The earliest user message we can actually name the chat from — not simply
+    // the first one, which may be a bare screenshot with no text to name it by.
+    const text = messages
+      .filter((m) => m.role === 'user')
+      .map((m) =>
+        m.parts
+          .flatMap((p) => (p.type === 'text' ? [p.text] : []))
+          .join(' ')
+          .trim(),
+      )
+      .find(Boolean)
+    const namer = getTitleProvider(settings)
+    if (!text || !namer) return
+    titleTriesRef.current += 1
+    void generateChatTitle(createModel(namer.provider, namer.modelId), text, conversationId)
+      .then((title) => {
+        if (!title) return
+        titledRef.current = true
+        return renameConversation(conversationId, title).then(onConversationsChanged)
+      })
+      .catch(() => {})
+    // Driven solely by turnSeq, like the persist above.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [turnSeq])
 
@@ -957,15 +1012,6 @@ export default function Chat({
     if (activeSelection) setDismissedSelection(activeSelection)
     setCaptureError(null)
     if (inputRef.current) inputRef.current.style.height = 'auto'
-
-    // Name the chat from its opening message — fired concurrently with the turn
-    // and applied whenever it resolves, so the title fills in on its own.
-    if (isFirstMessage && text && selected) {
-      const titleModel = createModel(selected.provider, selected.modelId)
-      void generateChatTitle(titleModel, text, conversationId)
-        .then((t) => (t ? renameConversation(conversationId, t).then(onConversationsChanged) : undefined))
-        .catch(() => {})
-    }
 
     setMessages((m) => [
       ...m,

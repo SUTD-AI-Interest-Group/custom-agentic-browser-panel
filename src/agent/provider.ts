@@ -1,6 +1,7 @@
 import { createOpenAICompatible } from '@ai-sdk/openai-compatible'
 import { generateText, type LanguageModel } from 'ai'
 import { getObserver } from './observability'
+import { sanitizeTitle } from './title'
 import type { ProviderConfig } from '../data/settings'
 
 // Any endpoint that speaks the OpenAI chat-completions protocol works here,
@@ -32,9 +33,21 @@ export interface TestResult {
 }
 
 /**
- * Names a chat from its opening message via a quick side-call to the same
- * model. Returns null (and never throws) if the model is unavailable or slow,
- * so the caller can simply leave the chat titled "New chat".
+ * How long the namer may take. Generous on purpose: nobody waits on this call —
+ * it runs in the background after the turn — while a *reasoning* model routinely
+ * spends 12–25s and ~2k tokens of chain-of-thought to produce four words. The
+ * previous 20s ceiling sat squarely inside that spread, so titles aborted on
+ * roughly half of all chats; because a failed title used to be permanent, those
+ * chats read "New chat" forever. Pick a small non-reasoning `titleModel` in
+ * Settings to make this ~1s instead.
+ */
+const TITLE_TIMEOUT_MS = 60_000
+
+/**
+ * Names a chat from its opening message via a side-call to the title model.
+ * Returns null (and never throws) if the model is unavailable or slow. A null is
+ * not terminal: the caller retries on the chat's next turn while it is still
+ * untitled.
  */
 export async function generateChatTitle(
   model: LanguageModel,
@@ -58,18 +71,13 @@ export async function generateChatTitle(
         'Write a concise title (3–6 words, Title Case, no quotes, no trailing punctuation) for a ' +
         'chat that begins with this message. Reply with the title only.\n\n' +
         `Message: ${firstMessage.slice(0, 500)}`,
-      abortSignal: AbortSignal.timeout(20_000),
+      abortSignal: AbortSignal.timeout(TITLE_TIMEOUT_MS),
     })
-    const title = text
-      .trim()
-      .split('\n')[0]
-      .replace(/^["'“”]+|["'“”.]+$/g, '')
-      .trim()
-      .slice(0, 60)
+    const title = sanitizeTitle(text)
     gen?.end({ output: title, usage })
     trace?.end({ output: title })
     void observer.flush()
-    return title || null
+    return title
   } catch (err) {
     gen?.end({ level: 'ERROR', statusMessage: err instanceof Error ? err.message : String(err) })
     trace?.end()

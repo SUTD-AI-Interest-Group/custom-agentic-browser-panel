@@ -74,6 +74,9 @@ export default function ProvidersTab({
       ...draft,
       providers: draft.providers.filter((p) => p.id !== id),
       selected: draft.selected?.providerId === id ? null : draft.selected,
+      // Drop a namer that pointed here, so it reverts to "same as chat model"
+      // rather than lingering as a pick the dropdown can no longer show.
+      titleModel: draft.titleModel?.providerId === id ? null : draft.titleModel,
     })
   }
 
@@ -179,6 +182,36 @@ export default function ProvidersTab({
             </button>
           ))}
         </div>
+      </Section>
+
+      <Section
+        title="Chat naming"
+        hint="Chats are named from their first message once the reply lands. A small, fast model does this best — a reasoning model can spend 20s and thousands of thinking tokens on four words."
+      >
+        <label>
+          Model
+          <select
+            value={draft.titleModel ? `${draft.titleModel.providerId}::${draft.titleModel.modelId}` : ''}
+            onChange={(e) => {
+              const [providerId, ...rest] = e.target.value.split('::')
+              commit({
+                ...draft,
+                titleModel: e.target.value ? { providerId, modelId: rest.join('::') } : null,
+              })
+            }}
+          >
+            <option value="">Same as chat model</option>
+            {draft.providers.flatMap((p) =>
+              p.models
+                .filter((m) => m.trim())
+                .map((m) => (
+                  <option key={`${p.id}::${m}`} value={`${p.id}::${m}`}>
+                    {m} · {p.name || 'Unnamed provider'}
+                  </option>
+                )),
+            )}
+          </select>
+        </label>
       </Section>
     </div>
   )

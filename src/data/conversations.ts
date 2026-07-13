@@ -86,33 +86,60 @@ export async function listConversations(): Promise<ConversationSummary[]> {
     .sort((a, b) => b.updatedAt - a.updatedAt)
 }
 
+/**
+ * Read-modify-write a row inside ONE readwrite transaction.
+ *
+ * The read and the write must not be separate transactions: the transcript save
+ * and the auto-namer both land at the end of a turn and each rewrites the whole
+ * record, so a `get` in one transaction and a `put` in another interleave into a
+ * lost update — the namer's title is overwritten by a save that had already read
+ * the row as untitled, or the save's transcript is overwritten by the namer's
+ * empty stub. IndexedDB serialises overlapping readwrite transactions on a store,
+ * so keeping both halves in one makes the update atomic.
+ */
+function mutate(
+  id: string,
+  fn: (existing: StoredConversation | undefined) => StoredConversation,
+): Promise<void> {
+  return openDb().then(
+    (db) =>
+      new Promise<void>((resolve, reject) => {
+        const tx = db.transaction(STORE, 'readwrite')
+        const store = tx.objectStore(STORE)
+        const read = store.get(id) as IDBRequest<StoredConversation | undefined>
+        read.onsuccess = () => store.put(fn(read.result))
+        tx.oncomplete = () => resolve()
+        tx.onerror = () => reject(tx.error)
+        tx.onabort = () => reject(tx.error)
+      }),
+  )
+}
+
 /** Upsert the transcript, preserving an existing title and createdAt. */
 export async function saveConversation(input: {
   id: string
   messages: UIMessage[]
   history: ModelMessage[]
 }): Promise<void> {
-  const existing = await getConversation(input.id)
   const now = Date.now()
-  const record: StoredConversation = {
+  await mutate(input.id, (existing) => ({
     id: input.id,
     title: existing?.title ?? null,
     createdAt: existing?.createdAt ?? now,
     updatedAt: now,
     messages: input.messages,
     history: input.history,
-  }
-  await requestOf('readwrite', (s) => s.put(record))
+  }))
 }
 
 /** Set the title, creating a stub row if the transcript hasn't saved yet. */
 export async function renameConversation(id: string, title: string): Promise<void> {
-  const existing = await getConversation(id)
   const now = Date.now()
-  const record: StoredConversation = existing
-    ? { ...existing, title }
-    : { id, title, createdAt: now, updatedAt: now, messages: [], history: [] }
-  await requestOf('readwrite', (s) => s.put(record))
+  await mutate(id, (existing) =>
+    existing
+      ? { ...existing, title }
+      : { id, title, createdAt: now, updatedAt: now, messages: [], history: [] },
+  )
 }
 
 export async function deleteConversation(id: string): Promise<void> {
