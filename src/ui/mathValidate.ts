@@ -51,6 +51,16 @@ function escapeStrayDollars(segment: string): string {
   return segment.replace(/(?<!\\)\$/g, '\\$')
 }
 
+// A `$$…$$` block only tokenizes when marked sees it as its own block — i.e.
+// blank-line-separated. Models routinely glue it to the previous prose line with
+// a single newline (`intro:\n$$…$$`), which folds it into the paragraph and
+// leaves it rendered as raw source. Emitting a valid display span blank-line-
+// isolated makes marked's block rule fire. Inline `$…$` is untouched, and any
+// redundant blank lines collapse harmlessly.
+function isolateDisplay(match: string): string {
+  return `\n\n${match}\n\n`
+}
+
 /** Validate + neutralize the math in `text`. Pure; safe to run on every render. */
 export function validateMath(text: string): MathValidation {
   const invalid: MathSpan[] = []
@@ -67,7 +77,7 @@ export function validateMath(text: string): MathValidation {
     const end = m.index + match.length
     last = end
     if (display !== undefined) {
-      if (compiles(display.trim(), true)) cleaned += match
+      if (compiles(display.trim(), true)) cleaned += isolateDisplay(match)
       else {
         cleaned += neutralize(match)
         invalid.push({ raw: match, start, end, display: true })

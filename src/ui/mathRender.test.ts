@@ -26,4 +26,12 @@ describe('markdown math render (with validateMath)', () => {
     // the structurally-broken inline span is inert code, not a half-math node
     expect(html).toContain('<code>')
   })
+
+  it('renders a display block glued to the previous line by a single newline', () => {
+    // The reported bug: `intro:\n$$…$$` (no blank line) rendered as raw text.
+    // (displayCount is the reliable signal — KaTeX always embeds the raw TeX in
+    // a MathML <annotation> node, so a substring check would false-positive.)
+    const html = render('Applying Gauss law:\n$$\\oint_S \\mathbf{E} \\cdot d\\mathbf{A} = \\frac{Q}{\\epsilon_0}$$')
+    expect(displayCount(html)).toBe(1)
+  })
 })

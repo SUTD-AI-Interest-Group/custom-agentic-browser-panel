@@ -2,11 +2,12 @@ import { describe, it, expect } from 'vitest'
 import { validateMath } from './mathValidate'
 
 describe('validateMath', () => {
-  it('leaves balanced inline and display math untouched', () => {
+  it('keeps balanced inline and display math (inline verbatim, display preserved)', () => {
     const text = 'Peak at $x=0$ and\n\n$$Q = \\lambda_0 \\sigma \\sqrt{2\\pi}$$\n\ndone'
     const { cleaned, invalid } = validateMath(text)
     expect(invalid).toHaveLength(0)
-    expect(cleaned).toBe(text)
+    expect(cleaned).toContain('$x=0$') // inline math untouched
+    expect(cleaned).toContain('$$Q = \\lambda_0 \\sigma \\sqrt{2\\pi}$$') // display preserved
   })
 
   it('neutralizes a structurally-invalid inline span as inline code and records it', () => {
@@ -66,5 +67,14 @@ describe('validateMath', () => {
     expect(invalid[0].display).toBe(true)
     expect(invalid[0].raw).toBe('$$\\frac{a}{$$')
     expect(cleaned).toBe('`$$\\frac{a}{$$`')
+  })
+
+  it('blank-line-isolates a valid display block glued to the previous line', () => {
+    // A $$…$$ that starts a line not separated from prose by a blank line is
+    // folded into the paragraph and never tokenized by marked-katex. Ensuring a
+    // blank line before (and after) it makes marked's block rule fire.
+    const { cleaned, invalid } = validateMath('it would be:\n$$E = mc^2$$')
+    expect(invalid).toHaveLength(0)
+    expect(cleaned).toContain('\n\n$$E = mc^2$$')
   })
 })
