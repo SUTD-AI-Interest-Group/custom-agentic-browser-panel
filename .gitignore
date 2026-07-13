@@ -8,3 +8,6 @@ dist/
 # Claude Code: per-user settings and isolated worktrees stay out of the repo
 .claude/settings.local.json
 .claude/worktrees/
+
+# Publicity: standalone Remotion motion-graphics project, not part of the extension
+/publicity/
