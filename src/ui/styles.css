@@ -2772,10 +2772,19 @@ body {
   flex: 1;
 }
 
-.provider-card input,
-.provider-card textarea,
-.obs-panel input:not([type='checkbox']),
-.system-prompt {
+/* The form-control baseline for every settings pane.
+ *
+ * Keyed to WHAT a control is, not to WHERE it sits. This used to be a list of
+ * ancestors (.provider-card, .obs-panel, .erase-confirm, .system-prompt), each
+ * re-declaring the same box, so a field added to a section nobody had listed
+ * rendered in the browser's default chrome until someone remembered to extend
+ * the list — which is exactly how the chat-naming <select> shipped naked next to
+ * a pane of styled inputs. A new control is now dressed by virtue of being a
+ * control.
+ *
+ * Checkboxes and radios are excluded: they are drawn by .check / .switch /
+ * .access-option, which style the *row*, not the box. */
+.settings-tabpane :is(input:not([type='checkbox']):not([type='radio']), select, textarea) {
   border: 1px solid var(--border);
   border-radius: 8px;
   padding: 6px 8px;
@@ -2785,14 +2794,48 @@ body {
   background: var(--bg);
   outline: none;
   width: 100%;
+}
+
+.settings-tabpane :is(input:not([type='checkbox']):not([type='radio']), select, textarea):focus {
+  border-color: var(--text-muted);
+}
+
+.settings-tabpane textarea {
   resize: vertical;
 }
 
-.provider-card input:focus,
-.provider-card textarea:focus,
-.obs-panel input:not([type='checkbox']):focus,
-.system-prompt:focus {
-  border-color: var(--text-muted);
+/* A native select's caret is drawn by the OS and cannot be themed, so suppress it
+   and let <Select> re-draw the panel's own chevron over the padding reserved here.
+   Without this the picker wears macOS's blue chrome amid our flat, tokenised UI. */
+.settings-tabpane select {
+  appearance: none;
+  padding-right: 26px;
+  cursor: pointer;
+}
+
+/* Label above control — the stacked field used across the settings panes. */
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 11.5px;
+  color: var(--text-muted);
+  flex: 1;
+}
+
+.select-wrap {
+  position: relative;
+  display: flex;
+}
+
+.select-chevron {
+  position: absolute;
+  right: 9px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--text-muted);
+  /* Clicks belong to the select underneath, not to its decoration. */
+  pointer-events: none;
 }
 
 .field-row {
@@ -3927,14 +3970,8 @@ body {
   margin-top: 10px;
 }
 
+/* Box style comes from the settings form-control baseline; only the layout is local. */
 .erase-confirm input {
   flex: 1;
   min-width: 0;
-  padding: 6px 8px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--surface);
-  color: var(--text);
-  font: inherit;
-  font-size: 12px;
 }

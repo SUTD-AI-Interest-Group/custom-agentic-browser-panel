@@ -32,6 +32,48 @@ export function Section({
 }
 
 /**
+ * A labelled dropdown. Exists because a bare `<select>` is the one control the
+ * panel cannot style into line: its caret is drawn by the OS, so it renders as
+ * native chrome amid a flat, tokenised UI. Here the native caret is suppressed
+ * (see `.settings-tabpane select`) and the panel's own chevron drawn over it —
+ * the same one Section/Disclosure use.
+ *
+ * Reach for this rather than a raw `<select>`, the way panes reach for `Section`
+ * rather than a hand-rolled `<h2>`.
+ */
+export function Select({
+  label,
+  value,
+  onChange,
+  children,
+}: {
+  label?: string
+  value: string
+  onChange: (value: string) => void
+  children: ReactNode
+}) {
+  return (
+    <label className="field">
+      {label}
+      <span className="select-wrap">
+        <select value={value} onChange={(e) => onChange(e.target.value)}>
+          {children}
+        </select>
+        <svg className="select-chevron" width="10" height="10" viewBox="0 0 10 10" fill="none">
+          <path
+            d="M1 3.5l4 4 4-4"
+            stroke="currentColor"
+            strokeWidth="1.5"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+        </svg>
+      </span>
+    </label>
+  )
+}
+
+/**
  * A collapsible block whose closed state still says where it stands — `status`
  * renders muted beside the summary (e.g. "Off", "On · cloud.langfuse.com"), so
  * folding a section away never hides whether it is doing something.

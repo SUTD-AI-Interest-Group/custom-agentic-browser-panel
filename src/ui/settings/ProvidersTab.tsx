@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import type { ProviderConfig, Settings } from '../../data/settings'
-import { Section } from './primitives'
+import { Section, Select } from './primitives'
 
 // Common OpenAI-compatible endpoints, offered as one-click starting points.
 // Anything not listed still works via "Custom".
@@ -188,30 +188,28 @@ export default function ProvidersTab({
         title="Chat naming"
         hint="Chats are named from their first message once the reply lands. A small, fast model does this best — a reasoning model can spend 20s and thousands of thinking tokens on four words."
       >
-        <label>
-          Model
-          <select
-            value={draft.titleModel ? `${draft.titleModel.providerId}::${draft.titleModel.modelId}` : ''}
-            onChange={(e) => {
-              const [providerId, ...rest] = e.target.value.split('::')
-              commit({
-                ...draft,
-                titleModel: e.target.value ? { providerId, modelId: rest.join('::') } : null,
-              })
-            }}
-          >
-            <option value="">Same as chat model</option>
-            {draft.providers.flatMap((p) =>
-              p.models
-                .filter((m) => m.trim())
-                .map((m) => (
-                  <option key={`${p.id}::${m}`} value={`${p.id}::${m}`}>
-                    {m} · {p.name || 'Unnamed provider'}
-                  </option>
-                )),
-            )}
-          </select>
-        </label>
+        <Select
+          label="Model"
+          value={draft.titleModel ? `${draft.titleModel.providerId}::${draft.titleModel.modelId}` : ''}
+          onChange={(value) => {
+            const [providerId, ...rest] = value.split('::')
+            commit({
+              ...draft,
+              titleModel: value ? { providerId, modelId: rest.join('::') } : null,
+            })
+          }}
+        >
+          <option value="">Same as chat model</option>
+          {draft.providers.flatMap((p) =>
+            p.models
+              .filter((m) => m.trim())
+              .map((m) => (
+                <option key={`${p.id}::${m}`} value={`${p.id}::${m}`}>
+                  {m} · {p.name || 'Unnamed provider'}
+                </option>
+              )),
+          )}
+        </Select>
       </Section>
     </div>
   )
