@@ -1,8 +1,8 @@
 import { describe, it, expect } from 'vitest'
-import { tool } from 'ai'
+import { tool, type ModelMessage } from 'ai'
 import { MockLanguageModelV3 } from 'ai/test'
 import { z } from 'zod'
-import { runAgentTurn, type UIPart } from './agent'
+import { runAgentTurn, toValidModelMessages, type UIPart } from './agent'
 
 // Progressive disclosure means most tools are NOT in `activeTools` until the
 // model loads them with GetTool. If the model instead calls such a tool
@@ -213,5 +213,60 @@ describe('step-budget stop reason', () => {
     })
 
     expect(result.stop.reason).toBe('completed')
+  })
+})
+
+// Reasoning parts must be stripped from replayed history: the app never renders
+// them from the model messages, and once persisted they lose the OpenAI Responses
+// adapter's provider metadata, so replaying them only logs a "Non-OpenAI reasoning
+// parts are not supported" warning. (Display reasoning rides a separate UI-part
+// channel.)
+describe('toValidModelMessages strips reasoning from replay', () => {
+  it('removes reasoning parts but keeps text and tool calls in the same message', () => {
+    const msgs = [
+      { role: 'user', content: 'hi' },
+      {
+        role: 'assistant',
+        content: [
+          { type: 'reasoning', text: 'let me think…' },
+          { type: 'text', text: 'hello' },
+          { type: 'tool-call', toolCallId: 'c1', toolName: 'ReadPage', input: {} },
+        ],
+      },
+    ] as unknown as ModelMessage[]
+    const out = toValidModelMessages(msgs)
+    expect(out).toHaveLength(2)
+    const content = out[1].content as Array<{ type: string }>
+    expect(content.map((p) => p.type)).toEqual(['text', 'tool-call'])
+  })
+
+  it('drops an assistant message that was reasoning-only', () => {
+    const msgs = [
+      { role: 'user', content: 'hi' },
+      { role: 'assistant', content: [{ type: 'reasoning', text: 'thinking' }] },
+      { role: 'assistant', content: [{ type: 'text', text: 'answer' }] },
+    ] as unknown as ModelMessage[]
+    const out = toValidModelMessages(msgs)
+    expect(out.map((m) => m.role)).toEqual(['user', 'assistant'])
+    expect((out[1].content as Array<{ type: string }>).map((p) => p.type)).toEqual(['text'])
+  })
+
+  it('still removes nested undefined from tool results (its original job)', () => {
+    const msgs = [
+      {
+        role: 'tool',
+        content: [
+          {
+            type: 'tool-result',
+            toolCallId: 'c1',
+            toolName: 'ReadPage',
+            output: { type: 'json', value: { ok: true, extra: undefined } },
+          },
+        ],
+      },
+    ] as unknown as ModelMessage[]
+    const out = toValidModelMessages(msgs)
+    const result = (out[0].content as Array<{ output: { value: Record<string, unknown> } }>)[0]
+    expect(result.output.value).toEqual({ ok: true })
   })
 })
