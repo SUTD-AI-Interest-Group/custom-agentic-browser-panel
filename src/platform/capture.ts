@@ -54,6 +54,26 @@ export async function captureRegion(): Promise<CapturedImage | null> {
   return cropShot(shot, region)
 }
 
+/**
+ * Abort an in-progress region capture from OUTSIDE the page — e.g. the user hit
+ * Esc while focused on the side panel, where the page's own Esc handler can't see
+ * it. Dispatches a synthetic Escape into the active tab so the overlay runs its
+ * normal cancel path (`finish(null)`), and `captureRegion` resolves null. Best
+ * effort: a no-op if the tab can't be scripted.
+ */
+export async function cancelRegionCapture(): Promise<void> {
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true })
+    if (tab?.id === undefined) return
+    await chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      func: () => window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' })),
+    })
+  } catch {
+    /* the capture will still cancel from the page, or time out harmlessly */
+  }
+}
+
 // Keep attachments a sane size for vision APIs; most models downscale beyond
 // ~1500px anyway.
 const MAX_SIDE = 1400

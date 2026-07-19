@@ -10,7 +10,7 @@ import { citationsToPlain } from './citations'
 import { runAgentTurn, type Checkpoint, type MessageSource, type QueuedImage, type UIMessage, type UIPart } from '../agent/agent'
 import { validateMath } from './mathValidate'
 import { repairMessageText, type Complete } from '../agent/mathRepair'
-import { captureRegion, type CapturedImage } from '../platform/capture'
+import { cancelRegionCapture, captureRegion, type CapturedImage } from '../platform/capture'
 import { ensureVisionCapability } from '../agent/vision'
 import { copyElementAsPng } from '../platform/domImage'
 import { getConversation, renameConversation, saveConversation } from '../data/conversations'
@@ -444,6 +444,40 @@ export default function Chat({
   const inputRef = useRef<HTMLTextAreaElement>(null)
 
   const selected = getSelectedProvider(settings)
+
+  // The most recent user message's text, for ArrowUp recall in the composer.
+  const lastUserText = useMemo(() => {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i].role === 'user') {
+        return messages[i].parts.map((p) => (p.type === 'text' ? p.text : '')).join('')
+      }
+    }
+    return ''
+  }, [messages])
+
+  // Focus the composer as soon as the chat is ready — on panel open and on every
+  // new/switched chat (Chat is keyed by conversationId, so it remounts each time),
+  // so the user can start typing immediately. Skipped when no provider is
+  // configured, since the textarea is disabled and can't take focus.
+  useEffect(() => {
+    if (restored && selected) inputRef.current?.focus()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [restored])
+
+  // ESC aborts an in-progress region capture when the panel is focused (the page
+  // overlay already handles ESC when the page itself is focused). We inject a
+  // synthetic Escape so the overlay runs its own cancel path.
+  useEffect(() => {
+    if (!capturing) return
+    function onKey(e: KeyboardEvent) {
+      if (e.key === 'Escape') {
+        e.preventDefault()
+        void cancelRegionCapture()
+      }
+    }
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
+  }, [capturing])
 
   // Restore a persisted conversation on mount. Chat is keyed by conversationId
   // in App, so this runs once per chat and never mid-conversation.
@@ -1640,6 +1674,14 @@ export default function Chat({
                   return
                 }
               }
+              // Shell-style recall: ArrowUp on an empty composer refills it with
+              // the previous message. Only when empty, so multi-line editing (and
+              // the mention/slash popovers above) keep ArrowUp for cursor movement.
+              if (e.key === 'ArrowUp' && input === '' && lastUserText) {
+                e.preventDefault()
+                setInput(lastUserText)
+                return
+              }
               if (e.key === 'Enter' && !e.shiftKey) {
                 e.preventDefault()
                 void send()
@@ -1904,15 +1946,18 @@ function MessageView({
   if (message.role === 'user') {
     const text = message.parts.map((p) => (p.type === 'text' ? p.text : '')).join('')
     return (
-      <div className="msg-user">
-        {message.images && message.images.length > 0 && (
-          <div className="msg-images">
-            {message.images.map((src, i) => (
-              <img key={i} src={src} alt="Attached screenshot" />
-            ))}
-          </div>
-        )}
-        {text}
+      <div className="msg-user-wrap">
+        <div className="msg-user">
+          {message.images && message.images.length > 0 && (
+            <div className="msg-images">
+              {message.images.map((src, i) => (
+                <img key={i} src={src} alt="Attached screenshot" />
+              ))}
+            </div>
+          )}
+          {text}
+        </div>
+        {text && <CopyTextButton text={text} label="Copy message" />}
       </div>
     )
   }
@@ -1931,7 +1976,7 @@ function MessageView({
           part.type === 'text' ? (
             <AssistantText key={i} text={part.text} streaming={streaming} />
           ) : part.type === 'reasoning' ? (
-            <ReasoningBlock key={i} text={part.text} streaming={streaming} />
+            <ReasoningBlock key={i} text={part.text} active={streaming && i === message.parts.length - 1} />
           ) : (
             <ToolPill key={part.toolCallId} part={part} />
           ),
@@ -1986,13 +2031,16 @@ function AssistantText({
 // The model's reasoning for one reply, as a collapsible "Thinking" block.
 // Reasoning is display-only: it is captured from the stream into UI parts but
 // stripped from the model-replay history (see toValidModelMessages in agent.ts).
-// Auto-expanded while the turn streams so you can watch it think; folded away
-// once reloaded from history (a persisted reply mounts with streaming=false).
-function ReasoningBlock({ text, streaming }: { text: string; streaming: boolean }) {
-  const [open, setOpen] = useState(streaming)
+// `active` is true only while the model is *currently* emitting this reasoning
+// (it's the last part and the turn is streaming). Open state follows `active` —
+// expanded while it thinks, then auto-collapsed the moment the response starts
+// (active → false) or on reload — until the user toggles it, which takes over.
+function ReasoningBlock({ text, active }: { text: string; active: boolean }) {
+  const [userToggled, setUserToggled] = useState<boolean | null>(null)
+  const open = userToggled ?? active
   return (
     <div className={`reasoning-block ${open ? 'open' : ''}`}>
-      <button className="reasoning-head" aria-expanded={open} onClick={() => setOpen((o) => !o)}>
+      <button className="reasoning-head" aria-expanded={open} onClick={() => setUserToggled(!open)}>
         <svg className="reasoning-chevron" width="10" height="10" viewBox="0 0 10 10" fill="none" aria-hidden="true">
           <path d="M3 1l4 4-4 4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
         </svg>
@@ -2103,6 +2151,38 @@ function CheckIcon() {
     <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
       <path d="M3.5 8.5l3 3 6-6.5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
     </svg>
+  )
+}
+
+// Copy plain text to the clipboard with a transient check, matching the assistant
+// toolbar's copy button. Shown under user messages.
+function CopyTextButton({ text, label }: { text: string; label: string }) {
+  const [state, setState] = useState<'idle' | 'done' | 'error'>('idle')
+  async function copy() {
+    try {
+      await navigator.clipboard.writeText(text)
+      setState('done')
+    } catch {
+      setState('error')
+    }
+    setTimeout(() => setState('idle'), 1500)
+  }
+  return (
+    <button
+      className={`msg-tool-btn user-copy-btn ${state}`}
+      data-tooltip={state === 'error' ? "Couldn't copy" : label}
+      aria-label={state === 'error' ? "Couldn't copy" : label}
+      onClick={() => void copy()}
+    >
+      {state === 'done' ? (
+        <CheckIcon />
+      ) : (
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+          <rect x="5" y="5" width="8.5" height="8.5" rx="1.5" stroke="currentColor" strokeWidth="1.3" />
+          <path d="M11 5V3.5A1.5 1.5 0 0 0 9.5 2H3.5A1.5 1.5 0 0 0 2 3.5v6A1.5 1.5 0 0 0 3.5 11H5" stroke="currentColor" strokeWidth="1.3" />
+        </svg>
+      )}
+    </button>
   )
 }
 
