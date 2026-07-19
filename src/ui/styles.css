@@ -3424,6 +3424,26 @@ body {
   margin: 8px 2px 0;
 }
 
+/* The interval + model pickers that sit above the dream card. */
+.dream-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+/* Reset-memory row: same shape as the Data tab's danger rows, set off with a
+   rule so a destructive control never blends into the memory list. */
+.dream-reset {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 12px 0;
+  margin-top: 10px;
+  border-top: 1px solid var(--border);
+}
+
 .memory-item {
   display: flex;
   align-items: flex-start;

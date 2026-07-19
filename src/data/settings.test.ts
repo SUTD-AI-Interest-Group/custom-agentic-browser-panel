@@ -1,10 +1,13 @@
 import { describe, expect, it } from 'vitest'
 import {
+  DEFAULT_DREAM_INTERVAL_MS,
   DEFAULT_SYSTEM_PROMPT,
   defaultSettings,
+  getDreamProvider,
   groupPolicy,
   inferKind,
   resetSettingsKeepingProviders,
+  resolveDreamIntervalMs,
   resolveReasoningEffort,
   setGroupPolicy,
   toolPolicy,
@@ -142,5 +145,43 @@ describe('resolveReasoningEffort', () => {
 
   it('is undefined when neither model nor provider set it', () => {
     expect(resolveReasoningEffort(provider(), 'm1')).toBeUndefined()
+  })
+})
+
+describe('resolveDreamIntervalMs', () => {
+  it('falls back to the 24h default when unset', () => {
+    expect(resolveDreamIntervalMs(base())).toBe(DEFAULT_DREAM_INTERVAL_MS)
+  })
+
+  it('uses a positive stored interval', () => {
+    expect(resolveDreamIntervalMs(base({ dreamIntervalMs: 30 * 60 * 1000 }))).toBe(30 * 60 * 1000)
+  })
+
+  it('ignores a non-positive interval and defaults', () => {
+    expect(resolveDreamIntervalMs(base({ dreamIntervalMs: 0 }))).toBe(DEFAULT_DREAM_INTERVAL_MS)
+  })
+})
+
+describe('getDreamProvider', () => {
+  const p1 = provider({ id: 'p1', name: 'Chat', models: ['chat-model'] })
+  const p2 = provider({ id: 'p2', name: 'Cheap', models: ['tiny-model'] })
+  const configured = base({ providers: [p1, p2], selected: { providerId: 'p1', modelId: 'chat-model' } })
+
+  it('falls back to the chat model when dreamModel is unset', () => {
+    expect(getDreamProvider(configured)).toEqual({ provider: p1, modelId: 'chat-model' })
+  })
+
+  it('uses the dreamModel when set and its provider still exists', () => {
+    const s = base({ ...configured, dreamModel: { providerId: 'p2', modelId: 'tiny-model' } })
+    expect(getDreamProvider(s)).toEqual({ provider: p2, modelId: 'tiny-model' })
+  })
+
+  it('falls back to the chat model when the dreamModel provider is gone', () => {
+    const s = base({ ...configured, dreamModel: { providerId: 'deleted', modelId: 'x' } })
+    expect(getDreamProvider(s)).toEqual({ provider: p1, modelId: 'chat-model' })
+  })
+
+  it('is null when nothing is configured', () => {
+    expect(getDreamProvider(base())).toBeNull()
   })
 })

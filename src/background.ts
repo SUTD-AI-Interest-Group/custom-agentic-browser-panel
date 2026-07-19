@@ -6,7 +6,7 @@
 import { dreamIfDue } from './agent/dream'
 import type { ResearchMsg } from './data/researchTasks'
 import { saveTask, applyUpdate } from './data/researchTasks'
-import { loadSettings, getSelectedProvider, observabilityConfig } from './data/settings'
+import { loadSettings, getSelectedProvider, observabilityConfig, resolveDreamIntervalMs } from './data/settings'
 import { isFetchableUrl } from './platform/webFetch'
 import { renderPage } from './platform/researchRender'
 import { closeAllSessions, handleBrowseOp } from './platform/researchBrowse'
@@ -19,12 +19,39 @@ chrome.sidePanel
 
 const DREAM_ALARM = 'dream'
 
-function scheduleDreamAlarm() {
-  chrome.alarms.create(DREAM_ALARM, { delayInMinutes: 5, periodInMinutes: 60 })
+/**
+ * How often the dream alarm fires, in minutes: the user's chosen interval, but
+ * capped at 60 (a 24h interval doesn't need 24h between checks — the alarm just
+ * verifies the gap has elapsed) and floored at 1 (Chrome's minimum period). A
+ * 30-minute interval genuinely fires every 30 minutes; dreamIfDue re-checks the
+ * real gap and idle guard before consolidating.
+ */
+function dreamAlarmPeriodMinutes(settings: Awaited<ReturnType<typeof loadSettings>>): number {
+  const minutes = Math.round(resolveDreamIntervalMs(settings) / 60_000)
+  return Math.min(Math.max(minutes, 1), 60)
 }
 
-chrome.runtime.onInstalled.addListener(scheduleDreamAlarm)
-chrome.runtime.onStartup.addListener(scheduleDreamAlarm)
+async function scheduleDreamAlarm(): Promise<void> {
+  const period = dreamAlarmPeriodMinutes(await loadSettings())
+  chrome.alarms.create(DREAM_ALARM, { delayInMinutes: Math.min(period, 5), periodInMinutes: period })
+}
+
+chrome.runtime.onInstalled.addListener(() => void scheduleDreamAlarm())
+chrome.runtime.onStartup.addListener(() => void scheduleDreamAlarm())
+
+// Re-arm the alarm when the user changes the dream interval, so a new cadence
+// takes effect without waiting for the next browser restart. Settings live under
+// one 'settings' key; only reschedule when the derived period actually changes.
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area !== 'local' || !changes.settings) return
+  void (async () => {
+    const period = dreamAlarmPeriodMinutes(await loadSettings())
+    const existing = await chrome.alarms.get(DREAM_ALARM)
+    if (!existing || existing.periodInMinutes !== period) {
+      chrome.alarms.create(DREAM_ALARM, { delayInMinutes: Math.min(period, 5), periodInMinutes: period })
+    }
+  })()
+})
 
 // MV3 can kill this worker at any time, which drops the research tab's handle and
 // strands its (minimized, invisible) window. Sweep any leftover on every wake —

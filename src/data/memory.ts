@@ -234,10 +234,43 @@ export async function pruneConsolidatedEpisodes(olderThanMs = 14 * 86_400_000): 
   }
 }
 
-/** Wipe long-term memory *and* the episode log the dreamer consolidates from. */
+/**
+ * Wipe long-term memory *and* the episode log the dreamer consolidates from,
+ * and reset the dream state so the panel reads "Has not dreamed yet" again. This
+ * is the single "reset memory entirely" path — the Dreaming panel's Reset button,
+ * the Data tab's Clear Memory, and the full erase all route through it.
+ */
 export async function clearMemory(): Promise<void> {
   await requestOf(MEMORIES, 'readwrite', (s) => s.clear())
   await requestOf(EPISODES, 'readwrite', (s) => s.clear())
+  await clearDreamState()
+}
+
+// ---------------------------------------------------------------------------
+// Dream state — the last-consolidation metadata shown in the Dreaming panel.
+// Kept here (not in dream.ts) so `clearMemory` can reset it without pulling the
+// AI SDK into this store, and so a "reset memory" wipes it in one call.
+// ---------------------------------------------------------------------------
+
+export interface DreamState {
+  lastDreamAt: number | null
+  /** Day summary produced by the last dream, for display in the Memory panel. */
+  lastSummary: string | null
+}
+
+const DREAM_STATE_KEY = 'dreamState'
+
+export async function getDreamState(): Promise<DreamState> {
+  const data = await chrome.storage.local.get(DREAM_STATE_KEY)
+  return { lastDreamAt: null, lastSummary: null, ...(data[DREAM_STATE_KEY] as Partial<DreamState> | undefined) }
+}
+
+export async function setDreamState(state: DreamState): Promise<void> {
+  await chrome.storage.local.set({ [DREAM_STATE_KEY]: state })
+}
+
+export async function clearDreamState(): Promise<void> {
+  await chrome.storage.local.remove(DREAM_STATE_KEY)
 }
 
 /** Byte/row estimate for the Data tab, counting both object stores. */

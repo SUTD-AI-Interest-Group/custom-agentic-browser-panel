@@ -133,7 +133,7 @@ export default function SettingsView({
         {tab === 'permissions' && (
           <PermissionsTab draft={draft} commit={commit} onSaved={flashSaved} />
         )}
-        {tab === 'memory' && <MemoryTab />}
+        {tab === 'memory' && <MemoryTab draft={draft} commit={commit} />}
         {tab === 'skills' && <SkillsTab onOpenSkills={onOpenSkills} onSaved={flashSaved} />}
         {tab === 'data' && <DataTab draft={draft} commit={commit} onErased={onErased} />}
       </div>

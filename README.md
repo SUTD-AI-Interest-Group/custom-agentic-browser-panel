@@ -199,10 +199,13 @@ A two-tier memory in IndexedDB:
 
 Episodes become memories through **dreaming** (`src/agent/dream.ts`): the model
 re-reads unconsolidated episodes alongside its current memories and emits add /
-update / delete operations plus a day summary. It's fully automatic — an hourly
-alarm, firing at most once per ~20h and only after 30+ minutes of inactivity.
-The Memory panel (moon icon) is a read-only window onto the store and the last
-dream; you can forget individual memories there.
+update / delete operations plus a day summary. It runs automatically — a
+`chrome.alarms` tick fires once the chosen interval has elapsed and the user has
+been idle 30+ minutes. The Memory panel (moon icon) exposes the controls: how
+often to consolidate (30 min – 24h, default 24h), which model does it (defaults
+to the chat model — a small, cheap one is often better), a **Dream now** button
+to run a cycle on demand, and **Reset memory** to wipe the store and start over.
+You can also forget individual memories there.
 
 ## Skills
 

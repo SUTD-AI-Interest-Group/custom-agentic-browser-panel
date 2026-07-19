@@ -4,42 +4,46 @@
 // memories, and rewrites the memory store — adding durable facts, merging
 // duplicates, forgetting stale entries, and writing a compact day summary.
 //
-// Runs in two places: the background service worker on an hourly alarm
-// (dreamIfDue), and on demand from the Memory panel ("Dream now" → runDream).
-// It is a single non-streaming generateText call, so it works fine in a
-// service worker with no DOM.
+// Runs in two places: the background service worker on a recurring alarm whose
+// period tracks the user's chosen interval (dreamIfDue), and on demand from the
+// Memory panel ("Dream now" → runDream). It is a single non-streaming
+// generateText call, so it works fine in a service worker with no DOM.
 
 import { generateText } from 'ai'
 import { createModel } from './provider'
 import { getObserver } from './observability'
-import { getSelectedProvider, loadSettings, observabilityConfig } from '../data/settings'
+import {
+  getDreamProvider,
+  loadSettings,
+  observabilityConfig,
+  resolveDreamIntervalMs,
+  type Settings,
+} from '../data/settings'
 import {
   deleteMemory,
+  getDreamState,
   listMemories,
   listUnconsolidatedEpisodes,
   markEpisodesConsolidated,
   pruneConsolidatedEpisodes,
   saveMemory,
+  setDreamState,
   updateMemory,
   type EpisodeRecord,
   type MemoryKind,
   type MemoryRecord,
 } from '../data/memory'
 
-export interface DreamState {
-  lastDreamAt: number | null
-  /** Day summary produced by the last dream, for display in the Memory panel. */
-  lastSummary: string | null
-}
+// Dream-state persistence (get/set/clear) lives in ../data/memory so that
+// clearMemory() can reset it in the same call; this module just reads/writes it.
 
 export type DreamOutcome =
   | { status: 'dreamed'; added: number; updated: number; deleted: number; episodes: number; summary: string | null }
   | { status: 'skipped'; reason: string }
 
-const STATE_KEY = 'dreamState'
-
-// Don't dream more than ~once a day, and never mid-conversation.
-const MIN_INTERVAL_MS = 20 * 60 * 60 * 1000
+// Never dream mid-conversation — only after the user has gone quiet. The gap
+// *between* dreams is user-configurable (resolveDreamIntervalMs); this idle
+// guard is not, so a short interval still won't interrupt active use.
 const MIN_IDLE_MS = 30 * 60 * 1000
 
 const VALID_KINDS: MemoryKind[] = ['fact', 'preference', 'project', 'summary']
@@ -48,19 +52,11 @@ const MAX_MEMORY_CHARS = 600
 const MAX_MESSAGE_CHARS = 1_500
 const MAX_TRANSCRIPT_CHARS = 24_000
 
-export async function getDreamState(): Promise<DreamState> {
-  const data = await chrome.storage.local.get(STATE_KEY)
-  return { lastDreamAt: null, lastSummary: null, ...(data[STATE_KEY] as Partial<DreamState> | undefined) }
-}
-
-async function setDreamState(state: DreamState): Promise<void> {
-  await chrome.storage.local.set({ [STATE_KEY]: state })
-}
-
 /** Alarm entry point: dream only when due and the user has gone quiet. */
 export async function dreamIfDue(): Promise<DreamOutcome> {
+  const settings = await loadSettings()
   const state = await getDreamState()
-  if (state.lastDreamAt && Date.now() - state.lastDreamAt < MIN_INTERVAL_MS) {
+  if (state.lastDreamAt && Date.now() - state.lastDreamAt < resolveDreamIntervalMs(settings)) {
     return { status: 'skipped', reason: 'Dreamed recently.' }
   }
   const episodes = await listUnconsolidatedEpisodes()
@@ -69,13 +65,17 @@ export async function dreamIfDue(): Promise<DreamOutcome> {
   if (Date.now() - lastActivity < MIN_IDLE_MS) {
     return { status: 'skipped', reason: 'User is still active.' }
   }
-  return runDream()
+  return runDream(settings)
 }
 
-/** Runs one full dream cycle immediately (used by the "Dream now" button). */
-export async function runDream(): Promise<DreamOutcome> {
-  const settings = await loadSettings()
-  const selected = getSelectedProvider(settings)
+/**
+ * Runs one full dream cycle immediately (used by the "Dream now" button and the
+ * due-check above). Ignores the interval/idle gates — the caller decides when.
+ * `preloaded` lets `dreamIfDue` avoid re-reading settings it just loaded.
+ */
+export async function runDream(preloaded?: Settings): Promise<DreamOutcome> {
+  const settings = preloaded ?? (await loadSettings())
+  const selected = getDreamProvider(settings)
   if (!selected) return { status: 'skipped', reason: 'No model configured.' }
 
   const episodes = await listUnconsolidatedEpisodes()

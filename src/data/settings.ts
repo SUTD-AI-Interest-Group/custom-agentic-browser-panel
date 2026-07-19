@@ -170,6 +170,20 @@ export interface Settings {
    * a small one answers in about a second. Read via `getTitleProvider()`.
    */
   titleModel?: SelectedModel | null
+  /**
+   * Optional model for the "dreaming" memory-consolidation cycle. Unset (the
+   * default) means "same as the chat model". Like `titleModel`, a small, cheap
+   * model is often the better pick here — dreaming is a single background
+   * generation the user never watches. Resolved via `getDreamProvider()`.
+   */
+  dreamModel?: SelectedModel | null
+  /**
+   * Minimum gap between automatic dream cycles, in ms. Unset → 24h
+   * (`DEFAULT_DREAM_INTERVAL_MS`). The background alarm honours short values by
+   * firing more often (see `src/background.ts`); manual "Dream now" ignores it.
+   * Resolved via `resolveDreamIntervalMs()`.
+   */
+  dreamIntervalMs?: number
   systemPrompt: string
   tabAccess: TabAccess
   /**
@@ -375,6 +389,44 @@ export function getTitleProvider(
   if (settings.titleModel) {
     const provider = settings.providers.find((p) => p.id === settings.titleModel!.providerId)
     if (provider) return { provider, modelId: settings.titleModel.modelId }
+  }
+  return getSelectedProvider(settings)
+}
+
+/** Default minimum gap between automatic dream cycles — once a day. */
+export const DEFAULT_DREAM_INTERVAL_MS = 24 * 60 * 60 * 1000
+
+/** The interval choices offered by the Dreaming panel's picker, in display order. */
+export const DREAM_INTERVAL_OPTIONS: ReadonlyArray<{ label: string; ms: number }> = [
+  { label: '30 minutes', ms: 30 * 60 * 1000 },
+  { label: '1 hour', ms: 60 * 60 * 1000 },
+  { label: '3 hours', ms: 3 * 60 * 60 * 1000 },
+  { label: '6 hours', ms: 6 * 60 * 60 * 1000 },
+  { label: '12 hours', ms: 12 * 60 * 60 * 1000 },
+  { label: '24 hours', ms: DEFAULT_DREAM_INTERVAL_MS },
+]
+
+/**
+ * The effective minimum gap between automatic dreams: the user's `dreamIntervalMs`
+ * if it is a positive number, else the 24h default. Old installs (field absent)
+ * keep the once-a-day cadence they always had.
+ */
+export function resolveDreamIntervalMs(settings: Settings): number {
+  const v = settings.dreamIntervalMs
+  return typeof v === 'number' && v > 0 ? v : DEFAULT_DREAM_INTERVAL_MS
+}
+
+/**
+ * The model that dreams: the user's `dreamModel` if set (and its provider still
+ * exists), else the chat model. Falls back the same way `getTitleProvider` does,
+ * so a stale pick degrades to a working model rather than none.
+ */
+export function getDreamProvider(
+  settings: Settings,
+): { provider: ProviderConfig; modelId: string } | null {
+  if (settings.dreamModel) {
+    const provider = settings.providers.find((p) => p.id === settings.dreamModel!.providerId)
+    if (provider) return { provider, modelId: settings.dreamModel.modelId }
   }
   return getSelectedProvider(settings)
 }

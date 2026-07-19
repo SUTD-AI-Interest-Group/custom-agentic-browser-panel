@@ -120,9 +120,10 @@ export default function ProvidersTab({
       ...draft,
       providers: draft.providers.filter((p) => p.id !== id),
       selected: draft.selected?.providerId === id ? null : draft.selected,
-      // Drop a namer that pointed here, so it reverts to "same as chat model"
-      // rather than lingering as a pick the dropdown can no longer show.
+      // Drop a namer / dreamer that pointed here, so each reverts to "same as chat
+      // model" rather than lingering as a pick the dropdown can no longer show.
       titleModel: draft.titleModel?.providerId === id ? null : draft.titleModel,
+      dreamModel: draft.dreamModel?.providerId === id ? null : draft.dreamModel,
     })
   }
 
