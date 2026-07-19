@@ -1913,8 +1913,17 @@ body {
 }
 
 .model-menu-list {
+  /* flex child in the column: grow to fill, but min-height:0 so it can shrink
+     below its content and actually scroll instead of shoving the effort footer
+     out of the menu. */
+  flex: 1 1 auto;
+  min-height: 0;
   overflow-y: auto;
   padding: 6px;
+}
+
+.model-menu-effort {
+  flex: none;
 }
 
 .model-menu-group + .model-menu-group {
