@@ -400,6 +400,19 @@ body {
   opacity: 1;
 }
 
+/* The user copy button sits at the panel's right edge, so anchor its tooltip to
+   the right and let it grow inward — left-anchored it would spill off-screen. */
+.user-copy-btn[data-tooltip]::after {
+  left: auto;
+  right: 0;
+}
+
+.user-copy-btn[data-tooltip]::before {
+  left: auto;
+  right: 11px;
+  transform: translateX(50%);
+}
+
 /* ---- Source favicons ----
    Beside the copy actions on a finished reply: a stacked row of favicon avatars
    for the pages the model drew on, an overflow "+N" chip, and hover cards. */
