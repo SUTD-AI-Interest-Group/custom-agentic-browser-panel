@@ -18,6 +18,8 @@ import { getShot, getShotThumb, type ShotThumb } from '../data/screenshots'
 import { downloadImage } from '../platform/download'
 import { appendToEpisode, getMemoryContext } from '../data/memory'
 import { createModel, generateChatTitle } from '../agent/provider'
+import ModelPicker from './ModelPicker'
+import { useDismissOnOutside } from './hooks'
 import { getObserver, type ModelUsage } from '../agent/observability'
 import { formatTokens, hasTokens, sumUsage, totalTokens } from '../agent/usage'
 import {
@@ -334,28 +336,6 @@ function ToolsMenuBody({
 }
 
 /** Close a popover on outside-click or Esc. Listens only while it is open. */
-function useDismissOnOutside(
-  open: boolean,
-  ref: React.RefObject<HTMLElement | null>,
-  close: () => void,
-) {
-  useEffect(() => {
-    if (!open) return
-    function onDown(e: MouseEvent) {
-      if (ref.current && !ref.current.contains(e.target as Node)) close()
-    }
-    function onKey(e: KeyboardEvent) {
-      if (e.key === 'Escape') close()
-    }
-    document.addEventListener('mousedown', onDown)
-    document.addEventListener('keydown', onKey)
-    return () => {
-      document.removeEventListener('mousedown', onDown)
-      document.removeEventListener('keydown', onKey)
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open])
-}
 
 export default function Chat({
   conversationId,
@@ -1396,15 +1376,6 @@ export default function Chat({
     })
   }
 
-  function selectModel(value: string) {
-    const [providerId, ...rest] = value.split('::')
-    onUpdateSettings({ ...settings, selected: { providerId, modelId: rest.join('::') } })
-  }
-
-  const modelOptions = settings.providers.flatMap((p) =>
-    p.models.map((m) => ({ value: `${p.id}::${m}`, label: m, provider: p.name })),
-  )
-
   // The pages attached to the next message, rendered as a pill row in the
   // composer: the first MAX_VISIBLE_CONTEXT with favicon + host, the rest
   // collapsed into a "+N" pill whose hover reveals the remainder. @all resolves
@@ -1678,28 +1649,11 @@ export default function Chat({
             }, 150)}
           />
           <div className="composer-row">
-            {modelOptions.length > 0 ? (
-              <select
-                className="model-select"
-                value={selected ? `${selected.provider.id}::${selected.modelId}` : ''}
-                onChange={(e) => selectModel(e.target.value)}
-              >
-                {!selected && <option value="">Select model</option>}
-                {settings.providers.map((p) => (
-                  <optgroup key={p.id} label={p.name}>
-                    {p.models.map((m) => (
-                      <option key={m} value={`${p.id}::${m}`}>
-                        {m}
-                      </option>
-                    ))}
-                  </optgroup>
-                ))}
-              </select>
-            ) : (
-              <button className="link-btn" onClick={onOpenSettings}>
-                Set up a provider
-              </button>
-            )}
+            <ModelPicker
+              settings={settings}
+              onUpdateSettings={onUpdateSettings}
+              onOpenSettings={onOpenSettings}
+            />
             <div className="composer-btns">
               {/* Wide panel: tools and screenshot as their own buttons. Below the
                   breakpoint these two are hidden and the "…" menu below takes over

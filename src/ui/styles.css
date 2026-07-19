@@ -1856,22 +1856,223 @@ body {
   margin-top: 6px;
 }
 
-.model-select {
+/* ---- Model picker (custom dropdown replacing the native <select>, so the
+   reasoning-effort slider can live inside the menu) ---- */
+
+.model-picker {
+  position: relative;
+  /* Let the trigger shrink and ellipsize a long model id rather than shoving the
+     action buttons out of the composer (the old <select> comment, still true). */
+  flex: 0 1 auto;
+  min-width: 0;
+}
+
+.model-select-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 100%;
   border: none;
-  outline: none;
   background: transparent;
   color: var(--text-muted);
   font-size: 12px;
   cursor: pointer;
-  /* A <select>'s intrinsic min-content width is its LONGEST option, so a long
-     model id (google/gemma-4-26b-a4b) would otherwise refuse to shrink and shove
-     the action buttons out of the composer. Let it shrink and ellipsize instead. */
-  flex: 0 1 auto;
+  padding: 0;
+}
+
+.model-select-btn:hover,
+.model-select-btn[aria-expanded='true'] {
+  color: var(--text);
+}
+
+.model-select-label {
   min-width: 0;
-  max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.model-select-btn svg {
+  flex: none;
+}
+
+.model-menu {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 0;
+  width: min(300px, calc(100vw - 24px));
+  max-height: 380px;
+  display: flex;
+  flex-direction: column;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.1);
+  z-index: 20;
+  overflow: hidden;
+}
+
+.model-menu-list {
+  overflow-y: auto;
+  padding: 6px;
+}
+
+.model-menu-group + .model-menu-group {
+  margin-top: 4px;
+}
+
+.model-menu-group-label {
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+  font-weight: 600;
+  padding: 6px 8px 2px;
+}
+
+.model-menu-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  border: none;
+  background: none;
+  text-align: left;
+  padding: 7px 8px;
+  border-radius: 8px;
+  color: var(--text);
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.model-menu-item:hover {
+  background: var(--pill-bg);
+}
+
+.model-menu-item.active {
+  color: var(--accent);
+}
+
+.model-menu-item-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.model-menu-item svg {
+  flex: none;
+}
+
+/* Reasoning-effort footer, pinned below the scrolling model list. */
+.model-menu-effort {
+  border-top: 1px solid var(--border);
+  padding: 10px 12px 12px;
+  background: var(--surface);
+}
+
+.model-menu-effort.off {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.effort-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.effort-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.effort-value {
+  font-size: 11px;
+  color: var(--accent);
+  text-transform: capitalize;
+}
+
+.effort-off-note {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.effort-help {
+  margin-left: auto;
+  width: 15px;
+  height: 15px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  font-size: 10px;
+  color: var(--text-muted);
+  cursor: help;
+}
+
+/* Snap slider: gradient-filled track (Faster → Smarter) driven by the --pct the
+   component sets from the current rung's index. */
+.effort-slider {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 100%;
+  height: 6px;
+  border-radius: 999px;
+  background: linear-gradient(
+    90deg,
+    var(--accent) 0%,
+    var(--accent) var(--pct, 0%),
+    var(--border) var(--pct, 0%),
+    var(--border) 100%
+  );
+  cursor: pointer;
+}
+
+.effort-slider::-webkit-slider-thumb {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #fff;
+  border: 1px solid var(--border);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
+  cursor: pointer;
+}
+
+.effort-slider::-moz-range-thumb {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #fff;
+  border: 1px solid var(--border);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
+  cursor: pointer;
+}
+
+.effort-ends {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 6px;
+  font-size: 10.5px;
+  color: var(--text-muted);
+}
+
+.link-btn.tiny {
+  font-size: 11px;
+  padding: 0;
+}
+
+.effort-not {
+  display: block;
+  margin-top: 8px;
+  color: var(--text-muted);
 }
 
 .send-btn {
