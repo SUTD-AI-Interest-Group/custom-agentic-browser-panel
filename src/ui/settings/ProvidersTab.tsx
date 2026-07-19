@@ -1,16 +1,20 @@
 import { useState } from 'react'
-import type { ProviderConfig, ReasoningEffort, Settings } from '../../data/settings'
+import { providerKind, type ModelConfig, type ProviderConfig, type ReasoningEffort, type Settings } from '../../data/settings'
+import { profileFor } from '../../data/providerProfiles'
+import { fetchModelList } from '../../platform/modelList'
 import { Section, Select } from './primitives'
 
-// Common OpenAI-compatible endpoints, offered as one-click starting points.
-// Anything not listed still works via "Custom".
-const PRESETS: Array<Pick<ProviderConfig, 'name' | 'baseURL'> & { models: string[] }> = [
-  { name: 'OpenAI', baseURL: 'https://api.openai.com/v1', models: ['gpt-4o-mini'] },
-  { name: 'Anthropic', baseURL: 'https://api.anthropic.com/v1', models: ['claude-sonnet-5'] },
-  { name: 'OpenRouter', baseURL: 'https://openrouter.ai/api/v1', models: [] },
-  { name: 'Groq', baseURL: 'https://api.groq.com/openai/v1', models: [] },
-  { name: 'Ollama (local)', baseURL: 'http://localhost:11434/v1', models: ['llama3.1'] },
-  { name: 'Custom', baseURL: '', models: [] },
+// Common endpoints, offered as one-click starting points, each tagged with the
+// `kind` that selects its capability profile. Anything not listed still works via
+// "Custom" (the generic OpenAI-compatible profile).
+const PRESETS: Array<Pick<ProviderConfig, 'name' | 'baseURL' | 'kind'> & { models: string[] }> = [
+  { name: 'OpenAI', baseURL: 'https://api.openai.com/v1', kind: 'openai', models: ['gpt-4o-mini'] },
+  { name: 'Anthropic', baseURL: 'https://api.anthropic.com/v1', kind: 'anthropic', models: ['claude-sonnet-5'] },
+  { name: 'OpenRouter', baseURL: 'https://openrouter.ai/api/v1', kind: 'openrouter', models: [] },
+  { name: 'Groq', baseURL: 'https://api.groq.com/openai/v1', kind: 'groq', models: [] },
+  { name: 'Ollama (local)', baseURL: 'http://localhost:11434/v1', kind: 'ollama', models: ['llama3.1'] },
+  { name: 'LM Studio (local)', baseURL: 'http://localhost:1234/v1', kind: 'lmstudio', models: [] },
+  { name: 'Custom', baseURL: '', kind: 'custom', models: [] },
 ]
 
 /** Drop the scheme so a collapsed card reads "api.openai.com/v1", not the whole URL. */
@@ -39,6 +43,10 @@ export default function ProvidersTab({
 }) {
   // Which cards are expanded. Not persisted: reopening Settings starts collapsed.
   const [open, setOpen] = useState<Set<string>>(new Set())
+  // "Refresh models" state: the provider id currently loading, plus the last
+  // result/error line per provider id.
+  const [refreshingId, setRefreshingId] = useState<string | null>(null)
+  const [refreshMsg, setRefreshMsg] = useState<Record<string, string>>({})
 
   function toggle(id: string) {
     setOpen((prev) => {
@@ -65,11 +73,46 @@ export default function ProvidersTab({
       name: preset.name === 'Custom' ? '' : preset.name,
       baseURL: preset.baseURL,
       apiKey: '',
+      kind: preset.kind,
       models: [...preset.models],
     }
     commit({ ...draft, providers: [...draft.providers, provider] })
     // A brand-new provider has no key yet — open it so the user can fill it in.
     setOpen((prev) => new Set(prev).add(provider.id))
+  }
+
+  /**
+   * Populate a provider's model list from its live endpoint (per the profile's
+   * models endpoint + auth). Also seeds a manual reasoning flag where the API
+   * reports one that the id heuristic would miss (mainly OpenRouter), keeping
+   * modelConfigs sparse. Best-effort: failures surface inline, nothing else changes.
+   */
+  async function refreshModels(p: ProviderConfig) {
+    setRefreshingId(p.id)
+    setRefreshMsg((m) => ({ ...m, [p.id]: '' }))
+    try {
+      const fetched = await fetchModelList(p)
+      const models = fetched.map((f) => f.id).sort((a, b) => a.localeCompare(b))
+      const detect = profileFor(providerKind(p)).detectReasoning
+      const modelConfigs: Record<string, ModelConfig> = { ...p.modelConfigs }
+      for (const f of fetched) {
+        if (f.reasoning === true && !detect(f.id)) {
+          modelConfigs[f.id] = { ...modelConfigs[f.id], reasoning: true }
+        }
+      }
+      commit({
+        ...draft,
+        providers: draft.providers.map((q) => (q.id === p.id ? { ...q, models, modelConfigs } : q)),
+      })
+      setRefreshMsg((m) => ({ ...m, [p.id]: `Loaded ${models.length} model${models.length === 1 ? '' : 's'}.` }))
+    } catch (err) {
+      setRefreshMsg((m) => ({
+        ...m,
+        [p.id]: `Couldn't load models: ${err instanceof Error ? err.message : String(err)}`,
+      }))
+    } finally {
+      setRefreshingId(null)
+    }
   }
 
   function removeProvider(id: string) {
@@ -162,16 +205,28 @@ export default function ProvidersTab({
                       onBlur={commitDraft}
                     />
                   </label>
-                  <label>
-                    Models (one per line)
-                    <textarea
-                      rows={3}
-                      value={p.models.join('\n')}
-                      placeholder={'gpt-4o-mini\ngpt-4o'}
-                      onChange={(e) => updateProvider(p.id, { models: e.target.value.split('\n') })}
-                      onBlur={commitDraft}
-                    />
-                  </label>
+                  <div className="models-field">
+                    <label>
+                      Models (one per line)
+                      <textarea
+                        rows={3}
+                        value={p.models.join('\n')}
+                        placeholder={'gpt-4o-mini\ngpt-4o'}
+                        onChange={(e) => updateProvider(p.id, { models: e.target.value.split('\n') })}
+                        onBlur={commitDraft}
+                      />
+                    </label>
+                    <div className="models-field-actions">
+                      <button
+                        className="link-btn tiny"
+                        disabled={refreshingId === p.id}
+                        onClick={() => refreshModels(p)}
+                      >
+                        {refreshingId === p.id ? 'Refreshing…' : 'Refresh from endpoint'}
+                      </button>
+                      {refreshMsg[p.id] && <span className="hint">{refreshMsg[p.id]}</span>}
+                    </div>
+                  </div>
                   <Select
                     label="Reasoning effort"
                     value={p.reasoningEffort ?? ''}

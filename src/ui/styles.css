@@ -2075,6 +2075,19 @@ body {
   color: var(--text-muted);
 }
 
+/* "Refresh from endpoint" action + status under a provider's model list. */
+.models-field-actions {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-top: 4px;
+  flex-wrap: wrap;
+}
+
+.models-field-actions .hint {
+  margin: 0;
+}
+
 .send-btn {
   display: inline-flex;
   align-items: center;
