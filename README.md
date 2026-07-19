@@ -12,8 +12,9 @@
 
 Lychee AI is a Manifest V3 Chrome extension (React 18 + Vite 6 + TypeScript,
 built on the [Vercel AI SDK](https://ai-sdk.dev) v5). **There is no backend.**
-The panel talks directly to whatever OpenAI-compatible endpoint you configure,
-and your API key never leaves `chrome.storage.local`.
+The panel talks directly to the model endpoint you configure — any
+OpenAI-compatible one, plus native OpenAI (Responses API) and Anthropic
+(Messages API) — and your API key never leaves `chrome.storage.local`.
 
 Two ideas run through the whole design:
 
@@ -54,16 +55,23 @@ is never even exposed to the model. Both settings can be changed later.
 
 ## Providers
 
-Any **OpenAI-compatible** endpoint works. Add one in Settings with a base URL,
-API key, and the model ids you want; one-click presets are included for:
+Add a provider in Settings with a base URL, API key, and the model ids you want
+(or hit **Refresh from endpoint** to pull them live); one-click presets are
+included for:
 
-| Provider | Base URL |
-| --- | --- |
-| OpenAI | `https://api.openai.com/v1` |
-| Anthropic (compat layer) | `https://api.anthropic.com/v1` |
-| OpenRouter | `https://openrouter.ai/api/v1` |
-| Groq | `https://api.groq.com/openai/v1` |
-| Ollama (local) | `http://localhost:11434/v1` |
+| Provider | Base URL | Adapter |
+| --- | --- | --- |
+| OpenAI | `https://api.openai.com/v1` | native Responses API |
+| Anthropic | `https://api.anthropic.com/v1` | native Messages API |
+| OpenRouter | `https://openrouter.ai/api/v1` | OpenAI-compatible |
+| Groq | `https://api.groq.com/openai/v1` | OpenAI-compatible |
+| Ollama (local) | `http://localhost:11434/v1` | OpenAI-compatible |
+| LM Studio (local) | `http://localhost:1234/v1` | OpenAI-compatible |
+
+For reasoning models (auto-detected — o-series, gpt-5, Claude, DeepSeek-R1,
+Qwen3, gpt-oss, …) the model picker shows a **Faster ↔ Smarter** effort slider;
+each provider's profile maps your choice onto its own reasoning parameter, and
+OpenAI runs on the Responses API so reasoning and tool-calling work together.
 
 The manifest's `host_permissions` are what exempt these calls from CORS — which
 is why no proxy server is needed.
