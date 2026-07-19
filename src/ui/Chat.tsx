@@ -20,8 +20,8 @@ import { appendToEpisode, getMemoryContext } from '../data/memory'
 import { createModel, generateChatTitle } from '../agent/provider'
 import ModelPicker from './ModelPicker'
 import { useDismissOnOutside } from './hooks'
-import { getObserver, type ModelUsage } from '../agent/observability'
-import { formatTokens, hasTokens, sumUsage, totalTokens } from '../agent/usage'
+import { getObserver } from '../agent/observability'
+import { sumUsage } from '../agent/usage'
 import {
   getSelectedProvider,
   getTitleProvider,
@@ -1996,30 +1996,8 @@ function MessageToolbar({
   return (
     <div className="msg-toolbar">
       <CopyActions targetRef={targetRef} markdown={markdown} />
-      <UsageLine usage={message.usage} />
       <SourceBar sources={deriveSources(message)} />
     </div>
-  )
-}
-
-/**
- * Tokens used by one reply. Silent when the endpoint reported no usage — an
- * endpoint that omits token counts should show nothing rather than a misleading
- * "0". The in/out split is in the tooltip to keep the toolbar line short. Cost is
- * deliberately not shown here: Langfuse prices generations from its own model
- * table, so pricing lives there rather than being duplicated in the panel.
- */
-function UsageLine({ usage }: { usage?: ModelUsage }) {
-  if (!hasTokens(usage)) return null
-  const inTok = usage?.inputTokens ?? 0
-  const outTok = usage?.outputTokens ?? 0
-  return (
-    <span
-      className="usage-line"
-      title={`${inTok.toLocaleString('en-US')} in · ${outTok.toLocaleString('en-US')} out`}
-    >
-      {formatTokens(totalTokens(usage))} tok
-    </span>
   )
 }
 

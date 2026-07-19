@@ -2025,43 +2025,47 @@ body {
   cursor: help;
 }
 
-/* Snap slider: gradient-filled track (Faster → Smarter) driven by the --pct the
-   component sets from the current rung's index. */
+/* Snap slider as an inset toggle: a recessed groove (subtle border + inner
+   shadow) with a warm lychee gradient filling up to the thumb (Faster → Smarter).
+   --pct is set inline by the component from the current rung's index. */
 .effort-slider {
   appearance: none;
   -webkit-appearance: none;
   width: 100%;
-  height: 6px;
+  height: 12px;
   border-radius: 999px;
-  background: linear-gradient(
+  background-color: var(--pill-bg);
+  background-image: linear-gradient(
     90deg,
-    var(--accent) 0%,
-    var(--accent) var(--pct, 0%),
-    var(--border) var(--pct, 0%),
-    var(--border) 100%
+    color-mix(in srgb, var(--accent) 55%, #fff) 0%,
+    var(--accent) calc(var(--pct, 0%) * 0.6),
+    var(--lychee-shade) var(--pct, 0%),
+    transparent var(--pct, 0%)
   );
+  border: 1px solid var(--border);
+  box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.3);
   cursor: pointer;
 }
 
 .effort-slider::-webkit-slider-thumb {
   appearance: none;
   -webkit-appearance: none;
-  width: 16px;
-  height: 16px;
+  width: 18px;
+  height: 18px;
   border-radius: 50%;
   background: #fff;
   border: 1px solid var(--border);
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.35);
   cursor: pointer;
 }
 
 .effort-slider::-moz-range-thumb {
-  width: 16px;
-  height: 16px;
+  width: 18px;
+  height: 18px;
   border-radius: 50%;
   background: #fff;
   border: 1px solid var(--border);
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.35);
   cursor: pointer;
 }
 
@@ -3587,19 +3591,6 @@ body {
   gap: 6px;
   font-size: 12px;
   color: var(--text);
-}
-
-/* Per-reply token count, in the message toolbar. Stays quiet — muted, tabular,
-   and absent entirely when the endpoint reports no usage. */
-.usage-line {
-  display: inline-flex;
-  align-items: center;
-  margin-left: 2px;
-  font-size: 11px;
-  color: var(--text-muted);
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
-  cursor: default;
 }
 
 /* Beta observability: master toggle switch + revealed config panel. */
