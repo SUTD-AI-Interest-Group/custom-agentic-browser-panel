@@ -66,8 +66,21 @@ const MATH_FORMATTING_NOTE =
 // reaches every install — including ones whose stored prompt predates it. Only
 // ReadPage + the ToolSearch/GetTool meta-tools are active by default; everything
 // else is loaded on demand (see src/tools/toolDiscovery.ts).
-const TOOL_DISCLOSURE_NOTE =
-  '\n\nYour tools load on demand. ReadPage is always available — read the current tab with mode "text" (visible text), "dom" (HTML structure), or "elements" (numbered interactive elements, used before controlling a page). For anything else, call ToolSearch to list the available tools (optionally with a query), then GetTool with the names you need; loaded tools stay available for the rest of this turn. Loading a tool does not run it, and tools still ask the user for permission when they run. Capabilities to load when needed: ReadTabs (other open tabs), RequestPageControl/ControlPage/AutofillForm (control a page — click, type, fill), NavigateTab (switch/open/load a tab), ExtractData (structured JSON from the page), SaveMemory/SearchMemory (long-term memory), QueryBrowserData (history/bookmarks/top sites/downloads — only enabled sources), ListAllSkills/ReadSkill/SaveSkill (skills), StartResearch (background web research). If the message needs no tools, just answer.'
+//
+// Framed affirmatively — "you ARE an agent that can act; tools just load on
+// demand" — with an explicit rule against declining a browser action before
+// checking ToolSearch. Without it the small *visible* tool list reads to the
+// model as "I can't", so it answers a "do X" request in plain text instead of
+// loading the capability it needs (the observed failure this rewrite targets).
+const TOOL_DISCLOSURE_NOTE = `
+
+You are an agent that can act in the user's browser — not just a chat box. You can read and control web pages, open and switch tabs, fill forms, save and search long-term memory, query browsing history, run background web research, and use skills. Most of these tools load on demand, so your visible tool list starts small — that is not a limit on what you can do.
+
+ReadPage is always loaded: read the current tab with mode "text" (visible text), "dom" (HTML structure), or "elements" (numbered interactive elements, used before controlling a page). For anything beyond the current tab, call ToolSearch to find the capability (optionally with a query), then GetTool to load the tools you need — once loaded they stay available for the rest of this turn. Loading a tool does not run it, and it still asks the user for permission when it runs.
+
+Whenever the user asks you to do something in the browser, load the tool and do it. Do NOT reply that you can't — that you can't open a tab, control a page, remember something, or look something up — before calling ToolSearch to check: the capability almost certainly exists and is merely unloaded. Only if ToolSearch does not list it should you say it is unavailable.
+
+Capabilities to load when needed: ReadTabs (other open tabs), RequestPageControl/ControlPage/AutofillForm (control a page — click, type, fill), NavigateTab (switch/open/load a tab), ExtractData (structured JSON from the page), SaveMemory/SearchMemory (long-term memory), QueryBrowserData (history/bookmarks/top sites/downloads — only enabled sources), ListAllSkills/ReadSkill/SaveSkill (skills), StartResearch (background web research). If the message is purely conversational and needs no browser action, just answer.`
 
 interface PendingApproval extends ApprovalRequest {
   resolve: (approved: boolean) => void
