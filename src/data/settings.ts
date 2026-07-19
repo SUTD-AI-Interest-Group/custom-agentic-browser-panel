@@ -2,6 +2,16 @@
 // A "provider" is any OpenAI-compatible endpoint (OpenAI, OpenRouter, Groq,
 // Ollama, Anthropic's /v1 compat layer, LM Studio, vLLM, ...).
 
+/**
+ * How hard a reasoning model should think, sent verbatim as `reasoning_effort`.
+ * Optional and opt-in per provider — see `applyReasoningEffort` in
+ * `src/agent/provider.ts` for why it's needed (a reasoning model + function tools
+ * on /v1/chat/completions is rejected unless the effort is pinned) and why it
+ * must stay unset by default (a non-reasoning model rejects the parameter, and
+ * older reasoning models like o1/o3 reject the 'none' value).
+ */
+export type ReasoningEffort = 'none' | 'minimal' | 'low' | 'medium' | 'high'
+
 export interface ProviderConfig {
   id: string
   name: string
@@ -9,6 +19,13 @@ export interface ProviderConfig {
   apiKey: string
   /** Model ids offered by this provider, one per entry. */
   models: string[]
+  /**
+   * Explicit `reasoning_effort` for every request to this provider. Unset (the
+   * default) sends nothing, preserving each endpoint's own default. Set to 'none'
+   * to make an OpenAI gpt-5.x reasoning model usable with the agent's function
+   * tools on /v1/chat/completions.
+   */
+  reasoningEffort?: ReasoningEffort
 }
 
 export interface SelectedModel {

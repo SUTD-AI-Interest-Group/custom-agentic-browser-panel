@@ -2,7 +2,29 @@ import { createOpenAICompatible } from '@ai-sdk/openai-compatible'
 import { generateText, type LanguageModel } from 'ai'
 import { getObserver } from './observability'
 import { sanitizeTitle } from './title'
-import type { ProviderConfig } from '../data/settings'
+import type { ProviderConfig, ReasoningEffort } from '../data/settings'
+
+/**
+ * Inject an explicit `reasoning_effort` into an outgoing chat-completions body.
+ *
+ * Reasoning models such as OpenAI's gpt-5.x default `reasoning_effort` to a
+ * non-'none' value *server-side* on /v1/chat/completions, and OpenAI then refuses
+ * the request the moment it also carries function tools:
+ *   "Function tools with reasoning_effort are not supported for <model> in
+ *    /v1/chat/completions. ... set reasoning_effort to 'none'."
+ * Every agent turn here is tool-driven over chat-completions, so such a model is
+ * unusable until we send an explicit effort. It stays opt-in per provider
+ * (`ProviderConfig.reasoningEffort`) because the value is model-specific: a
+ * non-reasoning model (gpt-4o) rejects the parameter outright, and older reasoning
+ * models (o1/o3) reject the 'none' value — so we send nothing unless asked.
+ */
+export function applyReasoningEffort(
+  body: Record<string, unknown>,
+  effort: ReasoningEffort | undefined,
+): Record<string, unknown> {
+  if (!effort) return body
+  return { ...body, reasoning_effort: effort }
+}
 
 // Any endpoint that speaks the OpenAI chat-completions protocol works here,
 // which covers virtually every provider (including local runtimes like
@@ -21,6 +43,11 @@ export function createModel(config: ProviderConfig, modelId: string): LanguageMo
     // generateText calls return usage regardless, which is why only chat turns
     // were affected. Endpoints that don't understand stream_options ignore it.
     includeUsage: true,
+    // Pin reasoning_effort when the user configured one for this provider — the
+    // only channel the openai-compatible adapter leaves for it. See
+    // applyReasoningEffort: without this, a gpt-5.x reasoning model can't run the
+    // agent's function tools on /v1/chat/completions. Unset → body untouched.
+    transformRequestBody: (body) => applyReasoningEffort(body, config.reasoningEffort),
   })
   return provider(modelId)
 }

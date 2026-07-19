@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import type { ProviderConfig, Settings } from '../../data/settings'
+import type { ProviderConfig, ReasoningEffort, Settings } from '../../data/settings'
 import { Section, Select } from './primitives'
 
 // Common OpenAI-compatible endpoints, offered as one-click starting points.
@@ -49,11 +49,14 @@ export default function ProvidersTab({
     })
   }
 
-  function updateProvider(id: string, patch: Partial<ProviderConfig>) {
-    buffer({
+  // Text fields buffer on keystroke and persist on blur; a discrete control (a
+  // dropdown) has no blur, so it persists straight away with `persist`.
+  function updateProvider(id: string, patch: Partial<ProviderConfig>, persist = false) {
+    const next = {
       ...draft,
       providers: draft.providers.map((p) => (p.id === id ? { ...p, ...patch } : p)),
-    })
+    }
+    ;(persist ? commit : buffer)(next)
   }
 
   function addProvider(preset: (typeof PRESETS)[number]) {
@@ -169,6 +172,29 @@ export default function ProvidersTab({
                       onBlur={commitDraft}
                     />
                   </label>
+                  <Select
+                    label="Reasoning effort"
+                    value={p.reasoningEffort ?? ''}
+                    onChange={(value) =>
+                      updateProvider(
+                        p.id,
+                        { reasoningEffort: (value || undefined) as ReasoningEffort | undefined },
+                        true,
+                      )
+                    }
+                  >
+                    <option value="">Provider default</option>
+                    <option value="none">none</option>
+                    <option value="minimal">minimal</option>
+                    <option value="low">low</option>
+                    <option value="medium">medium</option>
+                    <option value="high">high</option>
+                  </Select>
+                  <p className="hint">
+                    Sent as <code>reasoning_effort</code>. Set to <code>none</code> for an OpenAI
+                    gpt-5 reasoning model, whose default effort is rejected alongside the agent's
+                    tools; leave on <em>Provider default</em> otherwise.
+                  </p>
                 </div>
               )}
             </div>
