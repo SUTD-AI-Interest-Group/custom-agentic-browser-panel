@@ -11,6 +11,8 @@
     "test:watch": "vitest"
   },
   "dependencies": {
+    "@ai-sdk/anthropic": "^4.0.16",
+    "@ai-sdk/openai": "^4.0.16",
     "@ai-sdk/openai-compatible": "^3.0.7",
     "ai": "^7.0.22",
     "dompurify": "^3.4.11",

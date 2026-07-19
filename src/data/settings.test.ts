@@ -3,9 +3,12 @@ import {
   DEFAULT_SYSTEM_PROMPT,
   defaultSettings,
   groupPolicy,
+  inferKind,
   resetSettingsKeepingProviders,
+  resolveReasoningEffort,
   setGroupPolicy,
   toolPolicy,
+  type ProviderConfig,
   type Settings,
 } from './settings'
 
@@ -99,5 +102,45 @@ describe('defaultSettings', () => {
     expect(d.onboarded).toBe(false)
     expect(d.providers).toEqual([])
     expect(d.systemPrompt).toBe(DEFAULT_SYSTEM_PROMPT)
+  })
+})
+
+const provider = (overrides: Partial<ProviderConfig> = {}): ProviderConfig => ({
+  id: 'p',
+  name: 'P',
+  baseURL: '',
+  apiKey: '',
+  models: [],
+  ...overrides,
+})
+
+describe('inferKind', () => {
+  it('maps known hosts to their kind', () => {
+    expect(inferKind('https://api.openai.com/v1')).toBe('openai')
+    expect(inferKind('https://api.anthropic.com/v1')).toBe('anthropic')
+    expect(inferKind('https://openrouter.ai/api/v1')).toBe('openrouter')
+    expect(inferKind('https://api.groq.com/openai/v1')).toBe('groq')
+    expect(inferKind('http://localhost:11434/v1')).toBe('ollama')
+    expect(inferKind('http://localhost:1234/v1')).toBe('lmstudio')
+  })
+
+  it('falls back to custom for an unrecognised endpoint', () => {
+    expect(inferKind('https://my-proxy.example.com/v1')).toBe('custom')
+  })
+})
+
+describe('resolveReasoningEffort', () => {
+  it('prefers the per-model override over the provider default', () => {
+    const p = provider({ reasoningEffort: 'low', modelConfigs: { m1: { reasoningEffort: 'high' } } })
+    expect(resolveReasoningEffort(p, 'm1')).toBe('high')
+  })
+
+  it('falls back to the provider default for a model with no override', () => {
+    const p = provider({ reasoningEffort: 'low', modelConfigs: { m1: { reasoningEffort: 'high' } } })
+    expect(resolveReasoningEffort(p, 'm2')).toBe('low')
+  })
+
+  it('is undefined when neither model nor provider set it', () => {
+    expect(resolveReasoningEffort(provider(), 'm1')).toBeUndefined()
   })
 })

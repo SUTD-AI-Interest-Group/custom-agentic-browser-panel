@@ -3,29 +3,63 @@
 // Ollama, Anthropic's /v1 compat layer, LM Studio, vLLM, ...).
 
 /**
- * How hard a reasoning model should think, sent verbatim as `reasoning_effort`.
- * Optional and opt-in per provider — see `applyReasoningEffort` in
- * `src/agent/provider.ts` for why it's needed (a reasoning model + function tools
- * on /v1/chat/completions is rejected unless the effort is pinned) and why it
- * must stay unset by default (a non-reasoning model rejects the parameter, and
- * older reasoning models like o1/o3 reject the 'none' value).
+ * Which provider a config talks to. Selects its *capability profile* — reasoning
+ * wire format, model-list endpoint, and whether it goes through a native adapter
+ * (`openai` → Responses API, `anthropic` → Messages) or the OpenAI-compatible one
+ * (everything else). See `src/data/providerProfiles.ts`. Absent on installs saved
+ * before profiles existed → `inferKind` derives it from the base URL.
  */
-export type ReasoningEffort = 'none' | 'minimal' | 'low' | 'medium' | 'high'
+export type ProviderKind =
+  | 'openai'
+  | 'anthropic'
+  | 'openrouter'
+  | 'groq'
+  | 'ollama'
+  | 'lmstudio'
+  | 'custom'
+
+/**
+ * How hard a reasoning model should think. The capability profile translates it
+ * into each provider's own dialect — OpenAI/Groq `reasoning_effort`, OpenRouter's
+ * `reasoning` object, Ollama's mapped effort, or Anthropic's native thinking
+ * budget (see `src/data/providerProfiles.ts`). The wider `xhigh`/`max` rungs exist
+ * only for models that expose them (OpenAI gpt-5.6, OpenRouter); a model's slider
+ * offers just the subset its profile declares.
+ */
+export type ReasoningEffort = 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max'
+
+/**
+ * Per-model settings that override provider-level defaults. Sparse and keyed by
+ * model id, so old installs and newly-added models need no migration.
+ */
+export interface ModelConfig {
+  /** Reasoning effort for this model; overrides the provider's `reasoningEffort`. */
+  reasoningEffort?: ReasoningEffort
+  /**
+   * Manual reasoning-capability override for when auto-detection (id patterns /
+   * provider API flags) guesses wrong: `true` forces the effort slider on, `false`
+   * hides it, `undefined` leaves it to auto-detection.
+   */
+  reasoning?: boolean
+}
 
 export interface ProviderConfig {
   id: string
   name: string
   baseURL: string
   apiKey: string
+  /** Which provider this is; selects its capability profile. Inferred for old installs. */
+  kind?: ProviderKind
   /** Model ids offered by this provider, one per entry. */
   models: string[]
   /**
-   * Explicit `reasoning_effort` for every request to this provider. Unset (the
-   * default) sends nothing, preserving each endpoint's own default. Set to 'none'
-   * to make an OpenAI gpt-5.x reasoning model usable with the agent's function
-   * tools on /v1/chat/completions.
+   * Default reasoning effort for this provider's models — a per-model override in
+   * `modelConfigs` beats it (resolution: `resolveReasoningEffort`). Unset preserves
+   * the endpoint's own default and sends nothing for non-reasoning models.
    */
   reasoningEffort?: ReasoningEffort
+  /** Sparse per-model overrides (effort, manual reasoning flag), keyed by model id. */
+  modelConfigs?: Record<string, ModelConfig>
 }
 
 export interface SelectedModel {
@@ -276,11 +310,47 @@ export async function loadSettings(): Promise<Settings> {
   if (stored?.systemPrompt && SUPERSEDED_SYSTEM_PROMPTS.includes(stored.systemPrompt)) {
     settings.systemPrompt = DEFAULT_SYSTEM_PROMPT
   }
+  // Migration: providers saved before `kind` existed get one inferred from their
+  // base URL, so the capability-profile layer and model picker have a key to work
+  // from. Use sites also fall back via `providerKind`, so this only persists it.
+  settings.providers = settings.providers.map((p) => (p.kind ? p : { ...p, kind: inferKind(p.baseURL) }))
   return settings
 }
 
 export async function saveSettings(settings: Settings): Promise<void> {
   await chrome.storage.local.set({ [STORAGE_KEY]: settings })
+}
+
+/**
+ * Best-effort provider kind from a base URL, for configs saved before `kind`
+ * existed (and as a defensive fallback at use sites). Unrecognised hosts →
+ * `custom`, the generic OpenAI-compatible profile.
+ */
+export function inferKind(baseURL: string): ProviderKind {
+  const u = baseURL.toLowerCase()
+  if (u.includes('api.openai.com')) return 'openai'
+  if (u.includes('api.anthropic.com')) return 'anthropic'
+  if (u.includes('openrouter.ai')) return 'openrouter'
+  if (u.includes('api.groq.com')) return 'groq'
+  if (u.includes(':11434')) return 'ollama'
+  if (u.includes(':1234')) return 'lmstudio'
+  return 'custom'
+}
+
+/** A provider's kind, falling back to inference for configs that predate the field. */
+export function providerKind(provider: ProviderConfig): ProviderKind {
+  return provider.kind ?? inferKind(provider.baseURL)
+}
+
+/**
+ * A model's effective reasoning effort: its per-model override, else the provider
+ * default, else unset. The one place that resolves the two-level scheme.
+ */
+export function resolveReasoningEffort(
+  provider: ProviderConfig,
+  modelId: string,
+): ReasoningEffort | undefined {
+  return provider.modelConfigs?.[modelId]?.reasoningEffort ?? provider.reasoningEffort
 }
 
 export function getSelectedProvider(

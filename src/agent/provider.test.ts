@@ -1,30 +1,47 @@
 import { test, expect } from 'vitest'
-import { applyReasoningEffort } from './provider'
+import { reasoningBodyTransform } from './provider'
+import { profileFor } from '../data/providerProfiles'
 
-test('leaves the body untouched (same ref) when no effort is configured', () => {
+test('leaves a non-reasoning model with no effort untouched (same ref)', () => {
+  const transform = reasoningBodyTransform(profileFor('custom'), undefined, false)
   const body = { model: 'gpt-4o', messages: [] }
-  expect(applyReasoningEffort(body, undefined)).toBe(body)
+  expect(transform(body)).toBe(body)
 })
 
-test("pins reasoning_effort so a reasoning model accepts function tools", () => {
-  const body = { model: 'gpt-5.6-luna', messages: [], tools: [{}] }
-  expect(applyReasoningEffort(body, 'none')).toEqual({
-    model: 'gpt-5.6-luna',
-    messages: [],
+test('a reasoning model with unset effort sends nothing extra', () => {
+  const transform = reasoningBodyTransform(profileFor('ollama'), undefined, true)
+  expect(transform({ model: 'qwen3', tools: [{}] })).toEqual({ model: 'qwen3', tools: [{}] })
+})
+
+test('injects a set reasoning_effort for a compatible reasoning model', () => {
+  const transform = reasoningBodyTransform(profileFor('ollama'), 'low', true)
+  expect(transform({ model: 'qwen3', tools: [{}] })).toEqual({
+    model: 'qwen3',
     tools: [{}],
-    reasoning_effort: 'none',
-  })
-})
-
-test('passes a graded effort through verbatim', () => {
-  expect(applyReasoningEffort({ model: 'o3' }, 'low')).toEqual({
-    model: 'o3',
     reasoning_effort: 'low',
   })
 })
 
-test('does not mutate the input body', () => {
-  const body: Record<string, unknown> = { model: 'x' }
-  applyReasoningEffort(body, 'high')
-  expect(body).toEqual({ model: 'x' })
+test('Groq gets reasoning_format:parsed when tools ride along, even with no effort', () => {
+  const transform = reasoningBodyTransform(profileFor('groq'), undefined, true)
+  expect(transform({ model: 'deepseek-r1-distill-qwen-32b', tools: [{}] })).toEqual({
+    model: 'deepseek-r1-distill-qwen-32b',
+    tools: [{}],
+    reasoning_format: 'parsed',
+  })
+})
+
+test('Groq omits reasoning_format when the turn carries no tools', () => {
+  const transform = reasoningBodyTransform(profileFor('groq'), 'high', true)
+  expect(transform({ model: 'deepseek-r1-distill-qwen-32b' })).toEqual({
+    model: 'deepseek-r1-distill-qwen-32b',
+    reasoning_effort: 'high',
+  })
+})
+
+test('OpenRouter sends the reasoning object, never a bare reasoning_effort', () => {
+  const transform = reasoningBodyTransform(profileFor('openrouter'), 'high', true)
+  const out = transform({ model: 'openai/gpt-5', tools: [{}] })
+  expect(out).toMatchObject({ reasoning: { effort: 'high' } })
+  expect(out).not.toHaveProperty('reasoning_effort')
 })
