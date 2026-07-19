@@ -164,7 +164,7 @@ export async function runResearch(opts: {
    */
   const stepsOf = (parts: UIPart[], depth = 0): ResearchStep[] =>
     parts.flatMap((p): ResearchStep[] => {
-      if (p.type === 'text') {
+      if (p.type === 'text' || p.type === 'reasoning') {
         const text = p.text.trim()
         if (!text) return []
         return [{ tool: 'Thinking', summary: firstLine(text), detail: text, status: 'done', kind: 'thought', depth }]

@@ -1245,7 +1245,9 @@ export default function Chat({
         }
         if (MERGE_AUTO_CONTINUES) mergedParts = [...mergedParts, ...result.parts]
         assistantTexts.push(
-          result.parts.map((p) => (p.type === 'text' ? p.text : `[used tool: ${p.toolName}]`)).join('\n'),
+          result.parts
+            .map((p) => (p.type === 'text' ? p.text : p.type === 'tool' ? `[used tool: ${p.toolName}]` : ''))
+            .join('\n'),
         )
 
         if (result.stop.reason === 'completed') break
@@ -1928,6 +1930,8 @@ function MessageView({
         {message.parts.map((part, i) =>
           part.type === 'text' ? (
             <AssistantText key={i} text={part.text} streaming={streaming} />
+          ) : part.type === 'reasoning' ? (
+            <ReasoningBlock key={i} text={part.text} streaming={streaming} />
           ) : (
             <ToolPill key={part.toolCallId} part={part} />
           ),
@@ -1976,6 +1980,26 @@ function AssistantText({
         return <Markdown key={i} text={b.text} streaming={streaming} citations={citations} />
       })}
     </>
+  )
+}
+
+// The model's reasoning for one reply, as a collapsible "Thinking" block.
+// Reasoning is display-only: it is captured from the stream into UI parts but
+// stripped from the model-replay history (see toValidModelMessages in agent.ts).
+// Auto-expanded while the turn streams so you can watch it think; folded away
+// once reloaded from history (a persisted reply mounts with streaming=false).
+function ReasoningBlock({ text, streaming }: { text: string; streaming: boolean }) {
+  const [open, setOpen] = useState(streaming)
+  return (
+    <div className={`reasoning-block ${open ? 'open' : ''}`}>
+      <button className="reasoning-head" aria-expanded={open} onClick={() => setOpen((o) => !o)}>
+        <svg className="reasoning-chevron" width="10" height="10" viewBox="0 0 10 10" fill="none" aria-hidden="true">
+          <path d="M3 1l4 4-4 4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
+        <span className="reasoning-label">Thinking</span>
+      </button>
+      {open && <div className="reasoning-body">{text}</div>}
+    </div>
   )
 }
 

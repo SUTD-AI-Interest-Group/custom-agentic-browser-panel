@@ -19,6 +19,7 @@ import type { ResearchVerification } from '../data/researchTasks'
 
 export type UIPart =
   | { type: 'text'; text: string }
+  | { type: 'reasoning'; text: string }
   | {
       type: 'tool'
       toolCallId: string
@@ -479,6 +480,20 @@ export async function runAgentTurn(options: {
         const last = parts[parts.length - 1]
         if (last?.type === 'text') last.text += delta
         else parts.push({ type: 'text', text: delta })
+        emit()
+        break
+      }
+      // The model's reasoning summary (reasoning models only). Display-only: it
+      // accumulates into a `reasoning` UI part for the collapsible "Thinking"
+      // block, but is stripped from the replay history (see toValidModelMessages).
+      // Consecutive deltas merge into one part; a text/tool part between two
+      // reasoning bursts starts a fresh block, mirroring text-delta.
+      case 'reasoning-delta': {
+        const delta: string = part.delta ?? part.text ?? part.textDelta ?? ''
+        if (!delta) break
+        const last = parts[parts.length - 1]
+        if (last?.type === 'reasoning') last.text += delta
+        else parts.push({ type: 'reasoning', text: delta })
         emit()
         break
       }

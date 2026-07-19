@@ -4068,6 +4068,48 @@ body {
 }
 
 /* Silent LaTeX self-correction: shown while the model re-emits broken math. */
+/* Collapsible "Thinking" block: the model's reasoning for a reply. Muted and
+   folded away; auto-opens while streaming so you can watch it think. */
+.reasoning-block {
+  margin: 2px 0 8px;
+}
+
+.reasoning-head {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border: none;
+  background: none;
+  padding: 2px 0;
+  color: var(--text-muted);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.reasoning-head:hover {
+  color: var(--text);
+}
+
+.reasoning-chevron {
+  flex: none;
+  transition: transform 0.15s ease;
+}
+
+.reasoning-block.open .reasoning-chevron {
+  transform: rotate(90deg);
+}
+
+.reasoning-body {
+  margin-top: 4px;
+  padding: 8px 10px;
+  border-left: 2px solid var(--border);
+  color: var(--text-muted);
+  font-size: 12.5px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 .fixing-math {
   display: inline-flex;
   align-items: center;
