@@ -2223,8 +2223,9 @@ body {
 }
 
 @media (max-width: 360px) {
-  .composer-btns > .tools-menu-wrap,
-  .composer-btns > .cam-btn {
+  /* The camera stays out as its own button at every width; only the tools button
+     collapses into the "…" menu when the panel gets narrow. */
+  .composer-btns > .tools-menu-wrap {
     display: none;
   }
   .composer-btns > .more-menu-wrap {

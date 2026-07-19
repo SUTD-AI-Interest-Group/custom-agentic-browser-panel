@@ -1699,9 +1699,9 @@ export default function Chat({
               onOpenSettings={onOpenSettings}
             />
             <div className="composer-btns">
-              {/* Wide panel: tools and screenshot as their own buttons. Below the
-                  breakpoint these two are hidden and the "…" menu below takes over
-                  (see .composer-btns in styles.css) — same actions, one control. */}
+              {/* Tools and screenshot as their own buttons. Below the narrow
+                  breakpoint only the tools button collapses into the "…" menu
+                  (see .composer-btns in styles.css); the camera always stays out. */}
               <div className="tools-menu-wrap" ref={toolsMenuRef}>
                 <button
                   className="tools-btn"
@@ -1735,11 +1735,12 @@ export default function Chat({
                 <CameraIcon />
               </button>
 
-              {/* Narrow panel: both of the above collapse into this one menu. */}
+              {/* Narrow panel: only the tools button collapses into this menu —
+                  the camera above stays out as its own button at every width. */}
               <div className="more-menu-wrap" ref={moreMenuRef}>
                 <button
                   className="more-btn"
-                  title="Tools & screenshot"
+                  title="Tools"
                   aria-haspopup="menu"
                   aria-expanded={moreOpen}
                   onClick={() => setMoreOpen((o) => !o)}
@@ -1751,18 +1752,7 @@ export default function Chat({
                   </svg>
                 </button>
                 {moreOpen && (
-                  <div className="tools-popover" role="dialog" aria-label="Tools & screenshot">
-                    <button
-                      className="more-item"
-                      disabled={!selected || capturing}
-                      onClick={() => {
-                        setMoreOpen(false)
-                        void capture()
-                      }}
-                    >
-                      <CameraIcon />
-                      Screenshot part of the page
-                    </button>
+                  <div className="tools-popover" role="dialog" aria-label="Tools">
                     <div className="tools-popover-head">Tools</div>
                     <ToolsMenuBody
                       settings={settings}
