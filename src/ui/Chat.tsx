@@ -1211,15 +1211,14 @@ export default function Chat({
       activeNames.add('RequestPageControl')
       activeNames.add('ControlPage')
       activeNames.add('AutofillForm')
-      activeNames.add('Screenshot')
+      activeNames.add('GetScreenshot')
     }
 
-    // Does this model actually read images? Screenshot is useless (worse than
-    // useless — it loops) against a text-only endpoint, so it is removed from the
-    // toolset entirely when the answer is no. Probed once per provider+model and
-    // cached in chrome.storage.local, so this is free after the first turn. A
-    // failed probe means "assume blind": better to withhold a camera than to hand
-    // one to a model that cannot use it.
+    // Does this model actually read images? This no longer removes any tool — the
+    // screenshot tools always capture and save the shot for the user. It only
+    // decides whether the image ALSO reaches the model (see planShotDelivery).
+    // Probed once per provider+model and cached in chrome.storage.local, so this is
+    // free after the first turn; a failed probe means "assume blind".
     const visionCapable = await ensureVisionCapability(model.provider, model.modelId).catch(() => false)
 
     // Patch one assistant bubble: its parts are `base` (prior cycles, in merge
@@ -2409,7 +2408,7 @@ function ToolPill({ part }: { part: Extract<UIPart, { type: 'tool' }> }) {
     label = output?.started ? 'Started background research' : 'Research not started'
   else if (part.toolName === 'AutofillForm')
     label = output?.error ? 'Autofill stopped' : `Filled ${output?.filled?.length ?? 0} form field${(output?.filled?.length ?? 0) === 1 ? '' : 's'}`
-  else if (part.toolName === 'Screenshot')
+  else if (part.toolName === 'GetScreenshot' || part.toolName === 'GetElementScreenshot')
     label = output?.error
       ? 'Could not take a screenshot'
       : `Took a screenshot · ${output?.label ?? 'the page'}`
@@ -2425,7 +2424,11 @@ function ToolPill({ part }: { part: Extract<UIPart, { type: 'tool' }> }) {
   // shotId (constant once the call is done), so React sets it the moment the
   // shot lands but never fights a later manual collapse.
   const shotId: string | undefined =
-    part.toolName === 'Screenshot' && part.state === 'done' && !denied ? output?.shotId : undefined
+    (part.toolName === 'GetScreenshot' || part.toolName === 'GetElementScreenshot') &&
+    part.state === 'done' &&
+    !denied
+      ? output?.shotId
+      : undefined
 
   return (
     <details className={`tool-pill ${part.state} ${denied ? 'denied' : ''}`} open={!!shotId}>
