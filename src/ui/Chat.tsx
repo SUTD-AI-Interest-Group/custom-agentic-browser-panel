@@ -14,7 +14,7 @@ import { cancelRegionCapture, captureRegion, type CapturedImage } from '../platf
 import { ensureVisionCapability } from '../agent/vision'
 import { copyElementAsPng } from '../platform/domImage'
 import { getConversation, renameConversation, saveConversation } from '../data/conversations'
-import { getShot, getShotThumb, type ShotThumb } from '../data/screenshots'
+import { getShot, getShotThumb, type ShotThumb, type StoredShot } from '../data/screenshots'
 import { downloadImage } from '../platform/download'
 import { appendToEpisode, getMemoryContext } from '../data/memory'
 import { createModel, generateChatTitle } from '../agent/provider'
@@ -93,6 +93,43 @@ interface CurrentTabInfo {
   title: string
   url: string
   favIconUrl?: string
+}
+
+/**
+ * A steer the user injected while the agent was working, awaiting the running
+ * continuation chain to reach a step boundary and splice it into history (see
+ * `steer` / the drain in `runTurnChain`). The queue holds *promises* so the
+ * pending flag flips true synchronously on submit — `steerPending` can't miss a
+ * steer that is still assembling its attached-tab context when a cycle ends.
+ */
+interface QueuedSteer {
+  /** The model-facing user message to push into history. */
+  message: ModelMessage
+  /** Web pages this steer attached → sources on the reply it redirects. */
+  sources: MessageSource[]
+  /** Journal line for the episode (memory dreaming). */
+  journal: string
+  /** True if the steer invoked @memory, so the chain pre-authorizes SearchMemory. */
+  useMemory: boolean
+}
+
+/**
+ * A snapshot of the composer's contents + resolved context at send time — enough
+ * to build the model-facing message later. When the user submits while the agent
+ * is working, this is parked in `queued` (shown in the steer strip) rather than
+ * sent: leaving it there sends it as a normal follow-up once the turn finishes;
+ * pressing "Steer now" injects it mid-turn instead. Also the value passed straight
+ * into buildUserTurn for a fresh turn.
+ */
+interface MessageSpec {
+  text: string
+  images: CapturedImage[]
+  activeMentions: TabMention[]
+  useMemory: boolean
+  useAll: boolean
+  includeCurrentTab: boolean
+  includeDeicticTab: boolean
+  activeSelection: string | null
 }
 
 /** A tab the user @mentioned in the composer; its content syncs on send. */
@@ -361,6 +398,10 @@ export default function Chat({
   const [messages, setMessages] = useState<UIMessage[]>([])
   const [input, setInput] = useState('')
   const [streaming, setStreaming] = useState(false)
+  // A message the user submitted while the agent was working: parked here (shown in
+  // the steer strip) instead of sent. It auto-sends as a follow-up when the turn
+  // finishes, unless the user presses "Steer now" to inject it mid-turn.
+  const [queued, setQueued] = useState<MessageSpec | null>(null)
   const [turnStartedAt, setTurnStartedAt] = useState<number | null>(null)
   // A long task paused at the auto-continue ceiling: the Continue card shows the
   // model's checkpoint and, on click, resumes with a fresh budget. Ephemeral —
@@ -442,6 +483,10 @@ export default function Chat({
   const [sessionPlan, setSessionPlan] = useState<{ plan: string; host: string } | null>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
+  // Steers queued during the running chain, drained at each cycle boundary in
+  // runTurnChain (see QueuedSteer). Promises, so a steer still resolving its tab
+  // context is never lost to a cycle that finishes first.
+  const steerQueueRef = useRef<Promise<QueuedSteer>[]>([])
 
   const selected = getSelectedProvider(settings)
 
@@ -616,6 +661,21 @@ export default function Chat({
   useEffect(() => {
     messagesRef.current = messages
   }, [messages])
+
+  // Flush a queued follow-up once the turn finishes: a message the user submitted
+  // while the agent was working (and didn't inject via "Steer now") sends as a
+  // fresh turn the moment streaming ends. Clearing `queued` first stops it firing
+  // twice; startFreshTurn re-enters streaming, and the next queued message (if any)
+  // waits for the new turn to end.
+  useEffect(() => {
+    if (streaming || !queued) return
+    const spec = queued
+    setQueued(null)
+    void startFreshTurn(spec)
+    // startFreshTurn is a stable per-render closure; driving this off queued+streaming
+    // alone keeps it to one send per queued message.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [streaming, queued])
 
   // Close each composer popover on outside-click or Esc; only listens while open.
   useDismissOnOutside(toolsOpen, toolsMenuRef, () => setToolsOpen(false))
@@ -842,6 +902,10 @@ export default function Chat({
 
   function stop() {
     settleApproval(false)
+    // Discard any queued steers, and the pending follow-up too — the user asked to
+    // stop, so it must not auto-send when streaming ends (see the flush effect).
+    steerQueueRef.current = []
+    setQueued(null)
     abortRef.current?.abort()
   }
 
@@ -997,55 +1061,31 @@ export default function Chat({
     setInput((v) => stripToken(v, token))
   }
 
-  async function send() {
-    const text = input.trim()
-    // A leading "/skill-name" token explicitly invokes that skill for this turn:
-    // its full instructions are injected into the system prompt below.
-    const slashMatch = text.match(/^\/([a-z0-9-]+)(?:\s|$)/)
-    const invokedSkill = slashMatch ? await getSkill(slashMatch[1]) : null
-    const activeSkill =
-      invokedSkill && invokedSkill.userInvocable && invokedSkill.enabled !== false
-        ? invokedSkill
-        : null
-    const images = attachments
-    // Mentions only count if their token survived editing.
-    const activeMentions = mentions.filter((m) => text.includes(m.token))
-    // A surviving @memory token directs the agent to consult long-term memory.
-    const useMemory = MEMORY_TOKEN_RE.test(text)
-    // @all attaches every open tab (only honored in all-tabs visibility mode).
-    const useAll = settings.tabAccess === 'all-tabs' && ALL_TOKEN_RE.test(text)
-    const isFirstMessage = messages.length === 0
-    // Attach the tab the user is on to the first message of a fresh chat.
-    const includeCurrentTab = isFirstMessage && !tabDismissed && currentTab !== null
-    // Later in a chat, a deictic reference ("what about this?", "summarize this
-    // page") pulls in the tab the user is now viewing — but only when it isn't
-    // already in context, i.e. after they switched to or navigated to a
-    // different page since it was last shared.
-    const currentTabKey = currentTab ? tabKey(currentTab.tabId, currentTab.url) : null
-    const includeDeicticTab =
-      !includeCurrentTab &&
-      currentTab !== null &&
-      currentTabKey !== null &&
-      DEICTIC_RE.test(text) &&
-      !sharedTabsRef.current.has(currentTabKey)
-    // Highlighted text the user chose to share (consumed once sent).
-    const activeSelection =
-      selection && selection.text !== dismissedSelection ? selection.text : null
-    if ((!text && images.length === 0) || streaming || !selected) return
-    setInput('')
-    setAttachments([])
-    setMentions([])
-    setMentionQuery(null)
-    setSlashQuery(null)
-    if (activeSelection) setDismissedSelection(activeSelection)
-    setCaptureError(null)
-    if (inputRef.current) inputRef.current.style.height = 'auto'
-
-    setMessages((m) => [
-      ...m,
-      { id: uid(), role: 'user', parts: [{ type: 'text', text }], images: images.map((i) => i.dataUrl) },
-    ])
-
+  /**
+   * Resolve a user turn's attached context — @mentioned / @all / deictic tabs
+   * (synced at send time), a shared page selection, and the @memory directive —
+   * into the model-facing message, its favicon sources, and journal notes. Used by
+   * submit() for both a fresh turn and a mid-task steer, so both carry the same
+   * context identically; only what the caller does with the result differs (start a
+   * chain vs. enqueue a steer). Reads currentTab/sharedTabsRef from closure; every
+   * other input is passed in already resolved.
+   */
+  async function buildUserTurn(o: {
+    text: string
+    images: CapturedImage[]
+    activeMentions: TabMention[]
+    useMemory: boolean
+    useAll: boolean
+    includeCurrentTab: boolean
+    includeDeicticTab: boolean
+    activeSelection: string | null
+  }): Promise<{
+    message: ModelMessage
+    attachedSources: MessageSource[]
+    notes: string[]
+    syncedTabs: TabContent[]
+  }> {
+    const { text, images, activeMentions, useMemory, useAll, includeCurrentTab, includeDeicticTab, activeSelection } = o
     // Sync shared tab contents into the model-facing message: any @mentioned
     // tabs, plus the current tab when auto-attached (first message) or pulled in
     // by a deictic reference, de-duplicated by id.
@@ -1091,41 +1131,107 @@ export default function Chat({
       modelText = `${modelText}\n\n[The user invoked @memory — before answering, use the SearchMemory tool to recall relevant long-term memories (pick query terms from their message, or recall broadly if it is general) and ground your reply in what you find.]`
     }
 
-    if (images.length > 0) {
-      historyRef.current.push({
-        role: 'user',
-        content: [
-          // v7: `file` part with an image mediaType replaces the deprecated
-          // `{ type: 'image', image }` part (the data URL carries its own type).
-          ...images.map((i) => ({ type: 'file' as const, mediaType: 'image', data: i.dataUrl })),
-          ...(modelText ? [{ type: 'text' as const, text: modelText }] : []),
-        ],
-      })
-    } else {
-      historyRef.current.push({ role: 'user', content: modelText })
-    }
+    const message: ModelMessage =
+      images.length > 0
+        ? {
+            role: 'user',
+            content: [
+              // v7: `file` part with an image mediaType replaces the deprecated
+              // `{ type: 'image', image }` part (the data URL carries its own type).
+              ...images.map((i) => ({ type: 'file' as const, mediaType: 'image', data: i.dataUrl })),
+              ...(modelText ? [{ type: 'text' as const, text: modelText }] : []),
+            ],
+          }
+        : { role: 'user', content: modelText }
 
     // Tabs attached to this turn become sources on the reply's favicon bar.
     // Pages the model reads via its tools are merged in later, at render time.
     const attachedSources: MessageSource[] = syncedTabs
       .filter((c) => !c.error && isHttpUrl(c.url))
       .map((c) => ({ title: c.title, url: c.url }))
-    // Build the journal line for this user turn; the assistant side is appended
-    // when the whole continuation chain finishes. Tool calls are noted by name.
+    // Journal notes for this user turn; the assistant side is appended when the
+    // whole continuation chain finishes.
     const notes: string[] = []
     if (images.length > 0)
       notes.push(`[attached ${images.length} screenshot${images.length > 1 ? 's' : ''}]`)
     if (syncedTabs.length > 0)
       notes.push(`[synced tabs: ${syncedTabs.map((t) => t.title).join(', ')}]`)
     if (useMemory) notes.push('[asked to recall from memory]')
-    if (activeSkill) notes.push(`[invoked skill: ${activeSkill.name}]`)
     if (useAll) notes.push('[shared all open tabs]')
     if (activeSelection) notes.push('[shared a page selection]')
-    const journalUserText = [text, ...notes].filter(Boolean).join('\n')
+    return { message, attachedSources, notes, syncedTabs }
+  }
 
+  /**
+   * Snapshot the composer (text + screenshots + resolved @mention/@all/deictic/
+   * selection/@memory context) into a MessageSpec, or null if there's nothing to
+   * send / no provider configured. A pure read — it does not clear the composer.
+   */
+  function composeSpec(): MessageSpec | null {
+    const text = input.trim()
+    const images = attachments
+    if ((!text && images.length === 0) || !selected) return null
+    // Mentions only count if their token survived editing.
+    const activeMentions = mentions.filter((m) => text.includes(m.token))
+    // A surviving @memory token directs the agent to consult long-term memory.
+    const useMemory = MEMORY_TOKEN_RE.test(text)
+    // @all attaches every open tab (only honored in all-tabs visibility mode).
+    const useAll = settings.tabAccess === 'all-tabs' && ALL_TOKEN_RE.test(text)
+    // Auto-attach the current tab on the first message of a fresh chat only (a
+    // queued follow-up is never the first message, so this resolves to false there).
+    const includeCurrentTab = messages.length === 0 && !tabDismissed && currentTab !== null
+    // A deictic reference ("what about this?", "summarize this page") pulls in the
+    // tab being viewed, unless it's already in context (see sharedTabsRef).
+    const currentTabKey = currentTab ? tabKey(currentTab.tabId, currentTab.url) : null
+    const includeDeicticTab =
+      !includeCurrentTab &&
+      currentTab !== null &&
+      currentTabKey !== null &&
+      DEICTIC_RE.test(text) &&
+      !sharedTabsRef.current.has(currentTabKey)
+    const activeSelection =
+      selection && selection.text !== dismissedSelection ? selection.text : null
+    return { text, images, activeMentions, useMemory, useAll, includeCurrentTab, includeDeicticTab, activeSelection }
+  }
+
+  /** Clear the composer and its transient popovers once a spec has been captured. */
+  function clearComposer(consumedSelection: string | null) {
+    setInput('')
+    setAttachments([])
+    setMentions([])
+    setMentionQuery(null)
+    setSlashQuery(null)
+    if (consumedSelection) setDismissedSelection(consumedSelection)
+    setCaptureError(null)
+    if (inputRef.current) inputRef.current.style.height = 'auto'
+  }
+
+  /**
+   * Start a fresh continuation chain from a captured spec — a new turn. Resolves a
+   * leading "/skill" invocation (fresh turns only), records the user message in
+   * history, and runs the chain.
+   */
+  async function startFreshTurn(spec: MessageSpec) {
+    const { text, images } = spec
+    const slashMatch = text.match(/^\/([a-z0-9-]+)(?:\s|$)/)
+    const invokedSkill = slashMatch ? await getSkill(slashMatch[1]) : null
+    const activeSkill =
+      invokedSkill && invokedSkill.userInvocable && invokedSkill.enabled !== false ? invokedSkill : null
+
+    setMessages((m) => [
+      ...m,
+      { id: uid(), role: 'user', parts: [{ type: 'text', text }], images: images.map((i) => i.dataUrl) },
+    ])
+    // Drop any orphaned steer that raced a just-ended chain (see the finally in
+    // runTurnChain) so it can't leak into this new turn.
+    steerQueueRef.current = []
+    const { message, attachedSources, notes } = await buildUserTurn(spec)
+    historyRef.current.push(message)
+    if (activeSkill) notes.push(`[invoked skill: ${activeSkill.name}]`)
+    const journalUserText = [text, ...notes].filter(Boolean).join('\n')
     // @memory is the user's consent to recall, so skip the SearchMemory card for
     // this turn only (it reads local memory — no page or network access).
-    turnAllowed.current = useMemory ? new Set(['SearchMemory']) : new Set()
+    turnAllowed.current = spec.useMemory ? new Set(['SearchMemory']) : new Set()
     autoContinuesRef.current = 0
     setContinuation(null)
     await runTurnChain({
@@ -1135,6 +1241,60 @@ export default function Chat({
       journalUserText,
       droppableTail: true,
     })
+  }
+
+  /**
+   * Inject a captured spec into the running chain as a mid-task steer: show its
+   * bubble and enqueue it. A *promise* is pushed synchronously so steerPending
+   * flips true this instant — even mid-assembly, a cycle that ends first won't drop
+   * it (the drain awaits it). runAgentTurn halts at its next step boundary and
+   * runTurnChain's drain splices it into history.
+   */
+  function injectSteer(spec: MessageSpec) {
+    const { text, images } = spec
+    setMessages((m) => [
+      ...m,
+      { id: uid(), role: 'user', parts: [{ type: 'text', text }], images: images.map((i) => i.dataUrl) },
+    ])
+    const ready = buildUserTurn({ ...spec, includeCurrentTab: false }).then(
+      ({ message, attachedSources, notes }): QueuedSteer => ({
+        message,
+        sources: attachedSources,
+        journal: [text, ...notes, '[steered mid-task]'].filter(Boolean).join('\n'),
+        useMemory: spec.useMemory,
+      }),
+    )
+    steerQueueRef.current.push(ready)
+  }
+
+  /**
+   * Composer submit. Idle → start a fresh turn immediately. In-flight → park the
+   * message in `queued` (shown in the steer strip) rather than send it: leaving it
+   * there sends it as a normal follow-up once the turn finishes (see the effect
+   * below); pressing the strip's "Steer now" injects it mid-turn instead. Queuing
+   * is the default; steering is the explicit choice.
+   */
+  function submit() {
+    const spec = composeSpec()
+    if (!spec) return
+    clearComposer(spec.activeSelection)
+    if (streaming) setQueued(spec)
+    else void startFreshTurn(spec)
+  }
+
+  /** "Steer now" on the queued message: inject it into the running turn. */
+  function steerNow() {
+    if (!queued) return
+    injectSteer(queued)
+    setQueued(null)
+  }
+
+  /** Pull a queued follow-up back into the composer to edit or discard it. */
+  function retractQueued() {
+    if (!queued) return
+    setInput(queued.text)
+    setAttachments(queued.images)
+    setQueued(null)
   }
 
   /**
@@ -1212,15 +1372,14 @@ export default function Chat({
       activeNames.add('RequestPageControl')
       activeNames.add('ControlPage')
       activeNames.add('AutofillForm')
-      activeNames.add('Screenshot')
+      activeNames.add('GetScreenshot')
     }
 
-    // Does this model actually read images? Screenshot is useless (worse than
-    // useless — it loops) against a text-only endpoint, so it is removed from the
-    // toolset entirely when the answer is no. Probed once per provider+model and
-    // cached in chrome.storage.local, so this is free after the first turn. A
-    // failed probe means "assume blind": better to withhold a camera than to hand
-    // one to a model that cannot use it.
+    // Does this model actually read images? This no longer removes any tool — the
+    // screenshot tools always capture and save the shot for the user. It only
+    // decides whether the image ALSO reaches the model (see planShotDelivery).
+    // Probed once per provider+model and cached in chrome.storage.local, so this is
+    // free after the first turn; a failed probe means "assume blind".
     const visionCapable = await ensureVisionCapability(model.provider, model.modelId).catch(() => false)
 
     // Patch one assistant bubble: its parts are `base` (prior cycles, in merge
@@ -1229,6 +1388,9 @@ export default function Chat({
       setMessages((m) => m.map((msg) => (msg.id === id ? { ...msg, parts: [...base, ...parts] } : msg)))
 
     const assistantTexts: string[] = []
+    // Journal lines for any steers the user injected mid-chain, folded into the
+    // episode as user turns alongside the opening message.
+    const steerJournals: string[] = []
     const assistantIds = new Set<string>()
     let pushedAny = false
     let assistantId = uid()
@@ -1264,6 +1426,10 @@ export default function Chat({
           imageQueue,
           activeNames,
           trace,
+          // Agent steering: halt this cycle at the next step boundary when the user
+          // has queued a mid-task steer, so the drain below can splice it into
+          // history and continue the chain.
+          steerPending: () => steerQueueRef.current.length > 0,
         })
         patch(assistantId, base)(result.parts)
         historyRef.current.push(...result.responseMessages)
@@ -1285,6 +1451,38 @@ export default function Chat({
             .join('\n'),
         )
 
+        // Agent steering takes priority over the normal stop logic: a queued steer
+        // means the user redirected mid-task, so continue the chain with their
+        // message regardless of why this cycle ended (even 'completed', e.g. a
+        // one-shot answer the user redirected while it streamed). Awaiting resolves
+        // any steer still assembling its tab context; each becomes a real user
+        // message in history, and a fresh assistant bubble opens beneath the steer.
+        // Not counted against MAX_AUTO_CONTINUES — this is user-driven, not the
+        // model running long.
+        if (steerQueueRef.current.length > 0) {
+          const steers = await Promise.all(steerQueueRef.current.splice(0))
+          const steerSources: MessageSource[] = []
+          for (const s of steers) {
+            historyRef.current.push(s.message)
+            steerSources.push(...s.sources)
+            steerJournals.push(s.journal)
+            // A steer may invoke @memory: pre-authorize SearchMemory and seed it
+            // into the shared active set so the next cycle can call it ungated.
+            if (s.useMemory) {
+              activeNames.add('SearchMemory')
+              turnAllowed.current.add('SearchMemory')
+            }
+          }
+          assistantId = uid()
+          mergedParts = []
+          setMessages((m) => [
+            ...m,
+            { id: assistantId, role: 'assistant', parts: [], sources: steerSources.length ? steerSources : undefined },
+          ])
+          assistantIds.add(assistantId)
+          continue
+        }
+
         if (result.stop.reason === 'completed') break
         // 'checkpoint' | 'budget' — the task is not done. Auto-continue until the
         // ceiling, then hand off to the user via the Continue card.
@@ -1302,8 +1500,11 @@ export default function Chat({
       }
 
       // Journal the whole exchange once (success path only — not on abort/error).
+      // Mid-task steers ride along as extra user turns between the opener and the
+      // assistant's final text.
       void appendToEpisode(episodeIdRef.current, [
         { role: 'user', text: ctx.journalUserText, at: ctx.startedAt },
+        ...steerJournals.map((j) => ({ role: 'user' as const, text: j, at: Date.now() })),
         { role: 'assistant', text: assistantTexts.join('\n').trim(), at: Date.now() },
       ]).catch(() => {})
       trace?.end({ output: assistantTexts.join('\n').trim() })
@@ -1331,6 +1532,9 @@ export default function Chat({
     } finally {
       settleApproval(false)
       turnAllowed.current = new Set()
+      // Discard any steers still queued at chain end (drained on success, dropped
+      // on abort/error — the chain is over, so they have nothing to steer).
+      steerQueueRef.current = []
       pageControl.endSession()
       // Tear down ambient presence on any tab the chain touched (navigate/inspect
       // mount the frame outside a session, so endSession alone won't clear them).
@@ -1606,6 +1810,54 @@ export default function Chat({
           </div>
         )}
         <div className="composer">
+          {/* Agent steering: a subtle strip joined to the top of the composer (like
+              the research dock), shown ONLY when a message is queued — a reply the
+              user submitted mid-turn that's parked here instead of sent. It
+              auto-sends as a follow-up when the turn ends, or "Steer now" injects it
+              into the running turn. See submit() / steerNow() / the flush effect. */}
+          {streaming && queued && (
+            <div className="steer-strip">
+              <span className="steer-strip__icon" aria-hidden="true">
+                {/* redirect corner-arrow — marks this as a steering message */}
+                <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+                  <path
+                    d="M5 3v5.5a1.5 1.5 0 0 0 1.5 1.5H12"
+                    stroke="currentColor"
+                    strokeWidth="1.4"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  />
+                  <path
+                    d="M9.5 7.5 12 10l-2.5 2.5"
+                    stroke="currentColor"
+                    strokeWidth="1.4"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  />
+                </svg>
+              </span>
+              <span className="steer-strip__queued" title={queued.text || 'Queued follow-up'}>
+                {queued.text || `${queued.images.length} screenshot${queued.images.length > 1 ? 's' : ''}`}
+              </span>
+              <button
+                className="steer-strip__retract"
+                title="Edit or remove this queued message"
+                aria-label="Edit or remove queued message"
+                onClick={retractQueued}
+              >
+                <svg width="9" height="9" viewBox="0 0 8 8" fill="none">
+                  <path d="M1.5 1.5l5 5M6.5 1.5l-5 5" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
+                </svg>
+              </button>
+              <button
+                className="steer-strip__steer"
+                title="Inject this now to steer the running task"
+                onClick={steerNow}
+              >
+                Steer now
+              </button>
+            </div>
+          )}
           <ResearchDock tasks={dockTasks} onOpen={openDockTask} />
           {attachments.length > 0 && (
             <div className="attachment-row">
@@ -1628,7 +1880,16 @@ export default function Chat({
           <textarea
             ref={inputRef}
             value={input}
-            placeholder={selected ? 'Ask anything…' : 'Add a provider in settings to start'}
+            placeholder={
+              !selected
+                ? 'Add a provider in settings to start'
+                : streaming
+                  ? 'Reply — queues as a follow-up…'
+                  : 'Ask anything…'
+            }
+            // Stays usable while a turn runs — a message sent now is parked in the
+            // steer strip above (submit()); it auto-sends when the turn finishes, or
+            // "Steer now" injects it mid-turn.
             disabled={!selected}
             rows={1}
             onChange={(e) => {
@@ -1685,7 +1946,7 @@ export default function Chat({
               }
               if (e.key === 'Enter' && !e.shiftKey) {
                 e.preventDefault()
-                void send()
+                void submit()
               }
             }}
             onBlur={() => setTimeout(() => {
@@ -1767,30 +2028,32 @@ export default function Chat({
                 )}
               </div>
 
-              {streaming ? (
+              {/* While the agent works, Stop sits beside the send button and the
+                  send arrow queues a follow-up (parked in the steer strip); idle,
+                  it's just the send button. */}
+              {streaming && (
                 <button className="send-btn stop" title="Stop" onClick={stop}>
                   <svg width="12" height="12" viewBox="0 0 12 12">
                     <rect x="2" y="2" width="8" height="8" rx="1.5" fill="currentColor" />
                   </svg>
                 </button>
-              ) : (
-                <button
-                  className="send-btn"
-                  title="Send"
-                  disabled={(!input.trim() && attachments.length === 0) || !selected}
-                  onClick={() => void send()}
-                >
-                  <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-                    <path
-                      d="M7 11.5V2.5M7 2.5L3 6.5M7 2.5l4 4"
-                      stroke="currentColor"
-                      strokeWidth="1.8"
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                    />
-                  </svg>
-                </button>
               )}
+              <button
+                className="send-btn"
+                title={streaming ? 'Queue as a follow-up' : 'Send'}
+                disabled={(!input.trim() && attachments.length === 0) || !selected}
+                onClick={() => void submit()}
+              >
+                <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+                  <path
+                    d="M7 11.5V2.5M7 2.5L3 6.5M7 2.5l4 4"
+                    stroke="currentColor"
+                    strokeWidth="1.8"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  />
+                </svg>
+              </button>
             </div>
           </div>
         </div>
@@ -1920,6 +2183,20 @@ function ThinkingIndicator({
   )
 }
 
+/**
+ * The stored `shotId` of a *successful* screenshot part, else undefined. Drives
+ * grouping consecutive captures into one carousel (see MessageView) — errored or
+ * denied screenshots return undefined and fall through to a normal tool pill.
+ */
+function shotIdOf(part: UIPart): string | undefined {
+  if (part.type !== 'tool') return undefined
+  if (part.toolName !== 'GetScreenshot' && part.toolName !== 'GetElementScreenshot') return undefined
+  if (part.state !== 'done') return undefined
+  const out = part.output as any
+  if (out && typeof out === 'object' && out.denied) return undefined
+  return typeof out?.shotId === 'string' ? out.shotId : undefined
+}
+
 function MessageView({
   message,
   streaming,
@@ -1960,18 +2237,62 @@ function MessageView({
   const last = message.parts[message.parts.length - 1]
   const digesting = last?.type === 'tool' && last.state === 'done'
 
+  // Group successful screenshots taken back-to-back into one image carousel
+  // instead of a stack of raw tool cards. A run of screenshot shots spans
+  // intervening reasoning ("Thinking") parts — a reasoning model emits one
+  // between shots — but is broken by a text part or any other tool, so shots
+  // merge only where they are genuinely consecutive and narrative order is kept.
+  // A run is identified by its first shot's index; that slot renders the whole
+  // run (a ShotCard for one shot, a ShotCarousel for several) and the run's later
+  // shot parts render nothing.
+  const parts = message.parts
+  const runOf = parts.map(() => -1)
+  let curRun = -1
+  let runOpen = false
+  for (let i = 0; i < parts.length; i++) {
+    if (shotIdOf(parts[i]) !== undefined) {
+      if (!runOpen) {
+        curRun = i
+        runOpen = true
+      }
+      runOf[i] = curRun
+    } else if (parts[i].type !== 'reasoning') {
+      runOpen = false
+      curRun = -1
+    }
+  }
+  const runShots = new Map<number, string[]>()
+  parts.forEach((part, i) => {
+    if (runOf[i] < 0) return
+    const arr = runShots.get(runOf[i]) ?? []
+    arr.push(shotIdOf(part) as string)
+    runShots.set(runOf[i], arr)
+  })
+  const emittedRuns = new Set<number>()
+
   return (
     <div className="msg-assistant">
       <div className="msg-assistant-body" ref={bodyRef}>
-        {message.parts.map((part, i) =>
-          part.type === 'text' ? (
+        {parts.map((part, i) => {
+          const run = runOf[i]
+          if (run >= 0) {
+            if (emittedRuns.has(run)) return null
+            emittedRuns.add(run)
+            const ids = runShots.get(run) as string[]
+            return ids.length === 1 ? (
+              <ShotCard key={`shots-${run}`} shotId={ids[0]} />
+            ) : (
+              <ShotCarousel key={`shots-${run}`} shotIds={ids} />
+            )
+          }
+          return part.type === 'text' ? (
             <AssistantText key={i} text={part.text} streaming={streaming} />
           ) : part.type === 'reasoning' ? (
-            <ReasoningBlock key={i} text={part.text} active={streaming && i === message.parts.length - 1} />
+            <ReasoningBlock key={i} text={part.text} active={streaming && i === parts.length - 1} />
           ) : (
             <ToolPill key={part.toolCallId} part={part} />
-          ),
-        )}
+          )
+        })}
         {streaming &&
           turnStartedAt != null &&
           (message.parts.length === 0 || digesting) && (
@@ -2058,7 +2379,8 @@ function MessageToolbar({
     .trim()
   return (
     <div className="msg-toolbar">
-      <CopyActions targetRef={targetRef} markdown={markdown} />
+      {/* Picture only the response prose — drop the reasoning + tool-use blocks. */}
+      <CopyActions targetRef={targetRef} markdown={markdown} excludeFromImage=".reasoning-block, .tool-pill" />
       <SourceBar sources={deriveSources(message)} />
     </div>
   )
@@ -2071,9 +2393,13 @@ function MessageToolbar({
 function CopyActions({
   targetRef,
   markdown,
+  excludeFromImage,
 }: {
   targetRef: React.RefObject<HTMLElement>
   markdown: string
+  // CSS selector for blocks to leave out of the copied PNG (e.g. reasoning and
+  // tool-use pills under an assistant reply). Omitted → the whole element.
+  excludeFromImage?: string
 }) {
   const [imageState, setImageState] = useState<'idle' | 'done' | 'error'>('idle')
   const [copyState, setCopyState] = useState<'idle' | 'done' | 'error'>('idle')
@@ -2082,7 +2408,7 @@ function CopyActions({
     const el = targetRef.current
     if (!el) return
     try {
-      await copyElementAsPng(el)
+      await copyElementAsPng(el, excludeFromImage)
       setImageState('done')
     } catch {
       setImageState('error')
@@ -2405,7 +2731,7 @@ function ToolPill({ part }: { part: Extract<UIPart, { type: 'tool' }> }) {
     label = output?.started ? 'Started background research' : 'Research not started'
   else if (part.toolName === 'AutofillForm')
     label = output?.error ? 'Autofill stopped' : `Filled ${output?.filled?.length ?? 0} form field${(output?.filled?.length ?? 0) === 1 ? '' : 's'}`
-  else if (part.toolName === 'Screenshot')
+  else if (part.toolName === 'GetScreenshot' || part.toolName === 'GetElementScreenshot')
     label = output?.error
       ? 'Could not take a screenshot'
       : `Took a screenshot · ${output?.label ?? 'the page'}`
@@ -2414,44 +2740,47 @@ function ToolPill({ part }: { part: Extract<UIPart, { type: 'tool' }> }) {
     label = `Checkpointed progress — ${cp?.done?.length ?? 0} done, ${cp?.remaining?.length ?? 0} remaining`
   } else label = part.toolName
 
-  // A screenshot is the one tool result that is worth seeing rather than reading,
-  // so the image hangs below the pill instead of hiding inside it.
-  const shotId: string | undefined =
-    part.toolName === 'Screenshot' && part.state === 'done' && !denied ? output?.shotId : undefined
-
+  // Successful screenshots never reach here — MessageView groups them into a
+  // ShotCard/ShotCarousel of their own. What lands here is every other tool, plus
+  // errored/denied screenshots, which show their label above the collapsed raw
+  // JSON like any other tool call.
   return (
-    <>
-      <details className={`tool-pill ${part.state} ${denied ? 'denied' : ''}`}>
-        <summary>
-          <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
-            <path
-              d="M1.5 6s1.7-3.2 4.5-3.2S10.5 6 10.5 6 8.8 9.2 6 9.2 1.5 6 1.5 6Z"
-              stroke="currentColor"
-              strokeWidth="1.2"
-            />
-            <circle cx="6" cy="6" r="1.4" stroke="currentColor" strokeWidth="1.2" />
-          </svg>
-          <span>{label}</span>
-        </summary>
-        <pre>{JSON.stringify({ input: part.input, output: part.output }, null, 2)}</pre>
-      </details>
-      {shotId && <ShotCard shotId={shotId} />}
-    </>
+    <details className={`tool-pill ${part.state} ${denied ? 'denied' : ''}`}>
+      <summary>
+        <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+          <path
+            d="M1.5 6s1.7-3.2 4.5-3.2S10.5 6 10.5 6 8.8 9.2 6 9.2 1.5 6 1.5 6Z"
+            stroke="currentColor"
+            strokeWidth="1.2"
+          />
+          <circle cx="6" cy="6" r="1.4" stroke="currentColor" strokeWidth="1.2" />
+        </svg>
+        <span>{label}</span>
+      </summary>
+      <pre>{JSON.stringify({ input: part.input, output: part.output }, null, 2)}</pre>
+    </details>
   )
 }
 
 /**
- * The screenshot the agent took, shown to the user.
+ * A single screenshot the agent took, shown to the user in the transcript
+ * (one-shot runs; several consecutive shots become a ShotCarousel instead).
  *
  * Only the `shotId` lives in the transcript (an inline image there would also
  * ride in the model's history, costing tokens on every later step for a picture
  * it has already been shown properly). So the preview is read from IndexedDB on
  * mount — the thumbnail store, which is kilobytes, not the full-resolution one,
- * which for a stitched page is megabytes. The full image is fetched only if the
- * user actually clicks to download it.
+ * which for a stitched page is megabytes. The full-resolution PNG is fetched
+ * lazily, only when the user actually enlarges or downloads it.
+ *
+ * Collapsed, this is a compact thumbnail card; clicking it enlarges the
+ * full-resolution capture in place. Download is a secondary action in the
+ * enlarged view.
  */
 function ShotCard({ shotId }: { shotId: string }) {
   const [thumb, setThumb] = useState<ShotThumb | null>(null)
+  const [full, setFull] = useState<StoredShot | null>(null)
+  const [enlarged, setEnlarged] = useState(false)
   const [missing, setMissing] = useState(false)
   const [busy, setBusy] = useState(false)
 
@@ -2474,25 +2803,72 @@ function ShotCard({ shotId }: { shotId: string }) {
   if (missing) return <div className="shot-card-missing">This screenshot is no longer stored.</div>
   if (!thumb) return null
 
-  const download = async () => {
+  // Pull the multi-megabyte full-resolution PNG only the first time it is
+  // actually needed (enlarge or download); the thumbnail alone drives the
+  // collapsed preview. Cached in state so a second enlarge/download is instant.
+  const loadFull = async (): Promise<StoredShot | null> => {
+    if (full) return full
     setBusy(true)
     try {
-      const full = await getShot(shotId)
-      if (full) await downloadImage(full.dataUrl)
+      const f = await getShot(shotId)
+      if (f) setFull(f)
       else setMissing(true)
+      return f
     } finally {
       setBusy(false)
     }
+  }
+
+  const enlarge = async () => {
+    if (await loadFull()) setEnlarged(true)
+  }
+
+  const download = async () => {
+    const f = await loadFull()
+    if (f) await downloadImage(f.dataUrl)
+  }
+
+  if (enlarged && full) {
+    return (
+      <figure className="shot-figure">
+        <figcaption className="shot-figure-meta">
+          <span className="shot-card-label">{thumb.label}</span>
+          <span className="shot-card-dim">
+            {full.width}×{full.height}
+          </span>
+          <button type="button" className="shot-figure-btn" onClick={() => setEnlarged(false)}>
+            Shrink
+          </button>
+          <button
+            type="button"
+            className="shot-figure-btn"
+            onClick={() => void download()}
+            disabled={busy}
+          >
+            Download
+          </button>
+        </figcaption>
+        <button
+          type="button"
+          className="shot-figure-img"
+          onClick={() => setEnlarged(false)}
+          title="Click to shrink"
+          aria-label={`Collapse screenshot of ${thumb.label}`}
+        >
+          <img src={full.dataUrl} alt={`Screenshot of ${thumb.label}`} />
+        </button>
+      </figure>
+    )
   }
 
   return (
     <button
       type="button"
       className="shot-card"
-      onClick={() => void download()}
+      onClick={() => void enlarge()}
       disabled={busy}
-      title={`Download screenshot — ${thumb.label}`}
-      aria-label={`Download screenshot of ${thumb.label}`}
+      title={`Click to enlarge — ${thumb.label}`}
+      aria-label={`Enlarge screenshot of ${thumb.label}`}
     >
       <img src={thumb.thumb} alt={`Screenshot of ${thumb.label}`} />
       <span className="shot-card-meta">
@@ -2502,6 +2878,122 @@ function ShotCard({ shotId }: { shotId: string }) {
         </span>
       </span>
     </button>
+  )
+}
+
+/**
+ * A run of screenshots the agent took back-to-back, shown as one horizontal
+ * carousel instead of a stack of raw tool cards. Each tile is a thumbnail read
+ * from IndexedDB (kilobytes); clicking one enlarges that capture in place below
+ * the strip — the multi-megabyte full-resolution PNG is fetched only then — with
+ * Download as a secondary action. Clicking the open tile again shrinks it. Shots
+ * pruned by age/size drop out of the strip; if every one is gone the carousel
+ * says so rather than rendering broken frames.
+ */
+function ShotCarousel({ shotIds }: { shotIds: string[] }) {
+  const [thumbs, setThumbs] = useState<(ShotThumb | null)[] | null>(null)
+  const [openId, setOpenId] = useState<string | null>(null)
+  const [full, setFull] = useState<StoredShot | null>(null)
+  const [busy, setBusy] = useState(false)
+
+  // MessageView rebuilds `shotIds` on every render, so key the load on the id
+  // list itself, not the array's identity, or the effect would refetch endlessly.
+  const idsKey = shotIds.join('|')
+  useEffect(() => {
+    let alive = true
+    Promise.all(shotIds.map((id) => getShotThumb(id).catch(() => null))).then((ts) => {
+      if (alive) setThumbs(ts)
+    })
+    return () => {
+      alive = false
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [idsKey])
+
+  // Pull the multi-megabyte full-resolution PNG only when a tile is opened.
+  const open = async (id: string) => {
+    setOpenId(id)
+    setFull(null)
+    setBusy(true)
+    try {
+      setFull(await getShot(id))
+    } finally {
+      setBusy(false)
+    }
+  }
+  const close = () => {
+    setOpenId(null)
+    setFull(null)
+  }
+  const download = async () => {
+    if (full) await downloadImage(full.dataUrl)
+  }
+
+  if (!thumbs) return null
+  const tiles = shotIds
+    .map((id, i) => ({ id, thumb: thumbs[i] }))
+    .filter((t): t is { id: string; thumb: ShotThumb } => !!t.thumb)
+  if (tiles.length === 0)
+    return <div className="shot-card-missing">These screenshots are no longer stored.</div>
+
+  return (
+    <div className="shot-carousel">
+      <div className="shot-carousel-head">
+        <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true">
+          <path
+            d="M1.5 6s1.7-3.2 4.5-3.2S10.5 6 10.5 6 8.8 9.2 6 9.2 1.5 6 1.5 6Z"
+            stroke="currentColor"
+            strokeWidth="1.2"
+          />
+          <circle cx="6" cy="6" r="1.4" stroke="currentColor" strokeWidth="1.2" />
+        </svg>
+        <span>Took {tiles.length} screenshots</span>
+      </div>
+      <div className="shot-carousel-strip">
+        {tiles.map(({ id, thumb }) => (
+          <button
+            key={id}
+            type="button"
+            className={`shot-tile${id === openId ? ' active' : ''}`}
+            onClick={() => (id === openId ? close() : void open(id))}
+            title={`${thumb.label} · ${thumb.width}×${thumb.height}`}
+            aria-label={`Enlarge screenshot of ${thumb.label}`}
+          >
+            <img src={thumb.thumb} alt={`Screenshot of ${thumb.label}`} loading="lazy" />
+          </button>
+        ))}
+      </div>
+      {openId && full && (
+        <figure className="shot-figure">
+          <figcaption className="shot-figure-meta">
+            <span className="shot-card-label">{full.label}</span>
+            <span className="shot-card-dim">
+              {full.width}×{full.height}
+            </span>
+            <button type="button" className="shot-figure-btn" onClick={close}>
+              Shrink
+            </button>
+            <button
+              type="button"
+              className="shot-figure-btn"
+              onClick={() => void download()}
+              disabled={busy}
+            >
+              Download
+            </button>
+          </figcaption>
+          <button
+            type="button"
+            className="shot-figure-img"
+            onClick={close}
+            title="Click to shrink"
+            aria-label={`Collapse screenshot of ${full.label}`}
+          >
+            <img src={full.dataUrl} alt={`Screenshot of ${full.label}`} />
+          </button>
+        </figure>
+      )}
+    </div>
   )
 }
 

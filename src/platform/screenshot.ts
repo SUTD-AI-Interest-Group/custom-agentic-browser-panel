@@ -163,6 +163,34 @@ export function planTiles(totalHeight: number, tileHeight: number, maxTiles: num
   return { tiles: tiles.slice(0, maxTiles), dropped: tiles.length - maxTiles }
 }
 
+/**
+ * How a just-captured shot reaches the model, decided BEFORE tiling.
+ *
+ * `send`   — vision-capable with per-turn image budget left: tile up to `maxTiles`.
+ * `blind`  — the model cannot read images: capture is saved for the USER only.
+ * `budget` — vision-capable but this turn's image budget is spent: saved, not sent.
+ *
+ * `blind` and `budget` both send nothing, but they are distinct on purpose: each
+ * needs its own model-facing note, or a text-only model sits and retries for an
+ * image it will never be handed.
+ */
+export type ShotDelivery =
+  | { kind: 'send'; maxTiles: number }
+  | { kind: 'blind' }
+  | { kind: 'budget' }
+
+/** Pure delivery decision. Locks the "text-only still captures" invariant. */
+export function planShotDelivery(
+  visionCapable: boolean,
+  imagesUsed: number,
+  maxImages: number,
+): ShotDelivery {
+  if (!visionCapable) return { kind: 'blind' }
+  const budget = Math.max(0, maxImages - imagesUsed)
+  if (budget === 0) return { kind: 'budget' }
+  return { kind: 'send', maxTiles: budget }
+}
+
 // ---------------------------------------------------------------------------
 // Capture (side-panel side: has DOM + canvas)
 // ---------------------------------------------------------------------------
