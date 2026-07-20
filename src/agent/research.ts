@@ -72,7 +72,7 @@ const MAX_BROWSE_SESSIONS = 6
 // When the 24h cap is reached mid-run we still make ONE best-effort attempt to write
 // the report from whatever the notebook holds, bounded by this timeout, so a long run
 // that never fully converged is finalized as a partial report rather than lost.
-const FINALIZE_TIMEOUT_MS = 120_000
+const FINALIZE_TIMEOUT_MS = 180_000
 
 /** A minimal sink for the live step log: append a step, or replace the last one
  *  in place (used to flip a "running" phase step to its "done" state). */
@@ -402,6 +402,19 @@ export async function runResearch(opts: {
     await observer.flush()
     return { report, sources, notebook: nb, verification, partial }
   } catch (err) {
+    if (err instanceof ResearchDeadlineError) {
+      // The deadline was reached somewhere we didn't already finalize — e.g. the
+      // provider was down the entire time and even planning never completed. Return
+      // whatever the notebook holds as a partial report so the run never hard-errors
+      // on the deadline (the only terminal outcomes are done, partial-done, or a
+      // user Stop → cancelled).
+      const nb = notebook.get()
+      const report = fallbackReport(opts.question, nb)
+      const sources: ResearchSource[] = nb.sources.map((s) => ({ title: s.title, url: s.url }))
+      trace?.end({ output: report, metadata: { sources: sources.length, findings: nb.findings.length, partial: true } })
+      await observer.flush()
+      return { report, sources, notebook: nb, partial: true }
+    }
     trace?.end({ metadata: { error: err instanceof Error ? err.message : String(err) } })
     await observer.flush()
     throw err

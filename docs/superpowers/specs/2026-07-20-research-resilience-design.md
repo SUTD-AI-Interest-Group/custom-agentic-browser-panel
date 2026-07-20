@@ -103,9 +103,17 @@ transitions (`paused`/`resumed`/`done`/`error`) reuse the existing
 ## Constants
 
 - `MAX_RESEARCH_DURATION_MS = 24 * 60 * 60 * 1000`
-- Backoff: `base 5_000`, `factor 2`, `cap 120_000`, full jitter
-- Per-attempt timeout: `120_000`
+- Backoff: `base 5_000`, `factor 2`, `cap 120_000`, equal jitter (never 0)
+- Per-attempt timeout: `900_000` — a single attempt can be a whole gather round, so
+  this is large enough not to kill real work; it exists only to break a hung socket
+  (the heartbeat is a blind interval and can't detect a wedged attempt).
+- Finalize (best-effort synthesis at the cap) timeout: `180_000`
 - Watchdog alarm period: `1` min; `STALE_MS = 180_000`; heartbeat interval `20_000`
+
+A `ResearchDeadlineError` from **any** phase (including planning when the provider is
+down from the start) is caught and finalized as a partial report — the deadline never
+produces a hard error. The only terminal outcomes are `done`, partial-`done`, or a
+user Stop → `cancelled`.
 
 ## Edge-case walkthrough
 

@@ -27,12 +27,14 @@ export class ResearchDeadlineError extends Error {
 export const DEFAULT_BACKOFF = { base: 5_000, factor: 2, cap: 120_000 } as const
 
 /**
- * Per-attempt timeout. A hung TCP socket that never rejects would otherwise defeat
- * the whole retry mechanism, so each attempt runs under this ceiling and a timeout
- * is treated as a (transient) retry. Generous so a slow local model doing a large
- * synthesis is never cut off mid-generation.
+ * Per-attempt timeout — the backstop against a hung TCP socket that never rejects
+ * (which would otherwise defeat retry entirely, since the liveness heartbeat is a
+ * blind interval and can't tell a wedged attempt from a working one). Deliberately
+ * large: an attempt here can be a whole gather round (many tool calls + a slow local
+ * model), so this must exceed any legitimate round to avoid killing real work — it
+ * exists only to break a genuinely stuck connection.
  */
-export const PER_ATTEMPT_TIMEOUT_MS = 300_000
+export const PER_ATTEMPT_TIMEOUT_MS = 900_000
 
 export interface ErrorInfo {
   /** 'abort' = a real Stop (do not retry); 'transient' = pause + retry. */
