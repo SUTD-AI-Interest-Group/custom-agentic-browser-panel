@@ -113,6 +113,25 @@ interface QueuedSteer {
   useMemory: boolean
 }
 
+/**
+ * A snapshot of the composer's contents + resolved context at send time — enough
+ * to build the model-facing message later. When the user submits while the agent
+ * is working, this is parked in `queued` (shown in the steer strip) rather than
+ * sent: leaving it there sends it as a normal follow-up once the turn finishes;
+ * pressing "Steer now" injects it mid-turn instead. Also the value passed straight
+ * into buildUserTurn for a fresh turn.
+ */
+interface MessageSpec {
+  text: string
+  images: CapturedImage[]
+  activeMentions: TabMention[]
+  useMemory: boolean
+  useAll: boolean
+  includeCurrentTab: boolean
+  includeDeicticTab: boolean
+  activeSelection: string | null
+}
+
 /** A tab the user @mentioned in the composer; its content syncs on send. */
 interface TabMention {
   tabId: number
@@ -379,6 +398,10 @@ export default function Chat({
   const [messages, setMessages] = useState<UIMessage[]>([])
   const [input, setInput] = useState('')
   const [streaming, setStreaming] = useState(false)
+  // A message the user submitted while the agent was working: parked here (shown in
+  // the steer strip) instead of sent. It auto-sends as a follow-up when the turn
+  // finishes, unless the user presses "Steer now" to inject it mid-turn.
+  const [queued, setQueued] = useState<MessageSpec | null>(null)
   const [turnStartedAt, setTurnStartedAt] = useState<number | null>(null)
   // A long task paused at the auto-continue ceiling: the Continue card shows the
   // model's checkpoint and, on click, resumes with a fresh budget. Ephemeral —
@@ -639,6 +662,21 @@ export default function Chat({
     messagesRef.current = messages
   }, [messages])
 
+  // Flush a queued follow-up once the turn finishes: a message the user submitted
+  // while the agent was working (and didn't inject via "Steer now") sends as a
+  // fresh turn the moment streaming ends. Clearing `queued` first stops it firing
+  // twice; startFreshTurn re-enters streaming, and the next queued message (if any)
+  // waits for the new turn to end.
+  useEffect(() => {
+    if (streaming || !queued) return
+    const spec = queued
+    setQueued(null)
+    void startFreshTurn(spec)
+    // startFreshTurn is a stable per-render closure; driving this off queued+streaming
+    // alone keeps it to one send per queued message.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [streaming, queued])
+
   // Close each composer popover on outside-click or Esc; only listens while open.
   useDismissOnOutside(toolsOpen, toolsMenuRef, () => setToolsOpen(false))
   useDismissOnOutside(moreOpen, moreMenuRef, () => setMoreOpen(false))
@@ -864,8 +902,10 @@ export default function Chat({
 
   function stop() {
     settleApproval(false)
-    // Discard any queued steers — the user asked to stop, not to redirect.
+    // Discard any queued steers, and the pending follow-up too — the user asked to
+    // stop, so it must not auto-send when streaming ends (see the flush effect).
     steerQueueRef.current = []
+    setQueued(null)
     abortRef.current?.abort()
   }
 
@@ -1122,47 +1162,25 @@ export default function Chat({
   }
 
   /**
-   * Send the composer's contents. One entry point for both a fresh turn and a
-   * mid-task steer — the difference is purely whether the agent is in-flight
-   * *right now* (`streaming`), captured at submit time:
-   *
-   *  - **idle** → start a new continuation chain (the normal turn).
-   *  - **in-flight** → enqueue a steer onto steerQueueRef; runAgentTurn halts at
-   *    its next step boundary (steerPending) and runTurnChain's drain splices it
-   *    into history and continues the chain.
-   *
-   * A message is a steer *only* while the model is genuinely working — once its
-   * response has completed, `streaming` is false and this is an ordinary reply, so
-   * a normal follow-up is never treated as a steer. Both paths share the composer
-   * (text, screenshots, @mentions, selection, @memory/@all) via buildUserTurn; a
-   * leading "/skill" invocation is honored only for a fresh turn, not a steer.
+   * Snapshot the composer (text + screenshots + resolved @mention/@all/deictic/
+   * selection/@memory context) into a MessageSpec, or null if there's nothing to
+   * send / no provider configured. A pure read — it does not clear the composer.
    */
-  async function submit() {
+  function composeSpec(): MessageSpec | null {
     const text = input.trim()
     const images = attachments
-    if ((!text && images.length === 0) || !selected) return
-    // The one bit that splits the two behaviors — sampled once, up front.
-    const steering = streaming
-    // A leading "/skill-name" token invokes that skill — for a fresh turn only.
-    const slashMatch = !steering ? text.match(/^\/([a-z0-9-]+)(?:\s|$)/) : null
-    const invokedSkill = slashMatch ? await getSkill(slashMatch[1]) : null
-    const activeSkill =
-      invokedSkill && invokedSkill.userInvocable && invokedSkill.enabled !== false
-        ? invokedSkill
-        : null
+    if ((!text && images.length === 0) || !selected) return null
     // Mentions only count if their token survived editing.
     const activeMentions = mentions.filter((m) => text.includes(m.token))
     // A surviving @memory token directs the agent to consult long-term memory.
     const useMemory = MEMORY_TOKEN_RE.test(text)
     // @all attaches every open tab (only honored in all-tabs visibility mode).
     const useAll = settings.tabAccess === 'all-tabs' && ALL_TOKEN_RE.test(text)
-    // Auto-attach the current tab only on the first message of a fresh chat (never
-    // for a steer — the chat is well underway by then).
-    const includeCurrentTab = !steering && messages.length === 0 && !tabDismissed && currentTab !== null
-    // Later in a chat, a deictic reference ("what about this?", "summarize this
-    // page") pulls in the tab the user is now viewing — but only when it isn't
-    // already in context, i.e. after they switched to or navigated to a
-    // different page since it was last shared.
+    // Auto-attach the current tab on the first message of a fresh chat only (a
+    // queued follow-up is never the first message, so this resolves to false there).
+    const includeCurrentTab = messages.length === 0 && !tabDismissed && currentTab !== null
+    // A deictic reference ("what about this?", "summarize this page") pulls in the
+    // tab being viewed, unless it's already in context (see sharedTabsRef).
     const currentTabKey = currentTab ? tabKey(currentTab.tabId, currentTab.url) : null
     const includeDeicticTab =
       !includeCurrentTab &&
@@ -1170,70 +1188,49 @@ export default function Chat({
       currentTabKey !== null &&
       DEICTIC_RE.test(text) &&
       !sharedTabsRef.current.has(currentTabKey)
-    // Highlighted text the user chose to share (consumed once sent).
     const activeSelection =
       selection && selection.text !== dismissedSelection ? selection.text : null
+    return { text, images, activeMentions, useMemory, useAll, includeCurrentTab, includeDeicticTab, activeSelection }
+  }
+
+  /** Clear the composer and its transient popovers once a spec has been captured. */
+  function clearComposer(consumedSelection: string | null) {
     setInput('')
     setAttachments([])
     setMentions([])
     setMentionQuery(null)
     setSlashQuery(null)
-    if (activeSelection) setDismissedSelection(activeSelection)
+    if (consumedSelection) setDismissedSelection(consumedSelection)
     setCaptureError(null)
     if (inputRef.current) inputRef.current.style.height = 'auto'
+  }
+
+  /**
+   * Start a fresh continuation chain from a captured spec — a new turn. Resolves a
+   * leading "/skill" invocation (fresh turns only), records the user message in
+   * history, and runs the chain.
+   */
+  async function startFreshTurn(spec: MessageSpec) {
+    const { text, images } = spec
+    const slashMatch = text.match(/^\/([a-z0-9-]+)(?:\s|$)/)
+    const invokedSkill = slashMatch ? await getSkill(slashMatch[1]) : null
+    const activeSkill =
+      invokedSkill && invokedSkill.userInvocable && invokedSkill.enabled !== false ? invokedSkill : null
 
     setMessages((m) => [
       ...m,
       { id: uid(), role: 'user', parts: [{ type: 'text', text }], images: images.map((i) => i.dataUrl) },
     ])
-
-    if (steering) {
-      // Enqueue a *promise* synchronously so steerPending flips true this instant —
-      // even while the tab context is still being read, a cycle that ends first
-      // won't drop the steer (the drain awaits it). buildUserTurn is fire-safe.
-      const ready = buildUserTurn({
-        text,
-        images,
-        activeMentions,
-        useMemory,
-        useAll,
-        includeCurrentTab: false,
-        includeDeicticTab,
-        activeSelection,
-      }).then(
-        ({ message, attachedSources, notes }): QueuedSteer => ({
-          message,
-          sources: attachedSources,
-          journal: [text, ...notes, '[steered mid-task]'].filter(Boolean).join('\n'),
-          useMemory,
-        }),
-      )
-      steerQueueRef.current.push(ready)
-      return
-    }
-
-    // Fresh turn. Drop any orphaned steer that raced a just-ended chain (see the
-    // finally in runTurnChain) so it can't leak into this new turn.
+    // Drop any orphaned steer that raced a just-ended chain (see the finally in
+    // runTurnChain) so it can't leak into this new turn.
     steerQueueRef.current = []
-    // Resolve attached context (tabs/selection/memory) into the model-facing
-    // message via the shared assembler, then record it in history.
-    const { message, attachedSources, notes } = await buildUserTurn({
-      text,
-      images,
-      activeMentions,
-      useMemory,
-      useAll,
-      includeCurrentTab,
-      includeDeicticTab,
-      activeSelection,
-    })
+    const { message, attachedSources, notes } = await buildUserTurn(spec)
     historyRef.current.push(message)
     if (activeSkill) notes.push(`[invoked skill: ${activeSkill.name}]`)
     const journalUserText = [text, ...notes].filter(Boolean).join('\n')
-
     // @memory is the user's consent to recall, so skip the SearchMemory card for
     // this turn only (it reads local memory — no page or network access).
-    turnAllowed.current = useMemory ? new Set(['SearchMemory']) : new Set()
+    turnAllowed.current = spec.useMemory ? new Set(['SearchMemory']) : new Set()
     autoContinuesRef.current = 0
     setContinuation(null)
     await runTurnChain({
@@ -1243,6 +1240,60 @@ export default function Chat({
       journalUserText,
       droppableTail: true,
     })
+  }
+
+  /**
+   * Inject a captured spec into the running chain as a mid-task steer: show its
+   * bubble and enqueue it. A *promise* is pushed synchronously so steerPending
+   * flips true this instant — even mid-assembly, a cycle that ends first won't drop
+   * it (the drain awaits it). runAgentTurn halts at its next step boundary and
+   * runTurnChain's drain splices it into history.
+   */
+  function injectSteer(spec: MessageSpec) {
+    const { text, images } = spec
+    setMessages((m) => [
+      ...m,
+      { id: uid(), role: 'user', parts: [{ type: 'text', text }], images: images.map((i) => i.dataUrl) },
+    ])
+    const ready = buildUserTurn({ ...spec, includeCurrentTab: false }).then(
+      ({ message, attachedSources, notes }): QueuedSteer => ({
+        message,
+        sources: attachedSources,
+        journal: [text, ...notes, '[steered mid-task]'].filter(Boolean).join('\n'),
+        useMemory: spec.useMemory,
+      }),
+    )
+    steerQueueRef.current.push(ready)
+  }
+
+  /**
+   * Composer submit. Idle → start a fresh turn immediately. In-flight → park the
+   * message in `queued` (shown in the steer strip) rather than send it: leaving it
+   * there sends it as a normal follow-up once the turn finishes (see the effect
+   * below); pressing the strip's "Steer now" injects it mid-turn instead. Queuing
+   * is the default; steering is the explicit choice.
+   */
+  function submit() {
+    const spec = composeSpec()
+    if (!spec) return
+    clearComposer(spec.activeSelection)
+    if (streaming) setQueued(spec)
+    else void startFreshTurn(spec)
+  }
+
+  /** "Steer now" on the queued message: inject it into the running turn. */
+  function steerNow() {
+    if (!queued) return
+    injectSteer(queued)
+    setQueued(null)
+  }
+
+  /** Pull a queued follow-up back into the composer to edit or discard it. */
+  function retractQueued() {
+    if (!queued) return
+    setInput(queued.text)
+    setAttachments(queued.images)
+    setQueued(null)
   }
 
   /**
@@ -1759,25 +1810,59 @@ export default function Chat({
         )}
         <div className="composer">
           {/* Agent steering: a subtle strip joined to the top of the composer (like
-              the research dock) shown only while the agent is in-flight. It tells
-              the user that sending now redirects the running task — the composer
-              stays fully usable, and a message is a steer ONLY while this shows;
-              once the response completes it's an ordinary follow-up. See submit(). */}
+              the research dock) shown only while the agent is in-flight. A message
+              the user submits mid-turn parks here (queued) instead of sending: it
+              auto-sends as a follow-up when the turn ends, or "Steer now" injects it
+              into the running turn. See submit() / steerNow() / the flush effect. */}
           {streaming && (
             <div className="steer-strip">
-              <span className="steer-strip__icon" aria-hidden="true">
-                <svg width="13" height="13" viewBox="0 0 16 16" fill="none">
-                  <path
-                    d="M10.5 2.5l3 3L6 13l-3.5.5L3 10l7.5-7.5z"
-                    stroke="currentColor"
-                    strokeWidth="1.3"
-                    strokeLinejoin="round"
-                  />
-                </svg>
-              </span>
-              <span className="steer-strip__label">
-                Agent is working — your reply steers it, applied at its next step.
-              </span>
+              {queued ? (
+                <>
+                  <span className="steer-strip__icon" aria-hidden="true">
+                    {/* clock — this reply is waiting for the turn to finish */}
+                    <svg width="13" height="13" viewBox="0 0 16 16" fill="none">
+                      <circle cx="8" cy="8" r="6" stroke="currentColor" strokeWidth="1.3" />
+                      <path d="M8 4.8V8l2.2 1.4" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" />
+                    </svg>
+                  </span>
+                  <span className="steer-strip__queued" title={queued.text || 'Queued follow-up'}>
+                    {queued.text || `${queued.images.length} screenshot${queued.images.length > 1 ? 's' : ''}`}
+                  </span>
+                  <button
+                    className="steer-strip__retract"
+                    title="Edit or remove this queued message"
+                    aria-label="Edit or remove queued message"
+                    onClick={retractQueued}
+                  >
+                    <svg width="9" height="9" viewBox="0 0 8 8" fill="none">
+                      <path d="M1.5 1.5l5 5M6.5 1.5l-5 5" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
+                    </svg>
+                  </button>
+                  <button
+                    className="steer-strip__steer"
+                    title="Inject this now to steer the running task"
+                    onClick={steerNow}
+                  >
+                    Steer now
+                  </button>
+                </>
+              ) : (
+                <>
+                  <span className="steer-strip__icon" aria-hidden="true">
+                    <svg width="13" height="13" viewBox="0 0 16 16" fill="none">
+                      <path
+                        d="M10.5 2.5l3 3L6 13l-3.5.5L3 10l7.5-7.5z"
+                        stroke="currentColor"
+                        strokeWidth="1.3"
+                        strokeLinejoin="round"
+                      />
+                    </svg>
+                  </span>
+                  <span className="steer-strip__label">
+                    Agent is working — your reply will queue as a follow-up.
+                  </span>
+                </>
+              )}
             </div>
           )}
           <ResearchDock tasks={dockTasks} onOpen={openDockTask} />
@@ -1806,12 +1891,12 @@ export default function Chat({
               !selected
                 ? 'Add a provider in settings to start'
                 : streaming
-                  ? 'Reply to steer the running task…'
+                  ? 'Reply — queues as a follow-up…'
                   : 'Ask anything…'
             }
-            // Stays usable while a turn runs — a message sent now is a steer (see the
-            // steer strip above and submit()); after the response completes it's an
-            // ordinary follow-up.
+            // Stays usable while a turn runs — a message sent now is parked in the
+            // steer strip above (submit()); it auto-sends when the turn finishes, or
+            // "Steer now" injects it mid-turn.
             disabled={!selected}
             rows={1}
             onChange={(e) => {
@@ -1951,7 +2036,8 @@ export default function Chat({
               </div>
 
               {/* While the agent works, Stop sits beside the send button and the
-                  send arrow submits a steer; idle, it's just the send button. */}
+                  send arrow queues a follow-up (parked in the steer strip); idle,
+                  it's just the send button. */}
               {streaming && (
                 <button className="send-btn stop" title="Stop" onClick={stop}>
                   <svg width="12" height="12" viewBox="0 0 12 12">
@@ -1961,7 +2047,7 @@ export default function Chat({
               )}
               <button
                 className="send-btn"
-                title={streaming ? 'Steer the running task' : 'Send'}
+                title={streaming ? 'Queue as a follow-up' : 'Send'}
                 disabled={(!input.trim() && attachments.length === 0) || !selected}
                 onClick={() => void submit()}
               >
