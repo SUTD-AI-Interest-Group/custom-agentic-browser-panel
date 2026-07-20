@@ -6,6 +6,10 @@ import type { BrowseBroker, RenderBroker, SearchBroker } from '../tools/research
 
 const running = new Map<string, AbortController>()
 
+// While a task runs, bump its `updatedAt` on this cadence so the SW watchdog can
+// distinguish a live worker from a dead one even across a long, quiet model call.
+const HEARTBEAT_MS = 20_000
+
 // Tab brokers (offscreen side): the offscreen host cannot touch tabs, so both the
 // one-shot render and the interactive browse session are round-trips to the SW —
 // send a request, resolve on the matching result by requestId.
@@ -114,8 +118,17 @@ function makeSearchBroker(taskId: string, signal: AbortSignal): SearchBroker {
 
 chrome.runtime.onMessage.addListener((msg: ResearchMsg) => {
   if (msg?.type === 'research.start') {
+    // Double-run guard: the SW watchdog re-dispatches stranded tasks, but a task
+    // already running here (including one merely paused-and-sleeping between retries,
+    // whose promise is still pending so it stays in `running`) must never be run
+    // twice. A redundant dispatch for a live task is simply ignored.
+    if (running.has(msg.taskId)) return
     const ctrl = new AbortController()
     running.set(msg.taskId, ctrl)
+    const heartbeat = setInterval(() => {
+      if (ctrl.signal.aborted) return
+      void chrome.runtime.sendMessage({ type: 'research.heartbeat', taskId: msg.taskId } satisfies ResearchMsg).catch(() => {})
+    }, HEARTBEAT_MS)
     runResearch({
       taskId: msg.taskId,
       question: msg.question,
@@ -124,13 +137,22 @@ chrome.runtime.onMessage.addListener((msg: ResearchMsg) => {
       conversationId: msg.conversationId,
       observability: msg.observability,
       signal: ctrl.signal,
+      deadlineAt: msg.deadlineAt,
+      resumeNotebook: msg.notebook,
       renderBroker: makeRenderBroker(msg.taskId, ctrl.signal),
       browseBroker: makeBrowseBroker(msg.taskId, ctrl.signal),
       searchBroker: makeSearchBroker(msg.taskId, ctrl.signal),
       onUpdate: (steps, notebook) =>
         chrome.runtime.sendMessage({ type: 'research.update', taskId: msg.taskId, steps, notebook } satisfies ResearchMsg),
+      // Transient-failure transitions drive the UI's paused/waiting state.
+      onPause: ({ reason, nextRetryAt }) =>
+        void chrome.runtime
+          .sendMessage({ type: 'research.paused', taskId: msg.taskId, reason, nextRetryAt } satisfies ResearchMsg)
+          .catch(() => {}),
+      onResume: () =>
+        void chrome.runtime.sendMessage({ type: 'research.resumed', taskId: msg.taskId } satisfies ResearchMsg).catch(() => {}),
     })
-      .then(({ report, sources, notebook, verification }) => {
+      .then(({ report, sources, notebook, verification, partial }) => {
         // The SW already persisted status:'cancelled' when research.cancel fired;
         // a late resolve/reject here must not overwrite that with done/error.
         if (ctrl.signal.aborted) return
@@ -141,13 +163,17 @@ chrome.runtime.onMessage.addListener((msg: ResearchMsg) => {
           sources,
           notebook,
           verification,
+          partial,
         } satisfies ResearchMsg)
       })
       .catch((err) => {
         if (ctrl.signal.aborted) return
         chrome.runtime.sendMessage({ type: 'research.error', taskId: msg.taskId, error: err instanceof Error ? err.message : String(err) } satisfies ResearchMsg)
       })
-      .finally(() => running.delete(msg.taskId))
+      .finally(() => {
+        clearInterval(heartbeat)
+        running.delete(msg.taskId)
+      })
   } else if (msg?.type === 'research.cancel') {
     running.get(msg.taskId)?.abort()
     running.delete(msg.taskId)

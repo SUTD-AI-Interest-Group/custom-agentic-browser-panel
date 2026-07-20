@@ -185,6 +185,8 @@ export type ResearchMsg =
       sources: ResearchSource[]
       notebook?: ResearchNotebook
       verification?: ResearchVerification
+      /** True when the report was cut short by the 24h cap rather than converging. */
+      partial?: boolean
     }
   | { type: 'research.error'; taskId: string; error: string }
   | { type: 'research.cancel'; taskId: string }
