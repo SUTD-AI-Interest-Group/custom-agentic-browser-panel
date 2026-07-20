@@ -4061,8 +4061,9 @@ body {
   }
 }
 
-/* The screenshot the agent took, shown under its tool pill. Clicking downloads
-   the full-resolution image (the card itself only ever renders the thumbnail). */
+/* The screenshot the agent took, shown inside its (expanded) tool pill. The
+   collapsed card renders only the thumbnail; clicking it enlarges the
+   full-resolution capture in place (see .shot-figure). */
 .shot-card {
   display: flex;
   align-items: center;
@@ -4073,7 +4074,7 @@ body {
   border: 1px solid var(--border);
   border-radius: 10px;
   background: var(--pill-bg);
-  cursor: pointer;
+  cursor: zoom-in;
   text-align: left;
   transition: border-color 0.15s ease, background 0.15s ease;
 }
@@ -4124,6 +4125,66 @@ body {
   font-size: 11px;
   color: var(--text-dim);
   font-style: italic;
+}
+
+/* Enlarged capture: the full-resolution PNG rendered in place, with its controls
+   pinned above so they stay reachable no matter how tall a stitched shot is. */
+.shot-figure {
+  margin: 4px 0 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.shot-figure-meta {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.shot-figure-btn {
+  margin-left: auto;
+  padding: 2px 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--pill-bg);
+  color: var(--text-muted);
+  font-size: 11px;
+  cursor: pointer;
+  transition: border-color 0.15s ease, color 0.15s ease;
+}
+
+/* Only the first button gets pushed to the right; the rest sit beside it. */
+.shot-figure-btn ~ .shot-figure-btn {
+  margin-left: 0;
+}
+
+.shot-figure-btn:hover:not(:disabled) {
+  border-color: var(--accent, #7ab8ff);
+  color: var(--text);
+}
+
+.shot-figure-btn:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.shot-figure-img {
+  display: block;
+  width: 100%;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--pill-bg);
+  cursor: zoom-out;
+  overflow: hidden;
+}
+
+.shot-figure-img img {
+  display: block;
+  width: 100%;
+  height: auto;
 }
 
 /* Silent LaTeX self-correction: shown while the model re-emits broken math. */

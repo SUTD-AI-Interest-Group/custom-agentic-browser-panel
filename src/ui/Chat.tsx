@@ -14,7 +14,7 @@ import { cancelRegionCapture, captureRegion, type CapturedImage } from '../platf
 import { ensureVisionCapability } from '../agent/vision'
 import { copyElementAsPng } from '../platform/domImage'
 import { getConversation, renameConversation, saveConversation } from '../data/conversations'
-import { getShot, getShotThumb, type ShotThumb } from '../data/screenshots'
+import { getShot, getShotThumb, type ShotThumb, type StoredShot } from '../data/screenshots'
 import { downloadImage } from '../platform/download'
 import { appendToEpisode, getMemoryContext } from '../data/memory'
 import { createModel, generateChatTitle } from '../agent/provider'
@@ -2057,7 +2057,8 @@ function MessageToolbar({
     .trim()
   return (
     <div className="msg-toolbar">
-      <CopyActions targetRef={targetRef} markdown={markdown} />
+      {/* Picture only the response prose — drop the reasoning + tool-use blocks. */}
+      <CopyActions targetRef={targetRef} markdown={markdown} excludeFromImage=".reasoning-block, .tool-pill" />
       <SourceBar sources={deriveSources(message)} />
     </div>
   )
@@ -2070,9 +2071,13 @@ function MessageToolbar({
 function CopyActions({
   targetRef,
   markdown,
+  excludeFromImage,
 }: {
   targetRef: React.RefObject<HTMLElement>
   markdown: string
+  // CSS selector for blocks to leave out of the copied PNG (e.g. reasoning and
+  // tool-use pills under an assistant reply). Omitted → the whole element.
+  excludeFromImage?: string
 }) {
   const [imageState, setImageState] = useState<'idle' | 'done' | 'error'>('idle')
   const [copyState, setCopyState] = useState<'idle' | 'done' | 'error'>('idle')
@@ -2081,7 +2086,7 @@ function CopyActions({
     const el = targetRef.current
     if (!el) return
     try {
-      await copyElementAsPng(el)
+      await copyElementAsPng(el, excludeFromImage)
       setImageState('done')
     } catch {
       setImageState('error')
@@ -2413,44 +2418,52 @@ function ToolPill({ part }: { part: Extract<UIPart, { type: 'tool' }> }) {
     label = `Checkpointed progress — ${cp?.done?.length ?? 0} done, ${cp?.remaining?.length ?? 0} remaining`
   } else label = part.toolName
 
-  // A screenshot is the one tool result that is worth seeing rather than reading,
-  // so the image hangs below the pill instead of hiding inside it.
+  // A screenshot is worth seeing rather than reading, so it lives inside the
+  // pill: the captured image renders in full above the raw JSON, and clicking it
+  // enlarges the full-resolution capture in place. A screenshot pill also
+  // auto-opens so the image is visible without a click — `open` tracks a stable
+  // shotId (constant once the call is done), so React sets it the moment the
+  // shot lands but never fights a later manual collapse.
   const shotId: string | undefined =
     part.toolName === 'Screenshot' && part.state === 'done' && !denied ? output?.shotId : undefined
 
   return (
-    <>
-      <details className={`tool-pill ${part.state} ${denied ? 'denied' : ''}`}>
-        <summary>
-          <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
-            <path
-              d="M1.5 6s1.7-3.2 4.5-3.2S10.5 6 10.5 6 8.8 9.2 6 9.2 1.5 6 1.5 6Z"
-              stroke="currentColor"
-              strokeWidth="1.2"
-            />
-            <circle cx="6" cy="6" r="1.4" stroke="currentColor" strokeWidth="1.2" />
-          </svg>
-          <span>{label}</span>
-        </summary>
-        <pre>{JSON.stringify({ input: part.input, output: part.output }, null, 2)}</pre>
-      </details>
+    <details className={`tool-pill ${part.state} ${denied ? 'denied' : ''}`} open={!!shotId}>
+      <summary>
+        <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+          <path
+            d="M1.5 6s1.7-3.2 4.5-3.2S10.5 6 10.5 6 8.8 9.2 6 9.2 1.5 6 1.5 6Z"
+            stroke="currentColor"
+            strokeWidth="1.2"
+          />
+          <circle cx="6" cy="6" r="1.4" stroke="currentColor" strokeWidth="1.2" />
+        </svg>
+        <span>{label}</span>
+      </summary>
       {shotId && <ShotCard shotId={shotId} />}
-    </>
+      <pre>{JSON.stringify({ input: part.input, output: part.output }, null, 2)}</pre>
+    </details>
   )
 }
 
 /**
- * The screenshot the agent took, shown to the user.
+ * The screenshot the agent took, shown to the user inside its tool pill.
  *
  * Only the `shotId` lives in the transcript (an inline image there would also
  * ride in the model's history, costing tokens on every later step for a picture
  * it has already been shown properly). So the preview is read from IndexedDB on
  * mount — the thumbnail store, which is kilobytes, not the full-resolution one,
- * which for a stitched page is megabytes. The full image is fetched only if the
- * user actually clicks to download it.
+ * which for a stitched page is megabytes. The full-resolution PNG is fetched
+ * lazily, only when the user actually enlarges or downloads it.
+ *
+ * Collapsed, this is a compact thumbnail card; clicking it enlarges the
+ * full-resolution capture in place. Download is a secondary action in the
+ * enlarged view.
  */
 function ShotCard({ shotId }: { shotId: string }) {
   const [thumb, setThumb] = useState<ShotThumb | null>(null)
+  const [full, setFull] = useState<StoredShot | null>(null)
+  const [enlarged, setEnlarged] = useState(false)
   const [missing, setMissing] = useState(false)
   const [busy, setBusy] = useState(false)
 
@@ -2473,25 +2486,72 @@ function ShotCard({ shotId }: { shotId: string }) {
   if (missing) return <div className="shot-card-missing">This screenshot is no longer stored.</div>
   if (!thumb) return null
 
-  const download = async () => {
+  // Pull the multi-megabyte full-resolution PNG only the first time it is
+  // actually needed (enlarge or download); the thumbnail alone drives the
+  // collapsed preview. Cached in state so a second enlarge/download is instant.
+  const loadFull = async (): Promise<StoredShot | null> => {
+    if (full) return full
     setBusy(true)
     try {
-      const full = await getShot(shotId)
-      if (full) await downloadImage(full.dataUrl)
+      const f = await getShot(shotId)
+      if (f) setFull(f)
       else setMissing(true)
+      return f
     } finally {
       setBusy(false)
     }
+  }
+
+  const enlarge = async () => {
+    if (await loadFull()) setEnlarged(true)
+  }
+
+  const download = async () => {
+    const f = await loadFull()
+    if (f) await downloadImage(f.dataUrl)
+  }
+
+  if (enlarged && full) {
+    return (
+      <figure className="shot-figure">
+        <figcaption className="shot-figure-meta">
+          <span className="shot-card-label">{thumb.label}</span>
+          <span className="shot-card-dim">
+            {full.width}×{full.height}
+          </span>
+          <button type="button" className="shot-figure-btn" onClick={() => setEnlarged(false)}>
+            Shrink
+          </button>
+          <button
+            type="button"
+            className="shot-figure-btn"
+            onClick={() => void download()}
+            disabled={busy}
+          >
+            Download
+          </button>
+        </figcaption>
+        <button
+          type="button"
+          className="shot-figure-img"
+          onClick={() => setEnlarged(false)}
+          title="Click to shrink"
+          aria-label={`Collapse screenshot of ${thumb.label}`}
+        >
+          <img src={full.dataUrl} alt={`Screenshot of ${thumb.label}`} />
+        </button>
+      </figure>
+    )
   }
 
   return (
     <button
       type="button"
       className="shot-card"
-      onClick={() => void download()}
+      onClick={() => void enlarge()}
       disabled={busy}
-      title={`Download screenshot — ${thumb.label}`}
-      aria-label={`Download screenshot of ${thumb.label}`}
+      title={`Click to enlarge — ${thumb.label}`}
+      aria-label={`Enlarge screenshot of ${thumb.label}`}
     >
       <img src={thumb.thumb} alt={`Screenshot of ${thumb.label}`} />
       <span className="shot-card-meta">
