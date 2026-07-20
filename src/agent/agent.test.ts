@@ -216,6 +216,78 @@ describe('step-budget stop reason', () => {
   })
 })
 
+// Agent steering: while the model is mid-task, a user steer must halt the loop at
+// the NEXT step boundary (after the current step's tool executes — never orphaning a
+// tool call) so runTurnChain can splice the steer into history and continue with a
+// fresh cycle. runAgentTurn exposes this as a `steerPending` predicate OR'd into
+// stopWhen; the predicate only READS the pending flag, never drains it.
+describe('agent steering: steerPending halts the loop at the next step boundary', () => {
+  /** A model that never stops asking for another tool call (as in the budget test). */
+  function alwaysCallsATool() {
+    let call = 0
+    return new MockLanguageModelV3({
+      doStream: async () => {
+        call += 1
+        return {
+          stream: new ReadableStream({
+            start(controller: any) {
+              controller.enqueue({ type: 'stream-start', warnings: [] })
+              controller.enqueue({ type: 'tool-call', toolCallId: `c${call}`, toolName: 'ReadPage', input: '{}' })
+              controller.enqueue({
+                type: 'finish',
+                finishReason: 'tool-calls',
+                usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+              })
+              controller.close()
+            },
+          }),
+        }
+      },
+    })
+  }
+
+  it('stops after the current step when a steer is pending, well short of the ceiling', async () => {
+    // A model that would otherwise run to maxSteps (see the budget test). With a
+    // steer already pending, the loop must halt after the first step boundary.
+    const result = await runAgentTurn({
+      model: alwaysCallsATool(),
+      system: 's',
+      history: [{ role: 'user', content: 'go' }],
+      tools: makeTools(new Set()),
+      abortSignal: new AbortController().signal,
+      maxSteps: 8,
+      onUpdate: () => {},
+      steerPending: () => true,
+    })
+
+    expect(result.stop.stepsUsed).toBe(1)
+    // The current step ran to completion before the halt — its tool executed
+    // (state 'done'), and both the tool call and its result are in the replay
+    // history, so the continuation cycle inherits no dangling/orphaned tool call.
+    const toolPart = result.parts.find((p) => p.type === 'tool' && p.toolName === 'ReadPage')
+    expect(toolPart?.state).toBe('done')
+    expect(result.responseMessages.some((m) => m.role === 'tool')).toBe(true)
+  })
+
+  it('runs normally (to the ceiling) when no steer is pending', async () => {
+    // Same never-finishing model with the predicate returning false throughout: the
+    // steer path must not perturb an ordinary run — it goes the full distance.
+    const result = await runAgentTurn({
+      model: alwaysCallsATool(),
+      system: 's',
+      history: [{ role: 'user', content: 'go' }],
+      tools: makeTools(new Set()),
+      abortSignal: new AbortController().signal,
+      maxSteps: 4,
+      onUpdate: () => {},
+      steerPending: () => false,
+    })
+
+    expect(result.stop.stepsUsed).toBe(4)
+    expect(result.stop.reason).toBe('budget')
+  })
+})
+
 // Reasoning parts must be stripped from replayed history: the app never renders
 // them from the model messages, and once persisted they lose the OpenAI Responses
 // adapter's provider metadata, so replaying them only logs a "Non-OpenAI reasoning

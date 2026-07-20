@@ -95,6 +95,24 @@ interface CurrentTabInfo {
   favIconUrl?: string
 }
 
+/**
+ * A steer the user injected while the agent was working, awaiting the running
+ * continuation chain to reach a step boundary and splice it into history (see
+ * `steer` / the drain in `runTurnChain`). The queue holds *promises* so the
+ * pending flag flips true synchronously on submit — `steerPending` can't miss a
+ * steer that is still assembling its attached-tab context when a cycle ends.
+ */
+interface QueuedSteer {
+  /** The model-facing user message to push into history. */
+  message: ModelMessage
+  /** Web pages this steer attached → sources on the reply it redirects. */
+  sources: MessageSource[]
+  /** Journal line for the episode (memory dreaming). */
+  journal: string
+  /** True if the steer invoked @memory, so the chain pre-authorizes SearchMemory. */
+  useMemory: boolean
+}
+
 /** A tab the user @mentioned in the composer; its content syncs on send. */
 interface TabMention {
   tabId: number
@@ -360,6 +378,11 @@ export default function Chat({
 }) {
   const [messages, setMessages] = useState<UIMessage[]>([])
   const [input, setInput] = useState('')
+  // Agent steering: while a turn is streaming, a dedicated bar above the composer
+  // takes a mid-task redirect. Its text + captured screenshots are separate from
+  // the composer's so the two never bleed into each other.
+  const [steerInput, setSteerInput] = useState('')
+  const [steerAttachments, setSteerAttachments] = useState<CapturedImage[]>([])
   const [streaming, setStreaming] = useState(false)
   const [turnStartedAt, setTurnStartedAt] = useState<number | null>(null)
   // A long task paused at the auto-continue ceiling: the Continue card shows the
@@ -442,6 +465,11 @@ export default function Chat({
   const [sessionPlan, setSessionPlan] = useState<{ plan: string; host: string } | null>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
+  const steerInputRef = useRef<HTMLTextAreaElement>(null)
+  // Steers queued during the running chain, drained at each cycle boundary in
+  // runTurnChain (see QueuedSteer). Promises, so a steer still resolving its tab
+  // context is never lost to a cycle that finishes first.
+  const steerQueueRef = useRef<Promise<QueuedSteer>[]>([])
 
   const selected = getSelectedProvider(settings)
 
@@ -842,6 +870,8 @@ export default function Chat({
 
   function stop() {
     settleApproval(false)
+    // Discard any queued steers — the user asked to stop, not to redirect.
+    steerQueueRef.current = []
     abortRef.current?.abort()
   }
 
@@ -866,14 +896,15 @@ export default function Chat({
   }
 
   // Arc/Dia-style snipe: tint the page, snap to hovered components, or drag
-  // an area. The result lands as a removable thumbnail on the composer.
-  async function capture() {
+  // an area. The result lands as a removable thumbnail on the composer, or on the
+  // steer bar's own tray when captured mid-task (target === 'steer').
+  async function capture(target: 'composer' | 'steer' = 'composer') {
     if (capturing) return
     setCaptureError(null)
     setCapturing(true)
     try {
       const img = await captureRegion()
-      if (img) setAttachments((a) => [...a, img])
+      if (img) (target === 'steer' ? setSteerAttachments : setAttachments)((a) => [...a, img])
     } catch (err) {
       setCaptureError(
         `Couldn't capture this page: ${err instanceof Error ? err.message : String(err)}`,
@@ -996,6 +1027,107 @@ export default function Chat({
     setInput((v) => stripToken(v, token))
   }
 
+  /**
+   * Resolve a user turn's attached context — @mentioned / @all / deictic tabs
+   * (synced at send time), a shared page selection, and the @memory directive —
+   * into the model-facing message, its favicon sources, and journal notes. Shared
+   * by send() (a new turn) and steer() (a mid-task injection) so both carry the
+   * same context identically; only what the caller does with the result differs
+   * (start a chain vs. enqueue a steer). Reads currentTab/sharedTabsRef from
+   * closure; every other input is passed in already resolved.
+   */
+  async function buildUserTurn(o: {
+    text: string
+    images: CapturedImage[]
+    activeMentions: TabMention[]
+    useMemory: boolean
+    useAll: boolean
+    includeCurrentTab: boolean
+    includeDeicticTab: boolean
+    activeSelection: string | null
+  }): Promise<{
+    message: ModelMessage
+    attachedSources: MessageSource[]
+    notes: string[]
+    syncedTabs: TabContent[]
+  }> {
+    const { text, images, activeMentions, useMemory, useAll, includeCurrentTab, includeDeicticTab, activeSelection } = o
+    // Sync shared tab contents into the model-facing message: any @mentioned
+    // tabs, plus the current tab when auto-attached (first message) or pulled in
+    // by a deictic reference, de-duplicated by id.
+    const tabIds: number[] = []
+    for (const m of activeMentions) if (!tabIds.includes(m.tabId)) tabIds.push(m.tabId)
+    if ((includeCurrentTab || includeDeicticTab) && currentTab && !tabIds.includes(currentTab.tabId))
+      tabIds.push(currentTab.tabId)
+    let allTabsOmitted = 0
+    if (useAll) {
+      const open = await listOpenTabs()
+      allTabsOmitted = Math.max(0, open.length - MAX_ALL_TABS)
+      for (const t of open.slice(0, MAX_ALL_TABS)) if (!tabIds.includes(t.tabId)) tabIds.push(t.tabId)
+    }
+
+    let modelText = text
+    let syncedTabs: TabContent[] = []
+    if (tabIds.length > 0) {
+      syncedTabs = await Promise.all(tabIds.map((id) => readTabContent(id)))
+      // Remember which tabs are now in context (successful reads only), keyed by
+      // id+url, so a later "this page" re-injects the current tab only once the
+      // user has moved to a different page.
+      syncedTabs.forEach((c, i) => {
+        if (!c.error) sharedTabsRef.current.add(tabKey(tabIds[i], c.url))
+      })
+      const blocks = syncedTabs.map(
+        (c) =>
+          `<tab title=${JSON.stringify(c.title)} url=${JSON.stringify(c.url)}>\n${
+            c.error ? `(could not read this tab: ${c.error})` : c.text
+          }${c.truncated ? '\n[content truncated]' : ''}\n</tab>`,
+      )
+      const omit =
+        allTabsOmitted > 0
+          ? `\n\n[Note: ${allTabsOmitted} more open tab${allTabsOmitted > 1 ? 's were' : ' was'} omitted to keep this message manageable.]`
+          : ''
+      modelText = `${text}\n\n[Current content of the tab${syncedTabs.length > 1 ? 's' : ''} shared with you, synced at send time:]\n${blocks.join('\n\n')}${omit}`
+    }
+    if (activeSelection) {
+      const snippet = activeSelection.slice(0, SELECTION_MAX)
+      const more = activeSelection.length > SELECTION_MAX ? '\n…[selection truncated]' : ''
+      modelText = `${modelText}\n\n[The user highlighted this text on the current page and shared it as context:]\n"""\n${snippet}${more}\n"""`
+    }
+    if (useMemory) {
+      modelText = `${modelText}\n\n[The user invoked @memory — before answering, use the SearchMemory tool to recall relevant long-term memories (pick query terms from their message, or recall broadly if it is general) and ground your reply in what you find.]`
+    }
+
+    const message: ModelMessage =
+      images.length > 0
+        ? {
+            role: 'user',
+            content: [
+              // v7: `file` part with an image mediaType replaces the deprecated
+              // `{ type: 'image', image }` part (the data URL carries its own type).
+              ...images.map((i) => ({ type: 'file' as const, mediaType: 'image', data: i.dataUrl })),
+              ...(modelText ? [{ type: 'text' as const, text: modelText }] : []),
+            ],
+          }
+        : { role: 'user', content: modelText }
+
+    // Tabs attached to this turn become sources on the reply's favicon bar.
+    // Pages the model reads via its tools are merged in later, at render time.
+    const attachedSources: MessageSource[] = syncedTabs
+      .filter((c) => !c.error && isHttpUrl(c.url))
+      .map((c) => ({ title: c.title, url: c.url }))
+    // Journal notes for this user turn; the assistant side is appended when the
+    // whole continuation chain finishes.
+    const notes: string[] = []
+    if (images.length > 0)
+      notes.push(`[attached ${images.length} screenshot${images.length > 1 ? 's' : ''}]`)
+    if (syncedTabs.length > 0)
+      notes.push(`[synced tabs: ${syncedTabs.map((t) => t.title).join(', ')}]`)
+    if (useMemory) notes.push('[asked to recall from memory]')
+    if (useAll) notes.push('[shared all open tabs]')
+    if (activeSelection) notes.push('[shared a page selection]')
+    return { message, attachedSources, notes, syncedTabs }
+  }
+
   async function send() {
     const text = input.trim()
     // A leading "/skill-name" token explicitly invokes that skill for this turn:
@@ -1045,81 +1177,21 @@ export default function Chat({
       { id: uid(), role: 'user', parts: [{ type: 'text', text }], images: images.map((i) => i.dataUrl) },
     ])
 
-    // Sync shared tab contents into the model-facing message: any @mentioned
-    // tabs, plus the current tab when auto-attached (first message) or pulled in
-    // by a deictic reference, de-duplicated by id.
-    const tabIds: number[] = []
-    for (const m of activeMentions) if (!tabIds.includes(m.tabId)) tabIds.push(m.tabId)
-    if ((includeCurrentTab || includeDeicticTab) && currentTab && !tabIds.includes(currentTab.tabId))
-      tabIds.push(currentTab.tabId)
-    let allTabsOmitted = 0
-    if (useAll) {
-      const open = await listOpenTabs()
-      allTabsOmitted = Math.max(0, open.length - MAX_ALL_TABS)
-      for (const t of open.slice(0, MAX_ALL_TABS)) if (!tabIds.includes(t.tabId)) tabIds.push(t.tabId)
-    }
-
-    let modelText = text
-    let syncedTabs: TabContent[] = []
-    if (tabIds.length > 0) {
-      syncedTabs = await Promise.all(tabIds.map((id) => readTabContent(id)))
-      // Remember which tabs are now in context (successful reads only), keyed by
-      // id+url, so a later "this page" re-injects the current tab only once the
-      // user has moved to a different page.
-      syncedTabs.forEach((c, i) => {
-        if (!c.error) sharedTabsRef.current.add(tabKey(tabIds[i], c.url))
-      })
-      const blocks = syncedTabs.map(
-        (c) =>
-          `<tab title=${JSON.stringify(c.title)} url=${JSON.stringify(c.url)}>\n${
-            c.error ? `(could not read this tab: ${c.error})` : c.text
-          }${c.truncated ? '\n[content truncated]' : ''}\n</tab>`,
-      )
-      const omit =
-        allTabsOmitted > 0
-          ? `\n\n[Note: ${allTabsOmitted} more open tab${allTabsOmitted > 1 ? 's were' : ' was'} omitted to keep this message manageable.]`
-          : ''
-      modelText = `${text}\n\n[Current content of the tab${syncedTabs.length > 1 ? 's' : ''} shared with you, synced at send time:]\n${blocks.join('\n\n')}${omit}`
-    }
-    if (activeSelection) {
-      const snippet = activeSelection.slice(0, SELECTION_MAX)
-      const more = activeSelection.length > SELECTION_MAX ? '\n…[selection truncated]' : ''
-      modelText = `${modelText}\n\n[The user highlighted this text on the current page and shared it as context:]\n"""\n${snippet}${more}\n"""`
-    }
-    if (useMemory) {
-      modelText = `${modelText}\n\n[The user invoked @memory — before answering, use the SearchMemory tool to recall relevant long-term memories (pick query terms from their message, or recall broadly if it is general) and ground your reply in what you find.]`
-    }
-
-    if (images.length > 0) {
-      historyRef.current.push({
-        role: 'user',
-        content: [
-          // v7: `file` part with an image mediaType replaces the deprecated
-          // `{ type: 'image', image }` part (the data URL carries its own type).
-          ...images.map((i) => ({ type: 'file' as const, mediaType: 'image', data: i.dataUrl })),
-          ...(modelText ? [{ type: 'text' as const, text: modelText }] : []),
-        ],
-      })
-    } else {
-      historyRef.current.push({ role: 'user', content: modelText })
-    }
-
-    // Tabs attached to this turn become sources on the reply's favicon bar.
-    // Pages the model reads via its tools are merged in later, at render time.
-    const attachedSources: MessageSource[] = syncedTabs
-      .filter((c) => !c.error && isHttpUrl(c.url))
-      .map((c) => ({ title: c.title, url: c.url }))
-    // Build the journal line for this user turn; the assistant side is appended
-    // when the whole continuation chain finishes. Tool calls are noted by name.
-    const notes: string[] = []
-    if (images.length > 0)
-      notes.push(`[attached ${images.length} screenshot${images.length > 1 ? 's' : ''}]`)
-    if (syncedTabs.length > 0)
-      notes.push(`[synced tabs: ${syncedTabs.map((t) => t.title).join(', ')}]`)
-    if (useMemory) notes.push('[asked to recall from memory]')
+    // Resolve attached context (tabs/selection/memory) into the model-facing
+    // message via the shared assembler, then record it in history.
+    const { message, attachedSources, notes } = await buildUserTurn({
+      text,
+      images,
+      activeMentions,
+      useMemory,
+      useAll,
+      includeCurrentTab,
+      includeDeicticTab,
+      activeSelection,
+    })
+    historyRef.current.push(message)
+    // A slash-invoked skill is a send-only note (the steer bar has no skill picker).
     if (activeSkill) notes.push(`[invoked skill: ${activeSkill.name}]`)
-    if (useAll) notes.push('[shared all open tabs]')
-    if (activeSelection) notes.push('[shared a page selection]')
     const journalUserText = [text, ...notes].filter(Boolean).join('\n')
 
     // @memory is the user's consent to recall, so skip the SearchMemory card for
@@ -1134,6 +1206,68 @@ export default function Chat({
       journalUserText,
       droppableTail: true,
     })
+  }
+
+  /**
+   * Inject a mid-task steer into the running continuation chain. Mirrors send()'s
+   * assembly (so a steer carries screenshots, a page selection, a deictic "this
+   * page" and @memory/@all identically) but instead of starting a turn it enqueues
+   * onto steerQueueRef: runAgentTurn halts at its next step boundary (steerPending)
+   * and runTurnChain's drain splices the steer into history and continues the
+   * chain. Only meaningful while streaming — the bar that calls it is shown only
+   * then. The slim bar has no @mention popover, so per-tab mentions are omitted;
+   * the ambient page selection and deictic tab still apply.
+   */
+  async function steer() {
+    if (!streaming) return
+    const text = steerInput.trim()
+    const images = steerAttachments
+    if (!text && images.length === 0) return
+    const useMemory = MEMORY_TOKEN_RE.test(text)
+    const useAll = settings.tabAccess === 'all-tabs' && ALL_TOKEN_RE.test(text)
+    const currentTabKey = currentTab ? tabKey(currentTab.tabId, currentTab.url) : null
+    const includeDeicticTab =
+      currentTab !== null &&
+      currentTabKey !== null &&
+      DEICTIC_RE.test(text) &&
+      !sharedTabsRef.current.has(currentTabKey)
+    const activeSelection =
+      selection && selection.text !== dismissedSelection ? selection.text : null
+
+    setSteerInput('')
+    setSteerAttachments([])
+    if (activeSelection) setDismissedSelection(activeSelection)
+    setCaptureError(null)
+    if (steerInputRef.current) steerInputRef.current.style.height = 'auto'
+
+    // Optimistic user bubble, appended below the still-streaming assistant bubble;
+    // the drain opens a fresh assistant bubble beneath it for the continuation.
+    setMessages((m) => [
+      ...m,
+      { id: uid(), role: 'user', parts: [{ type: 'text', text }], images: images.map((i) => i.dataUrl) },
+    ])
+
+    // Enqueue a *promise* synchronously so steerPending flips true this instant —
+    // even while the tab context is still being read, a cycle that ends first
+    // won't drop the steer (the drain awaits it). buildUserTurn is fire-safe.
+    const ready = buildUserTurn({
+      text,
+      images,
+      activeMentions: [],
+      useMemory,
+      useAll,
+      includeCurrentTab: false,
+      includeDeicticTab,
+      activeSelection,
+    }).then(
+      ({ message, attachedSources, notes }): QueuedSteer => ({
+        message,
+        sources: attachedSources,
+        journal: [text, ...notes, '[steered mid-task]'].filter(Boolean).join('\n'),
+        useMemory,
+      }),
+    )
+    steerQueueRef.current.push(ready)
   }
 
   /**
@@ -1228,6 +1362,9 @@ export default function Chat({
       setMessages((m) => m.map((msg) => (msg.id === id ? { ...msg, parts: [...base, ...parts] } : msg)))
 
     const assistantTexts: string[] = []
+    // Journal lines for any steers the user injected mid-chain, folded into the
+    // episode as user turns alongside the opening message.
+    const steerJournals: string[] = []
     const assistantIds = new Set<string>()
     let pushedAny = false
     let assistantId = uid()
@@ -1263,6 +1400,10 @@ export default function Chat({
           imageQueue,
           activeNames,
           trace,
+          // Agent steering: halt this cycle at the next step boundary when the user
+          // has queued a mid-task steer, so the drain below can splice it into
+          // history and continue the chain.
+          steerPending: () => steerQueueRef.current.length > 0,
         })
         patch(assistantId, base)(result.parts)
         historyRef.current.push(...result.responseMessages)
@@ -1284,6 +1425,38 @@ export default function Chat({
             .join('\n'),
         )
 
+        // Agent steering takes priority over the normal stop logic: a queued steer
+        // means the user redirected mid-task, so continue the chain with their
+        // message regardless of why this cycle ended (even 'completed', e.g. a
+        // one-shot answer the user redirected while it streamed). Awaiting resolves
+        // any steer still assembling its tab context; each becomes a real user
+        // message in history, and a fresh assistant bubble opens beneath the steer.
+        // Not counted against MAX_AUTO_CONTINUES — this is user-driven, not the
+        // model running long.
+        if (steerQueueRef.current.length > 0) {
+          const steers = await Promise.all(steerQueueRef.current.splice(0))
+          const steerSources: MessageSource[] = []
+          for (const s of steers) {
+            historyRef.current.push(s.message)
+            steerSources.push(...s.sources)
+            steerJournals.push(s.journal)
+            // A steer may invoke @memory: pre-authorize SearchMemory and seed it
+            // into the shared active set so the next cycle can call it ungated.
+            if (s.useMemory) {
+              activeNames.add('SearchMemory')
+              turnAllowed.current.add('SearchMemory')
+            }
+          }
+          assistantId = uid()
+          mergedParts = []
+          setMessages((m) => [
+            ...m,
+            { id: assistantId, role: 'assistant', parts: [], sources: steerSources.length ? steerSources : undefined },
+          ])
+          assistantIds.add(assistantId)
+          continue
+        }
+
         if (result.stop.reason === 'completed') break
         // 'checkpoint' | 'budget' — the task is not done. Auto-continue until the
         // ceiling, then hand off to the user via the Continue card.
@@ -1301,8 +1474,11 @@ export default function Chat({
       }
 
       // Journal the whole exchange once (success path only — not on abort/error).
+      // Mid-task steers ride along as extra user turns between the opener and the
+      // assistant's final text.
       void appendToEpisode(episodeIdRef.current, [
         { role: 'user', text: ctx.journalUserText, at: ctx.startedAt },
+        ...steerJournals.map((j) => ({ role: 'user' as const, text: j, at: Date.now() })),
         { role: 'assistant', text: assistantTexts.join('\n').trim(), at: Date.now() },
       ]).catch(() => {})
       trace?.end({ output: assistantTexts.join('\n').trim() })
@@ -1330,6 +1506,9 @@ export default function Chat({
     } finally {
       settleApproval(false)
       turnAllowed.current = new Set()
+      // Discard any steers still queued at chain end (drained on success, dropped
+      // on abort/error — the chain is over, so they have nothing to steer).
+      steerQueueRef.current = []
       pageControl.endSession()
       // Tear down ambient presence on any tab the chain touched (navigate/inspect
       // mount the frame outside a session, so endSession alone won't clear them).
@@ -1514,6 +1693,87 @@ export default function Chat({
       </div>
 
       <div className="composer-area">
+        {/* Agent steering: a slim bar shown only while a turn is working, for
+            injecting a mid-task redirect. It sits above the composer (which shows
+            Stop and is otherwise disabled during a turn). The steer lands at the
+            agent's next step boundary — see steer() / runTurnChain's drain. */}
+        {streaming && (
+          <div className="steer-bar">
+            {steerAttachments.length > 0 && (
+              <div className="attachment-row">
+                {steerAttachments.map((img) => (
+                  <div className="attachment-thumb" key={img.id}>
+                    <img src={img.dataUrl} alt="Screenshot attachment" />
+                    <button
+                      className="attachment-remove"
+                      title="Remove screenshot"
+                      onClick={() => setSteerAttachments((a) => a.filter((x) => x.id !== img.id))}
+                    >
+                      <svg width="8" height="8" viewBox="0 0 8 8" fill="none">
+                        <path d="M1.5 1.5l5 5M6.5 1.5l-5 5" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
+                      </svg>
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+            <div className="steer-row">
+              <span className="steer-icon" title="Steer the running task" aria-hidden="true">
+                <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+                  <path
+                    d="M10.5 2.5l3 3L6 13l-3.5.5L3 10l7.5-7.5z"
+                    stroke="currentColor"
+                    strokeWidth="1.3"
+                    strokeLinejoin="round"
+                  />
+                </svg>
+              </span>
+              <textarea
+                ref={steerInputRef}
+                className="steer-input"
+                value={steerInput}
+                placeholder="Steer the current task…"
+                rows={1}
+                onChange={(e) => {
+                  setSteerInput(e.target.value)
+                  e.target.style.height = 'auto'
+                  e.target.style.height = `${Math.min(e.target.scrollHeight, 120)}px`
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && !e.shiftKey) {
+                    e.preventDefault()
+                    void steer()
+                  }
+                }}
+              />
+              <button
+                className="steer-cam"
+                title="Screenshot part of the page to steer with"
+                disabled={capturing}
+                onClick={() => void capture('steer')}
+              >
+                <CameraIcon />
+              </button>
+              <button
+                className="steer-send"
+                title="Inject this steer"
+                disabled={!steerInput.trim() && steerAttachments.length === 0}
+                onClick={() => void steer()}
+              >
+                <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+                  <path
+                    d="M7 11.5V2.5M7 2.5L3 6.5M7 2.5l4 4"
+                    stroke="currentColor"
+                    strokeWidth="1.8"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  />
+                </svg>
+              </button>
+            </div>
+            <div className="steer-hint">Applied at the agent's next step — won't interrupt an action in progress.</div>
+          </div>
+        )}
         <ContextPills tabs={contextTabs} />
         {selection && selection.text !== dismissedSelection && (
           <div className="selection-chip" title="Highlighted text shared as context">
@@ -1627,8 +1887,16 @@ export default function Chat({
           <textarea
             ref={inputRef}
             value={input}
-            placeholder={selected ? 'Ask anything…' : 'Add a provider in settings to start'}
-            disabled={!selected}
+            placeholder={
+              !selected
+                ? 'Add a provider in settings to start'
+                : streaming
+                  ? 'Agent is working — steer it above ↑'
+                  : 'Ask anything…'
+            }
+            // Disabled while a turn runs: mid-task input goes through the steer bar
+            // above, not the composer (whose send button is Stop during a turn).
+            disabled={!selected || streaming}
             rows={1}
             onChange={(e) => {
               handleInputChange(e.target.value, e.target.selectionStart ?? e.target.value.length)
@@ -1729,7 +1997,7 @@ export default function Chat({
               <button
                 className="cam-btn"
                 title="Screenshot part of the page"
-                disabled={!selected || capturing}
+                disabled={!selected || capturing || streaming}
                 onClick={() => void capture()}
               >
                 <CameraIcon />

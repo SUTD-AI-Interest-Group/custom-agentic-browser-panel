@@ -1859,6 +1859,106 @@ body {
   font-style: italic;
 }
 
+/* ---- Agent steering bar ----
+   Shown above the composer only while a turn is working; injects a mid-task
+   redirect (see steer() in Chat.tsx). Accent-tinted to read as distinct from the
+   composer and to signal it acts on the in-flight task. All colors ride the theme
+   tokens, so light/dark come for free. */
+.steer-bar {
+  margin: 0 0 8px;
+  padding: 7px 8px 6px;
+  background: color-mix(in srgb, var(--accent) 9%, var(--surface));
+  border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--border));
+  border-radius: 14px;
+  animation: steer-in 140ms ease-out;
+}
+
+@keyframes steer-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.steer-row {
+  display: flex;
+  align-items: flex-end;
+  gap: 6px;
+  min-width: 0;
+}
+
+.steer-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 26px;
+  color: var(--accent);
+  flex-shrink: 0;
+}
+
+.steer-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  border: none;
+  outline: none;
+  resize: none;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  padding: 4px 2px;
+  max-height: 120px;
+}
+
+.steer-input::placeholder {
+  color: var(--text-muted);
+}
+
+.steer-cam,
+.steer-send {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.steer-cam {
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-muted);
+}
+
+.steer-cam:hover:not(:disabled) {
+  background: var(--surface);
+  color: var(--text);
+}
+
+.steer-send {
+  border: none;
+  background: var(--accent);
+  color: var(--accent-text);
+}
+
+.steer-cam:disabled,
+.steer-send:disabled {
+  opacity: 0.3;
+  cursor: default;
+}
+
+.steer-hint {
+  margin: 5px 2px 0 30px;
+  font-size: 10.5px;
+  color: var(--text-muted);
+}
+
 .composer {
   background: var(--surface);
   border: 1px solid var(--border);

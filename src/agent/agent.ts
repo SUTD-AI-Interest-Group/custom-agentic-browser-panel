@@ -255,6 +255,16 @@ export async function runAgentTurn(options: {
    */
   maxSteps?: number
   /**
+   * Agent steering: a predicate the caller sets to true when the user has queued a
+   * mid-task steer. It is OR'd into `stopWhen`, so the loop halts at the NEXT step
+   * boundary — after the current step's tool call has executed (nothing orphaned),
+   * before the model's next action. The caller (runTurnChain) then splices the
+   * queued steer into history and continues the chain with a fresh cycle. This
+   * predicate only READS the flag; draining the queue is the caller's job, so the
+   * queue survives for runTurnChain to consume after the cycle returns.
+   */
+  steerPending?: () => boolean
+  /**
    * Optional Langfuse trace for this turn (created by the caller). When present,
    * each model step is recorded as a generation with token usage; when absent,
    * observability is off and nothing here runs. Tool spans are emitted separately
@@ -290,9 +300,15 @@ export async function runAgentTurn(options: {
     // `as ToolSet` keeps streamText's TOOLS generic string-keyed — a literal
     // 'Checkpoint' key would otherwise narrow toolChoice.toolName elsewhere.
     tools: { ...tools, [CHECKPOINT_TOOL]: checkpointTool } as ToolSet,
-    // Two ways to stop: the hard step ceiling (v7's isStepCount), or the model
-    // choosing to hand off via Checkpoint (OR semantics — whichever fires first).
-    stopWhen: [isStepCount(maxSteps), hasToolCall(CHECKPOINT_TOOL)],
+    // Ways to stop (OR semantics — whichever fires first): the hard step ceiling
+    // (v7's isStepCount), the model choosing to hand off via Checkpoint, or a
+    // user steer queued mid-task (halt at the next step boundary so runTurnChain
+    // can splice it into history and continue — see the steerPending option).
+    stopWhen: [
+      isStepCount(maxSteps),
+      hasToolCall(CHECKPOINT_TOOL),
+      () => options.steerPending?.() ?? false,
+    ],
     abortSignal,
     // Observability: record one Langfuse generation per model step (tokens,
     // finish reason, tool calls) and roll the turn totals onto the trace. All
