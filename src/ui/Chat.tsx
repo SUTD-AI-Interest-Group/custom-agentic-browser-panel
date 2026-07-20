@@ -1810,59 +1810,51 @@ export default function Chat({
         )}
         <div className="composer">
           {/* Agent steering: a subtle strip joined to the top of the composer (like
-              the research dock) shown only while the agent is in-flight. A message
-              the user submits mid-turn parks here (queued) instead of sending: it
+              the research dock), shown ONLY when a message is queued — a reply the
+              user submitted mid-turn that's parked here instead of sent. It
               auto-sends as a follow-up when the turn ends, or "Steer now" injects it
               into the running turn. See submit() / steerNow() / the flush effect. */}
-          {streaming && (
+          {streaming && queued && (
             <div className="steer-strip">
-              {queued ? (
-                <>
-                  <span className="steer-strip__icon" aria-hidden="true">
-                    {/* clock — this reply is waiting for the turn to finish */}
-                    <svg width="13" height="13" viewBox="0 0 16 16" fill="none">
-                      <circle cx="8" cy="8" r="6" stroke="currentColor" strokeWidth="1.3" />
-                      <path d="M8 4.8V8l2.2 1.4" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" />
-                    </svg>
-                  </span>
-                  <span className="steer-strip__queued" title={queued.text || 'Queued follow-up'}>
-                    {queued.text || `${queued.images.length} screenshot${queued.images.length > 1 ? 's' : ''}`}
-                  </span>
-                  <button
-                    className="steer-strip__retract"
-                    title="Edit or remove this queued message"
-                    aria-label="Edit or remove queued message"
-                    onClick={retractQueued}
-                  >
-                    <svg width="9" height="9" viewBox="0 0 8 8" fill="none">
-                      <path d="M1.5 1.5l5 5M6.5 1.5l-5 5" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
-                    </svg>
-                  </button>
-                  <button
-                    className="steer-strip__steer"
-                    title="Inject this now to steer the running task"
-                    onClick={steerNow}
-                  >
-                    Steer now
-                  </button>
-                </>
-              ) : (
-                <>
-                  <span className="steer-strip__icon" aria-hidden="true">
-                    <svg width="13" height="13" viewBox="0 0 16 16" fill="none">
-                      <path
-                        d="M10.5 2.5l3 3L6 13l-3.5.5L3 10l7.5-7.5z"
-                        stroke="currentColor"
-                        strokeWidth="1.3"
-                        strokeLinejoin="round"
-                      />
-                    </svg>
-                  </span>
-                  <span className="steer-strip__label">
-                    Agent is working — your reply will queue as a follow-up.
-                  </span>
-                </>
-              )}
+              <span className="steer-strip__icon" aria-hidden="true">
+                {/* redirect corner-arrow — marks this as a steering message */}
+                <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+                  <path
+                    d="M5 3v5.5a1.5 1.5 0 0 0 1.5 1.5H12"
+                    stroke="currentColor"
+                    strokeWidth="1.4"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  />
+                  <path
+                    d="M9.5 7.5 12 10l-2.5 2.5"
+                    stroke="currentColor"
+                    strokeWidth="1.4"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  />
+                </svg>
+              </span>
+              <span className="steer-strip__queued" title={queued.text || 'Queued follow-up'}>
+                {queued.text || `${queued.images.length} screenshot${queued.images.length > 1 ? 's' : ''}`}
+              </span>
+              <button
+                className="steer-strip__retract"
+                title="Edit or remove this queued message"
+                aria-label="Edit or remove queued message"
+                onClick={retractQueued}
+              >
+                <svg width="9" height="9" viewBox="0 0 8 8" fill="none">
+                  <path d="M1.5 1.5l5 5M6.5 1.5l-5 5" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
+                </svg>
+              </button>
+              <button
+                className="steer-strip__steer"
+                title="Inject this now to steer the running task"
+                onClick={steerNow}
+              >
+                Steer now
+              </button>
             </div>
           )}
           <ResearchDock tasks={dockTasks} onOpen={openDockTask} />
