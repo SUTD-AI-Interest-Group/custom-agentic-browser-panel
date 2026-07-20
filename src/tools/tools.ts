@@ -11,7 +11,7 @@ import { snapshotRegions } from '../platform/regionIndex'
 import { capture, tileShot, ShotError } from '../platform/screenshot'
 import { saveShot } from '../data/screenshots'
 import type { QueuedImage } from '../agent/agent'
-import { mountPresence, setTint, focusOn, pulse, setPresenceHidden } from '../platform/presence'
+import { mountPresence, setTint, focusOn, pulse, setPresenceHidden, animateNavIntent } from '../platform/presence'
 import { captureWithMarks } from '../platform/marks'
 import { createModel } from '../agent/provider'
 import { extractStructured } from '../agent/extract'
@@ -683,6 +683,26 @@ export function createAgentTools(
               : `Navigate ${tabId !== undefined ? `tab #${tabId}` : 'the current tab'} to ${url}`
         const approved = await requestApproval({ toolName: 'NavigateTab', summary, reason })
         if (!approved) return DENIED
+        // Pre-navigation intent cue for `goto` only: on the tab's *current* page
+        // — the one window where there's still content to dim — glide the cursor,
+        // pop a "Navigating to <host>…" pill, then darken with a blue shimmer,
+        // before the load swaps the DOM. `open` starts on a blank new tab and
+        // `activate` loads no URL, so neither qualifies. Resolve the target up
+        // front since `goto` may omit tabId (defaults to the active tab). Awaited
+        // so the cue plays out first, but best-effort — a restricted page just
+        // skips it and navigation proceeds.
+        if (action === 'goto' && url) {
+          const targetId = tabId ?? (await getActiveTab())?.id
+          if (targetId !== undefined) {
+            let host: string
+            try {
+              host = new URL(url).host
+            } catch {
+              host = url
+            }
+            await animateNavIntent(targetId, `Navigating to ${host}…`)
+          }
+        }
         const result = await navigateTab(action, { tabId, url })
         // Ambient presence on the tab the agent just moved to (frame only, no
         // dimming). For goto/open the new document is still loading, so wait a
