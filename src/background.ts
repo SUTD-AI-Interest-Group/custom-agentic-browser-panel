@@ -5,7 +5,17 @@
 
 import { dreamIfDue } from './agent/dream'
 import type { ResearchMsg } from './data/researchTasks'
-import { saveTask, applyUpdate } from './data/researchTasks'
+import {
+  saveTask,
+  applyUpdate,
+  getTask,
+  listTasks,
+  resumableTasks,
+  taskDeadline,
+  isActiveStatus,
+  heartbeat,
+  MAX_RESEARCH_DURATION_MS,
+} from './data/researchTasks'
 import { loadSettings, getSelectedProvider, observabilityConfig, resolveDreamIntervalMs } from './data/settings'
 import { isFetchableUrl } from './platform/webFetch'
 import { renderPage } from './platform/researchRender'
@@ -18,6 +28,15 @@ chrome.sidePanel
   .catch((err) => console.error('sidePanel.setPanelBehavior failed', err))
 
 const DREAM_ALARM = 'dream'
+
+// The research watchdog: a periodic tick that re-dispatches any stranded task (its
+// worker died with Chrome/offscreen) so it resumes from its persisted notebook, and
+// finalizes any task past its 24h cap. 1-minute period — Chrome's practical floor —
+// so recovery after a restart or eviction is prompt.
+const RESEARCH_WATCHDOG_ALARM = 'research-watchdog'
+function scheduleWatchdog(): void {
+  chrome.alarms.create(RESEARCH_WATCHDOG_ALARM, { delayInMinutes: 1, periodInMinutes: 1 })
+}
 
 /**
  * How often the dream alarm fires, in minutes: the user's chosen interval, but
@@ -36,8 +55,17 @@ async function scheduleDreamAlarm(): Promise<void> {
   chrome.alarms.create(DREAM_ALARM, { delayInMinutes: Math.min(period, 5), periodInMinutes: period })
 }
 
-chrome.runtime.onInstalled.addListener(() => void scheduleDreamAlarm())
-chrome.runtime.onStartup.addListener(() => void scheduleDreamAlarm())
+chrome.runtime.onInstalled.addListener(() => {
+  void scheduleDreamAlarm()
+  scheduleWatchdog()
+  void resumeStrandedResearch()
+})
+chrome.runtime.onStartup.addListener(() => {
+  void scheduleDreamAlarm()
+  scheduleWatchdog()
+  // Chrome just restarted — resume any research that was mid-flight when it closed.
+  void resumeStrandedResearch()
+})
 
 // Re-arm the alarm when the user changes the dream interval, so a new cadence
 // takes effect without waiting for the next browser restart. Settings live under
@@ -57,8 +85,16 @@ chrome.storage.onChanged.addListener((changes, area) => {
 // strands its (minimized, invisible) window. Sweep any leftover on every wake —
 // module scope runs on each worker start, not just at install/startup.
 void sweepOrphanWindow()
+// Same reasoning for research itself: if this worker (and the offscreen host) were
+// evicted mid-task, resume any stranded task as soon as the worker comes back, not
+// only on the next alarm tick.
+void resumeStrandedResearch()
 
 chrome.alarms.onAlarm.addListener((alarm) => {
+  if (alarm.name === RESEARCH_WATCHDOG_ALARM) {
+    void resumeStrandedResearch()
+    return
+  }
   if (alarm.name !== DREAM_ALARM) return
   dreamIfDue()
     .then((outcome) => {
@@ -149,50 +185,126 @@ async function notifyDone(taskId: string, question: string): Promise<void> {
   })
 }
 
+/**
+ * Dispatch (or re-dispatch) a task to the offscreen host. Shared by the initial
+ * launch and the watchdog's resume, so both take the identical, resilient path:
+ * a missing provider is a *pause* (never a terminal error), the 24h deadline rides
+ * along, and a resume seeds the offscreen run from the task's persisted notebook.
+ * The offscreen host's `running` guard makes a redundant dispatch a no-op.
+ */
+async function startResearchTask(taskId: string, opts: { resume?: boolean } = {}): Promise<void> {
+  const task = await getTask(taskId)
+  if (!task || !isActiveStatus(task.status)) return // finished, cancelled, or gone
+  const settings = await loadSettings()
+  const sel = getSelectedProvider(settings)
+  if (!sel) {
+    // No model configured: pause (the user can configure one and it resumes), never
+    // stop. The watchdog re-checks every tick.
+    await applyUpdate(taskId, (cur) =>
+      isActiveStatus(cur.status)
+        ? { status: 'paused', pauseReason: 'No model configured — set one up to resume', nextRetryAt: Date.now() + 60_000 }
+        : {},
+    )
+    return
+  }
+  await ensureOffscreen()
+  chrome.runtime.sendMessage({
+    type: 'research.start',
+    taskId,
+    question: task.question,
+    providerConfig: sel.provider,
+    modelId: sel.modelId,
+    conversationId: task.conversationId,
+    // The offscreen host has no chrome.storage to read observability from itself.
+    observability: observabilityConfig(settings),
+    deadlineAt: taskDeadline(task),
+    resume: opts.resume,
+    // On resume, hand back the persisted notebook so gathered findings carry over.
+    notebook: opts.resume ? task.notebook : undefined,
+  } satisfies ResearchMsg)
+}
+
+/**
+ * Find tasks whose worker looks dead (stale heartbeat) and re-dispatch them. Within
+ * the 24h cap they resume from the notebook; past it, runResearch finalizes a partial
+ * report. Each is "claimed" (updatedAt bumped) before dispatch so a racing watchdog
+ * tick or the startup scan doesn't double-dispatch it — with the offscreen guard as
+ * the ultimate backstop.
+ */
+async function resumeStrandedResearch(): Promise<void> {
+  try {
+    const tasks = await listTasks()
+    const map = Object.fromEntries(tasks.map((t) => [t.id, t]))
+    const stranded = resumableTasks(map, Date.now())
+    for (const task of stranded) {
+      await applyUpdate(task.id, {}) // claim: bump updatedAt so a concurrent tick skips it
+      await startResearchTask(task.id, { resume: true })
+    }
+  } catch (err) {
+    console.error('[research] resume scan failed', err)
+  }
+}
+
 chrome.runtime.onMessage.addListener((msg: ResearchMsg) => {
   ;(async () => {
     if (msg?.type === 'research.ensureAndStart') {
+      const now = Date.now()
       await saveTask({
         id: msg.taskId,
         question: msg.question,
         status: 'running',
         steps: [],
-        startedAt: Date.now(),
-        updatedAt: Date.now(),
+        startedAt: now,
+        updatedAt: now,
         conversationId: msg.conversationId,
+        // Anchor the 24h cap at creation, so a later resume can't extend it.
+        deadlineAt: now + MAX_RESEARCH_DURATION_MS,
       })
-      try {
-        await ensureOffscreen()
-        const settings = await loadSettings()
-        const sel = getSelectedProvider(settings)
-        if (!sel) {
-          await applyUpdate(msg.taskId, { status: 'error', error: 'No model is configured.' })
-          return
-        }
-        chrome.runtime.sendMessage({
-          type: 'research.start',
-          taskId: msg.taskId,
-          question: msg.question,
-          providerConfig: sel.provider,
-          modelId: sel.modelId,
-          conversationId: msg.conversationId,
-          // Forward observability config: the offscreen host has no chrome.storage
-          // to read it from itself.
-          observability: observabilityConfig(settings),
-        } satisfies ResearchMsg)
-      } catch (err) {
-        await applyUpdate(msg.taskId, { status: 'error', error: err instanceof Error ? err.message : String(err) })
-      }
+      // Dispatch through the shared, resilient path. Any failure here (e.g. offscreen
+      // creation hiccup) leaves the task 'running'; the watchdog re-dispatches it.
+      await startResearchTask(msg.taskId, { resume: false }).catch((err) =>
+        console.error('[research] initial dispatch failed', err),
+      )
     } else if (msg?.type === 'research.update') {
       // The offscreen host sends the full derived step list (with live results)
       // and, when it changes, the structured notebook (plan/coverage drive the
-      // sheet). Replace rather than append.
-      await applyUpdate(msg.taskId, msg.notebook ? { steps: msg.steps, notebook: msg.notebook } : { steps: msg.steps })
+      // sheet). Replace rather than append. Any progress also clears a stale
+      // 'paused' state (a resumed phase may emit updates before its resumed signal).
+      await applyUpdate(msg.taskId, (cur) => {
+        const base = msg.notebook ? { steps: msg.steps, notebook: msg.notebook } : { steps: msg.steps }
+        return cur.status === 'paused'
+          ? { ...base, status: 'running' as const, pauseReason: undefined, nextRetryAt: undefined }
+          : base
+      })
+    } else if (msg?.type === 'research.paused') {
+      // A phase hit a transient failure and is backing off. Active → paused, with the
+      // reason for the card; a cancelled task must not be resurrected.
+      await applyUpdate(msg.taskId, (cur) =>
+        isActiveStatus(cur.status)
+          ? { status: 'paused', pauseReason: msg.reason, nextRetryAt: msg.nextRetryAt }
+          : {},
+      )
+    } else if (msg?.type === 'research.resumed') {
+      await applyUpdate(msg.taskId, (cur) =>
+        cur.status === 'paused' ? { status: 'running', pauseReason: undefined, nextRetryAt: undefined } : {},
+      )
+    } else if (msg?.type === 'research.heartbeat') {
+      // Liveness only: bump updatedAt for an active task so the watchdog sees it live.
+      await heartbeat(msg.taskId)
     } else if (msg?.type === 'research.done') {
       const t = await applyUpdate(msg.taskId, (cur) =>
         cur.status === 'cancelled'
           ? {}
-          : { status: 'done', report: msg.report, sources: msg.sources, notebook: msg.notebook, verification: msg.verification },
+          : {
+              status: 'done',
+              report: msg.report,
+              sources: msg.sources,
+              notebook: msg.notebook,
+              verification: msg.verification,
+              partial: msg.partial,
+              pauseReason: undefined,
+              nextRetryAt: undefined,
+            },
       )
       if (t && t.status === 'done') {
         try {
@@ -204,7 +316,7 @@ chrome.runtime.onMessage.addListener((msg: ResearchMsg) => {
     } else if (msg?.type === 'research.error') {
       await applyUpdate(msg.taskId, (cur) => (cur.status === 'cancelled' ? {} : { status: 'error', error: msg.error }))
     } else if (msg?.type === 'research.cancel') {
-      await applyUpdate(msg.taskId, (cur) => (cur.status === 'running' ? { status: 'cancelled' } : {}))
+      await applyUpdate(msg.taskId, (cur) => (isActiveStatus(cur.status) ? { status: 'cancelled' } : {}))
       // A cancelled task's browse session would otherwise hold the research tab
       // until its TTL expired, blocking the next task's first fetch.
       closeAllSessions()
