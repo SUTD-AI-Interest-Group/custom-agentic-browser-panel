@@ -40,7 +40,7 @@ import { clearIndex } from '../platform/domIndex'
 import { unmountPresence, unmountAllPresence } from '../platform/presence'
 import { grantedCapabilities, type BrowsingCapability } from '../platform/permissions'
 import { getSkill, listSkillMetas, listSkills } from '../data/skills'
-import { listTasks, type ResearchTask, type ResearchStatus, type ResearchMsg, type ResearchVerification } from '../data/researchTasks'
+import { listTasks, isActiveStatus, type ResearchTask, type ResearchStatus, type ResearchMsg, type ResearchVerification } from '../data/researchTasks'
 
 // How long a finished research task lingers in the composer dock (as a ✓/✕/⊘
 // bar) after it completes before auto-dismissing. Its report has already
@@ -523,7 +523,7 @@ export default function Chat({
           role: 'assistant' as const,
           parts: t.report ? [{ type: 'text' as const, text: t.report }] : [],
           sources: t.sources,
-          research: { question: t.question, error: t.error, verification: t.verification },
+          research: { question: t.question, error: t.error, verification: t.verification, partial: t.partial },
         }))
       return add.length ? [...prev, ...add] : prev
     })
@@ -534,7 +534,7 @@ export default function Chat({
   useEffect(() => {
     if (!openSheetTaskId) return
     const t = researchTasks.find((r) => r.id === openSheetTaskId)
-    if (t && t.status !== 'running') setOpenSheetTaskId(null)
+    if (t && !isActiveStatus(t.status)) setOpenSheetTaskId(null)
   }, [researchTasks, openSheetTaskId])
 
   // A research row clicked in the Library navigates here (App has switched this
@@ -677,7 +677,7 @@ export default function Chat({
   // lingering task ages out — no idle timer when nothing is finishing.
   useEffect(() => {
     const lingering = researchTasks.some(
-      (t) => t.status !== 'running' && now - t.updatedAt < DOCK_LINGER_MS,
+      (t) => !isActiveStatus(t.status) && now - t.updatedAt < DOCK_LINGER_MS,
     )
     if (!lingering) return
     const id = setInterval(() => setNow(Date.now()), 1000)
@@ -851,11 +851,12 @@ export default function Chat({
     chrome.runtime.sendMessage({ type: 'research.cancel', taskId } satisfies ResearchMsg)
   }
 
-  // Tapping a dock bar: a running task opens its live-workflow sheet; a finished
-  // one closes any sheet and scrolls the chat to the report card that dropped in
-  // (a cancelled task has no card, so this is a harmless no-op for it).
+  // Tapping a dock bar: an active task (running or paused/waiting) opens its
+  // live-workflow sheet; a finished one closes any sheet and scrolls the chat to the
+  // report card that dropped in (a cancelled task has no card, so this is a harmless
+  // no-op for it).
   function openDockTask(t: ResearchTask) {
-    if (t.status === 'running') {
+    if (isActiveStatus(t.status)) {
       setOpenSheetTaskId(t.id)
       return
     }
@@ -1462,7 +1463,7 @@ export default function Chat({
   // Tasks shown in the composer dock: everything still running, plus terminal
   // tasks still inside their linger window. Newest first (listTasks order).
   const dockTasks = myTasks.filter(
-    (t) => t.status === 'running' || now - t.updatedAt < DOCK_LINGER_MS,
+    (t) => isActiveStatus(t.status) || now - t.updatedAt < DOCK_LINGER_MS,
   )
   // Finished reports are injected into `messages` as research-report cards (see
   // the injection effect), so there's no separate overlay list here.
@@ -2533,6 +2534,11 @@ function ResearchReportMessage({ message }: { message: UIMessage }) {
         </button>
         {!collapsed && (
           <div className="research-report__body">
+            {research.partial && (
+              <div className="research-report__partial" role="note">
+                Partial report — research reached its 24-hour limit before fully converging.
+              </div>
+            )}
             {research.verification && <VerificationBadge v={research.verification} />}
             {reportText ? (
               <AssistantText text={reportText} streaming={false} citations={message.sources} />
@@ -2594,8 +2600,10 @@ function ResearchDock({
 
 // One thin dock bar: status icon + question + expand chevron.
 function ResearchBar({ task, onOpen }: { task: ResearchTask; onOpen: () => void }) {
+  const title =
+    task.status === 'paused' && task.pauseReason ? `${task.question}\n${task.pauseReason}` : task.question
   return (
-    <button className={`research-bar ${task.status}`} onClick={onOpen} title={task.question}>
+    <button className={`research-bar ${task.status}`} onClick={onOpen} title={title}>
       <ResearchStatusIcon status={task.status} />
       <span className="research-bar__title">{task.question}</span>
       <svg className="research-bar__chevron" width="10" height="10" viewBox="0 0 10 10" aria-hidden>
@@ -2686,7 +2694,13 @@ function ResearchSheet({
           <ResearchFindings task={task} />
           <ResearchSources task={task} />
         </div>
-        {task.status === 'running' && (
+        {task.status === 'paused' && (
+          <div className="research-sheet__paused" role="status">
+            <ResearchSpinner />
+            <span>{task.pauseReason || 'Waiting to retry — will resume automatically.'}</span>
+          </div>
+        )}
+        {isActiveStatus(task.status) && (
           <div className="research-sheet__foot">
             <button className="btn ghost" onClick={onStop}>
               Stop
@@ -2755,13 +2769,17 @@ function ResearchSources({ task }: { task: ResearchTask }) {
   )
 }
 
-// Dock/sheet status glyph: a spinner while running, then ✓ / ✕ / ⊘ for
-// done / error / cancelled.
+// Dock/sheet status glyph: a spinner while running, a pause bars glyph while
+// paused/waiting-to-retry, then ✓ / ✕ / ⊘ for done / error / cancelled.
 function ResearchStatusIcon({ status }: { status: ResearchStatus }) {
   if (status === 'running') return <ResearchSpinner />
   return (
     <span className={`research-status research-status--${status}`}>
-      {status === 'done' ? (
+      {status === 'paused' ? (
+        <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden>
+          <path d="M6 4v8M10 4v8" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" fill="none" />
+        </svg>
+      ) : status === 'done' ? (
         <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden>
           <path d="M3.5 8.5l3 3 6-6.5" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" fill="none" />
         </svg>

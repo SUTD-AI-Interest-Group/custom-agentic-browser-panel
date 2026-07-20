@@ -10,6 +10,7 @@ import { relativeTime } from '../../platform/time'
 
 const STATUS_LABEL: Record<ResearchStatus, string> = {
   running: 'Running',
+  paused: 'Waiting',
   done: 'Done',
   error: 'Error',
   cancelled: 'Cancelled',
@@ -65,7 +66,10 @@ export default function ResearchList({ onOpen }: { onOpen: (task: ResearchTask) 
                 : undefined
             }
           >
-            <span className={`research-status research-status--${t.status}`}>
+            <span
+              className={`research-status research-status--${t.status}`}
+              title={t.status === 'paused' ? t.pauseReason : undefined}
+            >
               {STATUS_LABEL[t.status]}
             </span>
             <div className="library-row-main">

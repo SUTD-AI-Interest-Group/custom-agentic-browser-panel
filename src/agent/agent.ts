@@ -70,7 +70,7 @@ export interface UIMessage {
    * reply, so it scrolls with the chat and later turns follow it. The report
    * text lives in `parts`; `sources` carries the fetched pages.
    */
-  research?: { question: string; error?: string; verification?: ResearchVerification }
+  research?: { question: string; error?: string; verification?: ResearchVerification; partial?: boolean }
   /**
    * Tokens this assistant turn cost, summed across every step (and every cycle of
    * a continuation chain). Rendered as a subtle line under the reply. Absent on

@@ -1005,6 +1005,23 @@ body {
   font-size: 12.5px;
 }
 
+/* Note atop a report that was finalized at the 24h cap rather than fully converging. */
+.research-report__partial {
+  margin-bottom: 10px;
+  padding: 7px 10px;
+  border: 1px solid #d97706;
+  border-radius: 8px;
+  font-size: 12px;
+  color: #b45309;
+  background: color-mix(in srgb, #d97706 8%, transparent);
+}
+@media (prefers-color-scheme: dark) {
+  .research-report__partial {
+    color: #fbbf24;
+    border-color: #a16207;
+  }
+}
+
 /* ---- Research dock ----
    A strip at the TOP of the composer box (shares the same rounded container),
    stacking one bar per live/just-finished task above a divider that separates
@@ -1063,11 +1080,19 @@ body {
 .research-status--done {
   color: var(--success);
 }
+.research-status--paused {
+  color: #d97706;
+}
 .research-status--error {
   color: var(--danger);
 }
 .research-status--cancelled {
   color: var(--text-muted);
+}
+@media (prefers-color-scheme: dark) {
+  .research-status--paused {
+    color: #fbbf24;
+  }
 }
 
 .research-spinner {
@@ -1613,6 +1638,23 @@ body {
   justify-content: flex-end;
   padding: 12px 16px;
   border-top: 1px solid var(--border);
+}
+
+/* Waiting-to-retry banner: shown above the Stop button while a task is paused for
+   a transient failure (network/provider down). Amber, with the ring spinner. */
+.research-sheet__paused {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 16px;
+  border-top: 1px solid var(--border);
+  font-size: 12.5px;
+  color: #d97706;
+}
+@media (prefers-color-scheme: dark) {
+  .research-sheet__paused {
+    color: #fbbf24;
+  }
 }
 
 /* ---- Buttons ---- */
@@ -4044,6 +4086,11 @@ body {
   border-color: #16a34a;
 }
 
+.research-status--paused {
+  color: #d97706;
+  border-color: #d97706;
+}
+
 .research-status--error {
   color: var(--danger);
   border-color: var(--danger);
@@ -4058,6 +4105,11 @@ body {
   .research-status--done {
     color: #4ade80;
     border-color: #4ade80;
+  }
+
+  .research-status--paused {
+    color: #fbbf24;
+    border-color: #fbbf24;
   }
 }
 
