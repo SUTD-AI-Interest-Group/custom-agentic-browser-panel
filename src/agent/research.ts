@@ -13,8 +13,9 @@ import {
   type ResearchPlan,
 } from './notebook'
 import { createResearchTools, type BrowseBroker, type RenderBroker, type SearchBroker } from '../tools/research'
+import { withResilience, ResearchDeadlineError } from './resilience'
 import type { ObservabilityConfig, ProviderConfig } from '../data/settings'
-import type { ResearchSource, ResearchStep, ResearchVerification } from '../data/researchTasks'
+import { MAX_RESEARCH_DURATION_MS, type ResearchSource, type ResearchStep, type ResearchVerification } from '../data/researchTasks'
 
 /** Compact one-line stringify for a step summary. */
 function compact(value: unknown): string {
@@ -68,6 +69,11 @@ const MAX_GATHER_ROUNDS = 5
 // all its gather rounds.
 const MAX_BROWSE_SESSIONS = 6
 
+// When the 24h cap is reached mid-run we still make ONE best-effort attempt to write
+// the report from whatever the notebook holds, bounded by this timeout, so a long run
+// that never fully converged is finalized as a partial report rather than lost.
+const FINALIZE_TIMEOUT_MS = 120_000
+
 /** A minimal sink for the live step log: append a step, or replace the last one
  *  in place (used to flip a "running" phase step to its "done" state). */
 interface StepSink {
@@ -103,9 +109,41 @@ export async function runResearch(opts: {
   /** Emits the live step log + notebook snapshot for the sheet. */
   onUpdate: (steps: ResearchStep[], notebook: ResearchNotebook) => void
   signal: AbortSignal
-}): Promise<{ report: string; sources: ResearchSource[]; notebook: ResearchNotebook; verification?: ResearchVerification }> {
+  /** Absolute 24h deadline (epoch-ms). After it, the run finalizes a partial report.
+   *  Defaults to now + 24h for a fresh task. */
+  deadlineAt?: number
+  /** A persisted notebook to resume from (Chrome restart / eviction recovery), so a
+   *  resumed task keeps its findings instead of starting over. */
+  resumeNotebook?: ResearchNotebook
+  /** Called when a phase enters the resilient waiting state (transient failure). */
+  onPause?: (info: { reason: string; attempt: number; nextRetryAt: number }) => void
+  /** Called when a previously-paused phase resumes progress. */
+  onResume?: () => void
+}): Promise<{
+  report: string
+  sources: ResearchSource[]
+  notebook: ResearchNotebook
+  verification?: ResearchVerification
+  /** True when the report was cut short by the 24h cap rather than converging. */
+  partial?: boolean
+}> {
   const model = createModel(opts.provider, opts.modelId)
   const selected = { provider: opts.provider, modelId: opts.modelId }
+  const deadlineAt = opts.deadlineAt ?? Date.now() + MAX_RESEARCH_DURATION_MS
+  const pastDeadline = () => Date.now() >= deadlineAt
+
+  /**
+   * Run a phase resiliently: a transient failure pauses + backs off + retries until
+   * the phase succeeds, the task is aborted (→ propagates), or the deadline passes
+   * (→ ResearchDeadlineError). Reasons flow out to the paused card via onPause.
+   */
+  const resilient = <T>(fn: (signal: AbortSignal) => Promise<T>): Promise<T> =>
+    withResilience(fn, {
+      signal: opts.signal,
+      deadlineAt,
+      onPause: opts.onPause,
+      onResume: opts.onResume,
+    })
 
   // Observability: one research-task trace; phases become generations, tools spans.
   const observer = getObserver(opts.observability)
@@ -148,7 +186,11 @@ export async function runResearch(opts: {
     },
   }
 
-  const notebook: NotebookHandle = createNotebook(undefined, emit)
+  // Resume from the persisted notebook when recovering a stranded task; findings,
+  // sources, coverage and plan all carry over, so the gather loop continues closing
+  // gaps rather than starting from scratch.
+  const notebook: NotebookHandle = createNotebook(opts.resumeNotebook, emit)
+  const resuming = !!opts.resumeNotebook && opts.resumeNotebook.findings.length > 0
 
   // A BrowseSite call runs a whole nested agent loop against a live tab. Its inner
   // steps are kept per tool-call id and spliced in under their BrowseSite row, so
@@ -192,15 +234,28 @@ export async function runResearch(opts: {
 
   try {
     // ---- Phase 1: Scope & Plan ------------------------------------------------
-    const plan = await planResearch(opts.question, model, opts.signal, trace)
-    notebook.setPlan(plan)
-    pushStep({
-      kind: 'phase',
-      tool: 'Plan',
-      summary: `Planned ${plan.subQuestions.length} sub-question${plan.subQuestions.length === 1 ? '' : 's'}`,
-      detail: `Sub-questions:\n${plan.subQuestions.map((q, i) => `  ${i + 1}. ${q}`).join('\n')}\n\nOutline: ${plan.outline.join(' · ')}`,
-      status: 'done',
-    })
+    // A resumed task already has a plan in its notebook — don't re-plan, just note
+    // the continuation so the live log shows why the step count restarted.
+    const existingPlan = notebook.get().plan
+    if (resuming && existingPlan.subQuestions.length > 0) {
+      pushStep({
+        kind: 'phase',
+        tool: 'Resumed',
+        summary: `Resumed — continuing from ${notebook.get().findings.length} finding${notebook.get().findings.length === 1 ? '' : 's'}`,
+        detail: `Recovered after an interruption. Sub-questions:\n${existingPlan.subQuestions.map((q, i) => `  ${i + 1}. ${q}`).join('\n')}`,
+        status: 'done',
+      })
+    } else {
+      const plan = await resilient((signal) => planResearch(opts.question, model, signal, trace))
+      notebook.setPlan(plan)
+      pushStep({
+        kind: 'phase',
+        tool: 'Plan',
+        summary: `Planned ${plan.subQuestions.length} sub-question${plan.subQuestions.length === 1 ? '' : 's'}`,
+        detail: `Sub-questions:\n${plan.subQuestions.map((q, i) => `  ${i + 1}. ${q}`).join('\n')}\n\nOutline: ${plan.outline.join(' · ')}`,
+        status: 'done',
+      })
+    }
 
     // ---- Phase 2: Gather ↔ Reflect loop --------------------------------------
     // Page walks are budgeted across the whole task, not per round — one gnarly
@@ -208,7 +263,9 @@ export async function runResearch(opts: {
     const browseBudget = { remaining: MAX_BROWSE_SESSIONS }
 
     for (let round = 0; round < MAX_GATHER_ROUNDS; round++) {
-      if (opts.signal.aborted) break
+      // The 24h cap stops *gathering* — whatever is in the notebook is then written
+      // up as a partial report below, not discarded.
+      if (opts.signal.aborted || pastDeadline()) break
       const gaps = openGaps(notebook.get())
       if (gaps.length === 0) break
 
@@ -238,29 +295,50 @@ export async function runResearch(opts: {
         roundParts = parts
         rebuildRound()
       }
-      const gatherPrompt =
-        `Research question: ${opts.question}\n\n` +
-        `Focus THIS round on these open sub-questions:\n${focus.map((q, i) => `  ${i + 1}. ${q}`).join('\n')}\n\n` +
-        `What is already known (do not re-fetch these):\n${summarizeNotebook(notebook.get())}`
 
-      const result = await runAgentTurn({
-        model,
-        system: GATHER_SYSTEM,
-        history: [{ role: 'user', content: gatherPrompt }],
-        tools,
-        abortSignal: opts.signal,
-        onUpdate: onTurnUpdate,
-        trace,
-      })
+      let result: Awaited<ReturnType<typeof runAgentTurn>>
+      try {
+        result = await resilient((signal) => {
+          // Each attempt restarts this round's visible rows and re-reads the notebook
+          // for the "already known" list — findings recorded via Notebook.write persist
+          // across a retry, so a re-run continues rather than duplicating work.
+          allSteps.length = roundStart
+          roundParts = []
+          emit()
+          const gatherPrompt =
+            `Research question: ${opts.question}\n\n` +
+            `Focus THIS round on these open sub-questions:\n${focus.map((q, i) => `  ${i + 1}. ${q}`).join('\n')}\n\n` +
+            `What is already known (do not re-fetch these):\n${summarizeNotebook(notebook.get())}`
+          return runAgentTurn({
+            model,
+            system: GATHER_SYSTEM,
+            history: [{ role: 'user', content: gatherPrompt }],
+            tools,
+            abortSignal: signal,
+            onUpdate: onTurnUpdate,
+            trace,
+          })
+        })
+      } catch (err) {
+        rebuildRound = () => {}
+        if (err instanceof ResearchDeadlineError) break // out of time → finalize below
+        throw err
+      }
       // Freeze this round's steps at their final state.
       roundParts = result.parts
       rebuildRound()
       rebuildRound = () => {} // the round is over; a late browse callback must not redraw it
 
-      if (opts.signal.aborted) break
+      if (opts.signal.aborted || pastDeadline()) break
 
       // Reflect: assess coverage of the focus sub-questions; may end the loop.
-      const reflection = await reflect(opts.question, focus, notebook.get(), model, opts.signal, trace)
+      let reflection: Reflection
+      try {
+        reflection = await resilient((signal) => reflect(opts.question, focus, notebook.get(), model, signal, trace))
+      } catch (err) {
+        if (err instanceof ResearchDeadlineError) break
+        throw err
+      }
       reflection.assessments.forEach((a, i) => {
         // Map back to the exact plan wording (focus ⊂ plan.subQuestions) by
         // position — the model often paraphrases, which would otherwise create a
@@ -281,24 +359,87 @@ export async function runResearch(opts: {
       if (reflection.done || isFullyCovered(notebook.get())) break
     }
 
-    // ---- Phase 3: Synthesize --------------------------------------------------
-    pushStep({ kind: 'phase', tool: 'Synthesize', summary: 'Writing the report…', detail: '', status: 'running' })
-    const draft = await synthesize(opts.question, notebook.get(), model, opts.signal, trace)
-    stepSink.replaceTail({ kind: 'phase', tool: 'Synthesize', summary: 'Report drafted', detail: '', status: 'done' })
+    // ---- Phase 3: Synthesize (+ Phase 4: Verify when there is time) -----------
+    // `partial` is set when the 24h cap was reached: gather stopped early and we
+    // finalize whatever the notebook holds. Within the deadline we synthesize
+    // resiliently and verify; out of time we make ONE bounded best-effort attempt,
+    // then fall back to a notebook-only writeup so the run always yields something.
+    let draft: string | undefined
+    let verification: ResearchVerification | undefined
+    let partial = pastDeadline()
+    pushStep({
+      kind: 'phase',
+      tool: 'Synthesize',
+      summary: partial ? 'Finalizing a partial report…' : 'Writing the report…',
+      detail: '',
+      status: 'running',
+    })
+    if (!partial) {
+      try {
+        draft = await resilient((signal) => synthesize(opts.question, notebook.get(), model, signal, trace))
+        stepSink.replaceTail({ kind: 'phase', tool: 'Synthesize', summary: 'Report drafted', detail: '', status: 'done' })
+        const verified = await verifyReport(draft, notebook, model, opts.signal, trace, stepSink)
+        draft = verified.report
+        verification = verified.verification
+      } catch (err) {
+        if (!(err instanceof ResearchDeadlineError)) throw err
+        partial = true // ran out of time mid-synthesis → best-effort finalize below
+      }
+    }
+    if (partial) {
+      try {
+        draft = await synthesize(opts.question, notebook.get(), model, withAttemptTimeout(opts.signal, FINALIZE_TIMEOUT_MS), trace)
+      } catch {
+        draft = draft ?? fallbackReport(opts.question, notebook.get())
+      }
+      stepSink.replaceTail({ kind: 'phase', tool: 'Synthesize', summary: 'Partial report finalized', detail: '', status: 'done' })
+    }
 
-    // ---- Phase 4: Verify — grounding + adversarial, then revise --------------
-    const { report, verification } = await verifyReport(draft, notebook, model, opts.signal, trace, stepSink)
-
+    const report = draft ?? fallbackReport(opts.question, notebook.get())
     const nb = notebook.get()
     const sources: ResearchSource[] = nb.sources.map((s) => ({ title: s.title, url: s.url }))
-    trace?.end({ output: report, metadata: { sources: sources.length, findings: nb.findings.length } })
+    trace?.end({ output: report, metadata: { sources: sources.length, findings: nb.findings.length, partial } })
     await observer.flush()
-    return { report, sources, notebook: nb, verification }
+    return { report, sources, notebook: nb, verification, partial }
   } catch (err) {
     trace?.end({ metadata: { error: err instanceof Error ? err.message : String(err) } })
     await observer.flush()
     throw err
   }
+}
+
+/** Merge the task signal with a one-shot timeout for a single best-effort attempt,
+ *  degrading to the bare signal where AbortSignal.any/timeout is unavailable. */
+function withAttemptTimeout(signal: AbortSignal, ms: number): AbortSignal {
+  try {
+    if (typeof AbortSignal !== 'undefined' && 'any' in AbortSignal && 'timeout' in AbortSignal) {
+      return AbortSignal.any([signal, AbortSignal.timeout(ms)])
+    }
+  } catch {
+    /* fall through */
+  }
+  return signal
+}
+
+/**
+ * A minimal report assembled directly from the notebook — used only when the 24h cap
+ * is reached AND the model can't be reached to write a proper synthesis, so a long
+ * run still yields its gathered findings rather than nothing.
+ */
+function fallbackReport(question: string, nb: ResearchNotebook): string {
+  const findingLines = nb.findings.length
+    ? nb.findings.slice(0, 200).map((f) => `- ${f.claim}${f.sourceN ? ` [[${f.sourceN}]]` : ''}`)
+    : ['- No findings were recorded before the limit was reached.']
+  const sourceLines = nb.sources.map((s) => `[[${s.n}]] ${s.title || s.url} — ${s.url}`)
+  return [
+    `# ${question}`,
+    '',
+    '> **Partial report** — research reached its 24-hour limit before it could be written up in full. The findings gathered so far are listed below.',
+    '',
+    '## Findings',
+    ...findingLines,
+    ...(sourceLines.length ? ['', '## Sources', ...sourceLines] : []),
+  ].join('\n')
 }
 
 // ---------------------------------------------------------------------------
