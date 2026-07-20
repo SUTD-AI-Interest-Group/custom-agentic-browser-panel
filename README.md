@@ -103,7 +103,8 @@ logic lives in `src/tools/toolDiscovery.ts`.
 | --- | --- |
 | `ReadPage` | Read the active tab — text, DOM, or numbered interactive elements |
 | `ReadTabs` | List all open tabs; read specific ones by id |
-| `Screenshot` | Look at the page — viewport, a single element, or a stitched full page |
+| `GetScreenshot` | Look at the page as an image — the rendered viewport, or `fullPage:true` for a stitched full page |
+| `GetElementScreenshot` | Screenshot one element/region (`[rN]` from ReadPage regions, or a CSS selector) |
 | `ExtractData` | Pull structured data off the current page |
 | `RequestPageControl` / `ControlPage` | Open a control session, then act (click / type / select / scroll / press / navigate) |
 | `AutofillForm` | Fill a form from your saved profile |
@@ -145,9 +146,10 @@ built entirely on the manifest's existing `scripting`/`tabs` permissions. No
 Whether a model can *actually* read images is decided by a cheap runtime probe
 (`src/agent/vision.ts`): a tiny canvas image containing a random code is sent
 once per provider+model, and the model counts as vision-capable only if it
-echoes the code back. The verdict is cached, and `Screenshot` is deleted from
-the toolset entirely for text-only models — a tool whose whole product is an
-image is worse than absent for a model that cannot see.
+echoes the code back. The verdict is cached. The screenshot tools are never
+removed — they always save the shot for the user (shown inline in the chat); the
+verdict only decides whether the image is *also* sent to the model, or the tool
+just tells a text-only model plainly that it cannot see the picture it saved.
 
 Two registries stay deliberately separate: `domIndex` answers *"what can I
 click?"* (interactive, viewport-only, addressed `[3]`), while `regionIndex`

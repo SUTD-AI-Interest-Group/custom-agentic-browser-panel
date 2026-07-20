@@ -96,8 +96,8 @@ export type TurnStopReason = 'completed' | 'checkpoint' | 'budget'
  *
  * The caption is not decoration. It rides WITH the image because the queue now
  * carries two very different things — `ReadPage`'s set-of-marks shot, whose
- * numbered boxes map to the click registry's `[index]` values, and `Screenshot`'s
- * plain crops and tiles, which have no boxes on them at all. A single hardcoded
+ * numbered boxes map to the click registry's `[index]` values, and the screenshot
+ * tools' plain crops and tiles, which have no boxes on them at all. A single hardcoded
  * caption would tell the model to look for numbered boxes on an unmarked photo of
  * a bar chart, and it would duly hallucinate them.
  */
@@ -228,7 +228,7 @@ export async function runAgentTurn(options: {
    * Captioned images awaiting delivery to the model. The OpenAI-compatible
    * adapter serializes a tool result's `media` part to plain text, so images
    * never reach the model that way — perception tools (ReadPage modes
-   * "elements"/"regions", RequestPageControl, Screenshot) stash their capture
+   * "elements"/"regions", RequestPageControl, GetScreenshot/GetElementScreenshot) stash their capture
    * here instead, and prepareStep injects it as a `user` image message right
    * before the next step, the one channel the adapter actually turns into an
    * `image_url`.
