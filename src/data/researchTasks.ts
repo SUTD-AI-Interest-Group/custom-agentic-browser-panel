@@ -4,7 +4,28 @@ import type { ResearchNotebook } from '../agent/notebook'
 import type { BrowseAction } from '../tools/browsePolicy'
 import { estimateBytes, type StoreUsage } from './usage'
 
-export type ResearchStatus = 'running' | 'done' | 'error' | 'cancelled'
+/**
+ * `paused` is a resilient waiting state: the task hit a transient failure (network
+ * down, provider 5xx/429/auth, hung request) and is backing off to retry. It is
+ * *active* — treated like `running` for pruning, cancellation, and the dock — never
+ * a terminal state. A task only leaves the active set at the 24h cap (→ `done` with
+ * a partial report, or `error`) or a manual Stop (→ `cancelled`).
+ */
+export type ResearchStatus = 'running' | 'paused' | 'done' | 'error' | 'cancelled'
+
+/** A task is `running` or `paused` — i.e. still owned by a (possibly dead) worker. */
+export function isActiveStatus(status: ResearchStatus): boolean {
+  return status === 'running' || status === 'paused'
+}
+
+/** The hard wall-clock cap on a research task: 24h from `startedAt`. The ONLY
+ *  timeout, alongside a manual Stop. */
+export const MAX_RESEARCH_DURATION_MS = 24 * 60 * 60 * 1000
+
+/** How long without a heartbeat before the watchdog treats a task's worker as dead
+ *  and re-dispatches it. Comfortably larger than the offscreen heartbeat interval
+ *  and the 1-min watchdog period, so a live-but-quiet task is never double-run. */
+export const STALE_MS = 3 * 60 * 1000
 
 export interface ResearchSource { title: string; url: string }
 
@@ -88,6 +109,35 @@ export interface ResearchTask {
   notebook?: ResearchNotebook
   /** Set on completion: the verification pass summary shown on the report card. */
   verification?: ResearchVerification
+  /** Absolute epoch-ms deadline (startedAt + 24h). After this the task finalizes a
+   *  partial report. Absent on legacy tasks — derive with `taskDeadline`. */
+  deadlineAt?: number
+  /** While `status === 'paused'`: why it's waiting, shown on the card. */
+  pauseReason?: string
+  /** While paused: epoch-ms of the next scheduled retry. */
+  nextRetryAt?: number
+  /** True when the report was cut short by the 24h cap rather than fully converging. */
+  partial?: boolean
+}
+
+/** The absolute 24h deadline for a task, tolerant of legacy tasks that predate the field. */
+export function taskDeadline(t: Pick<ResearchTask, 'startedAt' | 'deadlineAt'>): number {
+  return t.deadlineAt ?? t.startedAt + MAX_RESEARCH_DURATION_MS
+}
+
+/**
+ * Active tasks (`running`/`paused`) whose worker looks dead — no heartbeat for
+ * `staleMs`. The watchdog re-dispatches exactly these: within the deadline they
+ * resume from the persisted notebook, past it they finalize a partial report.
+ * A live-but-quiet task keeps a fresh `updatedAt` (via heartbeat), so it is never
+ * selected and never double-run.
+ */
+export function resumableTasks(
+  map: Record<string, ResearchTask>,
+  now: number,
+  staleMs: number = STALE_MS,
+): ResearchTask[] {
+  return Object.values(map).filter((t) => isActiveStatus(t.status) && now - t.updatedAt > staleMs)
 }
 
 /** The Verify phase's summary: how many cited claims held up. */
@@ -112,8 +162,22 @@ export type ResearchMsg =
       conversationId?: string
       /** Observability config forwarded from the SW (offscreen has no chrome.storage). */
       observability?: ObservabilityConfig
+      /** Absolute 24h deadline; the offscreen host passes it straight to runResearch. */
+      deadlineAt?: number
+      /** True when this is a resume of a stranded task (Chrome restart / eviction). */
+      resume?: boolean
+      /** The persisted notebook to resume from, so a resumed task keeps its findings
+       *  instead of starting over. */
+      notebook?: ResearchNotebook
     }
   | { type: 'research.update'; taskId: string; steps: ResearchStep[]; notebook?: ResearchNotebook }
+  // Resilience transitions (offscreen → SW): a phase hit a transient failure and is
+  // backing off (`paused`), or a paused phase made progress again (`resumed`).
+  | { type: 'research.paused'; taskId: string; reason: string; nextRetryAt: number }
+  | { type: 'research.resumed'; taskId: string }
+  // Liveness (offscreen → SW): bump `updatedAt` during long, quiet model calls so the
+  // watchdog can tell a live worker from a dead one.
+  | { type: 'research.heartbeat'; taskId: string }
   | {
       type: 'research.done'
       taskId: string
@@ -172,15 +236,16 @@ async function all(): Promise<Record<string, ResearchTask>> {
   return (got[KEY] as Record<string, ResearchTask>) ?? {}
 }
 
-/** Keep the newest `max` tasks by startedAt, but never drop a still-running task. */
+/** Keep the newest `max` tasks by startedAt, but never drop an active (running or
+ *  paused) task — a paused task is only waiting for the network, not finished. */
 export function pruneTasks(map: Record<string, ResearchTask>, max: number): Record<string, ResearchTask> {
   const all = Object.values(map)
   if (all.length <= max) return map
-  const running = all.filter((t) => t.status === 'running')
+  const active = all.filter((t) => isActiveStatus(t.status))
   const rest = all
-    .filter((t) => t.status !== 'running')
+    .filter((t) => !isActiveStatus(t.status))
     .sort((a, b) => b.startedAt - a.startedAt)
-  const keep = [...running, ...rest.slice(0, Math.max(0, max - running.length))]
+  const keep = [...active, ...rest.slice(0, Math.max(0, max - active.length))]
   return Object.fromEntries(keep.map((t) => [t.id, t]))
 }
 
@@ -213,6 +278,21 @@ export async function applyUpdate(
     map[id] = next
     await chrome.storage.local.set({ [KEY]: map })
     return next
+  })
+}
+
+/**
+ * Bump `updatedAt` on an active task without otherwise changing it — the liveness
+ * heartbeat the watchdog reads. A no-op for terminal tasks, so a completed report's
+ * timestamp is never disturbed.
+ */
+export async function heartbeat(id: string): Promise<void> {
+  await serialize(async () => {
+    const map = await all()
+    const cur = map[id]
+    if (!cur || !isActiveStatus(cur.status)) return
+    map[id] = { ...cur, updatedAt: Date.now() }
+    await chrome.storage.local.set({ [KEY]: map })
   })
 }
 
