@@ -264,8 +264,8 @@ describe('agent steering: steerPending halts the loop at the next step boundary'
     // The current step ran to completion before the halt — its tool executed
     // (state 'done'), and both the tool call and its result are in the replay
     // history, so the continuation cycle inherits no dangling/orphaned tool call.
-    const toolPart = result.parts.find((p) => p.type === 'tool' && p.toolName === 'ReadPage')
-    expect(toolPart?.state).toBe('done')
+    const toolParts = result.parts.filter((p) => p.type === 'tool') as Extract<UIPart, { type: 'tool' }>[]
+    expect(toolParts.find((p) => p.toolName === 'ReadPage')?.state).toBe('done')
     expect(result.responseMessages.some((m) => m.role === 'tool')).toBe(true)
   })
 
