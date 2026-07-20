@@ -4267,6 +4267,60 @@ body {
   height: auto;
 }
 
+/* Screenshot carousel: a run of agent captures grouped into one horizontal strip.
+   Thumbnails scroll sideways; the head labels the run; clicking a tile opens the
+   full capture below via .shot-figure (shared with a single .shot-card). */
+.shot-carousel {
+  margin: 4px 0 8px;
+}
+
+.shot-carousel-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 4px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.shot-carousel-strip {
+  display: flex;
+  gap: 8px;
+  padding-bottom: 8px;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  scroll-snap-type: x proximity;
+  -webkit-overflow-scrolling: touch;
+}
+
+.shot-tile {
+  flex: 0 0 auto;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--pill-bg);
+  overflow: hidden;
+  cursor: zoom-in;
+  line-height: 0;
+  scroll-snap-align: start;
+  transition: border-color 0.15s ease;
+}
+
+.shot-tile:hover,
+.shot-tile.active {
+  border-color: var(--accent, #7ab8ff);
+}
+
+.shot-tile img {
+  height: 108px;
+  width: auto;
+  max-width: 220px;
+  object-fit: cover;
+  object-position: top center;
+  display: block;
+  background: var(--border);
+}
+
 /* Silent LaTeX self-correction: shown while the model re-emits broken math. */
 /* Collapsible "Thinking" block: the model's reasoning for a reply. Muted and
    folded away; auto-opens while streaming so you can watch it think. */

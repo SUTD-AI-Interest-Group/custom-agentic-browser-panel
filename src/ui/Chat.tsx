@@ -2182,6 +2182,20 @@ function ThinkingIndicator({
   )
 }
 
+/**
+ * The stored `shotId` of a *successful* screenshot part, else undefined. Drives
+ * grouping consecutive captures into one carousel (see MessageView) — errored or
+ * denied screenshots return undefined and fall through to a normal tool pill.
+ */
+function shotIdOf(part: UIPart): string | undefined {
+  if (part.type !== 'tool') return undefined
+  if (part.toolName !== 'GetScreenshot' && part.toolName !== 'GetElementScreenshot') return undefined
+  if (part.state !== 'done') return undefined
+  const out = part.output as any
+  if (out && typeof out === 'object' && out.denied) return undefined
+  return typeof out?.shotId === 'string' ? out.shotId : undefined
+}
+
 function MessageView({
   message,
   streaming,
@@ -2222,18 +2236,62 @@ function MessageView({
   const last = message.parts[message.parts.length - 1]
   const digesting = last?.type === 'tool' && last.state === 'done'
 
+  // Group successful screenshots taken back-to-back into one image carousel
+  // instead of a stack of raw tool cards. A run of screenshot shots spans
+  // intervening reasoning ("Thinking") parts — a reasoning model emits one
+  // between shots — but is broken by a text part or any other tool, so shots
+  // merge only where they are genuinely consecutive and narrative order is kept.
+  // A run is identified by its first shot's index; that slot renders the whole
+  // run (a ShotCard for one shot, a ShotCarousel for several) and the run's later
+  // shot parts render nothing.
+  const parts = message.parts
+  const runOf = parts.map(() => -1)
+  let curRun = -1
+  let runOpen = false
+  for (let i = 0; i < parts.length; i++) {
+    if (shotIdOf(parts[i]) !== undefined) {
+      if (!runOpen) {
+        curRun = i
+        runOpen = true
+      }
+      runOf[i] = curRun
+    } else if (parts[i].type !== 'reasoning') {
+      runOpen = false
+      curRun = -1
+    }
+  }
+  const runShots = new Map<number, string[]>()
+  parts.forEach((part, i) => {
+    if (runOf[i] < 0) return
+    const arr = runShots.get(runOf[i]) ?? []
+    arr.push(shotIdOf(part) as string)
+    runShots.set(runOf[i], arr)
+  })
+  const emittedRuns = new Set<number>()
+
   return (
     <div className="msg-assistant">
       <div className="msg-assistant-body" ref={bodyRef}>
-        {message.parts.map((part, i) =>
-          part.type === 'text' ? (
+        {parts.map((part, i) => {
+          const run = runOf[i]
+          if (run >= 0) {
+            if (emittedRuns.has(run)) return null
+            emittedRuns.add(run)
+            const ids = runShots.get(run) as string[]
+            return ids.length === 1 ? (
+              <ShotCard key={`shots-${run}`} shotId={ids[0]} />
+            ) : (
+              <ShotCarousel key={`shots-${run}`} shotIds={ids} />
+            )
+          }
+          return part.type === 'text' ? (
             <AssistantText key={i} text={part.text} streaming={streaming} />
           ) : part.type === 'reasoning' ? (
-            <ReasoningBlock key={i} text={part.text} active={streaming && i === message.parts.length - 1} />
+            <ReasoningBlock key={i} text={part.text} active={streaming && i === parts.length - 1} />
           ) : (
             <ToolPill key={part.toolCallId} part={part} />
-          ),
-        )}
+          )
+        })}
         {streaming &&
           turnStartedAt != null &&
           (message.parts.length === 0 || digesting) && (
@@ -2681,21 +2739,12 @@ function ToolPill({ part }: { part: Extract<UIPart, { type: 'tool' }> }) {
     label = `Checkpointed progress — ${cp?.done?.length ?? 0} done, ${cp?.remaining?.length ?? 0} remaining`
   } else label = part.toolName
 
-  // A screenshot is worth seeing rather than reading, so it lives inside the
-  // pill: the captured image renders in full above the raw JSON, and clicking it
-  // enlarges the full-resolution capture in place. A screenshot pill also
-  // auto-opens so the image is visible without a click — `open` tracks a stable
-  // shotId (constant once the call is done), so React sets it the moment the
-  // shot lands but never fights a later manual collapse.
-  const shotId: string | undefined =
-    (part.toolName === 'GetScreenshot' || part.toolName === 'GetElementScreenshot') &&
-    part.state === 'done' &&
-    !denied
-      ? output?.shotId
-      : undefined
-
+  // Successful screenshots never reach here — MessageView groups them into a
+  // ShotCard/ShotCarousel of their own. What lands here is every other tool, plus
+  // errored/denied screenshots, which show their label above the collapsed raw
+  // JSON like any other tool call.
   return (
-    <details className={`tool-pill ${part.state} ${denied ? 'denied' : ''}`} open={!!shotId}>
+    <details className={`tool-pill ${part.state} ${denied ? 'denied' : ''}`}>
       <summary>
         <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
           <path
@@ -2707,14 +2756,14 @@ function ToolPill({ part }: { part: Extract<UIPart, { type: 'tool' }> }) {
         </svg>
         <span>{label}</span>
       </summary>
-      {shotId && <ShotCard shotId={shotId} />}
       <pre>{JSON.stringify({ input: part.input, output: part.output }, null, 2)}</pre>
     </details>
   )
 }
 
 /**
- * The screenshot the agent took, shown to the user inside its tool pill.
+ * A single screenshot the agent took, shown to the user in the transcript
+ * (one-shot runs; several consecutive shots become a ShotCarousel instead).
  *
  * Only the `shotId` lives in the transcript (an inline image there would also
  * ride in the model's history, costing tokens on every later step for a picture
@@ -2828,6 +2877,122 @@ function ShotCard({ shotId }: { shotId: string }) {
         </span>
       </span>
     </button>
+  )
+}
+
+/**
+ * A run of screenshots the agent took back-to-back, shown as one horizontal
+ * carousel instead of a stack of raw tool cards. Each tile is a thumbnail read
+ * from IndexedDB (kilobytes); clicking one enlarges that capture in place below
+ * the strip — the multi-megabyte full-resolution PNG is fetched only then — with
+ * Download as a secondary action. Clicking the open tile again shrinks it. Shots
+ * pruned by age/size drop out of the strip; if every one is gone the carousel
+ * says so rather than rendering broken frames.
+ */
+function ShotCarousel({ shotIds }: { shotIds: string[] }) {
+  const [thumbs, setThumbs] = useState<(ShotThumb | null)[] | null>(null)
+  const [openId, setOpenId] = useState<string | null>(null)
+  const [full, setFull] = useState<StoredShot | null>(null)
+  const [busy, setBusy] = useState(false)
+
+  // MessageView rebuilds `shotIds` on every render, so key the load on the id
+  // list itself, not the array's identity, or the effect would refetch endlessly.
+  const idsKey = shotIds.join('|')
+  useEffect(() => {
+    let alive = true
+    Promise.all(shotIds.map((id) => getShotThumb(id).catch(() => null))).then((ts) => {
+      if (alive) setThumbs(ts)
+    })
+    return () => {
+      alive = false
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [idsKey])
+
+  // Pull the multi-megabyte full-resolution PNG only when a tile is opened.
+  const open = async (id: string) => {
+    setOpenId(id)
+    setFull(null)
+    setBusy(true)
+    try {
+      setFull(await getShot(id))
+    } finally {
+      setBusy(false)
+    }
+  }
+  const close = () => {
+    setOpenId(null)
+    setFull(null)
+  }
+  const download = async () => {
+    if (full) await downloadImage(full.dataUrl)
+  }
+
+  if (!thumbs) return null
+  const tiles = shotIds
+    .map((id, i) => ({ id, thumb: thumbs[i] }))
+    .filter((t): t is { id: string; thumb: ShotThumb } => !!t.thumb)
+  if (tiles.length === 0)
+    return <div className="shot-card-missing">These screenshots are no longer stored.</div>
+
+  return (
+    <div className="shot-carousel">
+      <div className="shot-carousel-head">
+        <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true">
+          <path
+            d="M1.5 6s1.7-3.2 4.5-3.2S10.5 6 10.5 6 8.8 9.2 6 9.2 1.5 6 1.5 6Z"
+            stroke="currentColor"
+            strokeWidth="1.2"
+          />
+          <circle cx="6" cy="6" r="1.4" stroke="currentColor" strokeWidth="1.2" />
+        </svg>
+        <span>Took {tiles.length} screenshots</span>
+      </div>
+      <div className="shot-carousel-strip">
+        {tiles.map(({ id, thumb }) => (
+          <button
+            key={id}
+            type="button"
+            className={`shot-tile${id === openId ? ' active' : ''}`}
+            onClick={() => (id === openId ? close() : void open(id))}
+            title={`${thumb.label} · ${thumb.width}×${thumb.height}`}
+            aria-label={`Enlarge screenshot of ${thumb.label}`}
+          >
+            <img src={thumb.thumb} alt={`Screenshot of ${thumb.label}`} loading="lazy" />
+          </button>
+        ))}
+      </div>
+      {openId && full && (
+        <figure className="shot-figure">
+          <figcaption className="shot-figure-meta">
+            <span className="shot-card-label">{full.label}</span>
+            <span className="shot-card-dim">
+              {full.width}×{full.height}
+            </span>
+            <button type="button" className="shot-figure-btn" onClick={close}>
+              Shrink
+            </button>
+            <button
+              type="button"
+              className="shot-figure-btn"
+              onClick={() => void download()}
+              disabled={busy}
+            >
+              Download
+            </button>
+          </figcaption>
+          <button
+            type="button"
+            className="shot-figure-img"
+            onClick={close}
+            title="Click to shrink"
+            aria-label={`Collapse screenshot of ${full.label}`}
+          >
+            <img src={full.dataUrl} alt={`Screenshot of ${full.label}`} />
+          </button>
+        </figure>
+      )}
+    </div>
   )
 }
 
