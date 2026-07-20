@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { planStitch, planTiles } from './screenshot'
+import { planStitch, planTiles, planShotDelivery } from './screenshot'
 
 // The stitch plan is the only place the scroll/crop arithmetic lives, and its
 // hard case — the bottom of a document, where the page refuses to scroll far
@@ -158,5 +158,24 @@ describe('planTiles', () => {
 
   it('handles a degenerate image', () => {
     expect(planTiles(0, 1400, 6)).toEqual({ tiles: [], dropped: 0 })
+  })
+})
+
+describe('planShotDelivery', () => {
+  it('text-only model: never sends an image — the shot is saved for the user only', () => {
+    // The reversed invariant: a blind model still captures (for the user), but no
+    // tiles are queued and the caller must tell it plainly, so it does not loop.
+    expect(planShotDelivery(false, 0, 12)).toEqual({ kind: 'blind' })
+    expect(planShotDelivery(false, 5, 12)).toEqual({ kind: 'blind' })
+  })
+
+  it('vision model with budget left: sends up to the remaining per-turn budget', () => {
+    expect(planShotDelivery(true, 0, 12)).toEqual({ kind: 'send', maxTiles: 12 })
+    expect(planShotDelivery(true, 10, 12)).toEqual({ kind: 'send', maxTiles: 2 })
+  })
+
+  it('vision model, budget spent: saves for the user but sends nothing to the model', () => {
+    expect(planShotDelivery(true, 12, 12)).toEqual({ kind: 'budget' })
+    expect(planShotDelivery(true, 20, 12)).toEqual({ kind: 'budget' })
   })
 })

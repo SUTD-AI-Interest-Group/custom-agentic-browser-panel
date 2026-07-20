@@ -48,14 +48,41 @@ function loadImage(src: string): Promise<HTMLImageElement> {
   })
 }
 
-export async function copyElementAsPng(el: HTMLElement): Promise<void> {
+// Lay the trimmed clone out off-screen and read its real height. Needed because
+// inlineComputedStyles pins an explicit `height` on every node, so after some
+// children are removed the container would otherwise keep its original height.
+function measureHeight(clone: HTMLElement, width: number): number {
+  const measurer = document.createElement('div')
+  measurer.style.cssText =
+    `position:fixed;left:-99999px;top:0;visibility:hidden;pointer-events:none;width:${width}px`
+  clone.style.height = 'auto'
+  measurer.appendChild(clone)
+  document.body.appendChild(measurer)
+  const height = Math.max(1, Math.ceil(clone.getBoundingClientRect().height))
+  document.body.removeChild(measurer)
+  measurer.removeChild(clone)
+  return height
+}
+
+// `exclude`, when given, is a CSS selector for descendants to drop from the
+// picture — e.g. an assistant reply's reasoning blocks and tool-use pills, so
+// the PNG shows only the response prose.
+export async function copyElementAsPng(el: HTMLElement, exclude?: string): Promise<void> {
   const rect = el.getBoundingClientRect()
   const width = Math.ceil(rect.width)
-  const height = Math.ceil(rect.height)
   const background = opaqueBackground(el)
 
   const clone = el.cloneNode(true) as HTMLElement
   inlineComputedStyles(el, clone)
+
+  // Drop excluded blocks after inlining styles (so the survivors keep their
+  // resolved styles), then re-measure since the content is now shorter.
+  let height = Math.ceil(rect.height)
+  if (exclude) {
+    clone.querySelectorAll(exclude).forEach((n) => n.remove())
+    height = measureHeight(clone, width)
+  }
+
   // Pin the clone to the element's border-box so foreignObject reproduces the
   // exact layout regardless of the inlined box-sizing/width.
   clone.setAttribute('xmlns', XHTML_NS)
