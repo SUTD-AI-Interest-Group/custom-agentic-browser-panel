@@ -378,11 +378,6 @@ export default function Chat({
 }) {
   const [messages, setMessages] = useState<UIMessage[]>([])
   const [input, setInput] = useState('')
-  // Agent steering: while a turn is streaming, a dedicated bar above the composer
-  // takes a mid-task redirect. Its text + captured screenshots are separate from
-  // the composer's so the two never bleed into each other.
-  const [steerInput, setSteerInput] = useState('')
-  const [steerAttachments, setSteerAttachments] = useState<CapturedImage[]>([])
   const [streaming, setStreaming] = useState(false)
   const [turnStartedAt, setTurnStartedAt] = useState<number | null>(null)
   // A long task paused at the auto-continue ceiling: the Continue card shows the
@@ -465,7 +460,6 @@ export default function Chat({
   const [sessionPlan, setSessionPlan] = useState<{ plan: string; host: string } | null>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
-  const steerInputRef = useRef<HTMLTextAreaElement>(null)
   // Steers queued during the running chain, drained at each cycle boundary in
   // runTurnChain (see QueuedSteer). Promises, so a steer still resolving its tab
   // context is never lost to a cycle that finishes first.
@@ -896,15 +890,14 @@ export default function Chat({
   }
 
   // Arc/Dia-style snipe: tint the page, snap to hovered components, or drag
-  // an area. The result lands as a removable thumbnail on the composer, or on the
-  // steer bar's own tray when captured mid-task (target === 'steer').
-  async function capture(target: 'composer' | 'steer' = 'composer') {
+  // an area. The result lands as a removable thumbnail on the composer.
+  async function capture() {
     if (capturing) return
     setCaptureError(null)
     setCapturing(true)
     try {
       const img = await captureRegion()
-      if (img) (target === 'steer' ? setSteerAttachments : setAttachments)((a) => [...a, img])
+      if (img) setAttachments((a) => [...a, img])
     } catch (err) {
       setCaptureError(
         `Couldn't capture this page: ${err instanceof Error ? err.message : String(err)}`,
@@ -1030,11 +1023,11 @@ export default function Chat({
   /**
    * Resolve a user turn's attached context — @mentioned / @all / deictic tabs
    * (synced at send time), a shared page selection, and the @memory directive —
-   * into the model-facing message, its favicon sources, and journal notes. Shared
-   * by send() (a new turn) and steer() (a mid-task injection) so both carry the
-   * same context identically; only what the caller does with the result differs
-   * (start a chain vs. enqueue a steer). Reads currentTab/sharedTabsRef from
-   * closure; every other input is passed in already resolved.
+   * into the model-facing message, its favicon sources, and journal notes. Used by
+   * submit() for both a fresh turn and a mid-task steer, so both carry the same
+   * context identically; only what the caller does with the result differs (start a
+   * chain vs. enqueue a steer). Reads currentTab/sharedTabsRef from closure; every
+   * other input is passed in already resolved.
    */
   async function buildUserTurn(o: {
     text: string
@@ -1128,26 +1121,44 @@ export default function Chat({
     return { message, attachedSources, notes, syncedTabs }
   }
 
-  async function send() {
+  /**
+   * Send the composer's contents. One entry point for both a fresh turn and a
+   * mid-task steer — the difference is purely whether the agent is in-flight
+   * *right now* (`streaming`), captured at submit time:
+   *
+   *  - **idle** → start a new continuation chain (the normal turn).
+   *  - **in-flight** → enqueue a steer onto steerQueueRef; runAgentTurn halts at
+   *    its next step boundary (steerPending) and runTurnChain's drain splices it
+   *    into history and continues the chain.
+   *
+   * A message is a steer *only* while the model is genuinely working — once its
+   * response has completed, `streaming` is false and this is an ordinary reply, so
+   * a normal follow-up is never treated as a steer. Both paths share the composer
+   * (text, screenshots, @mentions, selection, @memory/@all) via buildUserTurn; a
+   * leading "/skill" invocation is honored only for a fresh turn, not a steer.
+   */
+  async function submit() {
     const text = input.trim()
-    // A leading "/skill-name" token explicitly invokes that skill for this turn:
-    // its full instructions are injected into the system prompt below.
-    const slashMatch = text.match(/^\/([a-z0-9-]+)(?:\s|$)/)
+    const images = attachments
+    if ((!text && images.length === 0) || !selected) return
+    // The one bit that splits the two behaviors — sampled once, up front.
+    const steering = streaming
+    // A leading "/skill-name" token invokes that skill — for a fresh turn only.
+    const slashMatch = !steering ? text.match(/^\/([a-z0-9-]+)(?:\s|$)/) : null
     const invokedSkill = slashMatch ? await getSkill(slashMatch[1]) : null
     const activeSkill =
       invokedSkill && invokedSkill.userInvocable && invokedSkill.enabled !== false
         ? invokedSkill
         : null
-    const images = attachments
     // Mentions only count if their token survived editing.
     const activeMentions = mentions.filter((m) => text.includes(m.token))
     // A surviving @memory token directs the agent to consult long-term memory.
     const useMemory = MEMORY_TOKEN_RE.test(text)
     // @all attaches every open tab (only honored in all-tabs visibility mode).
     const useAll = settings.tabAccess === 'all-tabs' && ALL_TOKEN_RE.test(text)
-    const isFirstMessage = messages.length === 0
-    // Attach the tab the user is on to the first message of a fresh chat.
-    const includeCurrentTab = isFirstMessage && !tabDismissed && currentTab !== null
+    // Auto-attach the current tab only on the first message of a fresh chat (never
+    // for a steer — the chat is well underway by then).
+    const includeCurrentTab = !steering && messages.length === 0 && !tabDismissed && currentTab !== null
     // Later in a chat, a deictic reference ("what about this?", "summarize this
     // page") pulls in the tab the user is now viewing — but only when it isn't
     // already in context, i.e. after they switched to or navigated to a
@@ -1162,7 +1173,6 @@ export default function Chat({
     // Highlighted text the user chose to share (consumed once sent).
     const activeSelection =
       selection && selection.text !== dismissedSelection ? selection.text : null
-    if ((!text && images.length === 0) || streaming || !selected) return
     setInput('')
     setAttachments([])
     setMentions([])
@@ -1177,6 +1187,34 @@ export default function Chat({
       { id: uid(), role: 'user', parts: [{ type: 'text', text }], images: images.map((i) => i.dataUrl) },
     ])
 
+    if (steering) {
+      // Enqueue a *promise* synchronously so steerPending flips true this instant —
+      // even while the tab context is still being read, a cycle that ends first
+      // won't drop the steer (the drain awaits it). buildUserTurn is fire-safe.
+      const ready = buildUserTurn({
+        text,
+        images,
+        activeMentions,
+        useMemory,
+        useAll,
+        includeCurrentTab: false,
+        includeDeicticTab,
+        activeSelection,
+      }).then(
+        ({ message, attachedSources, notes }): QueuedSteer => ({
+          message,
+          sources: attachedSources,
+          journal: [text, ...notes, '[steered mid-task]'].filter(Boolean).join('\n'),
+          useMemory,
+        }),
+      )
+      steerQueueRef.current.push(ready)
+      return
+    }
+
+    // Fresh turn. Drop any orphaned steer that raced a just-ended chain (see the
+    // finally in runTurnChain) so it can't leak into this new turn.
+    steerQueueRef.current = []
     // Resolve attached context (tabs/selection/memory) into the model-facing
     // message via the shared assembler, then record it in history.
     const { message, attachedSources, notes } = await buildUserTurn({
@@ -1190,7 +1228,6 @@ export default function Chat({
       activeSelection,
     })
     historyRef.current.push(message)
-    // A slash-invoked skill is a send-only note (the steer bar has no skill picker).
     if (activeSkill) notes.push(`[invoked skill: ${activeSkill.name}]`)
     const journalUserText = [text, ...notes].filter(Boolean).join('\n')
 
@@ -1206,68 +1243,6 @@ export default function Chat({
       journalUserText,
       droppableTail: true,
     })
-  }
-
-  /**
-   * Inject a mid-task steer into the running continuation chain. Mirrors send()'s
-   * assembly (so a steer carries screenshots, a page selection, a deictic "this
-   * page" and @memory/@all identically) but instead of starting a turn it enqueues
-   * onto steerQueueRef: runAgentTurn halts at its next step boundary (steerPending)
-   * and runTurnChain's drain splices the steer into history and continues the
-   * chain. Only meaningful while streaming — the bar that calls it is shown only
-   * then. The slim bar has no @mention popover, so per-tab mentions are omitted;
-   * the ambient page selection and deictic tab still apply.
-   */
-  async function steer() {
-    if (!streaming) return
-    const text = steerInput.trim()
-    const images = steerAttachments
-    if (!text && images.length === 0) return
-    const useMemory = MEMORY_TOKEN_RE.test(text)
-    const useAll = settings.tabAccess === 'all-tabs' && ALL_TOKEN_RE.test(text)
-    const currentTabKey = currentTab ? tabKey(currentTab.tabId, currentTab.url) : null
-    const includeDeicticTab =
-      currentTab !== null &&
-      currentTabKey !== null &&
-      DEICTIC_RE.test(text) &&
-      !sharedTabsRef.current.has(currentTabKey)
-    const activeSelection =
-      selection && selection.text !== dismissedSelection ? selection.text : null
-
-    setSteerInput('')
-    setSteerAttachments([])
-    if (activeSelection) setDismissedSelection(activeSelection)
-    setCaptureError(null)
-    if (steerInputRef.current) steerInputRef.current.style.height = 'auto'
-
-    // Optimistic user bubble, appended below the still-streaming assistant bubble;
-    // the drain opens a fresh assistant bubble beneath it for the continuation.
-    setMessages((m) => [
-      ...m,
-      { id: uid(), role: 'user', parts: [{ type: 'text', text }], images: images.map((i) => i.dataUrl) },
-    ])
-
-    // Enqueue a *promise* synchronously so steerPending flips true this instant —
-    // even while the tab context is still being read, a cycle that ends first
-    // won't drop the steer (the drain awaits it). buildUserTurn is fire-safe.
-    const ready = buildUserTurn({
-      text,
-      images,
-      activeMentions: [],
-      useMemory,
-      useAll,
-      includeCurrentTab: false,
-      includeDeicticTab,
-      activeSelection,
-    }).then(
-      ({ message, attachedSources, notes }): QueuedSteer => ({
-        message,
-        sources: attachedSources,
-        journal: [text, ...notes, '[steered mid-task]'].filter(Boolean).join('\n'),
-        useMemory,
-      }),
-    )
-    steerQueueRef.current.push(ready)
   }
 
   /**
@@ -1692,87 +1667,6 @@ export default function Chat({
       </div>
 
       <div className="composer-area">
-        {/* Agent steering: a slim bar shown only while a turn is working, for
-            injecting a mid-task redirect. It sits above the composer (which shows
-            Stop and is otherwise disabled during a turn). The steer lands at the
-            agent's next step boundary — see steer() / runTurnChain's drain. */}
-        {streaming && (
-          <div className="steer-bar">
-            {steerAttachments.length > 0 && (
-              <div className="attachment-row">
-                {steerAttachments.map((img) => (
-                  <div className="attachment-thumb" key={img.id}>
-                    <img src={img.dataUrl} alt="Screenshot attachment" />
-                    <button
-                      className="attachment-remove"
-                      title="Remove screenshot"
-                      onClick={() => setSteerAttachments((a) => a.filter((x) => x.id !== img.id))}
-                    >
-                      <svg width="8" height="8" viewBox="0 0 8 8" fill="none">
-                        <path d="M1.5 1.5l5 5M6.5 1.5l-5 5" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
-                      </svg>
-                    </button>
-                  </div>
-                ))}
-              </div>
-            )}
-            <div className="steer-row">
-              <span className="steer-icon" title="Steer the running task" aria-hidden="true">
-                <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
-                  <path
-                    d="M10.5 2.5l3 3L6 13l-3.5.5L3 10l7.5-7.5z"
-                    stroke="currentColor"
-                    strokeWidth="1.3"
-                    strokeLinejoin="round"
-                  />
-                </svg>
-              </span>
-              <textarea
-                ref={steerInputRef}
-                className="steer-input"
-                value={steerInput}
-                placeholder="Steer the current task…"
-                rows={1}
-                onChange={(e) => {
-                  setSteerInput(e.target.value)
-                  e.target.style.height = 'auto'
-                  e.target.style.height = `${Math.min(e.target.scrollHeight, 120)}px`
-                }}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter' && !e.shiftKey) {
-                    e.preventDefault()
-                    void steer()
-                  }
-                }}
-              />
-              <button
-                className="steer-cam"
-                title="Screenshot part of the page to steer with"
-                disabled={capturing}
-                onClick={() => void capture('steer')}
-              >
-                <CameraIcon />
-              </button>
-              <button
-                className="steer-send"
-                title="Inject this steer"
-                disabled={!steerInput.trim() && steerAttachments.length === 0}
-                onClick={() => void steer()}
-              >
-                <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-                  <path
-                    d="M7 11.5V2.5M7 2.5L3 6.5M7 2.5l4 4"
-                    stroke="currentColor"
-                    strokeWidth="1.8"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                  />
-                </svg>
-              </button>
-            </div>
-            <div className="steer-hint">Applied at the agent's next step — won't interrupt an action in progress.</div>
-          </div>
-        )}
         <ContextPills tabs={contextTabs} />
         {selection && selection.text !== dismissedSelection && (
           <div className="selection-chip" title="Highlighted text shared as context">
@@ -1864,6 +1758,28 @@ export default function Chat({
           </div>
         )}
         <div className="composer">
+          {/* Agent steering: a subtle strip joined to the top of the composer (like
+              the research dock) shown only while the agent is in-flight. It tells
+              the user that sending now redirects the running task — the composer
+              stays fully usable, and a message is a steer ONLY while this shows;
+              once the response completes it's an ordinary follow-up. See submit(). */}
+          {streaming && (
+            <div className="steer-strip">
+              <span className="steer-strip__icon" aria-hidden="true">
+                <svg width="13" height="13" viewBox="0 0 16 16" fill="none">
+                  <path
+                    d="M10.5 2.5l3 3L6 13l-3.5.5L3 10l7.5-7.5z"
+                    stroke="currentColor"
+                    strokeWidth="1.3"
+                    strokeLinejoin="round"
+                  />
+                </svg>
+              </span>
+              <span className="steer-strip__label">
+                Agent is working — your reply steers it, applied at its next step.
+              </span>
+            </div>
+          )}
           <ResearchDock tasks={dockTasks} onOpen={openDockTask} />
           {attachments.length > 0 && (
             <div className="attachment-row">
@@ -1890,12 +1806,13 @@ export default function Chat({
               !selected
                 ? 'Add a provider in settings to start'
                 : streaming
-                  ? 'Agent is working — steer it above ↑'
+                  ? 'Reply to steer the running task…'
                   : 'Ask anything…'
             }
-            // Disabled while a turn runs: mid-task input goes through the steer bar
-            // above, not the composer (whose send button is Stop during a turn).
-            disabled={!selected || streaming}
+            // Stays usable while a turn runs — a message sent now is a steer (see the
+            // steer strip above and submit()); after the response completes it's an
+            // ordinary follow-up.
+            disabled={!selected}
             rows={1}
             onChange={(e) => {
               handleInputChange(e.target.value, e.target.selectionStart ?? e.target.value.length)
@@ -1951,7 +1868,7 @@ export default function Chat({
               }
               if (e.key === 'Enter' && !e.shiftKey) {
                 e.preventDefault()
-                void send()
+                void submit()
               }
             }}
             onBlur={() => setTimeout(() => {
@@ -1996,7 +1913,7 @@ export default function Chat({
               <button
                 className="cam-btn"
                 title="Screenshot part of the page"
-                disabled={!selected || capturing || streaming}
+                disabled={!selected || capturing}
                 onClick={() => void capture()}
               >
                 <CameraIcon />
@@ -2033,30 +1950,31 @@ export default function Chat({
                 )}
               </div>
 
-              {streaming ? (
+              {/* While the agent works, Stop sits beside the send button and the
+                  send arrow submits a steer; idle, it's just the send button. */}
+              {streaming && (
                 <button className="send-btn stop" title="Stop" onClick={stop}>
                   <svg width="12" height="12" viewBox="0 0 12 12">
                     <rect x="2" y="2" width="8" height="8" rx="1.5" fill="currentColor" />
                   </svg>
                 </button>
-              ) : (
-                <button
-                  className="send-btn"
-                  title="Send"
-                  disabled={(!input.trim() && attachments.length === 0) || !selected}
-                  onClick={() => void send()}
-                >
-                  <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-                    <path
-                      d="M7 11.5V2.5M7 2.5L3 6.5M7 2.5l4 4"
-                      stroke="currentColor"
-                      strokeWidth="1.8"
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                    />
-                  </svg>
-                </button>
               )}
+              <button
+                className="send-btn"
+                title={streaming ? 'Steer the running task' : 'Send'}
+                disabled={(!input.trim() && attachments.length === 0) || !selected}
+                onClick={() => void submit()}
+              >
+                <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+                  <path
+                    d="M7 11.5V2.5M7 2.5L3 6.5M7 2.5l4 4"
+                    stroke="currentColor"
+                    strokeWidth="1.8"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  />
+                </svg>
+              </button>
             </div>
           </div>
         </div>
