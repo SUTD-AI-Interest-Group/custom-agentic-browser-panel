@@ -40,7 +40,7 @@ import { looksLikePdfUrl } from '../platform/pdfText'
 import { loadPdf } from '../platform/pdf'
 import { createAgentTools, type ApprovalRequest, type PageControlGate } from '../tools/tools'
 import { buildMcpTools } from '../mcp/tools'
-import { getMcpManager } from '../mcp/manager'
+import { getMcpManager, type McpPromptArgInfo } from '../mcp/manager'
 import McpContentCard from './McpContentCard'
 import { type ControlSession } from '../tools/pageControl'
 import { clearIndex } from '../platform/domIndex'
@@ -356,15 +356,21 @@ function detectMention(value: string, caret: number): { start: number; query: st
 
 // Composer "/" menu: like @mentions but anchored to the start of the message.
 // A leading "/skill-name" token invokes that skill (parsed on send in `send`);
-// this popover just autocompletes the name.
+// this popover just autocompletes the name. MCP server prompts ride the same
+// menu as "mcp:server:prompt" entries — selecting one fetches the prompt (via
+// an inline arguments form when it declares required arguments) and drops its
+// text into the composer as a draft, so the user reviews before sending.
 type SlashCandidate =
   | { kind: 'skill'; name: string; description: string }
+  | { kind: 'mcp-prompt'; server: string; name: string; description: string; args: McpPromptArgInfo[] }
   | { kind: 'browse' }
 
-// Active only while the caret is still inside a leading "/token" (no space yet).
+// Active only while the caret is still inside a leading "/token" (no space
+// yet). The charset admits ":"/"_"/uppercase for MCP prompt tokens
+// (mcp:server:prompt); plain skill names stay [a-z0-9-].
 function detectSlash(value: string, caret: number): { query: string } | null {
   const before = value.slice(0, caret)
-  const m = before.match(/^\/([a-z0-9-]*)$/)
+  const m = before.match(/^\/([a-zA-Z0-9:_.-]*)$/)
   return m ? { query: m[1] } : null
 }
 
@@ -495,6 +501,16 @@ export default function Chat({
   const [slashQuery, setSlashQuery] = useState<{ query: string } | null>(null)
   const [slashCandidates, setSlashCandidates] = useState<SlashCandidate[]>([])
   const [slashIndex, setSlashIndex] = useState(0)
+  // MCP prompt invocation: the inline arguments form (for prompts that declare
+  // arguments) and a transient fetch-failure line above the composer.
+  const [mcpPromptForm, setMcpPromptForm] = useState<{
+    server: string
+    name: string
+    description: string
+    args: McpPromptArgInfo[]
+    values: Record<string, string>
+  } | null>(null)
+  const [mcpPromptError, setMcpPromptError] = useState<string | null>(null)
   // The active tab is attached to the first message of a fresh chat so the user
   // can start talking about the page right away; they can dismiss it.
   const [tabDismissed, setTabDismissed] = useState(false)
@@ -1197,8 +1213,57 @@ export default function Chat({
       .filter((sk) => !q || sk.name.includes(q) || sk.description.toLowerCase().includes(q))
       .slice(0, 8)
       .map((sk): SlashCandidate => ({ kind: 'skill', name: sk.name, description: sk.description }))
-    setSlashCandidates([...matched, { kind: 'browse' }])
+    // MCP server prompts, offered as mcp:server:prompt beside skills.
+    const prompts = getMcpManager()
+      .runtime()
+      .flatMap((r) =>
+        r.prompts.map(
+          (p): SlashCandidate => ({
+            kind: 'mcp-prompt',
+            server: r.name,
+            name: p.name,
+            description: p.description ?? '',
+            args: p.arguments,
+          }),
+        ),
+      )
+      .filter(
+        (p) =>
+          p.kind === 'mcp-prompt' &&
+          (!q || `mcp:${p.server}:${p.name}`.toLowerCase().includes(q) || p.description.toLowerCase().includes(q)),
+      )
+      .slice(0, 6)
+    setSlashCandidates([...matched, ...prompts, { kind: 'browse' }])
     setSlashIndex(0)
+  }
+
+  /** Fetch an MCP prompt and drop its text into the composer as a draft. */
+  async function insertMcpPrompt(server: string, name: string, values?: Record<string, string>) {
+    setMcpPromptForm(null)
+    setSlashQuery(null)
+    try {
+      const r = await getMcpManager().getPrompt(server, name, values)
+      const text = (r.messages ?? [])
+        .map((m) => {
+          const c = m.content as { type?: string; text?: string }
+          return c?.type === 'text' && typeof c.text === 'string' ? c.text : '[non-text content omitted]'
+        })
+        .join('\n\n')
+        .trim()
+      if (!text) {
+        setMcpPromptError(`The "${name}" prompt returned no text.`)
+        return
+      }
+      setInput(text)
+      requestAnimationFrame(() => {
+        inputRef.current?.focus()
+        inputRef.current?.setSelectionRange(text.length, text.length)
+      })
+    } catch (err) {
+      setMcpPromptError(
+        `Could not fetch the "${name}" prompt (${err instanceof Error ? err.message : String(err)}).`,
+      )
+    }
   }
 
   function selectSlash(c: SlashCandidate) {
@@ -1207,8 +1272,20 @@ export default function Chat({
       onOpenSkills()
       return
     }
+    if (c.kind === 'mcp-prompt') {
+      setSlashQuery(null)
+      setMcpPromptError(null)
+      // A prompt with declared arguments collects them first; an argument-less
+      // one fetches immediately.
+      if (c.args.length > 0) {
+        setMcpPromptForm({ server: c.server, name: c.name, description: c.description, args: c.args, values: {} })
+      } else {
+        void insertMcpPrompt(c.server, c.name)
+      }
+      return
+    }
     // Replace the leading "/query" token with "/name ", keeping any arguments.
-    const rest = input.replace(/^\/[a-z0-9-]*/, '').replace(/^\s+/, '')
+    const rest = input.replace(/^\/[a-zA-Z0-9:_.-]*/, '').replace(/^\s+/, '')
     const next = `/${c.name} ${rest}`
     setInput(next)
     setSlashQuery(null)
@@ -1224,6 +1301,7 @@ export default function Chat({
     // starts a fresh walk from the newest message rather than continuing
     // mid-walk from wherever the user had navigated to.
     recallIndexRef.current = -1
+    setMcpPromptError(null)
     setInput(value)
     const m = detectMention(value, caret)
     setMentionQuery(m)
@@ -2108,12 +2186,53 @@ export default function Chat({
           </div>
         )}
         {captureError && <div className="capture-error">{captureError}</div>}
+        {mcpPromptError && <div className="capture-error">{mcpPromptError}</div>}
+        {mcpPromptForm && (
+          <div className="mcp-prompt-form">
+            <div className="mcp-prompt-form-head">
+              <span className="mention-title">
+                /mcp:{mcpPromptForm.server}:{mcpPromptForm.name}
+              </span>
+              {mcpPromptForm.description && <span className="mention-url">{mcpPromptForm.description}</span>}
+            </div>
+            {mcpPromptForm.args.map((a) => (
+              <label className="field" key={a.name}>
+                {a.name}
+                {a.required ? ' *' : ''}
+                <input
+                  placeholder={a.description ?? ''}
+                  value={mcpPromptForm.values[a.name] ?? ''}
+                  onChange={(e) =>
+                    setMcpPromptForm({
+                      ...mcpPromptForm,
+                      values: { ...mcpPromptForm.values, [a.name]: e.target.value },
+                    })
+                  }
+                />
+              </label>
+            ))}
+            <div className="mcp-add-actions">
+              <button
+                className="btn small"
+                disabled={mcpPromptForm.args.some((a) => a.required && !mcpPromptForm.values[a.name]?.trim())}
+                onClick={() =>
+                  void insertMcpPrompt(mcpPromptForm.server, mcpPromptForm.name, mcpPromptForm.values)
+                }
+              >
+                Insert prompt
+              </button>
+              <button className="link-btn" onClick={() => setMcpPromptForm(null)}>
+                Cancel
+              </button>
+            </div>
+          </div>
+        )}
         {slashQuery && slashCandidates.length > 0 && (
           <div className="mention-popover">
             {slashCandidates.map((c, i) => (
               <button
-                key={c.kind === 'skill' ? c.name : 'browse'}
-                className={`mention-item ${i === slashIndex ? 'active' : ''} ${c.kind === 'skill' ? 'skill' : 'browse'}`}
+                key={c.kind === 'skill' ? c.name : c.kind === 'mcp-prompt' ? `mcp:${c.server}:${c.name}` : 'browse'}
+                className={`mention-item ${i === slashIndex ? 'active' : ''} ${c.kind === 'skill' || c.kind === 'mcp-prompt' ? 'skill' : 'browse'}`}
                 onMouseDown={(e) => {
                   e.preventDefault()
                   selectSlash(c)
@@ -2124,6 +2243,13 @@ export default function Chat({
                   <>
                     <span className="mention-title">/{c.name}</span>
                     <span className="mention-url">{c.description}</span>
+                  </>
+                ) : c.kind === 'mcp-prompt' ? (
+                  <>
+                    <span className="mention-title">
+                      /mcp:{c.server}:{c.name}
+                    </span>
+                    <span className="mention-url">{c.description || `Prompt from the ${c.server} MCP server`}</span>
                   </>
                 ) : (
                   <>
