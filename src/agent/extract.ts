@@ -1,6 +1,7 @@
 import { generateObject, generateText, jsonSchema, type LanguageModel } from 'ai'
 import { parseJsonLoose } from '../platform/webFetch'
 import type { Trace } from './observability'
+import { isAbortError } from './resilience'
 
 /**
  * Extract a JSON value matching `schema` (a JSON Schema object) from `prompt`.
@@ -33,8 +34,13 @@ export async function extractStructured(
     })
     gen?.end({ output: object, usage })
     return object
-  } catch {
-    // Endpoint has no structured-output mode — fall back to prompted JSON below.
+  } catch (err) {
+    // A genuine Stop must propagate immediately, not fall through to a second
+    // round-trip (generateText below) — that would delay Stop by an extra model
+    // call for no benefit, since the caller is already unwinding. Every other
+    // failure (no structured-output mode, a schema mismatch, ...) still falls
+    // back to prompted JSON.
+    if (isAbortError(err)) throw err
   }
   try {
     const { text, usage } = await generateText({

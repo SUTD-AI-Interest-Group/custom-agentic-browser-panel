@@ -139,6 +139,58 @@ describe('runAgentTurn: unloaded-tool calls are repaired into GetTool', () => {
   })
 })
 
+// The ungated Checkpoint control tool is merged into streamText's toolset
+// separately from `tools` (see checkpointTool in agent.ts), so it is NOT a
+// member of `Object.keys(tools)` that resolveActiveTools intersects against.
+// Left unhandled, activeTools (computed whenever activeNames is set — i.e.
+// always, in the foreground UI) would never include 'Checkpoint': the model
+// would never be offered it, hasToolCall('Checkpoint') would never fire, and
+// the whole step-budget hand-off would be dead. prepareStep must force it in.
+describe('Checkpoint is always reachable under progressive disclosure', () => {
+  it("includes 'Checkpoint' in the tools actually sent to the model even though it is absent from `tools` and `activeNames`", async () => {
+    const activeNames = new Set<string>() // deliberately empty: no ToolSearch/GetTool activity this turn
+    const model = new MockLanguageModelV3({
+      doStream: async () => ({
+        stream: new ReadableStream({
+          start(controller: any) {
+            controller.enqueue({ type: 'stream-start', warnings: [] })
+            controller.enqueue({ type: 'text-start', id: 't1' })
+            controller.enqueue({ type: 'text-delta', id: 't1', delta: 'ok' })
+            controller.enqueue({ type: 'text-end', id: 't1' })
+            controller.enqueue({
+              type: 'finish',
+              finishReason: 'stop',
+              usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+            })
+            controller.close()
+          },
+        }),
+      }),
+    })
+
+    await runAgentTurn({
+      model,
+      system: 's',
+      history: [{ role: 'user', content: 'go' }],
+      tools: makeTools(activeNames),
+      abortSignal: new AbortController().signal,
+      onUpdate: () => {},
+      activeNames,
+    })
+
+    // doStreamCalls[0].tools is the tool-schema list the SDK actually handed to
+    // the provider for that step — i.e. what the model could actually call.
+    expect(model.doStreamCalls.length).toBeGreaterThan(0)
+    const toolNames = (model.doStreamCalls[0].tools ?? []).map((t: any) => t.name)
+    expect(toolNames).toContain('Checkpoint')
+    // And the always-on core (ReadPage is in it) is still present alongside it —
+    // this isn't a case of Checkpoint accidentally replacing the real active set.
+    expect(toolNames).toContain('ReadPage')
+    // A gated tool that was never loaded (RequestPageControl) must still be absent.
+    expect(toolNames).not.toContain('RequestPageControl')
+  })
+})
+
 // A turn cut off at the step ceiling must report stop.reason 'budget', not
 // 'completed' — runTurnChain BREAKS the continuation chain on 'completed', so
 // mislabelling a cut-off silently truncates long-horizon work. The trap: the AI
@@ -213,6 +265,45 @@ describe('step-budget stop reason', () => {
     })
 
     expect(result.stop.reason).toBe('completed')
+  })
+
+  it("reports 'budget' when the provider truncates its own output (finishReason 'length'), even well under the step ceiling", async () => {
+    // The provider hit ITS OWN max-output-tokens mid-reply — a different cut-off
+    // than the step ceiling, but the same "incomplete, not a finished answer"
+    // situation: it must not be shown to the user as the final reply.
+    const result = await runAgentTurn({
+      model: new MockLanguageModelV3({
+        doStream: async () => ({
+          stream: new ReadableStream({
+            start(controller: any) {
+              controller.enqueue({ type: 'stream-start', warnings: [] })
+              controller.enqueue({ type: 'text-start', id: 't1' })
+              controller.enqueue({ type: 'text-delta', id: 't1', delta: 'cut off mid-sent' })
+              controller.enqueue({ type: 'text-end', id: 't1' })
+              // Unlike the plain-string `finishReason` used elsewhere in this file
+              // (fine there — those assertions don't depend on its exact value),
+              // this test's assertion DOES depend on it, so it must match the real
+              // LanguageModelV3 wire shape: an object with a `unified` reason.
+              controller.enqueue({
+                type: 'finish',
+                finishReason: { unified: 'length', raw: 'length' },
+                usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+              })
+              controller.close()
+            },
+          }),
+        }),
+      }),
+      system: 's',
+      history: [{ role: 'user', content: 'go' }],
+      tools: makeTools(new Set()),
+      abortSignal: new AbortController().signal,
+      maxSteps: 24,
+      onUpdate: () => {},
+    })
+
+    expect(result.stop.stepsUsed).toBe(1)
+    expect(result.stop.reason).toBe('budget')
   })
 })
 

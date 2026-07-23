@@ -396,6 +396,24 @@ export async function runAgentTurn(options: {
         return null
       }
       try {
+        // Trace this repair call the same way onStepFinish traces an ordinary
+        // step: a Langfuse generation wrapping the extra model round-trip. Kept
+        // best-effort (its own try/catch around create + end) so a tracing hiccup
+        // can never surface as a repair failure — only generateText/no-match below
+        // returns null.
+        const genStart = new Date().toISOString()
+        const gen = (() => {
+          try {
+            return trace?.generation({
+              name: 'repair-tool-call',
+              model: modelId,
+              input: { toolName: toolCall.toolName, input: toolCall.input, error: error.message },
+              startTime: genStart,
+            })
+          } catch {
+            return undefined
+          }
+        })()
         const repaired = await generateText({
           model,
           instructions: sys,
@@ -429,6 +447,15 @@ export async function runAgentTurn(options: {
           abortSignal,
         })
         const fixed = repaired.toolCalls.find((tc) => tc.toolName === toolCall.toolName)
+        try {
+          gen?.end({
+            output: fixed ? { toolName: fixed.toolName, input: fixed.input } : { text: repaired.text },
+            usage: repaired.usage,
+            finishReason: repaired.finishReason,
+          })
+        } catch {
+          /* best-effort */
+        }
         if (!fixed) return null
         return { ...toolCall, input: JSON.stringify(fixed.input) }
       } catch {
@@ -473,8 +500,21 @@ export async function runAgentTurn(options: {
       // Progressive disclosure: expose only the always-on core plus whatever the
       // model has loaded (GetTool) or the app seeded this turn, intersected with
       // the turn's real tools. Absent activeNames = legacy "every tool active".
+      //
+      // CHECKPOINT_TOOL is force-included here rather than folded into
+      // resolveActiveTools's ALWAYS_ON set: it is not a member of `tools` (the
+      // real, createAgentTools-derived toolset) at all — it's merged into
+      // streamText's toolset separately, above — so resolveActiveTools's
+      // `∩ existing` intersection against Object.keys(tools) would always drop it.
+      // Without this, activeTools never contains 'Checkpoint', the model is never
+      // offered it, hasToolCall(CHECKPOINT_TOOL) never fires, and the whole
+      // step-budget hand-off (see DEFAULT_WRAP_UP_NUDGE) is dead whenever
+      // activeNames is set (i.e. always, in the foreground UI). It must NOT be
+      // added to resolveActiveTools's catalog/ALWAYS_ON — Checkpoint stays out of
+      // the ToolSearch/GetTool disclosure catalog; it is injected here, not
+      // declared in createAgentTools.
       const activeTools = options.activeNames
-        ? resolveActiveTools(options.activeNames, Object.keys(tools))
+        ? [...new Set([...resolveActiveTools(options.activeNames, Object.keys(tools)), CHECKPOINT_TOOL])]
         : undefined
       const messages = [...base, ...injected]
       return activeTools ? { messages, activeTools } : { messages }
@@ -573,9 +613,15 @@ export async function runAgentTurn(options: {
   // so a turn cut off at the ceiling was mislabelled 'completed' and runTurnChain
   // broke out of the continuation chain instead of auto-continuing. A turn the
   // model ended by itself reports 'stop'; anything else at the ceiling is a cut-off.
+  //
+  // `finishReason === 'length'` is a SEPARATE cut-off: the provider truncated its
+  // own output (hit ITS max-output-tokens), which can happen well under maxSteps.
+  // Treat it as 'budget' too — the reply is incomplete text, not a finished
+  // answer — so runTurnChain auto-continues instead of showing a truncated reply
+  // as the final one.
   const reason: TurnStopReason = checkpoint
     ? 'checkpoint'
-    : stepsUsed >= maxSteps && finishReason !== 'stop'
+    : (stepsUsed >= maxSteps && finishReason !== 'stop') || finishReason === 'length'
       ? 'budget'
       : 'completed'
   // v7: use result.responseMessages (accumulated assistant/tool history across
