@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { marked } from 'marked'
 import markedKatex from 'marked-katex-extension'
 import DOMPurify from 'dompurify'
@@ -29,6 +29,9 @@ function citationHtml(n: number, citations: { url: string; title: string }[]): s
 // dropping the whole message.
 marked.use(markedKatex({ throwOnError: false, output: 'htmlAndMathml' }))
 
+/** Minimum gap between re-parses while a message is streaming (see `displayText`). */
+const STREAM_PARSE_INTERVAL_MS = 100
+
 export default function Markdown({
   text,
   streaming,
@@ -41,11 +44,56 @@ export default function Markdown({
   citations?: { url: string; title: string }[]
 }) {
   const ref = useRef<HTMLDivElement>(null)
+
+  // `text` grows on every streamed token, and re-running marked.parse +
+  // DOMPurify.sanitize over the WHOLE accumulated string on every one of those
+  // is O(n^2) over a long reply (codeEnhance.ts's highlight pass is guarded off
+  // streaming for the same reason). `displayText` throttles what actually gets
+  // (re-)parsed to at most once per STREAM_PARSE_INTERVAL_MS while streaming;
+  // the instant streaming flips false we snap straight to the exact final
+  // `text` (bypassing the throttle) so the last render is always the full,
+  // correct parse — never a stale throttled snapshot.
+  const [displayText, setDisplayText] = useState(text)
+  const lastAppliedAtRef = useRef(0)
+  const pendingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  useEffect(() => {
+    if (!streaming) {
+      if (pendingTimerRef.current) {
+        clearTimeout(pendingTimerRef.current)
+        pendingTimerRef.current = null
+      }
+      lastAppliedAtRef.current = Date.now()
+      setDisplayText(text)
+      return
+    }
+    const elapsed = Date.now() - lastAppliedAtRef.current
+    if (elapsed >= STREAM_PARSE_INTERVAL_MS) {
+      lastAppliedAtRef.current = Date.now()
+      setDisplayText(text)
+      return
+    }
+    // Too soon — (re-)schedule a trailing update. The remaining delay is always
+    // computed from lastAppliedAtRef, so repeatedly rescheduling as more tokens
+    // arrive keeps the same fixed fire time (lastAppliedAtRef + interval); we
+    // only clear+reset the timer to capture the latest `text` in its closure.
+    if (pendingTimerRef.current) clearTimeout(pendingTimerRef.current)
+    pendingTimerRef.current = setTimeout(() => {
+      pendingTimerRef.current = null
+      lastAppliedAtRef.current = Date.now()
+      setDisplayText(text)
+    }, STREAM_PARSE_INTERVAL_MS - elapsed)
+  }, [text, streaming])
+  // Belt-and-braces: clear a pending trailing update if the component unmounts
+  // mid-stream (e.g. the chat is cleared) so it can't fire into a dead render.
+  useEffect(() => () => {
+    if (pendingTimerRef.current) clearTimeout(pendingTimerRef.current)
+  }, [])
+
   const html = useMemo(() => {
     // Protect `[[n]]` citations from markdown BEFORE parsing (a private-use
     // sentinel marked/DOMPurify leave alone), then swap them for favicon chips
     // AFTER sanitize (their chrome-extension:// img src must dodge DOMPurify).
-    const src = citations ? encodeCitations(text) : text
+    const src = citations ? encodeCitations(displayText) : displayText
     const normalized = normalizeMathDelimiters(src)
     // On the FINAL render, neutralize any LaTeX that won't compile so a stray
     // `$` can't cascade-break the rest. Mid-stream stays lenient (a closing `$`
@@ -63,7 +111,7 @@ export default function Markdown({
       ADD_ATTR: ['encoding'],
     })
     return citations ? replaceCitationSentinels(clean, (n) => citationHtml(n, citations)) : clean
-  }, [text, citations, streaming])
+  }, [displayText, citations, streaming])
   useEffect(() => {
     if (!ref.current) return
     enhanceCodeBlocks(ref.current)

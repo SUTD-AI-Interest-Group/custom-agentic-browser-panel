@@ -70,12 +70,37 @@ function injScroll(attr: string, direction: string, index: number) {
 
 function injPress(keys: string) {
   const el = (document.activeElement as HTMLElement) ?? document.body
-  const fire = (type: string) =>
-    el.dispatchEvent(
-      new KeyboardEvent(type, { key: keys, bubbles: true, cancelable: true }),
-    )
+  // Track defaultPrevented per-dispatch: a page's own keydown handler (e.g. an
+  // SPA that calls preventDefault on Enter to run its own submit logic) should
+  // be left alone below, same as a real keypress would.
+  let defaultPrevented = false
+  const fire = (type: string) => {
+    const evt = new KeyboardEvent(type, { key: keys, bubbles: true, cancelable: true })
+    el.dispatchEvent(evt)
+    if (evt.defaultPrevented) defaultPrevented = true
+  }
   fire('keydown')
   fire('keyup')
+  // Synthetic KeyboardEvents are isTrusted:false, so a browser's native implicit
+  // form submission (Enter in a text field submits its <form>) never fires on
+  // its own here — yet ControlPage gates Enter as a point-of-no-return action,
+  // so the model is told this is a real, consequential keypress. Without this,
+  // Enter silently no-ops on a vanilla (non-SPA) form: no error, and the model
+  // may loop retrying it. Only fire for Enter, only when nothing upstream
+  // already handled it, and only for the single-line text inputs the HTML spec
+  // treats as implicit-submit triggers (a <textarea>'s Enter is a newline, not
+  // a submit, even natively).
+  if (/^enter$/i.test(keys) && !defaultPrevented) {
+    const input = el as HTMLInputElement
+    const textLikeTypes = ['text', 'search', 'url', 'tel', 'email', 'password', 'number']
+    const isTextLikeInput = el.tagName === 'INPUT' && textLikeTypes.includes((input.type || 'text').toLowerCase())
+    const form = isTextLikeInput ? input.form : null
+    if (form) {
+      if (typeof form.requestSubmit === 'function') form.requestSubmit()
+      else form.submit()
+      return { ok: true, message: `pressed ${keys} (submitted form)` }
+    }
+  }
   return { ok: true, message: `pressed ${keys}` }
 }
 

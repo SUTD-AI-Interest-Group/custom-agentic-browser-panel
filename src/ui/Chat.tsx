@@ -1268,17 +1268,41 @@ export default function Chat({
   }
 
   /**
+   * Fold a second in-flight submit into the one already parked in `queued`
+   * instead of overwriting it (a plain `setQueued(spec)` silently dropped the
+   * first message). Text concatenates with a blank line so both requests stay
+   * legible; attachments/mentions concatenate; the opt-in flags OR together so
+   * either submit's intent (e.g. @all, @memory) still takes effect. Mentions
+   * can repeat across the two specs — buildUserTurn already dedupes by tabId,
+   * so that's harmless. `activeSelection` keeps the first (the earlier submit's
+   * selection is what the user was looking at when they typed it).
+   */
+  function mergeQueuedSpec(a: MessageSpec, b: MessageSpec): MessageSpec {
+    return {
+      text: [a.text, b.text].filter(Boolean).join('\n\n'),
+      images: [...a.images, ...b.images],
+      activeMentions: [...a.activeMentions, ...b.activeMentions],
+      useMemory: a.useMemory || b.useMemory,
+      useAll: a.useAll || b.useAll,
+      includeCurrentTab: a.includeCurrentTab || b.includeCurrentTab,
+      includeDeicticTab: a.includeDeicticTab || b.includeDeicticTab,
+      activeSelection: a.activeSelection ?? b.activeSelection,
+    }
+  }
+
+  /**
    * Composer submit. Idle → start a fresh turn immediately. In-flight → park the
    * message in `queued` (shown in the steer strip) rather than send it: leaving it
    * there sends it as a normal follow-up once the turn finishes (see the effect
    * below); pressing the strip's "Steer now" injects it mid-turn instead. Queuing
-   * is the default; steering is the explicit choice.
+   * is the default; steering is the explicit choice. A second submit while one is
+   * already queued merges into it (see mergeQueuedSpec) rather than replacing it.
    */
   function submit() {
     const spec = composeSpec()
     if (!spec) return
     clearComposer(spec.activeSelection)
-    if (streaming) setQueued(spec)
+    if (streaming) setQueued((prev) => (prev ? mergeQueuedSpec(prev, spec) : spec))
     else void startFreshTurn(spec)
   }
 
@@ -1398,11 +1422,22 @@ export default function Chat({
     setMessages((m) => [...m, { id: assistantId, role: 'assistant', parts: [], sources: ctx.attachedSources }])
     assistantIds.add(assistantId)
 
+    // Chain-scoped, NOT per-cycle: a perception tool can push an image on the very
+    // step that trips stopWhen (budget/Checkpoint/steer), after which no further
+    // prepareStep runs THIS cycle to drain it. Reallocating a fresh queue per cycle
+    // would strand that image forever; sharing one instance across cycles lets the
+    // next cycle's first prepareStep pick up what the last one left behind. The
+    // same instance is handed to createAgentTools + runAgentTurn every cycle below.
+    const imageQueue: QueuedImage[] = []
+    // Messages pushed into historyRef.current since the last cycle that completed
+    // successfully (steer messages spliced in below). If the NEXT cycle throws
+    // (abort/error) before answering them, they're dangling user turns with no
+    // reply and must be popped — unlike `pushedAny`, this resets every successful
+    // cycle so it always reflects only the current at-risk tail.
+    let pendingSinceCycle = 0
+
     try {
       while (true) {
-        // Fresh per cycle: the queue is drained during the turn, and the tools
-        // must share the same instance so what they push, prepareStep injects.
-        const imageQueue: QueuedImage[] = []
         const base = MERGE_AUTO_CONTINUES ? mergedParts : []
         const result = await runAgentTurn({
           model: createModel(model.provider, model.modelId),
@@ -1434,6 +1469,9 @@ export default function Chat({
         patch(assistantId, base)(result.parts)
         historyRef.current.push(...result.responseMessages)
         pushedAny = true
+        // This cycle answered everything pushed since the last one succeeded
+        // (including any steers spliced in below), so nothing is at-risk anymore.
+        pendingSinceCycle = 0
         // Attribute this cycle's tokens to the bubble it streamed into. When
         // auto-continues merge into one bubble the cycles sum; when they don't,
         // each new bubble carries its own.
@@ -1464,6 +1502,8 @@ export default function Chat({
           const steerSources: MessageSource[] = []
           for (const s of steers) {
             historyRef.current.push(s.message)
+            // At risk until some later cycle answers it — see pendingSinceCycle.
+            pendingSinceCycle += 1
             steerSources.push(...s.sources)
             steerJournals.push(s.journal)
             // A steer may invoke @memory: pre-authorize SearchMemory and seed it
@@ -1512,10 +1552,17 @@ export default function Chat({
       // deterministic render layer could not compile. Fire-and-forget.
       void repairAssistantMath([...assistantIds], model)
     } catch (err) {
+      // Drop any user message(s) left dangling by this failed cycle: the original
+      // opener (guarded by droppableTail — continueTask's history legitimately
+      // ends on a checkpoint, not a fresh unanswered message) and/or any steers
+      // spliced in since the last cycle that got a reply. pendingSinceCycle can
+      // exceed 1 when several steers were drained in one batch, so pop them all —
+      // leaving even one behind is a dangling user turn the next request's history
+      // would send unanswered (and the native Anthropic adapter rejects consecutive
+      // user-role entries).
+      if (!pushedAny && ctx.droppableTail) historyRef.current.pop()
+      for (let i = 0; i < pendingSinceCycle; i++) historyRef.current.pop()
       if (controller.signal.aborted) {
-        // Keep completed cycles; only drop a dangling trailing user message (a
-        // send() turn that produced nothing) so the next request is consistent.
-        if (!pushedAny && ctx.droppableTail) historyRef.current.pop()
         trace?.end({ metadata: { aborted: true } })
       } else {
         const message = err instanceof Error ? err.message : String(err)
@@ -1526,7 +1573,6 @@ export default function Chat({
               : msg,
           ),
         )
-        if (!pushedAny && ctx.droppableTail) historyRef.current.pop()
         trace?.end({ metadata: { error: message } })
       }
     } finally {
