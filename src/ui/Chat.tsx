@@ -597,6 +597,37 @@ export default function Chat({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [restored])
 
+  // Stray typing focuses the composer: with the panel open but focus elsewhere
+  // (the transcript, a card, nothing), starting to type should just work.
+  // Registered once and ref-only. focus() runs during keydown, BEFORE the
+  // browser's default action inserts the character — so the keystroke itself
+  // lands in the textarea natively: nothing is lost, doubled, or preventDefault'd.
+  // Guards: never steal from another editable (Settings fields, rename inputs),
+  // never eat a shortcut (Cmd/Ctrl/Alt — Shift alone is a capital), skip IME
+  // composition, and do nothing while the chat view is hidden behind
+  // Settings/Library (Chat stays mounted there; offsetParent is null under the
+  // view-host's display:none).
+  useEffect(() => {
+    function isEditable(t: EventTarget | null): boolean {
+      if (!(t instanceof HTMLElement)) return false
+      if (t instanceof HTMLInputElement || t instanceof HTMLTextAreaElement || t instanceof HTMLSelectElement)
+        return true
+      return !!t.closest('[contenteditable="true"], [contenteditable=""]')
+    }
+    function onTypeAnywhere(e: KeyboardEvent) {
+      const el = inputRef.current
+      if (!el || el.disabled || el.offsetParent === null) return
+      if (e.defaultPrevented || e.isComposing || e.metaKey || e.ctrlKey || e.altKey) return
+      if (e.key.length !== 1) return
+      if (isEditable(e.target)) return
+      el.focus()
+      const end = el.value.length
+      el.setSelectionRange(end, end)
+    }
+    document.addEventListener('keydown', onTypeAnywhere)
+    return () => document.removeEventListener('keydown', onTypeAnywhere)
+  }, [])
+
   // ESC aborts an in-progress region capture when the panel is focused (the page
   // overlay already handles ESC when the page itself is focused). We inject a
   // synthetic Escape so the overlay runs its own cancel path.
