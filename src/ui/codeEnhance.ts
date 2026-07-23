@@ -1,8 +1,9 @@
 // Post-render enhancement of `.markdown pre` code blocks: a header bar (language
-// label + copy button) and a collapse toggle for tall blocks. Runs against the
-// DOM produced by marked → DOMPurify (dangerouslySetInnerHTML), so it operates
-// imperatively and is idempotent (guarded by data-enhanced). Syntax highlighting
-// is layered on in Task 6.
+// label + copy button), a collapse toggle for tall blocks, and lazy syntax
+// highlighting (highlightCode/highlightAll below, themed by the `.hljs-*` rules
+// in styles.css). Runs against the DOM produced by marked → DOMPurify
+// (dangerouslySetInnerHTML), so it operates imperatively and is idempotent
+// (guarded by data-enhanced / data-highlighted).
 
 const COLLAPSE_PX = 360
 
@@ -61,27 +62,14 @@ function languageOf(code: Element | null): string {
   return m ? m[1] : ''
 }
 
-// Lazy highlight.js core with a curated common-language set, loaded once and
-// shared. Dynamic import keeps it out of the initial sidepanel bundle.
-let hljsPromise: Promise<typeof import('highlight.js/lib/core').default> | null = null
+// Lazy highlight.js "common" build (~35 mainstream languages pre-registered),
+// loaded once and shared. The dynamic import keeps every grammar out of the
+// initial sidepanel bundle — Vite splits it into an on-demand chunk fetched
+// the first time a finished message contains a code block.
+let hljsPromise: Promise<typeof import('highlight.js/lib/common').default> | null = null
 async function loadHljs() {
   if (!hljsPromise) {
-    hljsPromise = (async () => {
-      const { default: hljs } = await import('highlight.js/lib/core')
-      const langs: [string, () => Promise<{ default: unknown }>][] = [
-        ['javascript', () => import('highlight.js/lib/languages/javascript')],
-        ['typescript', () => import('highlight.js/lib/languages/typescript')],
-        ['python', () => import('highlight.js/lib/languages/python')],
-        ['bash', () => import('highlight.js/lib/languages/bash')],
-        ['json', () => import('highlight.js/lib/languages/json')],
-        ['xml', () => import('highlight.js/lib/languages/xml')],
-        ['css', () => import('highlight.js/lib/languages/css')],
-      ]
-      await Promise.all(
-        langs.map(async ([name, imp]) => hljs.registerLanguage(name, ((await imp()).default) as never)),
-      )
-      return hljs
-    })()
+    hljsPromise = import('highlight.js/lib/common').then((m) => m.default)
   }
   return hljsPromise
 }
