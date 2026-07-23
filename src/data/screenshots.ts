@@ -34,6 +34,8 @@ export interface StoredShot {
   conversationId: string
   /** Approximate byte size, so pruning need not decode every image. */
   bytes: number
+  /** For a rendered PDF page: its 1-based page number (drives "open page" jumps). */
+  page?: number
 }
 
 /** A small preview, kept apart from the multi-megabyte full-resolution record. */
@@ -43,6 +45,11 @@ export interface ShotThumb {
   width: number
   height: number
   label: string
+  /** For a rendered PDF page: its 1-based page number. With `url`, lets the
+   *  collapsed card offer an "open page" jump without loading the full record. */
+  page?: number
+  /** The PDF's URL — set only alongside `page`. */
+  url?: string
 }
 
 const DB_NAME = 'lychee-screenshots'
@@ -143,6 +150,8 @@ export async function saveShot(shot: {
   title: string
   label: string
   conversationId: string
+  /** For a rendered PDF page: its 1-based page number (enables the card's "open page" jump). */
+  page?: number
 }): Promise<string> {
   const id = crypto.randomUUID()
   const record: StoredShot = {
@@ -156,6 +165,7 @@ export async function saveShot(shot: {
     createdAt: Date.now(),
     conversationId: shot.conversationId,
     bytes: approxBytes(shot.dataUrl),
+    ...(shot.page !== undefined ? { page: shot.page } : {}),
   }
   const thumb: ShotThumb = {
     id,
@@ -163,6 +173,7 @@ export async function saveShot(shot: {
     width: shot.width,
     height: shot.height,
     label: shot.label,
+    ...(shot.page !== undefined ? { page: shot.page, url: shot.url } : {}),
   }
   await requestOf('readwrite', (s) => s.put(record))
   await requestOn(THUMBS, 'readwrite', (s) => s.put(thumb))

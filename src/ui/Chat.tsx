@@ -35,7 +35,7 @@ import {
   type ProviderConfig,
   type Settings,
 } from '../data/settings'
-import { getActiveTab, listOpenTabs, readTabContent, type TabContent, type TabSummary } from '../platform/tabs'
+import { getActiveTab, listOpenTabs, openPdfAtPage, readTabContent, type TabContent, type TabSummary } from '../platform/tabs'
 import { looksLikePdfUrl } from '../platform/pdfText'
 import { loadPdf } from '../platform/pdf'
 import { createAgentTools, type ApprovalRequest, type PageControlGate } from '../tools/tools'
@@ -3288,6 +3288,14 @@ function ShotCard({ shotId }: { shotId: string }) {
     if (f) await downloadImage(f.dataUrl)
   }
 
+  // A rendered PDF page carries its page number + source URL in the thumb, so
+  // the card can take the user's viewer to that exact page on click. Human-
+  // initiated, so no approval gate (same footing as the camera button).
+  const jump =
+    thumb.page !== undefined && thumb.url
+      ? () => void openPdfAtPage(thumb.url!, thumb.page!)
+      : null
+
   if (enlarged && full) {
     return (
       <figure className="shot-figure">
@@ -3296,6 +3304,11 @@ function ShotCard({ shotId }: { shotId: string }) {
           <span className="shot-card-dim">
             {full.width}×{full.height}
           </span>
+          {jump && (
+            <button type="button" className="shot-figure-btn" onClick={jump} title="Jump the PDF viewer to this page">
+              Open page {thumb.page}
+            </button>
+          )}
           <button type="button" className="shot-figure-btn" onClick={() => setEnlarged(false)}>
             Shrink
           </button>
@@ -3322,22 +3335,33 @@ function ShotCard({ shotId }: { shotId: string }) {
   }
 
   return (
-    <button
-      type="button"
-      className="shot-card"
-      onClick={() => void enlarge()}
-      disabled={busy}
-      title={`Click to enlarge — ${thumb.label}`}
-      aria-label={`Enlarge screenshot of ${thumb.label}`}
-    >
-      <img src={thumb.thumb} alt={`Screenshot of ${thumb.label}`} />
-      <span className="shot-card-meta">
-        <span className="shot-card-label">{thumb.label}</span>
-        <span className="shot-card-dim">
-          {thumb.width}×{thumb.height}
+    <span className="shot-card-wrap">
+      <button
+        type="button"
+        className="shot-card"
+        onClick={() => void enlarge()}
+        disabled={busy}
+        title={`Click to enlarge — ${thumb.label}`}
+        aria-label={`Enlarge screenshot of ${thumb.label}`}
+      >
+        <img src={thumb.thumb} alt={`Screenshot of ${thumb.label}`} />
+        <span className="shot-card-meta">
+          <span className="shot-card-label">{thumb.label}</span>
+          <span className="shot-card-dim">
+            {thumb.width}×{thumb.height}
+          </span>
         </span>
-      </span>
-    </button>
+      </button>
+      {/* Sibling, not nested — the card is itself a <button>. */}
+      {jump && (
+        <button type="button" className="shot-jump-btn" onClick={jump} title="Jump the PDF viewer to this page">
+          <svg width="11" height="11" viewBox="0 0 12 12" fill="none" aria-hidden="true">
+            <path d="M4.5 2H2.5A1.5 1.5 0 0 0 1 3.5v5A1.5 1.5 0 0 0 2.5 10h5A1.5 1.5 0 0 0 9 8.5V6.5M6.5 1H11m0 0v4.5M11 1L5.5 6.5" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" />
+          </svg>
+          Open page {thumb.page}
+        </button>
+      )}
+    </span>
   )
 }
 

@@ -499,6 +499,7 @@ export function createAgentTools(
               title: r.title,
               label: `PDF page ${page} of ${r.pageCount}`,
               conversationId,
+              page,
             })
             const delivery = planShotDelivery(visionCapable, shotImagesUsed, MAX_SHOT_IMAGES_PER_TURN)
             if (delivery.kind === 'blind') {
@@ -676,6 +677,7 @@ export function createAgentTools(
               title: r.title,
               label: label?.trim() || `PDF page ${targetPage} — highlighted`,
               conversationId,
+              page: targetPage,
             })
             // Jump the viewer. Chrome's PDF plugin only parses #page=N at
             // document load — a fragment-only tabs.update is a same-document

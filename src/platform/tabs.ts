@@ -224,3 +224,29 @@ export async function navigateTab(
     return fail(err instanceof Error ? err.message : String(err))
   }
 }
+
+/**
+ * User-initiated jump to a page of a PDF (the ShotCard "open page" button —
+ * no approval gate, the human clicked). Finds the tab already viewing this PDF
+ * (any window, fragment ignored), retargets it to `#page=N`, and RELOADS it —
+ * Chrome's PDF viewer only parses `#page=N` at document load, so a fragment-only
+ * update alone moves the URL bar but not the page. Brings the tab to the
+ * foreground; opens a fresh tab when the PDF is no longer open anywhere.
+ */
+export async function openPdfAtPage(url: string, page: number): Promise<void> {
+  const base = url.split('#')[0]
+  const jumpUrl = `${base}#page=${page}`
+  try {
+    const tabs = await chrome.tabs.query({})
+    const existing = tabs.find((t) => (t.url ?? '').split('#')[0] === base)
+    if (existing?.id !== undefined) {
+      await chrome.tabs.update(existing.id, { url: jumpUrl, active: true })
+      await chrome.tabs.reload(existing.id)
+      if (existing.windowId !== undefined) await chrome.windows.update(existing.windowId, { focused: true })
+      return
+    }
+    await chrome.tabs.create({ url: jumpUrl })
+  } catch {
+    // Best-effort: a vanished window or a restricted URL just leaves things as they are.
+  }
+}
