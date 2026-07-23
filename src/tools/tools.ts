@@ -196,13 +196,17 @@ export function createAgentTools(
     }
 
     try {
-      const { shot, meta } = await capture(tab, spec)
+      // `shot` is the full-resolution capture — only ever used to feed tileShot
+      // below. `artifact` is the fit()-downscaled copy: the small strip saved as
+      // the user-facing shot. Tiling the already-shrunk artifact is exactly the
+      // bug this split fixes (a tall page would reach the model as one smear).
+      const { shot, artifact, meta } = await capture(tab, spec)
       // Saved for the user regardless of whether the model can afford to look at
       // it — the artifact and the perception are different products.
       const shotId = await saveShot({
-        dataUrl: shot.dataUrl,
-        width: shot.width,
-        height: shot.height,
+        dataUrl: artifact.dataUrl,
+        width: artifact.width,
+        height: artifact.height,
         url: meta.url,
         title: meta.title,
         label: meta.label,
@@ -224,8 +228,10 @@ export function createAgentTools(
           shotId,
           target: spec.kind,
           label: meta.label,
-          width: shot.width,
-          height: shot.height,
+          // Report the saved artifact's dimensions, not the full-res tiling
+          // source — the tool result should describe what the user was shown.
+          width: artifact.width,
+          height: artifact.height,
           note: `Captured ${meta.label} on ${host} and showed it to the user in the chat.${truncatedNote} You can't view images, so it was not sent to you — work from the page text if you need its contents.`,
         }
       }
@@ -237,8 +243,10 @@ export function createAgentTools(
           shotId,
           target: spec.kind,
           label: meta.label,
-          width: shot.width,
-          height: shot.height,
+          // Report the saved artifact's dimensions, not the full-res tiling
+          // source — the tool result should describe what the user was shown.
+          width: artifact.width,
+          height: artifact.height,
           note: `Captured ${meta.label} on ${host} and saved it for the user, but this turn's image budget is spent, so it was not sent to you. Work from the page text instead.`,
         }
       }
@@ -265,8 +273,10 @@ export function createAgentTools(
         shotId,
         target: spec.kind,
         label: meta.label,
-        width: shot.width,
-        height: shot.height,
+        // Report the saved artifact's dimensions, not the full-res tiling
+        // source — the tool result should describe what the user was shown.
+        width: artifact.width,
+        height: artifact.height,
         images: tiles.length,
         note: `Captured ${meta.label} on ${host}.${truncatedNote}${droppedNote} The image follows.`,
       }

@@ -159,6 +159,27 @@ describe('planTiles', () => {
   it('handles a degenerate image', () => {
     expect(planTiles(0, 1400, 6)).toEqual({ tiles: [], dropped: 0 })
   })
+
+  // Regression for the C2 bug: `capture()` used to hand the model an already
+  // fit()-downscaled (≤1400px-tall) canvas as the tiling SOURCE, so a tall page
+  // could never produce more than one (illegible) tile — planTiles(shot.height, …)
+  // never saw a height above MAX_SIDE. The fix is that `tileShot` now receives
+  // the FULL-RESOLUTION stitched canvas (see `capture()`'s `shot` vs `artifact`
+  // split, and `tileShot` in screenshot.ts); this pins the planner-level intent
+  // that a genuinely tall source must fan out into several full-res tiles, not
+  // collapse to one. The Chrome/canvas plumbing that actually keeps the tiling
+  // source at full resolution cannot run under vitest (no DOM/canvas/chrome.*
+  // here) — that end-to-end path is exercised by the `/verify-extension` flow
+  // in a real browser, capturing a page tall enough to require multiple tiles.
+  it('a full-resolution (un-fit) tall source yields more than one tile — the model must see it in bands', () => {
+    const plan = planTiles(8000, 1400, 6)
+    expect(plan.tiles.length).toBeGreaterThan(1)
+    expect(plan.tiles.every((t) => t.h <= 1400)).toBe(true)
+    // Every tile still full-res on its vertical extent; only the LAST one is a
+    // shorter remainder — none are the single downscaled smear the bug produced.
+    const total = plan.tiles.reduce((sum, t) => sum + t.h, 0)
+    expect(total).toBe(8000)
+  })
 })
 
 describe('planShotDelivery', () => {

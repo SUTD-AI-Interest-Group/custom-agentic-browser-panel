@@ -258,22 +258,36 @@ const toShot = (canvas: HTMLCanvasElement): Shot => ({
 })
 
 /**
- * Cut a stitched image into model-sized tiles. One tile short-circuits to the
- * whole image, so a plain viewport shot never pays for a needless canvas copy.
+ * Cut a FULL-RESOLUTION stitched image into model-sized tiles. `shot` must be
+ * the un-downscaled canvas (see `capture()`'s `shot` vs `artifact` split) — this
+ * is the one place a tall page's vertical detail survives to the model instead
+ * of being squashed into one illegible strip.
+ *
+ * A short shot that already fits both dimensions short-circuits to the whole
+ * image, so a plain viewport shot never pays for a needless canvas copy. Once a
+ * crop is unavoidable (multiple bands, or a single band still too wide), each
+ * resulting tile is `fit()` down only if IT is still oversized — height stays
+ * full-res (that's the point), width gets capped for very wide pages.
  */
 export async function tileShot(shot: Shot, maxTiles: number): Promise<{ tiles: Shot[]; dropped: number }> {
   const plan = planTiles(shot.height, MAX_SIDE, maxTiles)
-  if (plan.tiles.length <= 1) return { tiles: [shot], dropped: plan.dropped }
+  if (plan.tiles.length <= 1 && Math.max(shot.width, shot.height) <= MAX_SIDE) {
+    return { tiles: [shot], dropped: plan.dropped }
+  }
+
   const img = await loadImage(shot.dataUrl)
-  const tiles = plan.tiles.map((t) => {
+  const cropTile = (y: number, h: number): Shot => {
     const c = document.createElement('canvas')
     c.width = shot.width
-    c.height = t.h
+    c.height = h
     const ctx = c.getContext('2d')
     if (!ctx) throw new ShotError('Canvas is unavailable.')
-    ctx.drawImage(img, 0, t.y, shot.width, t.h, 0, 0, shot.width, t.h)
-    return toShot(c)
-  })
+    ctx.drawImage(img, 0, y, shot.width, h, 0, 0, shot.width, h)
+    return toShot(fit(c))
+  }
+
+  if (plan.tiles.length <= 1) return { tiles: [cropTile(0, shot.height)], dropped: plan.dropped }
+  const tiles = plan.tiles.map((t) => cropTile(t.y, t.h))
   return { tiles, dropped: plan.dropped }
 }
 
@@ -285,11 +299,19 @@ export async function tileShot(shot: Shot, maxTiles: number): Promise<{ tiles: S
  * pollute every pixel the model sees) and always restored, as are the page's
  * scroll position and any position:fixed elements we hid to stop headers
  * duplicating into every slice.
+ *
+ * Returns TWO images of the same capture: `shot` is the full-resolution
+ * stitched canvas — the source `tileShot` slices into full-res bands for the
+ * model — and `artifact` is `fit()`-downscaled, for the small strip saved as
+ * the user-facing shot. Squashing a tall page down to MAX_SIDE before tiling
+ * would make every tile identically illegible, which is the bug this split
+ * exists to avoid. For a short viewport shot `fit()` is a no-op, so the two
+ * are equal.
  */
 export async function capture(
   tab: chrome.tabs.Tab,
   target: ShotTarget,
-): Promise<{ shot: Shot; meta: ShotMeta }> {
+): Promise<{ shot: Shot; artifact: Shot; meta: ShotMeta }> {
   const tabId = tab.id
   const windowId = tab.windowId
   if (tabId === undefined || windowId === undefined) throw new ShotError('No active tab to capture.')
@@ -336,7 +358,7 @@ async function captureViewport(
   windowId: number,
   tab: chrome.tabs.Tab,
   prep: Prep,
-): Promise<{ shot: Shot; meta: ShotMeta }> {
+): Promise<{ shot: Shot; artifact: Shot; meta: ShotMeta }> {
   const img = await shoot(windowId)
   const canvas = document.createElement('canvas')
   canvas.width = img.naturalWidth
@@ -345,7 +367,10 @@ async function captureViewport(
   if (!ctx) throw new ShotError('Canvas is unavailable.')
   ctx.drawImage(img, 0, 0)
   return {
-    shot: toShot(fit(canvas)),
+    // Untouched capture for the model to tile; fit() is a no-op here for the
+    // common case (viewport already within MAX_SIDE), so the two are equal.
+    shot: toShot(canvas),
+    artifact: toShot(fit(canvas)),
     meta: { url: prep.url || tab.url || '', title: prep.title || tab.title || '', label: 'the visible viewport' },
   }
 }
@@ -355,7 +380,7 @@ async function captureFullPage(
   windowId: number,
   tab: chrome.tabs.Tab,
   prep: Prep,
-): Promise<{ shot: Shot; meta: ShotMeta }> {
+): Promise<{ shot: Shot; artifact: Shot; meta: ShotMeta }> {
   const plan = planStitch({
     contentTop: 0,
     contentHeight: prep.scrollHeight,
@@ -365,15 +390,15 @@ async function captureFullPage(
   if (plan.slices.length === 0) throw new ShotError('The page has no visible content to capture.')
 
   const canvas = await stitch(tabId, windowId, plan, prep, null)
-  return {
-    shot: toShot(fit(canvas)),
-    meta: {
-      url: prep.url || tab.url || '',
-      title: prep.title || tab.title || '',
-      label: 'the full page',
-      truncated: plan.truncated,
-    },
+  const meta: ShotMeta = {
+    url: prep.url || tab.url || '',
+    title: prep.title || tab.title || '',
+    label: 'the full page',
+    truncated: plan.truncated,
   }
+  // The full-resolution stitched canvas is the tiling source for the model;
+  // the fit()-downscaled copy is the small strip saved for the user.
+  return { shot: toShot(canvas), artifact: toShot(fit(canvas)), meta }
 }
 
 async function captureElement(
@@ -382,7 +407,7 @@ async function captureElement(
   tab: chrome.tabs.Tab,
   target: ShotTarget,
   prep: Prep,
-): Promise<{ shot: Shot; meta: ShotMeta }> {
+): Promise<{ shot: Shot; artifact: Shot; meta: ShotMeta }> {
   if (target.region === undefined && !target.selector) {
     throw new ShotError('An element capture needs either a region index or a CSS selector.')
   }
@@ -422,7 +447,8 @@ async function captureElement(
 
   const name = box.name ? ` "${box.name}"` : ''
   return {
-    shot: toShot(fit(canvas)),
+    shot: toShot(canvas),
+    artifact: toShot(fit(canvas)),
     meta: {
       url: prep.url || tab.url || '',
       title: prep.title || tab.title || '',
