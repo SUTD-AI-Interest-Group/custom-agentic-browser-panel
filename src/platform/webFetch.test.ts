@@ -1,5 +1,5 @@
-import { test, expect } from 'vitest'
-import { parseJsonLoose, isFetchableUrl, parseDuckDuckGoLite, parseDuckDuckGoHtml, resolveDdgHref, extractReadableText } from './webFetch'
+import { test, expect, vi, afterEach } from 'vitest'
+import { parseJsonLoose, isFetchableUrl, parseDuckDuckGoLite, parseDuckDuckGoHtml, resolveDdgHref, extractReadableText, fetchReadable } from './webFetch'
 
 test('parses fenced json', () => {
   expect(parseJsonLoose('```json\n{"a":1}\n```')).toEqual({ a: 1 })
@@ -117,4 +117,82 @@ test('extractReadableText inserts separators between adjacent block elements', (
 test('extractReadableText separates adjacent table cells', () => {
   const { text } = extractReadableText('<main><table><tr><td>Cell1</td><td>Cell2</td></tr></table></main>')
   expect(text).toMatch(/Cell1\s+Cell2/)
+})
+
+// --- S2: non-standard IP encodings ---------------------------------------
+
+test('SSRF guard rejects a bare decimal-integer host (127.0.0.1 as a u32)', () => {
+  expect(isFetchableUrl('http://2130706433/').ok).toBe(false)
+})
+
+test('SSRF guard rejects a bare hex-integer host (127.0.0.1 as hex)', () => {
+  expect(isFetchableUrl('http://0x7f000001/').ok).toBe(false)
+})
+
+test('SSRF guard rejects dotted hosts with octal octets', () => {
+  expect(isFetchableUrl('http://0177.0.0.1/').ok).toBe(false)
+})
+
+test('SSRF guard rejects dotted hosts with hex octets', () => {
+  expect(isFetchableUrl('http://0x7f.0.0.1/').ok).toBe(false)
+})
+
+test('SSRF guard still allows a normal public dotted-decimal IP', () => {
+  expect(isFetchableUrl('http://8.8.8.8/').ok).toBe(true)
+})
+
+test('SSRF guard still allows normal public https URLs', () => {
+  expect(isFetchableUrl('https://example.com/page').ok).toBe(true)
+  expect(isFetchableUrl('https://sub.example.com/page?x=1').ok).toBe(true)
+})
+
+test('KNOWN RESIDUAL RISK: a DNS-rebinding hostname is not caught by string inspection alone', () => {
+  // "127.0.0.1.nip.io" is a real, letter-containing public hostname whose
+  // A-record happens to resolve to 127.0.0.1 — isFetchableUrl cannot see
+  // that without doing DNS resolution (not feasible pre-connect here), so
+  // it passes. This test documents the residual gap rather than asserting
+  // it is closed; see the KNOWN RESIDUAL RISK comment on isFetchableUrl.
+  expect(isFetchableUrl('http://127.0.0.1.nip.io/').ok).toBe(true)
+})
+
+// --- S3: redirect re-validation --------------------------------------------
+
+const originalFetch = globalThis.fetch
+afterEach(() => {
+  globalThis.fetch = originalFetch
+})
+
+test('fetchReadable refuses a response whose final (redirected) URL is blocked, and discards the body', async () => {
+  const textSpy = vi.fn(async () => '<html><body>secret metadata</body></html>')
+  globalThis.fetch = vi.fn(async () =>
+    ({
+      ok: true,
+      url: 'http://169.254.169.254/latest/meta-data/',
+      status: 200,
+      headers: new Headers({ 'content-type': 'text/html' }),
+      text: textSpy,
+      body: null,
+    }) as unknown as Response,
+  )
+  const result = await fetchReadable('https://example.com/redirects-away')
+  expect('error' in result).toBe(true)
+  if ('error' in result) expect(result.error).toMatch(/redirected to a blocked target/)
+  // The body must never be read/returned once the final host is blocked.
+  expect(textSpy).not.toHaveBeenCalled()
+})
+
+test('fetchReadable still succeeds when the final URL stays public', async () => {
+  globalThis.fetch = vi.fn(async () =>
+    ({
+      ok: true,
+      url: 'https://example.com/final',
+      status: 200,
+      headers: new Headers({ 'content-type': 'text/html' }),
+      text: async () => '<html><head><title>T</title></head><body><main><p>Hello.</p></main></body></html>',
+      body: null,
+    }) as unknown as Response,
+  )
+  const result = await fetchReadable('https://example.com/start')
+  expect('error' in result).toBe(false)
+  if (!('error' in result)) expect(result.text).toContain('Hello.')
 })

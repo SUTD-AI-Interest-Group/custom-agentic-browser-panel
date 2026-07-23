@@ -93,6 +93,14 @@ export function isSafeResearchAction(action: BrowseAction, el?: IndexedElement):
       if (el.type === 'submit' && el.formMethod === 'post') {
         return deny('refused to submit a POST form')
       }
+      // An <a> click navigates the leased research tab just like the explicit
+      // `navigate` action does, so it must pass the same SSRF guard — otherwise
+      // a page could smuggle a click straight at a blocked target (e.g. the
+      // metadata endpoint) around the guard on `navigate`.
+      if (el.href) {
+        const guard = isFetchableUrl(el.href)
+        if (!guard.ok) return deny(`refused to click a link to a blocked target (${guard.reason})`)
+      }
       return ALLOW
     }
 

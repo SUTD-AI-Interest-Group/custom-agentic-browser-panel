@@ -83,6 +83,28 @@ describe('isSafeResearchAction — click', () => {
   it('denies a click on an element it cannot see', () => {
     expect(isSafeResearchAction({ kind: 'click', index: 9 }, undefined).ok).toBe(false)
   })
+
+  it('denies a click on an anchor whose href is a blocked target (S1)', () => {
+    const loopback = isSafeResearchAction(
+      { kind: 'click', index: 1 },
+      el({ tag: 'a', name: 'internal link', href: 'http://127.0.0.1/' }),
+    )
+    expect(loopback.ok).toBe(false)
+
+    const metadata = isSafeResearchAction(
+      { kind: 'click', index: 1 },
+      el({ tag: 'a', name: 'more info', href: 'http://169.254.169.254/latest/meta-data/' }),
+    )
+    expect(metadata.ok).toBe(false)
+  })
+
+  it('allows a click on an anchor to a normal public https URL', () => {
+    const v = isSafeResearchAction(
+      { kind: 'click', index: 1 },
+      el({ tag: 'a', name: 'Docs', href: 'https://example.com/docs' }),
+    )
+    expect(v.ok).toBe(true)
+  })
 })
 
 describe('isSafeResearchAction — type', () => {

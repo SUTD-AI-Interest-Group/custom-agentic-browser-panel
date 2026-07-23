@@ -4,32 +4,37 @@
 // + chrome.storage.local cache and a timeout, and is gated by a privacy setting.
 
 import { loadSettings } from '../data/settings'
+import { isFetchableUrl } from './webFetch'
 
 /** Reject preview fetches to private/loopback/link-local/metadata hosts so an
  *  assistant-authored link can't drive an automatic request at an internal
  *  target (SSRF/info-disclosure). Does not defeat DNS-rebinding but blocks the
- *  obvious literal-host cases. */
+ *  obvious literal-host cases.
+ *
+ *  Delegates the private/loopback/encoding decision to the shared, hardened
+ *  `isFetchableUrl` guard (also used by the research browser's fetch/
+ *  navigate/click paths) so this automatic, no-approval-card path never
+ *  trails behind it — it used to miss IPv4-mapped IPv6 literals and the
+ *  non-standard IP encodings (decimal/hex/octal host forms) that
+ *  `isFetchableUrl` now blocks. On top of that shared decision this keeps its
+ *  own stricter, preview-specific extras that `isFetchableUrl` doesn't cover:
+ *  the reserved `*.localhost`/`.internal` conventions and the CGNAT range
+ *  (100.64.0.0/10, RFC 6598) — an automatic preview fetch should stay more
+ *  conservative than the general-purpose guard. */
 function isSafePreviewTarget(url: string): boolean {
+  if (!isFetchableUrl(url).ok) return false
   let u: URL
   try {
     u = new URL(url)
   } catch {
     return false
   }
-  if (u.protocol !== 'http:' && u.protocol !== 'https:') return false
   const host = u.hostname.toLowerCase().replace(/^\[|\]$/g, '')
-  if (host === 'localhost' || host.endsWith('.localhost') || host.endsWith('.local') || host.endsWith('.internal')) return false
-  // IPv6 loopback/link-local/unique-local — gated on ':' so real domains like
-  // "fdic.gov" or "fcbank.com" (which start with fc/fd) aren't caught.
-  if (host.includes(':') && (host === '::1' || host.startsWith('fe80:') || host.startsWith('fc') || host.startsWith('fd'))) return false
+  if (host === 'localhost' || host.endsWith('.localhost') || host.endsWith('.internal')) return false
   const m = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/)
   if (m) {
     const a = Number(m[1])
     const b = Number(m[2])
-    if (a === 0 || a === 10 || a === 127) return false
-    if (a === 169 && b === 254) return false
-    if (a === 172 && b >= 16 && b <= 31) return false
-    if (a === 192 && b === 168) return false
     if (a === 100 && b >= 64 && b <= 127) return false
   }
   return true

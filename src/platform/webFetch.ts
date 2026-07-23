@@ -30,7 +30,37 @@ export function isFetchableUrl(raw: string): { ok: boolean; reason?: string } {
     if (a === 127 || a === 10 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (a === 169 && b === 254)) {
       return { ok: false, reason: 'blocked private IP' }
     }
+    // A normal public dotted-decimal quad (e.g. 8.8.8.8) — allow it. Returning
+    // here (rather than falling through) is required so it never reaches the
+    // non-standard-encoding check below, which would otherwise flag it too
+    // (every octet is all-digit).
+    return { ok: true }
   }
+  // Chrome's URL parser accepts several alternate spellings of an IPv4 address
+  // that the plain dotted-quad regex above does not match, and still resolves
+  // them to a real IP before connecting — so each can smuggle a loopback/
+  // private target past the checks above:
+  //   - a bare decimal integer host:      http://2130706433/     (=127.0.0.1)
+  //   - a bare hex integer host:          http://0x7f000001/     (=127.0.0.1)
+  //   - a dotted host with octal octets:  http://0177.0.0.1/     (0177 oct=127)
+  //   - a dotted host with hex octets:    http://0x7f.0.0.1/     (0x7f=127)
+  // None of these is a real DNS hostname (a genuine domain always has at
+  // least one non-IP-shaped label), so refuse anything where every
+  // dot-separated label is decimal/octal/hex-integer-shaped wholesale, rather
+  // than trying to decode and range-check every base individually.
+  const labels = h.split('.')
+  const isIpLikeLabel = (l: string) => /^0x[0-9a-f]+$/.test(l) || /^0[0-7]+$/.test(l) || /^\d+$/.test(l)
+  if (labels.every(isIpLikeLabel)) {
+    return { ok: false, reason: 'blocked non-standard IP form' }
+  }
+  // KNOWN RESIDUAL RISK: a normal-looking hostname whose DNS A-record points
+  // at a private/loopback address (DNS rebinding — e.g. "127.0.0.1.nip.io",
+  // a public DNS name that resolves straight to 127.0.0.1) cannot be caught
+  // by string inspection alone: it has letters, so it looks exactly like any
+  // other public hostname until resolved. Doing that resolution isn't
+  // feasible pre-connect here, so it is NOT blocked by this function. A pass
+  // from isFetchableUrl rules out the literal-host bypasses above; it is not
+  // proof the eventual connection lands on a public address.
   return { ok: true }
 }
 
@@ -182,6 +212,21 @@ export async function fetchReadable(
       redirect: 'follow',
       signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(FETCH_TIMEOUT_MS)]) : AbortSignal.timeout(FETCH_TIMEOUT_MS),
     })
+    // A public URL can 302 to a private/loopback target (e.g. an SSRF-fond
+    // redirector, or a metadata-endpoint bounce) — `redirect: 'follow'` walks
+    // it transparently, so the guard above (which only saw the *input* URL)
+    // is not enough on its own. `redirect: 'manual'` would let us inspect each
+    // hop before following it, but that yields an opaque-redirect response
+    // whose Location header the Fetch API refuses to expose — manual hop-
+    // walking is not possible from an extension/browser context. The
+    // feasible fallback is to re-check `res.url` (the final, already-followed
+    // URL) after the fact and refuse to hand back a body if it landed
+    // somewhere blocked. The request to the blocked target has already been
+    // made by this point — that part can't be undone — but discarding the
+    // body here stops the blocked content from ever reaching the model or
+    // the research notebook.
+    const finalGuard = isFetchableUrl(res.url)
+    if (!finalGuard.ok) return { error: `refused: redirected to a blocked target (${finalGuard.reason})` }
     if (!res.ok) return { error: `fetch failed: HTTP ${res.status}` }
     const ct = res.headers.get('content-type') ?? ''
     if (!/text\/html|text\/plain|application\/xhtml/i.test(ct)) return { error: `unsupported content-type: ${ct}` }
