@@ -2147,41 +2147,89 @@ const DIGESTING_WORDS = [
   'Decoding the lore',
 ]
 
+// The mascot's exercise repertoire. Each name matches an `.anim-<name>`
+// keyframe set in styles.css; loopAnim is that exercise's reference keyframe —
+// the one animation every part of the move is timed against. One completed
+// iteration of it means one full performance of the move (one flip, one jack,
+// one whole pirouette sequence), which is when the loader swaps exercises.
+const LYCHEE_MOVES = [
+  { name: 'run', loopAnim: 'lyfig-run-bob' },
+  { name: 'jumprope', loopAnim: 'lyfig-jumprope-hop' },
+  { name: 'star', loopAnim: 'lyfig-star-hop' },
+  { name: 'backflip', loopAnim: 'lyfig-backflip-arc' },
+  { name: 'cartwheel', loopAnim: 'lyfig-cartwheel-turn' },
+  { name: 'think', loopAnim: 'lyfig-think-arm' },
+  { name: 'spin', loopAnim: 'lyfig-spin-turn' },
+] as const
+
+type LycheeMove = (typeof LYCHEE_MOVES)[number]
+
+/** A random exercise, never the one just performed. */
+function pickMove(except?: string): LycheeMove {
+  const pool = except ? LYCHEE_MOVES.filter(m => m.name !== except) : LYCHEE_MOVES
+  return pool[Math.floor(Math.random() * pool.length)]
+}
+
 /**
- * The waiting mascot — a hopping lychee. Geometry only; the hop, squash, leaf
- * wiggle and shadow all live in styles.css (`.lychee-*`), which also handles
- * prefers-reduced-motion. The nested `lychee-hop` > `lychee-squash` groups are
- * load-bearing: one carries the arc, the other the deform, and collapsing them
- * into a single element makes the scale drag the translate with it.
+ * The waiting mascot — a lychee stick figure that exercises while the model
+ * works, cycling randomly between moves (see LYCHEE_MOVES). Geometry only; all
+ * motion lives in styles.css as per-exercise `.anim-*` keyframes, which also
+ * handle prefers-reduced-motion. Structure notes, both load-bearing:
+ * - Draw order: rope and legs render *behind* the body so their joints tuck
+ *   under the fruit; arms render *in front* so the thinking pose can reach
+ *   across it.
+ * - The nested `lyfig-move` (translate) > `lyfig-turn` (rotate/flip) groups
+ *   split the transforms — one element cannot carry both without the rotate
+ *   dragging the translate with it.
+ * Limb joint coordinates are duplicated as transform-origins in styles.css;
+ * keep the two in sync.
  */
 function LycheeLoader() {
+  const [move, setMove] = useState<LycheeMove>(() => pickMove())
+
   return (
     <svg
-      className="thinking-lychee"
-      viewBox="0 0 24 24"
+      className={`thinking-lychee anim-${move.name}`}
+      viewBox="0 0 24 32"
       aria-hidden="true"
       focusable="false"
+      // Animation events bubble, so the root hears every part's iterations;
+      // filtering to the move's reference keyframe swaps exercises the moment
+      // one full loop lands — each move plays once, cut exactly on its seam
+      // (no timer to drift against the CSS clock). Under reduced motion no
+      // iterations fire and the figure just stands still, which is the point.
+      onAnimationIteration={(e) => {
+        if (e.animationName === move.loopAnim) setMove(pickMove(move.name))
+      }}
     >
-      <ellipse className="lychee-shadow" cx="12" cy="22" rx="6" ry="1.6" fill="var(--text)" />
-      <g className="lychee-hop">
-        <g className="lychee-squash">
-          <path
-            d="M12 7.8 Q12.1 6.2 12.9 5.3"
-            stroke="var(--lychee-shade)"
-            strokeWidth="1.2"
-            strokeLinecap="round"
-            fill="none"
-          />
-          <path
-            className="lychee-leaf"
-            d="M12.9 5.5 C14.7 3.4 17.7 3.3 18.7 3.9 C18.1 6 15.6 7.4 13.2 6.7 Z"
-            fill="var(--lychee-leaf)"
-          />
-          <circle cx="12" cy="13.6" r="7" fill="var(--lychee)" />
-          {/* Three scales, a nod to the faceted shell — any more turns to mush at 18px. */}
-          <circle cx="9.4" cy="12" r="1.05" fill="var(--lychee-shade)" opacity="0.45" />
-          <circle cx="13.6" cy="11.3" r="1.05" fill="var(--lychee-shade)" opacity="0.45" />
-          <circle cx="11.6" cy="15.7" r="1.05" fill="var(--lychee-shade)" opacity="0.45" />
+      <ellipse className="lyfig-shadow" cx="12" cy="29.5" rx="6" ry="1.5" fill="var(--text)" />
+      <g className="lyfig-move">
+        <g className="lyfig-turn">
+          <path className="lyfig-rope lyfig-rope-over" d="M4.4 18.5 Q12 -15.5 19.6 18.5" />
+          <path className="lyfig-rope lyfig-rope-under" d="M4.4 18.5 Q12 40.5 19.6 18.5" />
+          <line className="lyfig-limb lyfig-leg-l" x1="9.8" y1="19.3" x2="9.3" y2="27" />
+          <line className="lyfig-limb lyfig-leg-r" x1="14.2" y1="19.3" x2="14.7" y2="27" />
+          <g className="lyfig-core">
+            <path
+              d="M12 7.8 Q12.1 6.2 12.9 5.3"
+              stroke="var(--lychee-shade)"
+              strokeWidth="1.2"
+              strokeLinecap="round"
+              fill="none"
+            />
+            <path
+              className="lyfig-leaf"
+              d="M12.9 5.5 C14.7 3.4 17.7 3.3 18.7 3.9 C18.1 6 15.6 7.4 13.2 6.7 Z"
+              fill="var(--lychee-leaf)"
+            />
+            <circle cx="12" cy="13.5" r="6.5" fill="var(--lychee)" />
+            {/* Three scales, a nod to the faceted shell — any more turns to mush at this size. */}
+            <circle cx="9.6" cy="12" r="1" fill="var(--lychee-shade)" opacity="0.45" />
+            <circle cx="13.8" cy="11.3" r="1" fill="var(--lychee-shade)" opacity="0.45" />
+            <circle cx="11.7" cy="15.4" r="1" fill="var(--lychee-shade)" opacity="0.45" />
+          </g>
+          <line className="lyfig-limb lyfig-arm-l" x1="6.6" y1="15" x2="5.2" y2="19.6" />
+          <line className="lyfig-limb lyfig-arm-r" x1="17.4" y1="15" x2="18.8" y2="19.6" />
         </g>
       </g>
     </svg>
@@ -2189,8 +2237,8 @@ function LycheeLoader() {
 }
 
 /**
- * Whimsical waiting-state indicator: a hopping lychee, a rotating word, and a
- * whole-turn elapsed timer. Rendered by MessageView while the turn is streaming
+ * Whimsical waiting-state indicator: an exercising lychee, a rotating word,
+ * and a whole-turn elapsed timer. Rendered by MessageView while the turn is streaming
  * but nothing is visibly appearing. `startedAt` is the turn start (ms) so the
  * timer stays continuous across tool steps; `variant` picks the word pool. A
  * fresh random offset per mount makes successive gaps in one turn read
@@ -2276,12 +2324,16 @@ function MessageView({
     )
   }
 
-  // Show the waiting indicator while the turn is live but nothing is visibly
-  // streaming: before the first part (thinking), or in the gap right after a
-  // tool result while the model decides its next move (digesting). The inline
-  // `turnStartedAt != null` also narrows it to a number for the prop.
+  // Show the waiting indicator while the turn is live and no *reply* is visibly
+  // streaming: before the first part (thinking), in the gap right after a tool
+  // result while the model decides its next move (digesting), and while a
+  // reasoning part streams — the collapsible "Thinking" block is muted preamble,
+  // not the reply, so the mascot keeps exercising beneath it until real response
+  // text starts. The inline `turnStartedAt != null` also narrows it to a number
+  // for the prop.
   const last = message.parts[message.parts.length - 1]
   const digesting = last?.type === 'tool' && last.state === 'done'
+  const reasoningLive = last?.type === 'reasoning'
 
   // Group successful screenshots taken back-to-back into one image carousel
   // instead of a stack of raw tool cards. A run of screenshot shots spans
@@ -2341,7 +2393,7 @@ function MessageView({
         })}
         {streaming &&
           turnStartedAt != null &&
-          (message.parts.length === 0 || digesting) && (
+          (message.parts.length === 0 || digesting || reasoningLive) && (
             <ThinkingIndicator
               startedAt={turnStartedAt}
               variant={digesting ? 'digesting' : 'thinking'}

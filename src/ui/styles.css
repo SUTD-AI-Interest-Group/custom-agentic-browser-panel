@@ -29,6 +29,9 @@
   --lychee: #c9304a;
   --lychee-shade: #a8253c;
   --lychee-leaf: #3e9e52;
+  /* The stick figure's limbs: black per the mascot spec, but a token (not a
+     literal) because black vanishes on the dark panel and must flip light. */
+  --lychee-limb: #1a1a1a;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -47,6 +50,7 @@
     --lychee: #f2687e;
     --lychee-shade: #c9304a;
     --lychee-leaf: #5fbf74;
+    --lychee-limb: #ececee;
   }
 }
 
@@ -654,101 +658,334 @@ body {
   font-size: 13px;
 }
 
-/* The waiting mascot: a lychee that hops. Drawn as inline SVG rather than a GIF
-   so it stays crisp at any DPI and recolours with the theme tokens.
+/* The waiting mascot: a lychee stick figure that works out while the model
+   thinks. Drawn as inline SVG rather than a GIF so it stays crisp at any DPI
+   and recolours with the theme tokens. Each exercise is one `.anim-<name>`
+   block of keyframes below; LycheeLoader (Chat.tsx) swaps which class is on
+   the <svg> after each completed loop (it listens for the reference
+   keyframe's animationiteration event), and the class swap restarts the
+   keyframes for the next move.
 
-   Squash-and-stretch needs two nested transforms — one group translates (the
-   arc), the one inside it scales (the deform) — because a single element cannot
-   carry both without the scale dragging the translate around. Every animated
-   node sets `transform-box: fill-box`, or SVG transform-origin resolves against
-   the viewport instead of the shape and the fruit swings off-screen. */
+   Two structural rules, carried over from the old hopping loader:
+   - Nested transforms: `.lyfig-move` translates (hops, arcs) and `.lyfig-turn`
+     rotates/flips, because a single element cannot carry both without the
+     rotate dragging the translate around.
+   - Every animated node sets `transform-box: view-box`, so transform-origin
+     resolves in viewBox units. Each limb's origin below is the literal joint
+     coordinate from the SVG geometry in Chat.tsx — keep the two files in sync,
+     or a limb orbits the figure instead of swinging from its socket. */
 .thinking-lychee {
   width: 18px;
-  height: 18px;
+  height: 24px;
   flex: none;
   overflow: visible;
 }
 
-.lychee-hop {
-  transform-box: fill-box;
-  transform-origin: 50% 100%;
-  animation: lychee-hop 1.15s cubic-bezier(0.45, 0, 0.55, 1) infinite;
+.lyfig-limb {
+  stroke: var(--lychee-limb);
+  stroke-width: 1.7;
+  stroke-linecap: round;
+  transform-box: view-box;
 }
 
-.lychee-squash {
-  transform-box: fill-box;
-  transform-origin: 50% 100%;
-  animation: lychee-squash 1.15s ease-in-out infinite;
+.lyfig-arm-l { transform-origin: 6.6px 15px; }
+.lyfig-arm-r { transform-origin: 17.4px 15px; }
+.lyfig-leg-l { transform-origin: 9.8px 19.3px; }
+.lyfig-leg-r { transform-origin: 14.2px 19.3px; }
+
+/* Rotation sign convention (SVG y-axis points down, so positive = clockwise
+   on screen): a positive rotation swings the LEFT arm/leg outward and the
+   RIGHT limb inward across the body — mirrored poses negate the angle. */
+
+.lyfig-move,
+.lyfig-turn,
+.lyfig-core,
+.lyfig-leaf {
+  transform-box: view-box;
 }
 
-/* Anchored at the stem so the leaf pivots like it's hinged, not sliding. */
-.lychee-leaf {
-  transform-box: fill-box;
-  transform-origin: 0% 100%;
-  animation: lychee-leaf 1.15s ease-in-out infinite;
-}
+/* Whole-figure rotations (flips, wheels) and the pirouette's scaleX share a
+   pivot near the figure's centre of mass. */
+.lyfig-turn { transform-origin: 12px 16px; }
+/* Body leans hinge at the hips; the leaf stays hinged at its stem. */
+.lyfig-core { transform-origin: 12px 19px; }
+.lyfig-leaf { transform-origin: 12.9px 5.5px; }
 
-.lychee-shadow {
-  transform-box: fill-box;
-  transform-origin: 50% 50%;
+.lyfig-shadow {
+  transform-box: view-box;
+  transform-origin: 12px 29.5px;
   /* Base opacity, not just a keyframe value — under reduced motion the animation
      is off and the shadow would otherwise render at full strength. */
   opacity: 0.16;
-  animation: lychee-shadow 1.15s ease-in-out infinite;
 }
 
-@keyframes lychee-hop {
-  0%,
-  18%,
-  100% {
-    transform: translateY(0);
-  }
-  50% {
-    transform: translateY(-5px);
-  }
-  80% {
-    transform: translateY(0);
-  }
+/* The skipping rope: two fixed arcs (overhead, underfoot) that the jumprope
+   keyframes swap between. Base opacity 0 keeps both invisible in every other
+   exercise and under reduced motion. */
+.lyfig-rope {
+  fill: none;
+  stroke: var(--lychee-limb);
+  stroke-width: 1;
+  opacity: 0;
 }
 
-/* Compress on the crouch and the landing, stretch at the apex. */
-@keyframes lychee-squash {
-  0%,
-  92%,
-  100% {
-    transform: scale(1, 1);
-  }
-  16% {
-    transform: scale(1.16, 0.84);
-  }
-  50% {
-    transform: scale(0.94, 1.07);
-  }
-  82% {
-    transform: scale(1.16, 0.84);
-  }
+/* Shared "feet leave the ground" shadow, reused by every airborne exercise at
+   that exercise's own cycle duration. */
+@keyframes lyfig-shadow-hop {
+  0%, 12%, 88%, 100% { transform: scale(1); opacity: 0.16; }
+  50% { transform: scale(0.6); opacity: 0.07; }
 }
 
-@keyframes lychee-leaf {
-  0%,
-  100% {
-    transform: rotate(0deg);
-  }
-  50% {
-    transform: rotate(-18deg);
-  }
+/* ---- run: jogging on the spot ---- */
+
+.anim-run .lyfig-move { animation: lyfig-run-bob 550ms linear infinite; }
+.anim-run .lyfig-arm-l,
+.anim-run .lyfig-leg-r { animation: lyfig-run-swing-a 550ms ease-in-out infinite; }
+.anim-run .lyfig-arm-r,
+.anim-run .lyfig-leg-l { animation: lyfig-run-swing-b 550ms ease-in-out infinite; }
+.anim-run .lyfig-leaf { animation: lyfig-leaf-flutter 550ms ease-in-out infinite; }
+
+/* Two footfalls per stride cycle, so the bob runs at double frequency. */
+@keyframes lyfig-run-bob {
+  0%, 50%, 100% { transform: translateY(0); }
+  25%, 75% { transform: translateY(-1px); }
+}
+/* Opposite limbs share a phase (left arm with right leg), like a real gait. */
+@keyframes lyfig-run-swing-a {
+  0%, 50%, 100% { transform: rotate(0deg); }
+  25% { transform: rotate(30deg); }
+  75% { transform: rotate(-30deg); }
+}
+@keyframes lyfig-run-swing-b {
+  0%, 50%, 100% { transform: rotate(0deg); }
+  25% { transform: rotate(-30deg); }
+  75% { transform: rotate(30deg); }
+}
+@keyframes lyfig-leaf-flutter {
+  0%, 100% { transform: rotate(0deg); }
+  50% { transform: rotate(-14deg); }
 }
 
-@keyframes lychee-shadow {
-  0%,
-  100% {
-    transform: scale(1);
-    opacity: 0.16;
-  }
-  50% {
-    transform: scale(0.62);
-    opacity: 0.07;
-  }
+/* ---- jumprope: skipping on the spot ---- */
+
+.anim-jumprope .lyfig-move { animation: lyfig-jumprope-hop 600ms cubic-bezier(0.45, 0, 0.55, 1) infinite; }
+.anim-jumprope .lyfig-arm-l { animation: lyfig-jumprope-arm-l 600ms ease-in-out infinite; }
+.anim-jumprope .lyfig-arm-r { animation: lyfig-jumprope-arm-r 600ms ease-in-out infinite; }
+.anim-jumprope .lyfig-rope-over { animation: lyfig-rope-over 600ms linear infinite; }
+.anim-jumprope .lyfig-rope-under { animation: lyfig-rope-under 600ms linear infinite; }
+.anim-jumprope .lyfig-shadow { animation: lyfig-shadow-hop 600ms ease-in-out infinite; }
+
+@keyframes lyfig-jumprope-hop {
+  0%, 12%, 88%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-3px); }
+}
+/* Hands held out turning the rope; the wrist circle is faked with a small
+   rotation pulse in time with the hop. */
+@keyframes lyfig-jumprope-arm-l {
+  0%, 100% { transform: rotate(48deg); }
+  50% { transform: rotate(64deg); }
+}
+@keyframes lyfig-jumprope-arm-r {
+  0%, 100% { transform: rotate(-48deg); }
+  50% { transform: rotate(-64deg); }
+}
+/* Rope overhead while grounded, underfoot at the apex of the hop — swapping
+   the two arcs' opacity in antiphase sells one revolution per hop. */
+@keyframes lyfig-rope-over {
+  0%, 24%, 76%, 100% { opacity: 1; }
+  25%, 75% { opacity: 0; }
+}
+@keyframes lyfig-rope-under {
+  0%, 24%, 76%, 100% { opacity: 0; }
+  25%, 75% { opacity: 1; }
+}
+
+/* ---- star: jumping jacks ---- */
+
+.anim-star .lyfig-move { animation: lyfig-star-hop 700ms cubic-bezier(0.45, 0, 0.55, 1) infinite; }
+.anim-star .lyfig-arm-l { animation: lyfig-star-arm-l 700ms ease-in-out infinite; }
+.anim-star .lyfig-arm-r { animation: lyfig-star-arm-r 700ms ease-in-out infinite; }
+.anim-star .lyfig-leg-l { animation: lyfig-star-leg-l 700ms ease-in-out infinite; }
+.anim-star .lyfig-leg-r { animation: lyfig-star-leg-r 700ms ease-in-out infinite; }
+.anim-star .lyfig-shadow { animation: lyfig-shadow-hop 700ms ease-in-out infinite; }
+
+@keyframes lyfig-star-hop {
+  0%, 100% { transform: translateY(0); }
+  12% { transform: translateY(1px); }
+  45% { transform: translateY(-3.5px); }
+  80% { transform: translateY(0); }
+}
+@keyframes lyfig-star-arm-l {
+  0%, 100% { transform: rotate(0deg); }
+  40%, 55% { transform: rotate(138deg); }
+  85% { transform: rotate(0deg); }
+}
+@keyframes lyfig-star-arm-r {
+  0%, 100% { transform: rotate(0deg); }
+  40%, 55% { transform: rotate(-138deg); }
+  85% { transform: rotate(0deg); }
+}
+@keyframes lyfig-star-leg-l {
+  0%, 100% { transform: rotate(0deg); }
+  40%, 55% { transform: rotate(32deg); }
+  85% { transform: rotate(0deg); }
+}
+@keyframes lyfig-star-leg-r {
+  0%, 100% { transform: rotate(0deg); }
+  40%, 55% { transform: rotate(-32deg); }
+  85% { transform: rotate(0deg); }
+}
+
+/* ---- backflip ---- */
+
+.anim-backflip .lyfig-move { animation: lyfig-backflip-arc 1100ms cubic-bezier(0.4, 0, 0.6, 1) infinite; }
+.anim-backflip .lyfig-turn { animation: lyfig-backflip-turn 1100ms cubic-bezier(0.55, 0.1, 0.45, 0.9) infinite; }
+.anim-backflip .lyfig-arm-l { animation: lyfig-backflip-arm-l 1100ms ease-in-out infinite; }
+.anim-backflip .lyfig-arm-r { animation: lyfig-backflip-arm-r 1100ms ease-in-out infinite; }
+.anim-backflip .lyfig-leg-l { animation: lyfig-backflip-leg-l 1100ms ease-in-out infinite; }
+.anim-backflip .lyfig-leg-r { animation: lyfig-backflip-leg-r 1100ms ease-in-out infinite; }
+.anim-backflip .lyfig-shadow { animation: lyfig-shadow-hop 1100ms ease-in-out infinite; }
+
+@keyframes lyfig-backflip-arc {
+  0%, 100% { transform: translateY(0); }
+  10% { transform: translateY(1.2px); }
+  40%, 60% { transform: translateY(-5px); }
+  90% { transform: translateY(0.6px); }
+}
+/* Negative = backwards; rotation starts after launch and lands before touchdown. */
+@keyframes lyfig-backflip-turn {
+  0%, 14% { transform: rotate(0deg); }
+  82%, 100% { transform: rotate(-360deg); }
+}
+@keyframes lyfig-backflip-arm-l {
+  0%, 100% { transform: rotate(0deg); }
+  20%, 70% { transform: rotate(150deg); }
+  95% { transform: rotate(0deg); }
+}
+@keyframes lyfig-backflip-arm-r {
+  0%, 100% { transform: rotate(0deg); }
+  20%, 70% { transform: rotate(-150deg); }
+  95% { transform: rotate(0deg); }
+}
+/* Both legs fold the same way mid-air: a tuck, not a straddle. */
+@keyframes lyfig-backflip-leg-l {
+  0%, 25%, 100% { transform: rotate(0deg); }
+  40%, 65% { transform: rotate(75deg); }
+  85% { transform: rotate(0deg); }
+}
+@keyframes lyfig-backflip-leg-r {
+  0%, 25%, 100% { transform: rotate(0deg); }
+  40%, 65% { transform: rotate(60deg); }
+  85% { transform: rotate(0deg); }
+}
+
+/* ---- cartwheel: a full wheel in star pose ---- */
+
+.anim-cartwheel .lyfig-move { animation: lyfig-cartwheel-rise 1200ms ease-in-out infinite; }
+.anim-cartwheel .lyfig-turn {
+  transform-origin: 12px 17px;
+  animation: lyfig-cartwheel-turn 1200ms cubic-bezier(0.45, 0.05, 0.55, 0.95) infinite;
+}
+.anim-cartwheel .lyfig-arm-l { animation: lyfig-cartwheel-arm-l 1200ms ease-in-out infinite; }
+.anim-cartwheel .lyfig-arm-r { animation: lyfig-cartwheel-arm-r 1200ms ease-in-out infinite; }
+.anim-cartwheel .lyfig-leg-l { animation: lyfig-cartwheel-leg-l 1200ms ease-in-out infinite; }
+.anim-cartwheel .lyfig-leg-r { animation: lyfig-cartwheel-leg-r 1200ms ease-in-out infinite; }
+
+@keyframes lyfig-cartwheel-rise {
+  0%, 10%, 90%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-1.2px); }
+}
+@keyframes lyfig-cartwheel-turn {
+  0%, 10% { transform: rotate(0deg); }
+  90%, 100% { transform: rotate(360deg); }
+}
+/* Limbs spread into the star before the wheel starts and fold after it lands. */
+@keyframes lyfig-cartwheel-arm-l {
+  0%, 100% { transform: rotate(0deg); }
+  12%, 88% { transform: rotate(138deg); }
+}
+@keyframes lyfig-cartwheel-arm-r {
+  0%, 100% { transform: rotate(0deg); }
+  12%, 88% { transform: rotate(-138deg); }
+}
+@keyframes lyfig-cartwheel-leg-l {
+  0%, 100% { transform: rotate(0deg); }
+  12%, 88% { transform: rotate(32deg); }
+}
+@keyframes lyfig-cartwheel-leg-r {
+  0%, 100% { transform: rotate(0deg); }
+  12%, 88% { transform: rotate(-32deg); }
+}
+
+/* ---- think: hand on chin, lean, toe-tap ---- */
+
+.anim-think .lyfig-arm-r { animation: lyfig-think-arm 4400ms ease-in-out infinite; }
+.anim-think .lyfig-core { animation: lyfig-think-lean 4400ms ease-in-out infinite; }
+.anim-think .lyfig-leaf { animation: lyfig-think-leaf 4400ms ease-in-out infinite; }
+.anim-think .lyfig-leg-l { animation: lyfig-think-tap 4400ms ease-in-out infinite; }
+
+/* +82deg lands the arm's free end just under the face dots — hand on chin —
+   held for the whole bout with a couple of pensive taps. */
+@keyframes lyfig-think-arm {
+  0%, 100% { transform: rotate(0deg); }
+  8%, 44% { transform: rotate(82deg); }
+  48% { transform: rotate(76deg); }
+  52%, 92% { transform: rotate(82deg); }
+}
+@keyframes lyfig-think-lean {
+  0%, 100% { transform: rotate(0deg); }
+  10%, 90% { transform: rotate(4deg); }
+}
+@keyframes lyfig-think-leaf {
+  0%, 100% { transform: rotate(0deg); }
+  30% { transform: rotate(-12deg); }
+  55% { transform: rotate(-4deg); }
+  78% { transform: rotate(-10deg); }
+}
+/* An idle toe-tap, twice per bout. */
+@keyframes lyfig-think-tap {
+  0%, 28%, 44%, 62%, 78%, 100% { transform: rotate(0deg); }
+  32%, 40% { transform: rotate(12deg); }
+  66%, 74% { transform: rotate(12deg); }
+}
+
+/* ---- spin: a pirouette on one foot ---- */
+
+.anim-spin .lyfig-move { animation: lyfig-spin-rise 3000ms ease-in-out infinite; }
+.anim-spin .lyfig-turn { animation: lyfig-spin-turn 3000ms ease-in-out infinite; }
+.anim-spin .lyfig-arm-l { animation: lyfig-spin-arm-l 3000ms ease-in-out infinite; }
+.anim-spin .lyfig-arm-r { animation: lyfig-spin-arm-r 3000ms ease-in-out infinite; }
+.anim-spin .lyfig-leg-l { animation: lyfig-spin-leg 3000ms ease-in-out infinite; }
+
+/* A pirouette is a yaw, which flat SVG cannot do — oscillating scaleX between
+   1 and -1 fakes the figure turning through profile. Three full turns per
+   bout, with the pose struck before the first and released after the last. */
+@keyframes lyfig-spin-turn {
+  0%, 8% { transform: scaleX(1); }
+  22% { transform: scaleX(-1); }
+  36% { transform: scaleX(1); }
+  50% { transform: scaleX(-1); }
+  64% { transform: scaleX(1); }
+  78% { transform: scaleX(-1); }
+  92%, 100% { transform: scaleX(1); }
+}
+/* Up on the toe of the supporting foot. */
+@keyframes lyfig-spin-rise {
+  0%, 100% { transform: translateY(0); }
+  8%, 92% { transform: translateY(-0.8px); }
+}
+@keyframes lyfig-spin-arm-l {
+  0%, 100% { transform: rotate(0deg); }
+  8%, 92% { transform: rotate(150deg); }
+}
+@keyframes lyfig-spin-arm-r {
+  0%, 100% { transform: rotate(0deg); }
+  8%, 92% { transform: rotate(-150deg); }
+}
+/* Working leg raised in passé. */
+@keyframes lyfig-spin-leg {
+  0%, 100% { transform: rotate(0deg); }
+  8%, 92% { transform: rotate(55deg); }
 }
 
 .thinking-elapsed {
@@ -757,13 +994,13 @@ body {
 }
 
 /* Reduced motion gets the fruit, just still — the indicator's job (a turn is
-   live) is carried by the rotating word and elapsed counter regardless. */
+   live) is carried by the rotating word and elapsed counter regardless. The
+   `*` catches every animated part in one rule (the per-exercise selectors are
+   more specific, hence the !important); the rope stays hidden via its base
+   opacity of 0. */
 @media (prefers-reduced-motion: reduce) {
-  .lychee-hop,
-  .lychee-squash,
-  .lychee-leaf,
-  .lychee-shadow {
-    animation: none;
+  .thinking-lychee * {
+    animation: none !important;
   }
 }
 
