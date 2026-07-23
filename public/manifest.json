@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "description": "A model-agnostic AI agent in your side panel that can (with your permission) read, control, and research the web with you.",
   "minimum_chrome_version": "116",
-  "permissions": ["sidePanel", "storage", "scripting", "tabs", "alarms", "activeTab", "clipboardWrite", "favicon", "offscreen", "notifications"],
+  "permissions": ["sidePanel", "storage", "scripting", "tabs", "alarms", "activeTab", "clipboardWrite", "favicon", "offscreen", "notifications", "contextMenus"],
   "optional_permissions": ["history", "bookmarks", "topSites", "downloads"],
   "host_permissions": ["<all_urls>"],
   "icons": {

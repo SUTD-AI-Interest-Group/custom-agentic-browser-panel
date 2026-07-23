@@ -4,6 +4,8 @@
 // when the user has been idle for a while (see dream.ts).
 
 import { dreamIfDue } from './agent/dream'
+import type { ComposerAction } from './platform/composerActions'
+import { COMPOSER_ACTION_MSG, setComposerAction } from './platform/composerActions'
 import type { ResearchMsg } from './data/researchTasks'
 import {
   saveTask,
@@ -59,12 +61,14 @@ chrome.runtime.onInstalled.addListener(() => {
   void scheduleDreamAlarm()
   scheduleWatchdog()
   void resumeStrandedResearch()
+  registerContextMenus()
 })
 chrome.runtime.onStartup.addListener(() => {
   void scheduleDreamAlarm()
   scheduleWatchdog()
   // Chrome just restarted — resume any research that was mid-flight when it closed.
   void resumeStrandedResearch()
+  registerContextMenus()
 })
 
 // Re-arm the alarm when the user changes the dream interval, so a new cadence
@@ -141,6 +145,83 @@ chrome.commands.onCommand.addListener((command, tab) => {
   }
   // No await before open() — awaiting would spend the user gesture the API needs.
   chrome.sidePanel.open({ windowId }).catch((err) => console.error('sidePanel.open failed', err))
+})
+
+// ---------------------------------------------------------------------------
+// "Ask Lychee about this" context menu: right-click a selection, link, image, or
+// the page itself to hand it straight to the panel. The mailbox contract
+// (src/platform/composerActions.ts) carries the action across the gap between
+// "panel may be closed" and "panel mounts and drains it"; here we only stage it
+// and open the panel, in that order, on the gesture.
+// ---------------------------------------------------------------------------
+
+const CONTEXT_MENU_IDS = {
+  selection: 'lychee-ask-selection',
+  link: 'lychee-ask-link',
+  image: 'lychee-ask-image',
+  page: 'lychee-ask-page',
+} as const
+
+/**
+ * (Re)create the "Ask Lychee about this" menu items. removeAll() first, since
+ * onInstalled/onStartup can both fire across a single install (e.g. update then
+ * a later browser restart) and chrome.contextMenus.create rejects a duplicate id.
+ */
+function registerContextMenus(): void {
+  chrome.contextMenus.removeAll(() => {
+    chrome.contextMenus.create({
+      id: CONTEXT_MENU_IDS.selection,
+      title: 'Ask Lychee about this selection',
+      contexts: ['selection'],
+    })
+    chrome.contextMenus.create({
+      id: CONTEXT_MENU_IDS.link,
+      title: 'Ask Lychee about this link',
+      contexts: ['link'],
+    })
+    chrome.contextMenus.create({
+      id: CONTEXT_MENU_IDS.image,
+      title: 'Ask Lychee about this image',
+      contexts: ['image'],
+    })
+    chrome.contextMenus.create({
+      id: CONTEXT_MENU_IDS.page,
+      title: 'Ask Lychee about this page',
+      contexts: ['page'],
+    })
+  })
+}
+
+/** Map a context-menu click to the ComposerAction the panel should act on. */
+function buildComposerAction(info: chrome.contextMenus.OnClickData, tab?: chrome.tabs.Tab): ComposerAction | null {
+  switch (info.menuItemId) {
+    case CONTEXT_MENU_IDS.selection:
+      return { kind: 'selection', text: info.selectionText ?? '', pageUrl: info.pageUrl ?? tab?.url ?? '', pageTitle: tab?.title }
+    case CONTEXT_MENU_IDS.link:
+      return { kind: 'link', url: info.linkUrl ?? '', pageUrl: info.pageUrl ?? '' }
+    case CONTEXT_MENU_IDS.image:
+      return { kind: 'image', srcUrl: info.srcUrl ?? '', pageUrl: info.pageUrl ?? '' }
+    case CONTEXT_MENU_IDS.page:
+      return { kind: 'page', pageUrl: info.pageUrl ?? tab?.url ?? '', pageTitle: tab?.title }
+    default:
+      return null
+  }
+}
+
+chrome.contextMenus.onClicked.addListener((info, tab) => {
+  const windowId = tab?.windowId
+  if (windowId === undefined) return // no window to open the panel into
+
+  const action = buildComposerAction(info, tab)
+  if (!action) return
+
+  // sidePanel.open must run synchronously in the gesture (same constraint as the
+  // toggle-panel command above) — so open first, then stage the mailbox and
+  // broadcast. The panel drains on mount regardless, and the broadcast only
+  // covers the already-open case, so this ordering loses nothing.
+  chrome.sidePanel.open({ windowId }).catch((err) => console.error('sidePanel.open failed', err))
+  void setComposerAction(action)
+  void chrome.runtime.sendMessage({ type: COMPOSER_ACTION_MSG }).catch(() => {})
 })
 
 // ---------------------------------------------------------------------------
