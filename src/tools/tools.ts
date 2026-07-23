@@ -163,6 +163,15 @@ export function createAgentTools(
   activeNames: Set<string>,
   /** Optional Langfuse trace for this turn; when set, each tool call becomes a span. */
   trace?: Trace,
+  /**
+   * Additional tools to merge into this turn's ToolSet — MCP server tools
+   * (src/mcp/tools.ts), already policy-filtered and approval-gated by their
+   * builder. They MUST come through here rather than being spread in by the
+   * caller: the disclosure catalog below is derived from THIS ToolSet, and a
+   * tool outside it could never be listed by ToolSearch, loaded by GetTool, or
+   * self-healed by the repair hook — an unloaded call would dead-end.
+   */
+  extraTools?: ToolSet,
 ): ToolSet {
   const BROWSING_SOURCES = ['history', 'bookmarks', 'topSites', 'downloads'] as const
   const grantedSources = BROWSING_SOURCES.filter((s) => granted.has(s))
@@ -1292,6 +1301,14 @@ export function createAgentTools(
   // off to the offscreen research host, which runs the real (ungated) research
   // tools headlessly — see src/tools/research.ts and src/agent/research.ts.
   Object.assign(tools, createStartResearchTool(requestApproval, conversationId))
+
+  // MCP server tools, pre-gated and policy-filtered by buildMcpTools. Built-in
+  // names win a collision (the mcp_ prefix makes one implausible anyway).
+  if (extraTools) {
+    for (const [name, t] of Object.entries(extraTools)) {
+      if (!(name in tools)) tools[name] = t
+    }
+  }
 
   // Honor the tab-visibility preference chosen in onboarding: in active-tab
   // mode the model never even sees a tool that could enumerate other tabs.

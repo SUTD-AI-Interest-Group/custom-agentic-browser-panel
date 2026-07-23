@@ -39,6 +39,9 @@ import { getActiveTab, listOpenTabs, openPdfAtPage, readTabContent, type TabCont
 import { looksLikePdfUrl } from '../platform/pdfText'
 import { loadPdf } from '../platform/pdf'
 import { createAgentTools, type ApprovalRequest, type PageControlGate } from '../tools/tools'
+import { buildMcpTools } from '../mcp/tools'
+import { getMcpManager } from '../mcp/manager'
+import McpContentCard from './McpContentCard'
 import { type ControlSession } from '../tools/pageControl'
 import { clearIndex } from '../platform/domIndex'
 import { unmountPresence, unmountAllPresence } from '../platform/presence'
@@ -89,7 +92,7 @@ Whenever the user asks you to do something in the browser, load the tool and do 
 
 Ground your answers on the page. When your answer comes from a specific passage, clause, figure, or section of the page or PDF the user is viewing ("what are the terms…", "which part mentions…", "where does it say…"), load HighlightContent and mark that spot as part of answering — it scrolls their tab to the passage and highlights it so they can see where your answer came from. Do this proactively, without being asked to "show" it; highlight each key passage of a multi-part answer.
 
-Capabilities to load when needed: HighlightContent (scroll to and mark the passage/figure your answer came from), ReadTabs (other open tabs), RequestPageControl/ControlPage/AutofillForm (control a page — click, type, fill), NavigateTab (switch/open/load a tab), ExtractData (structured JSON from the page), SaveMemory/SearchMemory (long-term memory), QueryBrowserData (history/bookmarks/top sites/downloads — only enabled sources), ListAllSkills/ReadSkill/SaveSkill (skills), StartResearch (background web research). If the message is purely conversational and needs no browser action, just answer.`
+Capabilities to load when needed: HighlightContent (scroll to and mark the passage/figure your answer came from), ReadTabs (other open tabs), RequestPageControl/ControlPage/AutofillForm (control a page — click, type, fill), NavigateTab (switch/open/load a tab), ExtractData (structured JSON from the page), SaveMemory/SearchMemory (long-term memory), QueryBrowserData (history/bookmarks/top sites/downloads — only enabled sources), ListAllSkills/ReadSkill/SaveSkill (skills), StartResearch (background web research). Tools whose names start with mcp_ come from MCP servers the user connected (ListMcpResources/ReadMcpResource read those servers' resources) — list them with ToolSearch like any other capability. If the message is purely conversational and needs no browser action, just answer.`
 
 interface PendingApproval extends ApprovalRequest {
   resolve: (approved: boolean) => void
@@ -1734,6 +1737,18 @@ export default function Chat({
     try {
       while (true) {
         const base = MERGE_AUTO_CONTINUES ? mergedParts : []
+        // MCP server tools join the ToolSet through createAgentTools's
+        // extraTools (NOT spread in here) so the disclosure catalog sees them.
+        // Rebuilt each cycle: a server that connected mid-chain contributes on
+        // the next cycle.
+        const mcpTools = buildMcpTools({
+          manager: getMcpManager(),
+          settings,
+          requestApproval,
+          imageQueue,
+          conversationId,
+          visionCapable,
+        })
         const result = await runAgentTurn({
           model: createModel(model.provider, model.modelId),
           system,
@@ -1750,6 +1765,7 @@ export default function Chat({
             conversationId,
             activeNames,
             trace,
+            mcpTools,
           ),
           abortSignal: controller.signal,
           onUpdate: patch(assistantId, base),
@@ -3198,27 +3214,52 @@ function ToolPill({ part }: { part: Extract<UIPart, { type: 'tool' }> }) {
   else if (part.toolName === 'Checkpoint') {
     const cp = part.input as Partial<Checkpoint> | undefined
     label = `Checkpointed progress — ${cp?.done?.length ?? 0} done, ${cp?.remaining?.length ?? 0} remaining`
-  } else label = part.toolName
+  } else if (part.toolName.startsWith('mcp_'))
+    label = output?.error
+      ? `MCP tool failed · ${part.toolName.slice(4)}`
+      : `Used MCP tool · ${part.toolName.slice(4)}`
+  else label = part.toolName
+
+  // Rich MCP results: the pill stays the audit trail, and any artifacts the
+  // call produced (images, audio, video, documents) render as cards beneath it.
+  // A needs-auth error additionally offers the Authorize action — the one
+  // user click the OAuth popup is allowed to launch from mid-chat.
+  const artifactIds: string[] = Array.isArray(output?.artifactIds) ? output.artifactIds : []
+  const needsAuthServer: string | null =
+    output?.needsAuth && typeof output?.server === 'string' ? output.server : null
 
   // Successful screenshots never reach here — MessageView groups them into a
   // ShotCard/ShotCarousel of their own. What lands here is every other tool, plus
   // errored/denied screenshots, which show their label above the collapsed raw
   // JSON like any other tool call.
   return (
-    <details className={`tool-pill ${part.state} ${denied ? 'denied' : ''}`}>
-      <summary>
-        <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
-          <path
-            d="M1.5 6s1.7-3.2 4.5-3.2S10.5 6 10.5 6 8.8 9.2 6 9.2 1.5 6 1.5 6Z"
-            stroke="currentColor"
-            strokeWidth="1.2"
-          />
-          <circle cx="6" cy="6" r="1.4" stroke="currentColor" strokeWidth="1.2" />
-        </svg>
-        <span>{label}</span>
-      </summary>
-      <pre>{JSON.stringify({ input: part.input, output: part.output }, null, 2)}</pre>
-    </details>
+    <>
+      <details className={`tool-pill ${part.state} ${denied ? 'denied' : ''}`}>
+        <summary>
+          <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+            <path
+              d="M1.5 6s1.7-3.2 4.5-3.2S10.5 6 10.5 6 8.8 9.2 6 9.2 1.5 6 1.5 6Z"
+              stroke="currentColor"
+              strokeWidth="1.2"
+            />
+            <circle cx="6" cy="6" r="1.4" stroke="currentColor" strokeWidth="1.2" />
+          </svg>
+          <span>{label}</span>
+        </summary>
+        <pre>{JSON.stringify({ input: part.input, output: part.output }, null, 2)}</pre>
+      </details>
+      {needsAuthServer && (
+        <button
+          className="btn ghost small"
+          onClick={() => void getMcpManager().authorize(needsAuthServer).catch(() => {})}
+        >
+          Authorize {needsAuthServer}
+        </button>
+      )}
+      {artifactIds.map((id) => (
+        <McpContentCard key={id} artifactId={id} />
+      ))}
+    </>
   )
 }
 
