@@ -42,6 +42,7 @@ import { createAgentTools, type ApprovalRequest, type PageControlGate } from '..
 import { type ControlSession } from '../tools/pageControl'
 import { clearIndex } from '../platform/domIndex'
 import { unmountPresence, unmountAllPresence } from '../platform/presence'
+import { clearAllHighlights } from '../platform/highlight'
 import { grantedCapabilities, type BrowsingCapability } from '../platform/permissions'
 import { getSkill, listSkillMetas, listSkills } from '../data/skills'
 import { listTasks, isActiveStatus, type ResearchTask, type ResearchStatus, type ResearchMsg, type ResearchVerification } from '../data/researchTasks'
@@ -1425,6 +1426,11 @@ export default function Chat({
     // Drop any orphaned steer that raced a just-ended chain (see the finally in
     // runTurnChain) so it can't leak into this new turn.
     steerQueueRef.current = []
+    // A fresh question starts from a clean page: sweep any passage highlights
+    // the previous turn left behind. Deliberately here and NOT in runTurnChain's
+    // finally — unlike the presence overlay, highlights must OUTLIVE their turn
+    // so the user can read what was marked (see src/platform/highlight.ts).
+    void clearAllHighlights()
     const { message, attachedSources, notes } = await buildUserTurn(spec)
     historyRef.current.push(message)
     if (activeSkill) notes.push(`[invoked skill: ${activeSkill.name}]`)
@@ -1840,6 +1846,9 @@ export default function Chat({
       pageControl.endSession()
       // Tear down ambient presence on any tab the chain touched (navigate/inspect
       // mount the frame outside a session, so endSession alone won't clear them).
+      // Passage highlights (highlight.ts) are deliberately NOT cleared here —
+      // they outlive the turn so the user can read what was marked; the next
+      // fresh turn sweeps them (see startFreshTurn).
       void unmountAllPresence()
       abortRef.current = null
       setStreaming(false)
