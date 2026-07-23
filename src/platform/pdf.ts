@@ -17,6 +17,7 @@
 import workerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url'
 import type { PDFDocumentLoadingTask, PDFDocumentProxy } from 'pdfjs-dist'
 import { sniffPdf, flattenOutline, type PageText, type OutlineEntry, type OutlineNode } from './pdfText'
+import { findTextInChunks } from './highlightText'
 
 /** An expected, explainable failure — the message is a sentence the model (and user) can act on. */
 export class PdfError extends Error {}
@@ -278,6 +279,22 @@ export async function loadPdf(
 // burning tokens; matches the screenshot pipeline's ballpark.
 const RENDER_LONG_EDGE = 1400
 
+// Shared canvas render for renderPdfPage / renderPdfPageHighlighted: one page,
+// scaled so its long edge is RENDER_LONG_EDGE device pixels.
+async function renderPageToCanvas(doc: PDFDocumentProxy, pageNumber: number) {
+  const page = await doc.getPage(pageNumber)
+  const base = page.getViewport({ scale: 1 })
+  const scale = Math.min(3, Math.max(0.3, RENDER_LONG_EDGE / Math.max(base.width, base.height)))
+  const viewport = page.getViewport({ scale })
+  const canvas = document.createElement('canvas')
+  canvas.width = Math.ceil(viewport.width)
+  canvas.height = Math.ceil(viewport.height)
+  const ctx = canvas.getContext('2d')
+  if (!ctx) throw new PdfError('Could not create a canvas to render the page.')
+  await page.render({ canvas, canvasContext: ctx, viewport }).promise
+  return { page, canvas, ctx, viewport }
+}
+
 /**
  * Render one page (1-based) to a PNG data URL. Shares loadPdf's document cache.
  * Runs only where a DOM canvas exists (side panel) — the research path never
@@ -292,21 +309,80 @@ export async function renderPdfPage(
   if (pageNumber < 1 || pageNumber > doc.numPages) {
     throw new PdfError(`No page ${pageNumber} — this PDF has ${doc.numPages} pages.`)
   }
-  const page = await doc.getPage(pageNumber)
-  const base = page.getViewport({ scale: 1 })
-  const scale = Math.min(3, Math.max(0.3, RENDER_LONG_EDGE / Math.max(base.width, base.height)))
-  const viewport = page.getViewport({ scale })
-  const canvas = document.createElement('canvas')
-  canvas.width = Math.ceil(viewport.width)
-  canvas.height = Math.ceil(viewport.height)
-  const ctx = canvas.getContext('2d')
-  if (!ctx) throw new PdfError('Could not create a canvas to render the page.')
-  await page.render({ canvas, canvasContext: ctx, viewport }).promise
+  const { canvas } = await renderPageToCanvas(doc, pageNumber)
   return {
     dataUrl: canvas.toDataURL('image/png'),
     width: canvas.width,
     height: canvas.height,
     pageCount: doc.numPages,
     title: loaded.info.title,
+  }
+}
+
+/** The subset of a pdf.js text item the highlighter needs (TextMarkedContent has no `str`). */
+interface PdfTextItem {
+  str: string
+  transform: number[]
+  width: number
+  height: number
+}
+
+/**
+ * Render one page with `query` marked like a highlighter pen. The match runs
+ * over the page's text items (findTextInChunks — the same matcher the webpage
+ * path uses, so PDF items that omit inter-word spaces still match); each
+ * matched item's box is mapped through the viewport transform and painted as a
+ * translucent multiply rect, so the text stays legible under the marker.
+ * `matched:false` means the passage wasn't found on THIS page — the plain
+ * render is returned so the caller can still show the page.
+ */
+export async function renderPdfPageHighlighted(
+  url: string,
+  pageNumber: number,
+  query: string,
+  opts?: { credentials?: RequestCredentials; signal?: AbortSignal },
+): Promise<{
+  dataUrl: string
+  width: number
+  height: number
+  pageCount: number
+  title: string
+  matched: boolean
+  matchCount: number
+}> {
+  const { doc, loaded } = await getEntry(url, opts)
+  if (pageNumber < 1 || pageNumber > doc.numPages) {
+    throw new PdfError(`No page ${pageNumber} — this PDF has ${doc.numPages} pages.`)
+  }
+  const { page, canvas, ctx, viewport } = await renderPageToCanvas(doc, pageNumber)
+  const content = await page.getTextContent()
+  const items = (content.items as unknown[]).filter(
+    (it): it is PdfTextItem => typeof (it as PdfTextItem).str === 'string',
+  )
+  const m = findTextInChunks(items.map((it) => it.str), query)
+  if (m.first) {
+    const pdfjs = await getPdfjs()
+    ctx.globalCompositeOperation = 'multiply'
+    ctx.fillStyle = 'rgba(255,213,79,0.6)'
+    for (let i = m.first.startChunk; i <= m.first.endChunk; i++) {
+      const it = items[i]
+      // Item transform is in PDF space; composing with the viewport transform
+      // yields the device-space baseline origin. Glyph height falls out of the
+      // composed matrix's scale component.
+      const tx = pdfjs.Util.transform(viewport.transform, it.transform)
+      const h = Math.hypot(tx[2], tx[3]) || it.height * viewport.scale
+      const w = it.width * viewport.scale
+      ctx.fillRect(tx[4] - 1, tx[5] - h, w + 2, h * 1.2)
+    }
+    ctx.globalCompositeOperation = 'source-over'
+  }
+  return {
+    dataUrl: canvas.toDataURL('image/png'),
+    width: canvas.width,
+    height: canvas.height,
+    pageCount: doc.numPages,
+    title: loaded.info.title,
+    matched: m.first !== null,
+    matchCount: m.count,
   }
 }
