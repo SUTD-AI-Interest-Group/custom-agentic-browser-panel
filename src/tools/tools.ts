@@ -10,7 +10,8 @@ import { snapshotPage, type PageSnapshot } from '../platform/domIndex'
 import { snapshotRegions } from '../platform/regionIndex'
 import { capture, tileShot, ShotError, planShotDelivery } from '../platform/screenshot'
 import { looksLikePdfUrl, parsePageRange, searchPages, assemblePagesText } from '../platform/pdfText'
-import { loadPdf, renderPdfPage, PdfError, type LoadedPdf } from '../platform/pdf'
+import { loadPdf, renderPdfPage, renderPdfPageHighlighted, PdfError, type LoadedPdf } from '../platform/pdf'
+import { highlightTextOnPage, highlightRegionOnPage } from '../platform/highlight'
 import { saveShot } from '../data/screenshots'
 import type { QueuedImage } from '../agent/agent'
 import { mountPresence, setTint, focusOn, pulse, setPresenceHidden, animateNavIntent } from '../platform/presence'
@@ -380,7 +381,12 @@ export function createAgentTools(
         })
         if (!approved) return DENIED
         if (mode === 'dom') return await readTabDom(tab.id, MAX_DOM_CHARS)
-        return await readTabContent(tab.id)
+        const content = await readTabContent(tab.id)
+        if ('error' in content && content.error) return content
+        return {
+          ...content,
+          tip: 'When your answer comes from a specific passage on this page, call HighlightContent with that exact text to scroll to it and mark it for the user.',
+        }
       },
     }),
 
@@ -559,6 +565,9 @@ export function createAgentTools(
           } else if (r.capped) {
             notes.push(`More pages matched than shown (${r.totalMatches} occurrences in total); narrow the query.`)
           }
+          if (r.totalMatches > 0) {
+            notes.push('To point the user at a passage in their viewer, call HighlightContent with the matched text and its page number.')
+          }
           return {
             url: info.url,
             title: info.title,
@@ -590,6 +599,107 @@ export function createAgentTools(
           pages: blocks.map((b) => ({ page: b.page, text: b.text, ...(b.truncated ? { truncated: true } : {}) })),
           ...(notes.length ? { note: notes.join(' ') } : {}),
         }
+      },
+    }),
+
+    HighlightContent: tool({
+      description:
+        'Show the user exactly WHERE on the page your answer comes from: scroll the active tab to a passage or region and mark it like a highlighter pen. Use this proactively whenever your answer is grounded in a specific passage, clause, figure, or section of the page or PDF the user is viewing ("which part mentions…", "what are the terms…"). Pass `text` (the passage, quoted exactly from the page/PDF) or `region` (an [rN] from ReadPage mode:"regions"); calls accumulate, so highlight each clause of a multi-part answer. On a PDF tab the viewer jumps to the page and the user is shown that page rendered with the passage marked. Highlights stay visible after your answer. Asks the user for permission first (except while a page-control session already owns this tab).',
+      inputSchema: z.object({
+        text: z
+          .string()
+          .optional()
+          .describe('The passage to highlight, quoted exactly as it appears on the page or PDF (a phrase to a couple of sentences).'),
+        region: z
+          .number()
+          .optional()
+          .describe('A region number from ReadPage(mode:"regions"), e.g. 2 for [r2] — for charts/figures/tables (webpages only).'),
+        label: z.string().optional().describe('Optional short callout shown beside the highlight, e.g. "Termination clause".'),
+        page: z
+          .number()
+          .optional()
+          .describe('PDF only: the page the passage is on (from ReadPdf search/pages). Omit to search the whole PDF.'),
+        reason: z.string().describe('Short reason shown to the user, e.g. "To show where the terms are stated"'),
+      }),
+      execute: async ({ text, region, label, page, reason }) => {
+        if (!text?.trim() && region === undefined)
+          return { error: 'Pass either `text` (a quoted passage) or `region` (an [rN] number).' }
+        const tab = await getActiveTab()
+        if (tab?.id === undefined) return { error: 'No active tab found.' }
+        const isPdf = looksLikePdfUrl(tab.url ?? '')
+        if (isPdf && region !== undefined)
+          return { error: 'The active tab is a PDF — regions do not exist there. Pass `text` (optionally with a `page` from ReadPdf search).' }
+
+        // Same exemption as the other perception tools: an open control session
+        // already covers pointing at the page it is driving.
+        const open = pageControl.session()
+        const owned = !!open && open.active && open.tabId === tab.id
+        if (!owned) {
+          const summary =
+            region !== undefined
+              ? 'Highlight a region on this page'
+              : `Highlight “${text!.trim().slice(0, 60)}${text!.trim().length > 60 ? '…' : ''}” on ${isPdf ? 'the PDF' : 'this page'}`
+          const approved = await requestApproval({ toolName: 'HighlightContent', summary, reason })
+          if (!approved) return DENIED
+        }
+
+        if (isPdf) {
+          const creds = { credentials: 'include' as const }
+          const target = tab.url!
+          try {
+            let targetPage = page
+            if (!targetPage) {
+              const loaded = await loadPdf(target, creds)
+              const found = searchPages(loaded.pages, text!)
+              if ('error' in found) return { error: found.error }
+              if (found.totalMatches === 0) {
+                return {
+                  found: false,
+                  note: 'That passage was not found in the PDF. Quote the text exactly as ReadPdf returned it (mode:"search" finds its page), or pass a `page` number.',
+                }
+              }
+              targetPage = found.matches[0].page
+            }
+            const r = await renderPdfPageHighlighted(target, targetPage, text!, creds)
+            // Same contract as the screenshot tools: the render is a USER
+            // artifact (ShotCard). It never rides imageQueue — the model already
+            // knows the text it asked to highlight.
+            const shotId = await saveShot({
+              dataUrl: r.dataUrl,
+              width: r.width,
+              height: r.height,
+              url: target,
+              title: r.title,
+              label: label?.trim() || `PDF page ${targetPage} — highlighted`,
+              conversationId,
+            })
+            // Best-effort jump: Chrome honors #page=N on load; an already-open
+            // viewer may ignore a fragment-only change. The in-chat render
+            // carries the answer regardless.
+            try {
+              await chrome.tabs.update(tab.id, { url: `${target.split('#')[0]}#page=${targetPage}` })
+            } catch {
+              /* best-effort */
+            }
+            return {
+              ok: true,
+              shotId,
+              page: targetPage,
+              pageCount: r.pageCount,
+              note: `Sent the PDF viewer to page ${targetPage} and showed the user that page with the passage marked${r.matched ? '' : ' (the passage could not be located on that rendered page, so the plain page was shown)'}. The image was not sent to you — you already know the text.`,
+            }
+          } catch (err) {
+            if (err instanceof PdfError) return { error: err.message }
+            return { error: `Could not highlight in the PDF (${err instanceof Error ? err.message : String(err)}).` }
+          }
+        }
+
+        if (region !== undefined) {
+          const r = await highlightRegionOnPage(tab.id, region, label)
+          return r.found ? { ok: true, note: r.message } : { error: r.message }
+        }
+        const r = await highlightTextOnPage(tab.id, text!, label)
+        return r.found ? { ok: true, occurrences: r.count, note: r.message } : { error: r.message }
       },
     }),
 
