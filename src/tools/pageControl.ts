@@ -68,6 +68,16 @@ const hostOf = (url: string): string => {
 }
 
 /**
+ * Names that commit money, identity, or destruction — the same intent as
+ * COMMITTING_NAME in src/tools/browsePolicy.ts (the policy the LESS-trusted
+ * headless research browser is held to). A granted foreground session must
+ * not be looser than that: "Delete my account" or "Confirm order" (often
+ * type!=='submit' in SPAs) still needs a fresh one-shot approval card.
+ */
+const COMMITTING_NAME =
+  /\b(buy|purchase|checkout|pay|payment|order now|add to (cart|bag)|subscribe|unsubscribe|donate|sign\s*up|signup|register|log\s*in|login|sign\s*in|signin|delete|remove|cancel|confirm|apply now|submit application|place order|continue)\b/i
+
+/**
  * True when an action must show an individual approval card even inside a
  * granted session: form submits, cross-origin navigation, sensitive fields,
  * or a model self-flag.
@@ -86,7 +96,7 @@ export function isPointOfNoReturn(
   if (spec.action === 'click' && el) {
     if (el.href && hostOf(el.href) !== sessionOrigin) return true
     if (el.type === 'submit' || el.type === 'image') return true
-    if (/submit|sign in|log ?in|pay|checkout|place order|continue/i.test(el.name)) return true
+    if (COMMITTING_NAME.test(el.name)) return true
   }
   return false
 }

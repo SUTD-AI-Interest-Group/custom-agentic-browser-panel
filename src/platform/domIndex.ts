@@ -44,7 +44,8 @@ const ATTR = 'data-agent-idx'
 // Runs inside the target page. Fully self-contained (serialized by
 // executeScript). Returns raw element records + page meta.
 function buildInteractiveIndex(attr: string, maxElements: number) {
-  const SENSITIVE_RE = /card|cvv|ccv|ssn|passw/i
+  const SENSITIVE_RE =
+    /card|cvv|ccv|ssn|passw|social security|routing|account\s*(number|no)|\bpin\b|security code|\botp\b|verification code|one[-\s]?time|iban|sort code/i
   const INTERACTIVE_TAGS = /^(A|BUTTON|INPUT|SELECT|TEXTAREA)$/
   const INTERACTIVE_ROLES =
     /^(button|link|checkbox|radio|tab|menuitem|switch|option|combobox|textbox)$/
@@ -117,9 +118,11 @@ function buildInteractiveIndex(attr: string, maxElements: number) {
     const input = el as HTMLInputElement
     const type = input.type || undefined
     const nameId = `${el.getAttribute('name') ?? ''} ${el.id ?? ''}`
+    const autocomplete = el.getAttribute('autocomplete') ?? ''
     const sensitive =
       type === 'password' ||
-      /^cc-/i.test(el.getAttribute('autocomplete') ?? '') ||
+      /^cc-/i.test(autocomplete) ||
+      /\b(one-time-code|new-password|current-password)\b/i.test(autocomplete) ||
       SENSITIVE_RE.test(nameId)
     const form = el.closest('form')
     el.setAttribute(attr, String(index))
