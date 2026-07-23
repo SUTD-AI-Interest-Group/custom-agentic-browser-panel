@@ -103,3 +103,18 @@ test('summarizeNotebook renders plan, coverage, findings, and numbered sources',
   expect(s).toContain('X is a thing [1]')
   expect(s).toContain('[1] Source A — https://a.com')
 })
+
+test('summarizeNotebook caps SOURCES to the most recent maxSources and notes the rest', () => {
+  const nb = createNotebook()
+  for (let i = 1; i <= 5; i++) {
+    nb.addSource({ url: `https://s${i}.com`, title: `Source ${i}` })
+  }
+  const s = summarizeNotebook(nb.get(), { maxSources: 2 })
+  // Only the two most-recently-added sources are listed...
+  expect(s).toContain('[4] Source 4 — https://s4.com')
+  expect(s).toContain('[5] Source 5 — https://s5.com')
+  expect(s).not.toContain('[1] Source 1 — https://s1.com')
+  expect(s).not.toContain('[3] Source 3 — https://s3.com')
+  // ...and the omitted count is called out.
+  expect(s).toContain('…and 3 more sources')
+})

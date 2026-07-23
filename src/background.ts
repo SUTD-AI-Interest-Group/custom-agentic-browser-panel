@@ -19,7 +19,7 @@ import {
 import { loadSettings, getSelectedProvider, observabilityConfig, resolveDreamIntervalMs } from './data/settings'
 import { isFetchableUrl } from './platform/webFetch'
 import { renderPage } from './platform/researchRender'
-import { closeAllSessions, handleBrowseOp } from './platform/researchBrowse'
+import { closeSessionsForTask, handleBrowseOp } from './platform/researchBrowse'
 import { searchInTab } from './platform/researchSearch'
 import { sweepOrphanWindow } from './platform/researchTab'
 
@@ -247,111 +247,119 @@ async function resumeStrandedResearch(): Promise<void> {
 
 chrome.runtime.onMessage.addListener((msg: ResearchMsg) => {
   ;(async () => {
-    if (msg?.type === 'research.ensureAndStart') {
-      const now = Date.now()
-      await saveTask({
-        id: msg.taskId,
-        question: msg.question,
-        status: 'running',
-        steps: [],
-        startedAt: now,
-        updatedAt: now,
-        conversationId: msg.conversationId,
-        // Anchor the 24h cap at creation, so a later resume can't extend it.
-        deadlineAt: now + MAX_RESEARCH_DURATION_MS,
-      })
-      // Dispatch through the shared, resilient path. Any failure here (e.g. offscreen
-      // creation hiccup) leaves the task 'running'; the watchdog re-dispatches it.
-      await startResearchTask(msg.taskId, { resume: false }).catch((err) =>
-        console.error('[research] initial dispatch failed', err),
-      )
-    } else if (msg?.type === 'research.update') {
-      // The offscreen host sends the full derived step list (with live results)
-      // and, when it changes, the structured notebook (plan/coverage drive the
-      // sheet). Replace rather than append. Any progress also clears a stale
-      // 'paused' state (a resumed phase may emit updates before its resumed signal).
-      await applyUpdate(msg.taskId, (cur) => {
-        const base = msg.notebook ? { steps: msg.steps, notebook: msg.notebook } : { steps: msg.steps }
-        return cur.status === 'paused'
-          ? { ...base, status: 'running' as const, pauseReason: undefined, nextRetryAt: undefined }
-          : base
-      })
-    } else if (msg?.type === 'research.paused') {
-      // A phase hit a transient failure and is backing off. Active → paused, with the
-      // reason for the card; a cancelled task must not be resurrected.
-      await applyUpdate(msg.taskId, (cur) =>
-        isActiveStatus(cur.status)
-          ? { status: 'paused', pauseReason: msg.reason, nextRetryAt: msg.nextRetryAt }
-          : {},
-      )
-    } else if (msg?.type === 'research.resumed') {
-      await applyUpdate(msg.taskId, (cur) =>
-        cur.status === 'paused' ? { status: 'running', pauseReason: undefined, nextRetryAt: undefined } : {},
-      )
-    } else if (msg?.type === 'research.heartbeat') {
-      // Liveness only: bump updatedAt for an active task so the watchdog sees it live.
-      await heartbeat(msg.taskId)
-    } else if (msg?.type === 'research.done') {
-      const t = await applyUpdate(msg.taskId, (cur) =>
-        cur.status === 'cancelled'
-          ? {}
-          : {
-              status: 'done',
-              report: msg.report,
-              sources: msg.sources,
-              notebook: msg.notebook,
-              verification: msg.verification,
-              partial: msg.partial,
-              pauseReason: undefined,
-              nextRetryAt: undefined,
-            },
-      )
-      if (t && t.status === 'done') {
-        try {
-          await notifyDone(msg.taskId, t.question)
-        } catch (err) {
-          console.error('[research] notify failed', err)
+    try {
+      if (msg?.type === 'research.ensureAndStart') {
+        const now = Date.now()
+        await saveTask({
+          id: msg.taskId,
+          question: msg.question,
+          status: 'running',
+          steps: [],
+          startedAt: now,
+          updatedAt: now,
+          conversationId: msg.conversationId,
+          // Anchor the 24h cap at creation, so a later resume can't extend it.
+          deadlineAt: now + MAX_RESEARCH_DURATION_MS,
+        })
+        // Dispatch through the shared, resilient path. Any failure here (e.g. offscreen
+        // creation hiccup) leaves the task 'running'; the watchdog re-dispatches it.
+        await startResearchTask(msg.taskId, { resume: false }).catch((err) =>
+          console.error('[research] initial dispatch failed', err),
+        )
+      } else if (msg?.type === 'research.update') {
+        // The offscreen host sends the full derived step list (with live results)
+        // and, when it changes, the structured notebook (plan/coverage drive the
+        // sheet). Replace rather than append. Any progress also clears a stale
+        // 'paused' state (a resumed phase may emit updates before its resumed signal).
+        await applyUpdate(msg.taskId, (cur) => {
+          const base = msg.notebook ? { steps: msg.steps, notebook: msg.notebook } : { steps: msg.steps }
+          return cur.status === 'paused'
+            ? { ...base, status: 'running' as const, pauseReason: undefined, nextRetryAt: undefined }
+            : base
+        })
+      } else if (msg?.type === 'research.paused') {
+        // A phase hit a transient failure and is backing off. Active → paused, with the
+        // reason for the card; a cancelled task must not be resurrected.
+        await applyUpdate(msg.taskId, (cur) =>
+          isActiveStatus(cur.status)
+            ? { status: 'paused', pauseReason: msg.reason, nextRetryAt: msg.nextRetryAt }
+            : {},
+        )
+      } else if (msg?.type === 'research.resumed') {
+        await applyUpdate(msg.taskId, (cur) =>
+          cur.status === 'paused' ? { status: 'running', pauseReason: undefined, nextRetryAt: undefined } : {},
+        )
+      } else if (msg?.type === 'research.heartbeat') {
+        // Liveness only: bump updatedAt for an active task so the watchdog sees it live.
+        await heartbeat(msg.taskId)
+      } else if (msg?.type === 'research.done') {
+        const t = await applyUpdate(msg.taskId, (cur) =>
+          cur.status === 'cancelled'
+            ? {}
+            : {
+                status: 'done',
+                report: msg.report,
+                sources: msg.sources,
+                notebook: msg.notebook,
+                verification: msg.verification,
+                partial: msg.partial,
+                pauseReason: undefined,
+                nextRetryAt: undefined,
+              },
+        )
+        if (t && t.status === 'done') {
+          try {
+            await notifyDone(msg.taskId, t.question)
+          } catch (err) {
+            console.error('[research] notify failed', err)
+          }
         }
+      } else if (msg?.type === 'research.error') {
+        await applyUpdate(msg.taskId, (cur) => (cur.status === 'cancelled' ? {} : { status: 'error', error: msg.error }))
+      } else if (msg?.type === 'research.cancel') {
+        await applyUpdate(msg.taskId, (cur) => (isActiveStatus(cur.status) ? { status: 'cancelled' } : {}))
+        // A cancelled task's browse session would otherwise hold the research tab
+        // until its TTL expired, blocking the next task's first fetch. Scoped to
+        // THIS task only — tasks run concurrently, and a global close would tear
+        // down another task's open page-walk mid-flight (see FIX H1).
+        closeSessionsForTask(msg.taskId)
+      } else if (msg?.type === 'research.browse') {
+        // Interactive browse: the offscreen sub-agent drives the isolated tab one
+        // policy-checked step at a time (see platform/researchBrowse.ts).
+        const result = await handleBrowseOp(msg.sessionId, msg.op)
+        chrome.runtime.sendMessage({
+          type: 'research.browseResult',
+          taskId: msg.taskId,
+          requestId: msg.requestId,
+          result,
+        } satisfies ResearchMsg)
+      } else if (msg?.type === 'research.searchTab') {
+        // Tab-search fallback: the keyless fetch was throttled, so run the search in
+        // a real tab that can clear the bot wall (see platform/researchSearch.ts).
+        const { results, error } = await searchInTab(msg.query, msg.maxResults)
+        chrome.runtime.sendMessage({
+          type: 'research.searchTabResult',
+          taskId: msg.taskId,
+          requestId: msg.requestId,
+          results,
+          error,
+        } satisfies ResearchMsg)
+      } else if (msg?.type === 'research.renderPage') {
+        // Hybrid-escalation broker: the offscreen agent can't touch tabs, so it asks
+        // the SW to render a hard URL in an isolated tab and return the text/shot.
+        const guard = isFetchableUrl(msg.url)
+        const outcome = guard.ok ? await renderPage(msg.url, msg.want) : { error: `refused (${guard.reason})` }
+        chrome.runtime.sendMessage({
+          type: 'research.renderResult',
+          taskId: msg.taskId,
+          requestId: msg.requestId,
+          ...outcome,
+        } satisfies ResearchMsg)
       }
-    } else if (msg?.type === 'research.error') {
-      await applyUpdate(msg.taskId, (cur) => (cur.status === 'cancelled' ? {} : { status: 'error', error: msg.error }))
-    } else if (msg?.type === 'research.cancel') {
-      await applyUpdate(msg.taskId, (cur) => (isActiveStatus(cur.status) ? { status: 'cancelled' } : {}))
-      // A cancelled task's browse session would otherwise hold the research tab
-      // until its TTL expired, blocking the next task's first fetch.
-      closeAllSessions()
-    } else if (msg?.type === 'research.browse') {
-      // Interactive browse: the offscreen sub-agent drives the isolated tab one
-      // policy-checked step at a time (see platform/researchBrowse.ts).
-      const result = await handleBrowseOp(msg.sessionId, msg.op)
-      chrome.runtime.sendMessage({
-        type: 'research.browseResult',
-        taskId: msg.taskId,
-        requestId: msg.requestId,
-        result,
-      } satisfies ResearchMsg)
-    } else if (msg?.type === 'research.searchTab') {
-      // Tab-search fallback: the keyless fetch was throttled, so run the search in
-      // a real tab that can clear the bot wall (see platform/researchSearch.ts).
-      const { results, error } = await searchInTab(msg.query, msg.maxResults)
-      chrome.runtime.sendMessage({
-        type: 'research.searchTabResult',
-        taskId: msg.taskId,
-        requestId: msg.requestId,
-        results,
-        error,
-      } satisfies ResearchMsg)
-    } else if (msg?.type === 'research.renderPage') {
-      // Hybrid-escalation broker: the offscreen agent can't touch tabs, so it asks
-      // the SW to render a hard URL in an isolated tab and return the text/shot.
-      const guard = isFetchableUrl(msg.url)
-      const outcome = guard.ok ? await renderPage(msg.url, msg.want) : { error: `refused (${guard.reason})` }
-      chrome.runtime.sendMessage({
-        type: 'research.renderResult',
-        taskId: msg.taskId,
-        requestId: msg.requestId,
-        ...outcome,
-      } satisfies ResearchMsg)
+    } catch (err) {
+      // A storage/quota failure (or anything else unguarded above) would otherwise
+      // become a silent unhandled rejection inside this fire-and-forget IIFE.
+      console.error('[bg] message handler failed', msg?.type, err)
     }
   })()
   return true

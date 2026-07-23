@@ -220,8 +220,9 @@ export function createNotebook(initial?: ResearchNotebook, onChange?: () => void
  * plan + per-sub-question coverage + the most recent findings + the numbered
  * source list. Never the raw fetched text (that would defeat the point).
  */
-export function summarizeNotebook(nb: ResearchNotebook, opts?: { maxFindings?: number }): string {
+export function summarizeNotebook(nb: ResearchNotebook, opts?: { maxFindings?: number; maxSources?: number }): string {
   const maxFindings = opts?.maxFindings ?? 25
+  const maxSources = opts?.maxSources ?? 60
   const lines: string[] = []
   if (nb.plan.subQuestions.length) {
     lines.push('SUB-QUESTIONS (coverage):')
@@ -240,10 +241,17 @@ export function summarizeNotebook(nb: ResearchNotebook, opts?: { maxFindings?: n
   }
   if (nb.images.length) lines.push(`IMAGES gathered: ${nb.images.length}`)
   if (nb.sources.length) {
+    // No cite-count on ResearchSourceRec to rank by, so — like FINDINGS above — cap
+    // to the most-recently-added sources (array order == citation order == recency).
+    // A citation number outside this window can still appear in FINDINGS text; that's
+    // fine, the model doesn't need every source's row to resolve a bracket it wrote.
+    const shown = nb.sources.slice(-maxSources)
+    const omitted = nb.sources.length - shown.length
     lines.push('SOURCES:')
-    for (const s of nb.sources) {
+    for (const s of shown) {
       lines.push(`  [${s.n}] ${s.title} — ${s.url}${s.credibility ? ` (${s.credibility})` : ''}`)
     }
+    if (omitted > 0) lines.push(`  …and ${omitted} more sources`)
   }
   return lines.join('\n')
 }

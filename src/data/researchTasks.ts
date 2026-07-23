@@ -224,6 +224,31 @@ const KEY = 'researchTasks'
 // conversations; nothing else removes old task records, so cap growth on every insert.
 const MAX_TASKS = 50
 
+// A `research.update` message carries the FULL derived step list every time (see
+// background.ts — "replace rather than append"), so a long-running task's log grows
+// without bound: hours of gather/reflect rounds easily produce thousands of entries,
+// each with a bounded-but-nonzero `detail` blob. 200 is generous for what a user
+// actually reads in the sheet (recent activity) while keeping one task's record from
+// crowding out the other 49 under the shared quota.
+const MAX_STEPS = 200
+
+/** Cap a task's step log to the most recent `max` entries. When entries are
+ *  trimmed, a single marker `phase` step is prepended so the sheet shows that
+ *  earlier history was dropped rather than silently starting mid-log. Pure and
+ *  idempotent — safe to call on every persisted update, not just once. */
+export function capSteps(steps: ResearchStep[], max: number = MAX_STEPS): ResearchStep[] {
+  if (steps.length <= max) return steps
+  const dropped = steps.length - max
+  const marker: ResearchStep = {
+    tool: 'Log',
+    summary: `…${dropped} earlier step${dropped === 1 ? '' : 's'} trimmed`,
+    detail: 'Older entries were dropped to keep this task’s stored record within the shared storage quota.',
+    status: 'done',
+    kind: 'phase',
+  }
+  return [marker, ...steps.slice(-max)]
+}
+
 // Serialize read-modify-write so concurrent saveTask/applyUpdate calls (e.g. rapid
 // research.update bursts) can't interleave a stale get() over a prior set().
 let writeChain: Promise<unknown> = Promise.resolve()
@@ -254,8 +279,14 @@ export function pruneTasks(map: Record<string, ResearchTask>, max: number): Reco
 export async function saveTask(t: ResearchTask): Promise<void> {
   await serialize(async () => {
     const map = await all()
-    map[t.id] = t
-    await chrome.storage.local.set({ [KEY]: pruneTasks(map, MAX_TASKS) })
+    map[t.id] = { ...t, steps: capSteps(t.steps) }
+    try {
+      await chrome.storage.local.set({ [KEY]: pruneTasks(map, MAX_TASKS) })
+    } catch (err) {
+      // A quota/storage failure here would otherwise be a silent unhandled rejection
+      // in the fire-and-forget message listener that calls this.
+      console.error('[researchTasks] persist failed', err)
+    }
   })
 }
 
@@ -277,8 +308,13 @@ export async function applyUpdate(
     if (!cur) return undefined
     const delta = typeof patch === 'function' ? patch(cur) : patch
     const next = { ...cur, ...delta, updatedAt: Date.now() }
+    if (next.steps) next.steps = capSteps(next.steps)
     map[id] = next
-    await chrome.storage.local.set({ [KEY]: map })
+    try {
+      await chrome.storage.local.set({ [KEY]: map })
+    } catch (err) {
+      console.error('[researchTasks] persist failed', err)
+    }
     return next
   })
 }
@@ -294,7 +330,11 @@ export async function heartbeat(id: string): Promise<void> {
     const cur = map[id]
     if (!cur || !isActiveStatus(cur.status)) return
     map[id] = { ...cur, updatedAt: Date.now() }
-    await chrome.storage.local.set({ [KEY]: map })
+    try {
+      await chrome.storage.local.set({ [KEY]: map })
+    } catch (err) {
+      console.error('[researchTasks] persist failed', err)
+    }
   })
 }
 
