@@ -3312,6 +3312,9 @@ function ToolPill({ part }: { part: Extract<UIPart, { type: 'tool' }> }) {
   // here would be a changed effect dep in McpAppCard on every transcript
   // render, remounting the app iframe each keystroke.
   const appOutput = useMemo(() => ({ text: output?.text, structured: output?.structured }), [output])
+  // Why the in-chat Authorize attempt failed (popup cancelled, network, state
+  // mismatch) — silence here would leave the user retrying blind.
+  const [authError, setAuthError] = useState<string | null>(null)
   const denied = output && typeof output === 'object' && output.denied
   let label: string
   if (part.state === 'running') label = 'Waiting for permission…'
@@ -3404,11 +3407,17 @@ function ToolPill({ part }: { part: Extract<UIPart, { type: 'tool' }> }) {
       {needsAuthServer && (
         <button
           className="btn ghost small"
-          onClick={() => void getMcpManager().authorize(needsAuthServer).catch(() => {})}
+          onClick={() => {
+            setAuthError(null)
+            getMcpManager()
+              .authorize(needsAuthServer)
+              .catch((err) => setAuthError(err instanceof Error ? err.message : String(err)))
+          }}
         >
           Authorize {needsAuthServer}
         </button>
       )}
+      {authError && <p className="mcp-error">Authorization failed: {authError}</p>}
       {artifactIds.map((id) => (
         <McpContentCard key={id} artifactId={id} />
       ))}

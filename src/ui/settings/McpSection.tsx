@@ -291,6 +291,12 @@ function JsonEditor({
   const canonical = serializeMcpJson(servers)
   const [text, setText] = useState(canonical)
   const [dirty, setDirty] = useState(false)
+  // The canonical text this edit session started from. Save is an outright
+  // REPLACE of the server map, so if another control (add form, remove, a
+  // toggle-driven import) changed the stored config while the textarea was
+  // dirty, saving the stale text would silently undo that change — refuse
+  // instead and make the user reconcile.
+  const [editBase, setEditBase] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   const fileRef = useRef<HTMLInputElement>(null)
 
@@ -302,11 +308,19 @@ function JsonEditor({
   const parsed = dirty ? parseMcpJson(text) : null
   const parseError = parsed && 'error' in parsed ? parsed.error : null
   const entryErrors = parsed && !('error' in parsed) ? parsed.invalid : []
+  const baseChanged = dirty && editBase !== null && editBase !== canonical
 
   function save() {
     if (!parsed || 'error' in parsed) return
+    if (baseChanged) {
+      setNotice(
+        'The server list changed while you were editing (a server was added, removed or toggled). Discard your edits and re-apply them to the current JSON.',
+      )
+      return
+    }
     onReplace(parsed.servers)
     setDirty(false)
+    setEditBase(null)
     setNotice(
       entryErrors.length
         ? `Saved. Skipped invalid entr${entryErrors.length > 1 ? 'ies' : 'y'}: ${entryErrors.map((e) => e.name).join(', ')}.`
@@ -364,6 +378,7 @@ function JsonEditor({
           value={text}
           onChange={(e) => {
             setText(e.target.value)
+            if (!dirty) setEditBase(canonical)
             setDirty(true)
             setNotice(null)
           }}
@@ -376,15 +391,18 @@ function JsonEditor({
             </p>
           ))}
         <div className="mcp-add-actions">
-          <button className="btn ghost small" disabled={!dirty || !!parseError} onClick={save}>
+          <button className="btn ghost small" disabled={!dirty || !!parseError || baseChanged} onClick={save}>
             Save
           </button>
+          {baseChanged && <span className="mcp-error">The server list changed while you were editing.</span>}
           {dirty && (
             <button
               className="link-btn"
               onClick={() => {
                 setText(canonical)
                 setDirty(false)
+                setEditBase(null)
+                setNotice(null)
               }}
             >
               Discard edits

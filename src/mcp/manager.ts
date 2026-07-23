@@ -73,6 +73,14 @@ interface ServerSlot {
   /** Reconnect backoff bookkeeping (reset on success). */
   attempts: number
   retryTimer?: ReturnType<typeof setTimeout>
+  /**
+   * Teardown generation. A connect() in flight cannot be cancelled, so
+   * teardown() bumps this instead; the connect captures the value it started
+   * under and discards its own result if the slot was torn down (disabled,
+   * removed, reconfigured) while it awaited — otherwise a slow handshake
+   * would silently resurrect a connection the user just turned off.
+   */
+  gen: number
   tools: McpToolInfo[]
   resources: McpResourceInfo[]
   prompts: McpPromptInfo[]
@@ -162,10 +170,12 @@ export class McpManager {
   }
 
   private emptySlot(entry: McpServerEntry): ServerSlot {
-    return { entry, status: 'connecting', attempts: 0, tools: [], resources: [], prompts: [] }
+    return { entry, status: 'connecting', attempts: 0, gen: 0, tools: [], resources: [], prompts: [] }
   }
 
   private teardown(name: string, slot: ServerSlot) {
+    // Invalidate any connect() still in flight (see ServerSlot.gen).
+    slot.gen += 1
     if (slot.retryTimer) clearTimeout(slot.retryTimer)
     slot.retryTimer = undefined
     slot.connectPromise = undefined
@@ -192,6 +202,11 @@ export class McpManager {
   }
 
   private async connect(name: string, slot: ServerSlot): Promise<void> {
+    // Captured before the first await: if teardown() runs while this coroutine
+    // is suspended (user disabled/removed/reconfigured the server), the slot's
+    // gen moves on and everything below must discard its work.
+    const gen = slot.gen
+    const stale = () => this.slots.get(name) !== slot || slot.gen !== gen
     slot.status = 'connecting'
     slot.error = undefined
     this.notify()
@@ -221,6 +236,13 @@ export class McpManager {
         // rejects the POST (404/405/…) — retry over the legacy SSE transport.
         connected = await attempt('sse')
       }
+      if (stale()) {
+        // The user turned this server off (or changed it) mid-handshake: the
+        // connection must not be installed, or a "Disabled" server would keep
+        // serving tool calls. Close what we just opened and walk away.
+        void connected.client.close().catch(() => {})
+        return
+      }
       slot.client = connected.client
       slot.transport = connected.transport
       slot.attempts = 0
@@ -248,6 +270,10 @@ export class McpManager {
       await this.listCatalog(name, slot)
       this.notify()
     } catch (err) {
+      // A slot torn down mid-connect owns its status ('disabled', a fresh
+      // 'connecting', …) — don't stamp this dead attempt's failure over it or
+      // schedule a retry it no longer wants.
+      if (stale()) throw err
       if (err instanceof UnauthorizedError) {
         slot.status = 'needs-auth'
         slot.error = 'This server requires authorization.'
@@ -317,6 +343,9 @@ export class McpManager {
           )
         : Promise.resolve([]),
     ])
+    // Torn down (or reconnected) while listing — this catalog belongs to a
+    // connection that no longer exists; keep the slot's own state.
+    if (slot.client !== client) return
     slot.tools = tools
     slot.resources = resources
     slot.prompts = prompts
