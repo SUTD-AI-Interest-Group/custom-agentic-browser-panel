@@ -12,6 +12,9 @@ export default defineConfig({
         sidepanel: 'sidepanel.html',
         background: 'src/background.ts',
         offscreen: 'offscreen.html',
+        // The MCP Apps sandbox host is NOT an entry: public/sandbox.html ships
+        // verbatim with an inline classic script, because a manifest-sandboxed
+        // page has an opaque origin and a module script would fail CORS.
       },
       output: {
         entryFileNames: '[name].js',

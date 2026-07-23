@@ -7,6 +7,7 @@ import {
 } from '../../data/settings'
 import { testLangfuseConnection } from '../../agent/observability'
 import { Disclosure, Section } from './primitives'
+import McpSection from './McpSection'
 
 /**
  * General tab: system prompt, keyboard shortcut, privacy, observability. Text
@@ -65,6 +66,8 @@ export default function GeneralTab({
         </label>
         <p className="hint">Contacts linked sites for their title, description and image.</p>
       </Section>
+
+      <McpSection draft={draft} commit={commit} />
 
       <ObservabilitySection draft={draft} buffer={buffer} commit={commit} commitDraft={commitDraft} />
     </div>

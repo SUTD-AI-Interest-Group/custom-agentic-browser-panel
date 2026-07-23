@@ -1,0 +1,63 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <style>
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        height: 100%;
+        overflow: hidden;
+        background: transparent;
+      }
+      iframe {
+        display: block;
+        width: 100%;
+        height: 100%;
+        border: 0;
+      }
+    </style>
+    <!--
+      The MCP Apps sandbox host. This page is manifest-sandboxed ("sandbox" key):
+      unique origin, no chrome.* APIs, and a CSP that permits the inline/eval
+      scripts app HTML needs — the one place MV3 lets app-supplied scripts run.
+
+      The script is INLINE and classic on purpose: a sandboxed page has an
+      opaque origin, so a module script fetched from chrome-extension:// fails
+      its CORS check. It lives in public/ (copied verbatim to dist/), not as a
+      Vite entry.
+
+      It is a dumb relay with one job each way:
+        panel → here: 'mcp-app:load' mounts the app HTML in a nested srcdoc
+                      iframe (allow-scripts only — never allow-same-origin);
+                      'mcp-app:rpc-response' forwards a JSON-RPC reply down.
+        app → here:   every message is forwarded up wrapped in 'mcp-app:rpc'.
+                      ALL protocol decisions (which methods exist, which tools
+                      may be called, approval) belong to the panel's bridge
+                      (src/mcp/appBridge.ts), never to this page.
+    -->
+    <script>
+      var appFrame = null
+      window.addEventListener('message', function (e) {
+        var data = e.data
+        if (e.source === window.parent) {
+          if (data && data.type === 'mcp-app:load' && typeof data.html === 'string') {
+            if (appFrame) appFrame.remove()
+            appFrame = document.createElement('iframe')
+            appFrame.setAttribute('sandbox', 'allow-scripts allow-forms')
+            appFrame.srcdoc = data.html
+            document.body.appendChild(appFrame)
+          } else if (data && data.type === 'mcp-app:rpc-response' && data.payload !== undefined) {
+            if (appFrame && appFrame.contentWindow) appFrame.contentWindow.postMessage(data.payload, '*')
+          }
+          return
+        }
+        if (appFrame && e.source === appFrame.contentWindow) {
+          window.parent.postMessage({ type: 'mcp-app:rpc', payload: e.data }, '*')
+        }
+      })
+    </script>
+  </head>
+  <body></body>
+</html>

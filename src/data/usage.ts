@@ -4,8 +4,8 @@
 // report their own size, and storage.ts imports both. Making this file import a
 // store would close a cycle, and neither module would compile alone.
 
-/** The five clearable stores, in Data-tab display order. */
-export type StoreKey = 'conversations' | 'screenshots' | 'memory' | 'skills' | 'research'
+/** The clearable stores, in Data-tab display order. */
+export type StoreKey = 'conversations' | 'screenshots' | 'mcp' | 'memory' | 'skills' | 'research'
 
 export interface StoreUsage {
   /** Estimated bytes — see `estimateBytes`. */

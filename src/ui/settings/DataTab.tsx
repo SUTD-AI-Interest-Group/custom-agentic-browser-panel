@@ -7,6 +7,7 @@ import { Section } from './primitives'
 const ROWS: Array<{ key: StoreKey; label: string }> = [
   { key: 'conversations', label: 'Conversations' },
   { key: 'screenshots', label: 'Screenshots' },
+  { key: 'mcp', label: 'MCP content' },
   { key: 'memory', label: 'Memory' },
   { key: 'skills', label: 'Skills' },
   { key: 'research', label: 'Research' },
@@ -14,8 +15,9 @@ const ROWS: Array<{ key: StoreKey; label: string }> = [
 
 /** What clearing each store actually destroys — revealed once the button is armed. */
 const CLEAR_EFFECT: Record<StoreKey, string> = {
-  conversations: 'Deletes every chat and its screenshots.',
+  conversations: 'Deletes every chat, its screenshots and its MCP content.',
   screenshots: 'Deletes every captured image.',
+  mcp: 'Deletes media and documents returned by MCP tools.',
   memory: 'Deletes all memories and the episode log.',
   skills: 'Deletes your custom skills. Built-ins are restored.',
   research: 'Deletes all saved reports.',

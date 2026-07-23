@@ -2,6 +2,8 @@
 // A "provider" is any OpenAI-compatible endpoint (OpenAI, OpenRouter, Groq,
 // Ollama, Anthropic's /v1 compat layer, LM Studio, vLLM, ...).
 
+import type { McpSettings } from '../mcp/config'
+
 /**
  * Which provider a config talks to. Selects its *capability profile* — reasoning
  * wire format, model-list endpoint, and whether it goes through a native adapter
@@ -80,7 +82,7 @@ export type TabAccess = 'active-tab' | 'all-tabs'
 export type ToolPolicy = 'never' | 'ask' | 'always'
 
 /** UI grouping for the tool-permission matrix, in display order. */
-export type ToolGroup = 'reading' | 'control' | 'navigation' | 'memory' | 'insights' | 'skills'
+export type ToolGroup = 'reading' | 'control' | 'navigation' | 'memory' | 'insights' | 'skills' | 'mcp'
 
 export interface ToolCatalogEntry {
   /** The tool's key in `createAgentTools` — the id policies are stored under. */
@@ -114,6 +116,11 @@ export const TOOL_CATALOG: ToolCatalogEntry[] = [
   { name: 'ListAllSkills', group: 'skills', label: 'List available skills', defaultPolicy: 'always' },
   { name: 'ReadSkill', group: 'skills', label: 'Load a skill', defaultPolicy: 'always' },
   { name: 'SaveSkill', group: 'skills', label: 'Create / update a skill' },
+  // MCP server tools themselves are NOT here — their policies are per-server
+  // (Settings.mcp.policies, resolved by mcpToolPolicy). These two built-ins
+  // read MCP resources across servers, so they ride the ordinary matrix.
+  { name: 'ListMcpResources', group: 'mcp', label: 'List MCP server resources', defaultPolicy: 'always' },
+  { name: 'ReadMcpResource', group: 'mcp', label: 'Read an MCP server resource' },
 ]
 
 /** Display order of tool groups in the permission matrix and quick menu. */
@@ -124,6 +131,7 @@ export const GROUP_ORDER: ToolGroup[] = [
   'memory',
   'insights',
   'skills',
+  'mcp',
 ]
 
 /** Human labels for each tool group. */
@@ -134,6 +142,7 @@ export const GROUP_LABELS: Record<ToolGroup, string> = {
   memory: 'Long-term memory',
   insights: 'Browsing insights',
   skills: 'Skills',
+  mcp: 'MCP',
 }
 
 /** Default policy per tool, derived from TOOL_CATALOG (unset → `ask`). */
@@ -201,6 +210,13 @@ export interface Settings {
   fetchLinkPreviews?: boolean
   /** Beta Langfuse observability. Absent on old installs → treated as disabled. */
   observability?: ObservabilityConfig
+  /**
+   * MCP servers: `servers` is byte-for-byte the standard `mcpServers` JSON
+   * object (upload/edit/copy are pure serialization); enabled flags and
+   * per-server tool policies ride in sidecar maps that never export. Sparse —
+   * absent on installs that configured nothing. See `src/mcp/config.ts`.
+   */
+  mcp?: McpSettings
 }
 
 /** Default (disabled) observability config; also the shape onboarding starts from. */
