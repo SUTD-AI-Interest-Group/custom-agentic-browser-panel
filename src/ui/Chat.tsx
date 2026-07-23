@@ -3308,6 +3308,10 @@ function controlActionLabel(input: any, output: any): string {
 
 function ToolPill({ part }: { part: Extract<UIPart, { type: 'tool' }> }) {
   const output = part.output as any
+  // Stable identity for the app card's init context: a fresh object literal
+  // here would be a changed effect dep in McpAppCard on every transcript
+  // render, remounting the app iframe each keystroke.
+  const appOutput = useMemo(() => ({ text: output?.text, structured: output?.structured }), [output])
   const denied = output && typeof output === 'object' && output.denied
   let label: string
   if (part.state === 'running') label = 'Waiting for permission…'
@@ -3409,11 +3413,7 @@ function ToolPill({ part }: { part: Extract<UIPart, { type: 'tool' }> }) {
         <McpContentCard key={id} artifactId={id} />
       ))}
       {output?.app && typeof output.app === 'object' && typeof output.app.server === 'string' && (
-        <McpAppCard
-          app={output.app as McpAppRef}
-          toolInput={part.input}
-          toolOutput={{ text: output.text, structured: output.structured }}
-        />
+        <McpAppCard app={output.app as McpAppRef} toolInput={part.input} toolOutput={appOutput} />
       )}
     </>
   )
