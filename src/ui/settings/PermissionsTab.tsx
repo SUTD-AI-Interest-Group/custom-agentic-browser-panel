@@ -17,6 +17,8 @@ import {
   requestCapabilities,
   removeCapabilities,
 } from '../../platform/permissions'
+import { mcpSettings, mcpToolPolicy } from '../../mcp/config'
+import { getMcpManager } from '../../mcp/manager'
 import { Section } from './primitives'
 
 const POLICIES: ToolPolicy[] = ['never', 'ask', 'always']
@@ -223,8 +225,175 @@ export default function PermissionsTab({
             </div>
           )
         })}
+
+        <McpPermissions draft={draft} commit={commit} />
       </Section>
     </div>
+  )
+}
+
+/**
+ * Per-server MCP policy rows, appended under the built-in tool groups. The
+ * two-level scheme mirrors provider/model reasoning effort: the server row's
+ * segmented control is the default for all its tools; expanding it reveals
+ * per-tool overrides (resolved by mcpToolPolicy: override → default → ask).
+ * Choosing a server default deliberately clears that server's overrides, so
+ * the collapsed control always says the truth afterwards. Tool lists come from
+ * the manager's cached catalog, so rows work while a server is disconnected.
+ */
+function McpPermissions({
+  draft,
+  commit,
+}: {
+  draft: Settings
+  commit: (next: Settings) => void
+}) {
+  const [openServers, setOpenServers] = useState<Set<string>>(new Set())
+  // Re-render when the manager's catalog changes (first connect, listChanged).
+  const [, setTick] = useState(0)
+  useEffect(() => getMcpManager().subscribe(() => setTick((n) => n + 1)), [])
+
+  const mcp = mcpSettings(draft)
+  const names = Object.keys(mcp.servers)
+  if (names.length === 0) return null
+  const catalog = new Map(getMcpManager().runtime().map((r) => [r.name, r.tools]))
+
+  function toggle(name: string) {
+    setOpenServers((prev) => {
+      const next = new Set(prev)
+      if (next.has(name)) next.delete(name)
+      else next.add(name)
+      return next
+    })
+  }
+
+  function setServerDefault(name: string, policy: ToolPolicy) {
+    commit({
+      ...draft,
+      mcp: { ...mcp, policies: { ...mcp.policies, [name]: { default: policy } } },
+    })
+  }
+
+  function setToolOverride(server: string, tool: string, policy: ToolPolicy) {
+    const p = mcp.policies?.[server]
+    commit({
+      ...draft,
+      mcp: {
+        ...mcp,
+        policies: {
+          ...mcp.policies,
+          [server]: { ...p, tools: { ...p?.tools, [tool]: policy } },
+        },
+      },
+    })
+  }
+
+  return (
+    <>
+      <p className="hint">MCP servers — a server's setting is the default for all its tools.</p>
+      {names.map((name) => {
+        const tools = catalog.get(name) ?? []
+        const serverDefault = mcp.policies?.[name]?.default ?? 'ask'
+        const overrides = mcp.policies?.[name]?.tools ?? {}
+        const mixed = tools.some((t) => mcpToolPolicy(mcp, name, t.name) !== serverDefault) ||
+          Object.keys(overrides).some((t) => overrides[t] !== serverDefault)
+        const expanded = openServers.has(name)
+        return (
+          <div className={`tool-group ${expanded ? 'open' : ''}`} id={`mcpgroup-${name}`} key={name}>
+            <div className="tool-group-head">
+              <button className="tool-group-toggle" aria-expanded={expanded} onClick={() => toggle(name)}>
+                <svg className="disclosure-chevron" width="10" height="10" viewBox="0 0 10 10" fill="none">
+                  <path
+                    d="M3 1l4 4-4 4"
+                    stroke="currentColor"
+                    strokeWidth="1.5"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  />
+                </svg>
+                <span className="tool-group-title">
+                  {name} <span className="mcp-badge">MCP</span>
+                </span>
+                <span className="tool-group-count">{tools.length}</span>
+              </button>
+              {mixed ? (
+                <button className="mixed-pill" onClick={() => toggle(name)}>
+                  Mixed
+                </button>
+              ) : (
+                <div className="policy-seg" role="radiogroup" aria-label={name}>
+                  {POLICIES.map((policy) => (
+                    <button
+                      key={policy}
+                      role="radio"
+                      aria-checked={serverDefault === policy}
+                      className={`policy-opt ${policy} ${serverDefault === policy ? 'active' : ''}`}
+                      onClick={() => setServerDefault(name, policy)}
+                    >
+                      {POLICY_LABELS[policy]}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {expanded && (
+              <div className="tool-group-body">
+                {mixed && (
+                  <p className="hint">
+                    Some tools override the server default — pick a default below to reset them.
+                  </p>
+                )}
+                {mixed && (
+                  <div className="tool-row">
+                    <span className="tool-label">All {name} tools</span>
+                    <div className="policy-seg" role="radiogroup" aria-label={`All ${name} tools`}>
+                      {POLICIES.map((policy) => (
+                        <button
+                          key={policy}
+                          role="radio"
+                          aria-checked={false}
+                          className={`policy-opt ${policy}`}
+                          onClick={() => setServerDefault(name, policy)}
+                        >
+                          {POLICY_LABELS[policy]}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                {tools.length === 0 && (
+                  <p className="hint">Tools appear here after the first successful connection.</p>
+                )}
+                {tools.map((t) => {
+                  const current = mcpToolPolicy(mcp, name, t.name)
+                  return (
+                    <div className="tool-row" key={t.name}>
+                      <span className="tool-label" title={t.description}>
+                        {t.name}
+                      </span>
+                      <div className="policy-seg" role="radiogroup" aria-label={t.name}>
+                        {POLICIES.map((policy) => (
+                          <button
+                            key={policy}
+                            role="radio"
+                            aria-checked={current === policy}
+                            className={`policy-opt ${policy} ${current === policy ? 'active' : ''}`}
+                            onClick={() => setToolOverride(name, t.name, policy)}
+                          >
+                            {POLICY_LABELS[policy]}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+            )}
+          </div>
+        )
+      })}
+    </>
   )
 }
 
