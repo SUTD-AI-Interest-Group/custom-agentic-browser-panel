@@ -16,6 +16,8 @@ export interface StoredConversation {
   updatedAt: number
   messages: UIMessage[]
   history: ModelMessage[]
+  /** Pinned conversations sort first in the Library. Absent means false. */
+  pinned?: boolean
 }
 
 /** Lightweight row for the history dropdown (no message bodies). */
@@ -25,6 +27,7 @@ export interface ConversationSummary {
   createdAt: number
   updatedAt: number
   messageCount: number
+  pinned?: boolean
 }
 
 const DB_NAME = 'lychee-conversations'
@@ -73,6 +76,17 @@ export async function getConversation(id: string): Promise<StoredConversation | 
   return rec ?? null
 }
 
+/**
+ * Pinned rows first, then most-recently-updated first within each group. Pure
+ * so it can be unit-tested without the IndexedDB plumbing around it.
+ */
+export function comparePinnedThenRecent(
+  a: Pick<ConversationSummary, 'pinned' | 'updatedAt'>,
+  b: Pick<ConversationSummary, 'pinned' | 'updatedAt'>,
+): number {
+  return Number(b.pinned ?? false) - Number(a.pinned ?? false) || b.updatedAt - a.updatedAt
+}
+
 export async function listConversations(): Promise<ConversationSummary[]> {
   const all = await requestOf<StoredConversation[]>('readonly', (s) => s.getAll())
   return all
@@ -82,8 +96,9 @@ export async function listConversations(): Promise<ConversationSummary[]> {
       createdAt: c.createdAt,
       updatedAt: c.updatedAt,
       messageCount: c.messages.length,
+      pinned: c.pinned ?? false,
     }))
-    .sort((a, b) => b.updatedAt - a.updatedAt)
+    .sort(comparePinnedThenRecent)
 }
 
 /**
@@ -129,6 +144,10 @@ export async function saveConversation(input: {
     updatedAt: now,
     messages: input.messages,
     history: input.history,
+    // saveConversation rebuilds the record field-by-field (no `...existing`
+    // spread), so the pin must be carried forward explicitly or every
+    // transcript save would silently unpin the conversation.
+    pinned: existing?.pinned ?? false,
   }))
 }
 
@@ -139,6 +158,16 @@ export async function renameConversation(id: string, title: string): Promise<voi
     existing
       ? { ...existing, title }
       : { id, title, createdAt: now, updatedAt: now, messages: [], history: [] },
+  )
+}
+
+/** Flip the pinned flag, creating a stub row if the transcript hasn't saved yet. */
+export async function togglePin(id: string): Promise<void> {
+  const now = Date.now()
+  await mutate(id, (existing) =>
+    existing
+      ? { ...existing, pinned: !(existing.pinned ?? false) }
+      : { id, title: null, createdAt: now, updatedAt: now, messages: [], history: [], pinned: true },
   )
 }
 
