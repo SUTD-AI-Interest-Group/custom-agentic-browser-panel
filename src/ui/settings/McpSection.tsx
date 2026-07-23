@@ -152,6 +152,15 @@ function ServerRow({
   const kind = classifyEntry(entry)
   const s = statusInfo(entry, enabled, live)
   const stdio = kind === 'stdio'
+  // Whether OAuth credentials are stored for this server — drives "Sign out".
+  const [hasAuth, setHasAuth] = useState(false)
+  useEffect(() => {
+    const key = `mcpAuth:${name}`
+    chrome.storage.local
+      .get(key)
+      .then((d) => setHasAuth(!!(d[key] as { tokens?: unknown } | undefined)?.tokens))
+      .catch(() => {})
+  }, [name, live?.state])
   return (
     <div className={`mcp-server-row ${stdio ? 'stdio' : ''}`}>
       <span className={`mcp-dot ${s.cls}`} title={s.label} />
@@ -168,6 +177,18 @@ function ServerRow({
       {s.cls === 'needs-auth' && onAuthorize && (
         <button className="btn ghost small" onClick={onAuthorize}>
           Authorize
+        </button>
+      )}
+      {hasAuth && s.cls !== 'needs-auth' && (
+        <button
+          className="link-btn"
+          title="Forget this server's OAuth tokens"
+          onClick={() => {
+            setHasAuth(false)
+            void getMcpManager().signOut(name)
+          }}
+        >
+          Sign out
         </button>
       )}
       {!stdio && (
