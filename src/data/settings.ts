@@ -2,6 +2,8 @@
 // A "provider" is any OpenAI-compatible endpoint (OpenAI, OpenRouter, Groq,
 // Ollama, Anthropic's /v1 compat layer, LM Studio, vLLM, ...).
 
+import type { McpSettings } from '../mcp/config'
+
 /**
  * Which provider a config talks to. Selects its *capability profile* — reasoning
  * wire format, model-list endpoint, and whether it goes through a native adapter
@@ -201,6 +203,13 @@ export interface Settings {
   fetchLinkPreviews?: boolean
   /** Beta Langfuse observability. Absent on old installs → treated as disabled. */
   observability?: ObservabilityConfig
+  /**
+   * MCP servers: `servers` is byte-for-byte the standard `mcpServers` JSON
+   * object (upload/edit/copy are pure serialization); enabled flags and
+   * per-server tool policies ride in sidecar maps that never export. Sparse —
+   * absent on installs that configured nothing. See `src/mcp/config.ts`.
+   */
+  mcp?: McpSettings
 }
 
 /** Default (disabled) observability config; also the shape onboarding starts from. */
