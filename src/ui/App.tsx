@@ -3,6 +3,7 @@ import { listConversations, type ConversationSummary } from '../data/conversatio
 import { dreamIfDue } from '../agent/dream'
 import { seedBuiltinSkills } from '../data/builtinSkills'
 import { loadSettings, saveSettings, type Settings } from '../data/settings'
+import { getMcpManager } from '../mcp/manager'
 import type { ResearchTask } from '../data/researchTasks'
 import { relativeTime } from '../platform/time'
 import Chat from './Chat'
@@ -44,6 +45,13 @@ export default function App() {
     void dreamIfDue().catch(() => {})
     refreshConversations()
   }, [refreshConversations])
+
+  // MCP: reconcile server connections with settings — on load and every save.
+  // The manager lives in this panel context and dies with it; refresh() is
+  // cheap when nothing changed.
+  useEffect(() => {
+    if (settings) void getMcpManager().refresh(settings).catch(() => {})
+  }, [settings])
 
   // Dismiss the history menu when clicking anywhere outside it.
   useEffect(() => {

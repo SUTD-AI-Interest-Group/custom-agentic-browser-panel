@@ -10,6 +10,7 @@ import {
   type McpServerEntry,
   type McpSettings,
 } from '../../mcp/config'
+import { getMcpManager } from '../../mcp/manager'
 
 /**
  * General-tab section for MCP servers: the server list (status, enable,
@@ -17,24 +18,36 @@ import {
  * importable, copyable. The `servers` object IS the standard `mcpServers`
  * file, so the editor and the copy button are pure serialization.
  *
- * Live connection status arrives via the status prop (wired to McpManager by
- * GeneralTab); before the manager connects, rows show config-derived states.
+ * Live connection status comes straight from the panel's McpManager (this
+ * section subscribes); before a server ever connects, rows show
+ * config-derived states (disabled / stdio-unsupported / not connected yet).
  */
 export default function McpSection({
   draft,
   commit,
-  status,
-  onAuthorize,
 }: {
   draft: Settings
   commit: (next: Settings) => void
-  /** Live per-server status from the manager; absent server → config-derived. */
-  status?: Record<string, { state: string; error?: string }>
-  /** Launch the OAuth flow for a server (user-click only). */
-  onAuthorize?: (name: string) => void
 }) {
   const mcp = mcpSettings(draft)
   const names = Object.keys(mcp.servers)
+
+  // Live status: re-render on every manager state change.
+  const [, setTick] = useState(0)
+  useEffect(() => getMcpManager().subscribe(() => setTick((n) => n + 1)), [])
+  const status = Object.fromEntries(
+    getMcpManager()
+      .runtime()
+      .map((r) => [r.name, { state: r.status, error: r.error }]),
+  )
+  const [authError, setAuthError] = useState<string | null>(null)
+
+  function authorize(name: string) {
+    setAuthError(null)
+    getMcpManager()
+      .authorize(name)
+      .catch((err) => setAuthError(`${name}: ${err instanceof Error ? err.message : String(err)}`))
+  }
 
   const patch = (next: McpSettings) => commit({ ...draft, mcp: next })
 
@@ -74,12 +87,13 @@ export default function McpSection({
           name={name}
           entry={mcp.servers[name]}
           enabled={serverEnabled(mcp, name)}
-          live={status?.[name]}
+          live={status[name]}
           onToggle={(on) => setEnabled(name, on)}
           onRemove={() => removeServer(name)}
-          onAuthorize={onAuthorize ? () => onAuthorize(name) : undefined}
+          onAuthorize={() => authorize(name)}
         />
       ))}
+      {authError && <p className="mcp-error">{authError}</p>}
 
       <AddServerForm
         existing={new Set(names)}
