@@ -1,5 +1,5 @@
 import { test, expect, vi, afterEach } from 'vitest'
-import { parseJsonLoose, isFetchableUrl, parseDuckDuckGoLite, parseDuckDuckGoHtml, resolveDdgHref, extractReadableText, fetchReadable } from './webFetch'
+import { parseJsonLoose, isFetchableUrl, parseDuckDuckGoLite, parseDuckDuckGoHtml, resolveDdgHref, extractReadableText, fetchReadable, PDF_CONTENT } from './webFetch'
 
 test('parses fenced json', () => {
   expect(parseJsonLoose('```json\n{"a":1}\n```')).toEqual({ a: 1 })
@@ -195,4 +195,19 @@ test('fetchReadable still succeeds when the final URL stays public', async () =>
   const result = await fetchReadable('https://example.com/start')
   expect('error' in result).toBe(false)
   if (!('error' in result)) expect(result.text).toContain('Hello.')
+})
+
+test('fetchReadable returns the PDF_CONTENT sentinel for application/pdf responses', async () => {
+  globalThis.fetch = vi.fn(async () =>
+    ({
+      ok: true,
+      url: 'https://example.com/paper',
+      status: 200,
+      headers: new Headers({ 'content-type': 'application/pdf' }),
+      text: async () => '%PDF-1.7 …binary…',
+      body: null,
+    }) as unknown as Response,
+  )
+  const result = await fetchReadable('https://example.com/paper')
+  expect('error' in result && result.error).toBe(PDF_CONTENT)
 })

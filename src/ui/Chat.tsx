@@ -36,6 +36,8 @@ import {
   type Settings,
 } from '../data/settings'
 import { getActiveTab, listOpenTabs, readTabContent, type TabContent, type TabSummary } from '../platform/tabs'
+import { looksLikePdfUrl } from '../platform/pdfText'
+import { loadPdf } from '../platform/pdf'
 import { createAgentTools, type ApprovalRequest, type PageControlGate } from '../tools/tools'
 import { type ControlSession } from '../tools/pageControl'
 import { clearIndex } from '../platform/domIndex'
@@ -215,6 +217,33 @@ function hostOf(url: string): string {
     return new URL(url).hostname.replace(/^www\./, '')
   } catch {
     return ''
+  }
+}
+
+// A PDF tab cannot be scripted, so readTabContent comes back empty or with an
+// error — substitute a pdf.js summary (title, page count, first-page snippet)
+// so "summarize this pdf" carries real context instead of an error block, and
+// point the model at ReadPdf for the rest. User-initiated (the user shared the
+// tab), so no approval card — same consent story as readTabContent itself.
+async function pdfAwareTabContent(c: TabContent): Promise<TabContent> {
+  if (!looksLikePdfUrl(c.url) || (!c.error && c.text.trim())) return c
+  try {
+    const { info, pages } = await loadPdf(c.url, { credentials: 'include' })
+    const first = pages[0]?.text.replace(/\s+/g, ' ').trim().slice(0, 1500) ?? ''
+    return {
+      ...c,
+      error: undefined,
+      title: info.title || c.title,
+      text: `[This tab is a PDF: "${info.title}", ${info.pageCount} page${info.pageCount === 1 ? '' : 's'}.${info.author ? ` Author: ${info.author}.` : ''} Use the ReadPdf tool to search or read the rest.]\n\nFirst page:\n${first}`,
+      truncated: info.pageCount > 1,
+    }
+  } catch {
+    return {
+      ...c,
+      error: undefined,
+      text: '[This tab is a PDF. Chrome PDFs cannot be read as page text — use the ReadPdf tool to read, search, or view it.]',
+      truncated: false,
+    }
   }
 }
 
@@ -1268,7 +1297,9 @@ export default function Chat({
     let modelText = text
     let syncedTabs: TabContent[] = []
     if (tabIds.length > 0) {
-      syncedTabs = await Promise.all(tabIds.map((id) => readTabContent(id)))
+      syncedTabs = await Promise.all(
+        tabIds.map((id) => readTabContent(id).then(pdfAwareTabContent)),
+      )
       // Remember which tabs are now in context (successful reads only), keyed by
       // id+url, so a later "this page" re-injects the current tab only once the
       // user has moved to a different page.

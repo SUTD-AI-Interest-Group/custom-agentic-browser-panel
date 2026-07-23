@@ -99,6 +99,7 @@ export interface ToolCatalogEntry {
  */
 export const TOOL_CATALOG: ToolCatalogEntry[] = [
   { name: 'ReadPage', group: 'reading', label: 'Read the current tab (text / DOM / elements)' },
+  { name: 'ReadPdf', group: 'reading', label: 'Read / search the open PDF' },
   { name: 'ReadTabs', group: 'reading', label: 'List / read other open tabs (text / DOM)' },
   { name: 'ExtractData', group: 'reading', label: 'Extract structured data from this page' },
   { name: 'StartResearch', group: 'reading', label: 'Run background web research' },

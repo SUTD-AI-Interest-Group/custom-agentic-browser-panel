@@ -4,7 +4,9 @@ import type { ProviderConfig } from '../data/settings'
 import { createModel } from '../agent/provider'
 import { extractStructured } from '../agent/extract'
 import { instrumentToolset, type Trace } from '../agent/observability'
-import { searchDuckDuckGo, fetchReadable, type SearchResultRow } from '../platform/webFetch'
+import { searchDuckDuckGo, fetchReadable, isFetchableUrl, PDF_CONTENT, type SearchResultRow } from '../platform/webFetch'
+import { looksLikePdfUrl, assemblePagesText } from '../platform/pdfText'
+import { loadPdf } from '../platform/pdf'
 import { searchAcademic, searchImages, harvestImages, type ImageResult } from '../platform/researchSources'
 import { summarizeNotebook, type NotebookHandle } from '../agent/notebook'
 import { runBrowseSession, type BrowseBroker } from '../agent/browseAgent'
@@ -72,6 +74,42 @@ function briefImage(img: ImageResult) {
   return { url: img.url, caption: img.caption || img.title, license: img.license, source: img.sourcePageUrl }
 }
 
+// FetchUrl's text budget for a PDF, matching extractReadableText's HTML cap.
+const PDF_TEXT_BUDGET = 20_000
+
+/**
+ * FetchUrl's PDF path: extract text with pdf.js instead of scraping DOM text —
+ * Chrome's PDF viewer has no DOM, so the rendered-tab escalation can never help
+ * here. SSRF-guarded like fetchReadable: the input URL is checked before the
+ * fetch, and the final (redirect-followed) URL is re-checked before any content
+ * is returned. Cookie-less, like every research fetch.
+ */
+async function fetchPdfReadable(url: string, notebook: NotebookHandle, signal?: AbortSignal) {
+  const guard = isFetchableUrl(url)
+  if (!guard.ok) return { error: `refused to fetch (${guard.reason})` }
+  try {
+    const { info, pages } = await loadPdf(url, { credentials: 'omit', signal })
+    const finalGuard = isFetchableUrl(info.url)
+    if (!finalGuard.ok) return { error: `refused: redirected to a blocked target (${finalGuard.reason})` }
+    const { blocks, omittedPages } = assemblePagesText(pages, pages.map((p) => p.page), PDF_TEXT_BUDGET)
+    const text = blocks.map((b) => `[page ${b.page}]\n${b.text}`).join('\n\n')
+    notebook.addSource({ url: info.url, title: info.title, fetchedVia: 'headless' })
+    const cut = omittedPages.length > 0 || info.pageCount > info.extractedPages
+    return {
+      url: info.url,
+      title: info.title,
+      text,
+      pdf: true,
+      pageCount: info.pageCount,
+      ...(cut
+        ? { truncated: true, note: `PDF text truncated to the first ${blocks.length} of ${info.pageCount} pages.` }
+        : {}),
+    }
+  } catch (err) {
+    return { error: err instanceof Error ? err.message : String(err) }
+  }
+}
+
 /**
  * Read-only, web-egress-only tools for the BACKGROUND research agent. Ungated by
  * design — there is no user present in the offscreen sandbox, and these tools
@@ -129,12 +167,15 @@ export function createResearchTools(deps: {
 
     FetchUrl: tool({
       description:
-        'Fetch a public web page and return its readable text. Automatically renders JS/paywalled/PDF pages in a real tab when the plain fetch comes back empty. Pass render:true to force a rendered read (e.g. for a page you know is a SPA).',
+        'Fetch a public web page and return its readable text. PDFs are parsed directly (per-page text, [page N] markers). Automatically renders JS/paywalled pages in a real tab when the plain fetch comes back empty. Pass render:true to force a rendered read (e.g. for a page you know is a SPA).',
       inputSchema: z.object({
         url: z.string().describe('http(s) URL to read'),
         render: z.boolean().optional().describe('Force a real-tab render instead of a plain fetch'),
       }),
       execute: async ({ url, render }, { abortSignal }) => {
+        // A PDF has no DOM to render or scrape — go straight to the pdf.js
+        // extractor (even under render:true; a tab render can never help).
+        if (looksLikePdfUrl(url)) return await fetchPdfReadable(url, notebook, abortSignal)
         // Forced render (a SPA the model already knows about).
         if (render && renderBroker) {
           const rr = await renderBroker.render(url, 'text')
@@ -146,6 +187,9 @@ export function createResearchTools(deps: {
           // fall through to a plain fetch if the render failed
         }
         const r = await fetchReadable(url, abortSignal)
+        // A PDF served from an extension-less URL (arxiv.org/pdf/…) only reveals
+        // itself by content-type — the sentinel routes it to the extractor.
+        if ('error' in r && r.error === PDF_CONTENT) return await fetchPdfReadable(url, notebook, abortSignal)
         const thin = !('error' in r) && r.text.trim().length < THIN_TEXT
         if (renderBroker && ('error' in r || thin)) {
           const rr = await renderBroker.render(url, 'text')

@@ -102,6 +102,7 @@ logic lives in `src/tools/toolDiscovery.ts`.
 | Tool | What it does |
 | --- | --- |
 | `ReadPage` | Read the active tab — text, DOM, or numbered interactive elements |
+| `ReadPdf` | Read/search a PDF (the open tab or a URL) — outline, page ranges, keyword search with page-numbered snippets, or render a page as an image |
 | `ReadTabs` | List all open tabs; read specific ones by id |
 | `GetScreenshot` | Look at the page as an image — the rendered viewport, or `fullPage:true` for a stitched full page |
 | `GetElementScreenshot` | Screenshot one element/region (`[rN]` from ReadPage regions, or a CSS selector) |
@@ -284,6 +285,8 @@ src/platform/presence.ts      On-page overlay: tint + gliding cursor + spotlight
 src/platform/marks.ts         Set-of-marks screenshot (numbered boxes over a capture)
 src/platform/researchTab.ts   Leased, isolated, minimized tab for research
 src/platform/webFetch.ts      Fetch + readability extraction (SSRF-guarded)
+src/platform/pdf.ts           PDF fetch/parse/render core (pdf.js, cached)
+src/platform/pdfText.ts       Pure PDF logic: ranges, search, budgets (tested)
 ```
 
 Functions injected via `chrome.scripting.executeScript` run in the page's

@@ -13,8 +13,9 @@
 // read-only + safe settling only (navigate to the requested URL, scroll to trigger
 // lazy content) — never a form submit, cross-origin navigation, or auth.
 //
-// Known caveat: PDFs render in Chrome's plugin viewer (no DOM text), so text
-// extraction is thin for them — a dedicated PDF path (pdf.js) is future work.
+// PDFs never reach this broker: FetchUrl routes them to the pdf.js extractor
+// (platform/pdf.ts) before escalation — Chrome's plugin viewer has no DOM text,
+// so a rendered read could never help there.
 
 import { isFetchableUrl } from './webFetch'
 import { acquireTab, captureBestEffort, exec, navigateAndWait, sleep, type TabLease } from './researchTab'

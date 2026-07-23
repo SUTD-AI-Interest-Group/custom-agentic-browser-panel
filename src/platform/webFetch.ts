@@ -199,6 +199,11 @@ export async function searchDuckDuckGo(
  *  attempt (202/429) — the caller escalates to a real tab on exactly this. */
 export const SEARCH_RATE_LIMITED = 'search rate-limited (bot protection)'
 
+/** Sentinel error from fetchReadable when the response is a PDF — the caller
+ *  (research's FetchUrl) escalates to the pdf.js extractor on exactly this,
+ *  never to a rendered tab (Chrome's PDF viewer has no DOM text to scrape). */
+export const PDF_CONTENT = 'pdf content'
+
 /** Fetch a public page and return its readable text. SSRF-guarded, credentials omitted, timed, size-capped. Never throws. */
 export async function fetchReadable(
   url: string,
@@ -229,6 +234,7 @@ export async function fetchReadable(
     if (!finalGuard.ok) return { error: `refused: redirected to a blocked target (${finalGuard.reason})` }
     if (!res.ok) return { error: `fetch failed: HTTP ${res.status}` }
     const ct = res.headers.get('content-type') ?? ''
+    if (/application\/pdf/i.test(ct)) return { error: PDF_CONTENT }
     if (!/text\/html|text\/plain|application\/xhtml/i.test(ct)) return { error: `unsupported content-type: ${ct}` }
     const body = await readCapped(res, MAX_BYTES)
     const { title, text } = extractReadableText(body)

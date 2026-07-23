@@ -9,6 +9,8 @@ import type { BrowsingCapability } from '../platform/permissions'
 import { snapshotPage, type PageSnapshot } from '../platform/domIndex'
 import { snapshotRegions } from '../platform/regionIndex'
 import { capture, tileShot, ShotError, planShotDelivery } from '../platform/screenshot'
+import { looksLikePdfUrl, parsePageRange, searchPages, assemblePagesText } from '../platform/pdfText'
+import { loadPdf, renderPdfPage, PdfError, type LoadedPdf } from '../platform/pdf'
 import { saveShot } from '../data/screenshots'
 import type { QueuedImage } from '../agent/agent'
 import { mountPresence, setTint, focusOn, pulse, setPresenceHidden, animateNavIntent } from '../platform/presence'
@@ -125,6 +127,9 @@ async function lookResult(
 // DOM is denser than plain text, so these caps run larger than the 25k text cap.
 const MAX_DOM_CHARS = 40_000 // single active tab (ReadPage mode "dom")
 const MAX_DOM_CHARS_PER_TAB = 15_000 // per tab in ReadTabs mode "dom", to bound aggregate size
+
+// ReadPdf mode "pages" total budget — mirrors readTabContent's 25k text cap.
+const MAX_PDF_TEXT_CHARS = 25_000
 
 // Image budgets. A stitched page is handed to the model as several legible tiles
 // rather than one illegible squashed strip (see planTiles), so one GetScreenshot call
@@ -307,6 +312,15 @@ export function createAgentTools(
       execute: async ({ mode, reason }) => {
         const tab = await getActiveTab()
         if (tab?.id === undefined) return { error: 'No active tab found.' }
+        // Chrome renders PDFs in a plugin with no scriptable DOM — every ReadPage
+        // mode would come back empty or error. Redirect the model to ReadPdf
+        // before asking the user anything (this touches nothing but the tab URL,
+        // which ReadPage already uses).
+        if (looksLikePdfUrl(tab.url ?? '')) {
+          return {
+            note: 'The active tab is a PDF. Chrome shows PDFs in a plugin viewer with no readable page DOM, so ReadPage cannot see it. Use the ReadPdf tool instead: mode "outline" to orient, "search" to find text, "pages" to read, "view" to look at a page.',
+          }
+        }
         // Both perception modes are read-only, and both are exempt from the card
         // while a control session already owns this tab — the session grant covers
         // looking at the page it is already driving.
@@ -413,6 +427,170 @@ export function createAgentTools(
           'Take a screenshot of one element on this page',
           reason,
         ),
+    }),
+
+    ReadPdf: tool({
+      description:
+        'Read, search, or look at a PDF — the one open in the active tab (default) or any PDF `url`. Chrome PDFs are invisible to ReadPage; this tool parses the actual file. mode="outline": title, page count, bookmarks — orient yourself first. mode="pages": read a page range (`pages:"3-7,12"`) as text. mode="search": find a word/phrase across every page, returning page numbers + snippets — the fastest way to answer a question about a long PDF; if a term misses, retry with synonyms. mode="view": render one page (`page:4`) as an image to look at — figures, charts, or scanned PDFs with no text layer. Asks the user for permission first.',
+      inputSchema: z.object({
+        mode: z
+          .enum(['outline', 'pages', 'search', 'view'])
+          .describe(
+            'outline = metadata + bookmarks; pages = read a page range as text; search = find text across all pages; view = render one page as an image',
+          ),
+        url: z
+          .string()
+          .optional()
+          .describe('A PDF URL to read. Omit to read the PDF open in the active tab.'),
+        pages: z.string().optional().describe('mode="pages": a page range like "3-7" or "3-7,12"'),
+        query: z.string().optional().describe('mode="search": the word or phrase to find'),
+        page: z.number().optional().describe('mode="view": the page number to render'),
+        reason: z
+          .string()
+          .describe('Short reason shown to the user, e.g. "To answer from the methods section"'),
+      }),
+      execute: async ({ mode, url, pages, query, page, reason }) => {
+        // Validate before asking the user — a card for a call that cannot run is noise.
+        if (mode === 'pages' && !pages) return { error: 'mode:"pages" needs a `pages` range like "3-7".' }
+        if (mode === 'search' && !query?.trim()) return { error: 'mode:"search" needs a `query`.' }
+        if (mode === 'view' && !page) return { error: 'mode:"view" needs a `page` number.' }
+        let target = url
+        if (!target) {
+          const tab = await getActiveTab()
+          target = tab?.url
+          if (!target) return { error: 'No active tab and no `url` given.' }
+        }
+        // The card names the document: the tab the user is viewing, or the host
+        // it would be fetched from.
+        const docLabel = url ? `the PDF at ${hostLabel(url)}` : 'the PDF you are viewing'
+        const summary =
+          mode === 'outline'
+            ? `Read the table of contents of ${docLabel}`
+            : mode === 'pages'
+              ? `Read pages ${pages} of ${docLabel}`
+              : mode === 'search'
+                ? `Search ${docLabel} for “${query}”`
+                : `Look at page ${page} of ${docLabel}`
+        const approved = await requestApproval({ toolName: 'ReadPdf', summary, reason })
+        if (!approved) return DENIED
+
+        // The foreground fetch rides the user's cookies so a PDF they can see
+        // behind a login, the agent can read too. (Research's PDF path stays
+        // cookie-less — see fetchPdfReadable in research.ts.)
+        const creds = { credentials: 'include' as const }
+
+        if (mode === 'view') {
+          try {
+            const r = await renderPdfPage(target, page!, creds)
+            // Same contract as the screenshot tools: the render is ALWAYS saved
+            // as a user-facing artifact (ShotCard); planShotDelivery only routes
+            // whether it also reaches the model, and only via imageQueue.
+            const shotId = await saveShot({
+              dataUrl: r.dataUrl,
+              width: r.width,
+              height: r.height,
+              url: target,
+              title: r.title,
+              label: `PDF page ${page} of ${r.pageCount}`,
+              conversationId,
+            })
+            const delivery = planShotDelivery(visionCapable, shotImagesUsed, MAX_SHOT_IMAGES_PER_TURN)
+            if (delivery.kind === 'blind') {
+              return {
+                ok: true,
+                shotId,
+                page,
+                pageCount: r.pageCount,
+                note: `Rendered page ${page} of "${r.title}" and showed it to the user in the chat. You can't view images, so it was not sent to you — use mode:"pages" or mode:"search" for its text.`,
+              }
+            }
+            if (delivery.kind === 'budget') {
+              return {
+                ok: true,
+                shotId,
+                page,
+                pageCount: r.pageCount,
+                note: `Rendered page ${page} of "${r.title}" and saved it for the user, but this turn's image budget is spent, so it was not sent to you. Use mode:"pages" for its text.`,
+              }
+            }
+            imageQueue.push({
+              dataUrl: r.dataUrl,
+              caption: `Page ${page} of ${r.pageCount} of the PDF "${r.title}" — a plain rendered page; there are no numbered boxes on it.`,
+            })
+            shotImagesUsed += 1
+            return { ok: true, shotId, page, pageCount: r.pageCount, images: 1, note: 'The page image follows.' }
+          } catch (err) {
+            if (err instanceof PdfError) return { error: err.message }
+            return { error: `Could not render the page (${err instanceof Error ? err.message : String(err)}).` }
+          }
+        }
+
+        let loaded: LoadedPdf
+        try {
+          loaded = await loadPdf(target, creds)
+        } catch (err) {
+          if (err instanceof PdfError) return { error: err.message }
+          return { error: `Could not read the PDF (${err instanceof Error ? err.message : String(err)}).` }
+        }
+        const { info, pages: pageTexts, outline } = loaded
+        const notes: string[] = []
+        if (info.pageCount > info.extractedPages) {
+          notes.push(`Text was extracted for the first ${info.extractedPages} of ${info.pageCount} pages.`)
+        }
+
+        if (mode === 'outline') {
+          return {
+            url: info.url,
+            title: info.title,
+            ...(info.author ? { author: info.author } : {}),
+            pageCount: info.pageCount,
+            ...(outline.length
+              ? { bookmarks: outline }
+              : { firstPage: pageTexts[0]?.text.slice(0, 600) ?? '' }),
+            note: ['Use mode:"search" to locate topics, then mode:"pages" to read them.', ...notes].join(' '),
+          }
+        }
+
+        if (mode === 'search') {
+          const r = searchPages(pageTexts, query!)
+          if ('error' in r) return { error: r.error }
+          if (r.totalMatches === 0) {
+            notes.push('No matches. Try a shorter or different term (synonyms, singular form).')
+          } else if (r.capped) {
+            notes.push(`More pages matched than shown (${r.totalMatches} occurrences in total); narrow the query.`)
+          }
+          return {
+            url: info.url,
+            title: info.title,
+            pageCount: info.pageCount,
+            totalMatches: r.totalMatches,
+            matches: r.matches,
+            ...(notes.length ? { note: notes.join(' ') } : {}),
+          }
+        }
+
+        // mode === 'pages'
+        const parsed = parsePageRange(pages!, info.pageCount)
+        if ('error' in parsed) return { error: parsed.error }
+        const { blocks, omittedPages } = assemblePagesText(pageTexts, parsed.pages, MAX_PDF_TEXT_CHARS)
+        if (omittedPages.length) {
+          notes.push(
+            `The character budget cut page${omittedPages.length > 1 ? 's' : ''} ${omittedPages.join(', ')} — request ${omittedPages.length > 1 ? 'them' : 'it'} in a smaller range.`,
+          )
+        }
+        if (blocks.length > 0 && blocks.every((b) => b.text.trim().length < 20)) {
+          notes.push(
+            'These pages have little or no text layer — this may be a scanned PDF. Use mode:"view" to look at a page as an image.',
+          )
+        }
+        return {
+          url: info.url,
+          title: info.title,
+          pageCount: info.pageCount,
+          pages: blocks.map((b) => ({ page: b.page, text: b.text, ...(b.truncated ? { truncated: true } : {}) })),
+          ...(notes.length ? { note: notes.join(' ') } : {}),
+        }
+      },
     }),
 
     ToolSearch: tool({
