@@ -2637,13 +2637,16 @@ function ThinkingIndicator({
 }
 
 /**
- * The stored `shotId` of a *successful* screenshot part, else undefined. Drives
+ * The stored `shotId` of a *successful* shot-saving part, else undefined. Drives
  * grouping consecutive captures into one carousel (see MessageView) — errored or
- * denied screenshots return undefined and fall through to a normal tool pill.
+ * denied calls return undefined and fall through to a normal tool pill.
+ * Name-agnostic on purpose: `shotId` in a done output IS the contract for "a
+ * user-facing image was saved" (GetScreenshot, GetElementScreenshot, ReadPdf
+ * mode:"view", HighlightContent's marked PDF page — and any future tool), so a
+ * new shot-saving tool can never silently save an image the chat never shows.
  */
 function shotIdOf(part: UIPart): string | undefined {
   if (part.type !== 'tool') return undefined
-  if (part.toolName !== 'GetScreenshot' && part.toolName !== 'GetElementScreenshot') return undefined
   if (part.state !== 'done') return undefined
   const out = part.output as any
   if (out && typeof out === 'object' && out.denied) return undefined

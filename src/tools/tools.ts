@@ -677,11 +677,17 @@ export function createAgentTools(
               label: label?.trim() || `PDF page ${targetPage} — highlighted`,
               conversationId,
             })
-            // Best-effort jump: Chrome honors #page=N on load; an already-open
-            // viewer may ignore a fragment-only change. The in-chat render
-            // carries the answer regardless.
+            // Jump the viewer. Chrome's PDF plugin only parses #page=N at
+            // document load — a fragment-only tabs.update is a same-document
+            // navigation it ignores (the URL bar changes, the page doesn't).
+            // So set the URL, then reload, and the viewer re-opens on the
+            // target page. Unconditional: even when the fragment already says
+            // this page, the user may have scrolled away, and "highlight" means
+            // "take me there". Best-effort — a failure still leaves the marked
+            // render in chat.
             try {
               await chrome.tabs.update(tab.id, { url: `${target.split('#')[0]}#page=${targetPage}` })
+              await chrome.tabs.reload(tab.id)
             } catch {
               /* best-effort */
             }
