@@ -341,7 +341,7 @@ export function createAgentTools(
               url: snap.url,
               title: snap.title,
               regions: snap.text,
-              note: 'Pass a region number to GetElementScreenshot as `region` (e.g. region: 2 for [r2]) to look at it.',
+              note: 'Pass a region number to GetElementScreenshot as `region` (e.g. region: 2 for [r2]) to look at it, or to HighlightContent to point the user at it.',
             }
           } catch (err) {
             return { error: `Cannot read this page (${err instanceof Error ? err.message : String(err)}).` }
@@ -590,6 +590,10 @@ export function createAgentTools(
         if (blocks.length > 0 && blocks.every((b) => b.text.trim().length < 20)) {
           notes.push(
             'These pages have little or no text layer — this may be a scanned PDF. Use mode:"view" to look at a page as an image.',
+          )
+        } else if (blocks.length > 0) {
+          notes.push(
+            'When your answer comes from a specific passage here, call HighlightContent with that quoted text and its page number to mark it for the user.',
           )
         }
         return {

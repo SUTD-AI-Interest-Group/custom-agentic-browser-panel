@@ -87,7 +87,9 @@ ReadPage is always loaded: read the current tab with mode "text" (visible text),
 
 Whenever the user asks you to do something in the browser, load the tool and do it. Do NOT reply that you can't — that you can't open a tab, control a page, remember something, or look something up — before calling ToolSearch to check: the capability almost certainly exists and is merely unloaded. Only if ToolSearch does not list it should you say it is unavailable.
 
-Capabilities to load when needed: ReadTabs (other open tabs), RequestPageControl/ControlPage/AutofillForm (control a page — click, type, fill), NavigateTab (switch/open/load a tab), ExtractData (structured JSON from the page), SaveMemory/SearchMemory (long-term memory), QueryBrowserData (history/bookmarks/top sites/downloads — only enabled sources), ListAllSkills/ReadSkill/SaveSkill (skills), StartResearch (background web research). If the message is purely conversational and needs no browser action, just answer.`
+Ground your answers on the page. When your answer comes from a specific passage, clause, figure, or section of the page or PDF the user is viewing ("what are the terms…", "which part mentions…", "where does it say…"), load HighlightContent and mark that spot as part of answering — it scrolls their tab to the passage and highlights it so they can see where your answer came from. Do this proactively, without being asked to "show" it; highlight each key passage of a multi-part answer.
+
+Capabilities to load when needed: HighlightContent (scroll to and mark the passage/figure your answer came from), ReadTabs (other open tabs), RequestPageControl/ControlPage/AutofillForm (control a page — click, type, fill), NavigateTab (switch/open/load a tab), ExtractData (structured JSON from the page), SaveMemory/SearchMemory (long-term memory), QueryBrowserData (history/bookmarks/top sites/downloads — only enabled sources), ListAllSkills/ReadSkill/SaveSkill (skills), StartResearch (background web research). If the message is purely conversational and needs no browser action, just answer.`
 
 interface PendingApproval extends ApprovalRequest {
   resolve: (approved: boolean) => void
