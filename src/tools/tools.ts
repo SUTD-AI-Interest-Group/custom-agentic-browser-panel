@@ -18,6 +18,9 @@ import { mountPresence, setTint, focusOn, pulse, setPresenceHidden, animateNavIn
 import { captureWithMarks } from '../platform/marks'
 import { createModel } from '../agent/provider'
 import { extractStructured } from '../agent/extract'
+import { getMcpManager } from '../mcp/manager'
+import { mapResourceResult } from '../mcp/content'
+import { saveMcpArtifact } from '../data/mcpArtifacts'
 import { instrumentToolset, type Trace } from '../agent/observability'
 import { createStartResearchTool } from './research'
 import { buildCatalog, searchCatalog, partitionToolNames, type CatalogEntry } from './toolDiscovery'
@@ -1295,6 +1298,78 @@ export function createAgentTools(
         }
       },
     }),
+
+    ListMcpResources: tool({
+      description:
+        "List the resources (documents, data, files) exposed by the user's connected MCP servers — names, URIs and mime types, per server. Use before ReadMcpResource to find what a server offers.",
+      inputSchema: z.object({
+        server: z.string().optional().describe('Limit to one server by name. Omit to list all.'),
+      }),
+      execute: async ({ server }) => {
+        const approved = await requestApproval({
+          toolName: 'ListMcpResources',
+          summary: server ? `List resources on the ${server} MCP server` : 'List MCP server resources',
+          reason: 'To see which resources are available',
+        })
+        if (!approved) return DENIED
+        const runtime = getMcpManager()
+          .runtime()
+          .filter((r) => (server ? r.name === server : true))
+        if (runtime.length === 0)
+          return { error: server ? `No MCP server named "${server}".` : 'No MCP servers are configured.' }
+        return {
+          servers: runtime.map((r) => ({
+            server: r.name,
+            status: r.status,
+            resources: r.resources.slice(0, 100),
+          })),
+          note: 'Read one with ReadMcpResource (server + uri). A disconnected server may list stale or no resources.',
+        }
+      },
+    }),
+
+    ReadMcpResource: tool({
+      description:
+        'Read one resource from a connected MCP server by its URI (find URIs with ListMcpResources). Text is returned to you; images/media are shown to the user. Asks the user for permission first.',
+      inputSchema: z.object({
+        server: z.string().describe('The MCP server name, as configured by the user.'),
+        uri: z.string().describe('The resource URI, from ListMcpResources or a tool result.'),
+        reason: z.string().describe('Short reason shown to the user, e.g. "To read the project spec"'),
+      }),
+      execute: async ({ server, uri, reason }, { abortSignal }) => {
+        const approved = await requestApproval({
+          toolName: 'ReadMcpResource',
+          summary: `Read “${uri}” from the ${server} MCP server`,
+          reason,
+        })
+        if (!approved) return DENIED
+        let result
+        try {
+          result = await getMcpManager().readResource(server, uri, { signal: abortSignal })
+        } catch (err) {
+          return { error: `Could not read the resource (${err instanceof Error ? err.message : String(err)}).` }
+        }
+        const mapped = mapResourceResult(result as { contents?: unknown[] }, { server })
+        const artifactIds: string[] = []
+        for (const a of mapped.artifacts) {
+          try {
+            artifactIds.push(await saveMcpArtifact({ ...a, conversationId, server, tool: 'resource' }))
+          } catch {
+            /* best-effort */
+          }
+        }
+        const value = { ...mapped.modelValue }
+        if (mapped.images.length > 0) {
+          if (visionCapable) imageQueue.push(...mapped.images)
+          else
+            value.note = [value.note, 'You cannot view images, so the image was shown to the user only.']
+              .filter(Boolean)
+              .join(' ')
+        }
+        if (artifactIds.length > 0) value.artifactIds = artifactIds
+        return value
+      },
+    }),
   }
 
   // Background web research: gated in the foreground (this card), then handed
@@ -1322,6 +1397,14 @@ export function createAgentTools(
   // sources are named in its description) so the model never requests an
   // ungranted source.
   if (grantedSources.length === 0) delete tools.QueryBrowserData
+
+  // The MCP resource tools exist only when the user has configured at least one
+  // MCP server — same principle as QueryBrowserData: a capability the user
+  // never set up should not appear in the model's catalog at all.
+  if (getMcpManager().runtime().length === 0) {
+    delete tools.ListMcpResources
+    delete tools.ReadMcpResource
+  }
 
   // Honor the per-tool permission policy: a tool set to "Never" is removed
   // entirely (like the visibility/insight gates above), so the model never even
