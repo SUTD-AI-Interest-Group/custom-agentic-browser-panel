@@ -57,5 +57,10 @@
       },
       "description": "Toggle the Lychee AI side panel"
     }
+  },
+  "sandbox": {
+    "pages": [
+      "sandbox.html"
+    ]
   }
 }

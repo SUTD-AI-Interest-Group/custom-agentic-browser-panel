@@ -41,7 +41,9 @@ import { loadPdf } from '../platform/pdf'
 import { createAgentTools, type ApprovalRequest, type PageControlGate } from '../tools/tools'
 import { buildMcpTools } from '../mcp/tools'
 import { getMcpManager, type McpPromptArgInfo } from '../mcp/manager'
+import { mcpSettings, mcpToolPolicy } from '../mcp/config'
 import McpContentCard from './McpContentCard'
+import McpAppCard, { registerMcpAppToolCaller, type McpAppRef } from './McpAppCard'
 import { type ControlSession } from '../tools/pageControl'
 import { clearIndex } from '../platform/domIndex'
 import { unmountPresence, unmountAllPresence } from '../platform/presence'
@@ -1062,6 +1064,27 @@ export default function Chat({
     session: () => pageSessionRef.current,
     endSession: teardownSession,
   }
+
+  // MCP App cards can request tool calls after their turn is over (a button in
+  // the app). Route them through the same policy + approval card as the
+  // agent's own MCP calls, scoped to the app's producing server. Registered
+  // per render so the closure always sees current settings.
+  useEffect(() => {
+    registerMcpAppToolCaller(async (server, tool, args) => {
+      const mcp = mcpSettings(settings)
+      const policy = mcpToolPolicy(mcp, server, tool)
+      if (policy === 'never') throw new Error('This tool is disabled in your settings.')
+      if (policy !== 'always') {
+        const approved = await requestApproval({
+          toolName: `mcp_${server}_${tool}`,
+          summary: `The ${server} app wants to call “${tool}”`,
+          reason: 'Requested by the interactive app card in this chat.',
+        })
+        if (!approved) throw new Error('The user denied this call.')
+      }
+      return getMcpManager().callTool(server, tool, (args ?? {}) as Record<string, unknown>)
+    })
+  })
 
   function requestApproval(request: ApprovalRequest): Promise<boolean> {
     // Point-of-no-return steps (form submits, cross-origin nav, passwords) are
@@ -3385,6 +3408,13 @@ function ToolPill({ part }: { part: Extract<UIPart, { type: 'tool' }> }) {
       {artifactIds.map((id) => (
         <McpContentCard key={id} artifactId={id} />
       ))}
+      {output?.app && typeof output.app === 'object' && typeof output.app.server === 'string' && (
+        <McpAppCard
+          app={output.app as McpAppRef}
+          toolInput={part.input}
+          toolOutput={{ text: output.text, structured: output.structured }}
+        />
+      )}
     </>
   )
 }

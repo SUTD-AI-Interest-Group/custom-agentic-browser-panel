@@ -147,11 +147,43 @@ export function buildMcpTools(opts: {
         }
         if (artifactIds.length > 0) value.artifactIds = artifactIds
 
-        // MCP Apps: a tool with a ui:// output template gets its interactive
-        // card rendered by the UI (McpAppCard fetches the template through the
-        // manager). The model just learns the app was shown.
+        // MCP Apps: a tool with a ui:// output template gets an interactive
+        // card (McpAppCard → the manifest-sandboxed page). The template is
+        // fetched here and cached as an HTML artifact so the card survives
+        // reload and disconnection; a text/uri-list template becomes a direct
+        // external-URL iframe instead. The model just learns the app was shown.
         if (appTemplate) {
-          value.app = { server: serverName, tool: info.name, template: appTemplate }
+          const app: Record<string, unknown> = {
+            server: serverName,
+            tool: info.name,
+            template: appTemplate,
+          }
+          try {
+            const res = await manager.readResource(serverName, appTemplate, { signal: abortSignal })
+            const c = ((res as { contents?: unknown[] }).contents?.[0] ?? {}) as Record<string, unknown>
+            const mime = typeof c.mimeType === 'string' ? c.mimeType : 'text/html'
+            const text = typeof c.text === 'string' ? c.text : undefined
+            if (mime.startsWith('text/uri-list') && text) {
+              const url = text
+                .split('\n')
+                .map((l) => l.trim())
+                .find((l) => /^https?:\/\//i.test(l))
+              if (url) app.externalUrl = url
+            } else if (text) {
+              app.artifactId = await saveMcpArtifact({
+                kind: 'html',
+                mimeType: mime,
+                text,
+                title: `${info.name} app`,
+                conversationId,
+                server: serverName,
+                tool: info.name,
+              })
+            }
+          } catch {
+            // Card falls back to a live template read on mount.
+          }
+          value.app = app
           value.note = [value.note, 'An interactive app card was shown to the user for this result.']
             .filter(Boolean)
             .join(' ')
