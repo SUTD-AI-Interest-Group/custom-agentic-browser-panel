@@ -4537,3 +4537,93 @@ body {
   flex: 1;
   min-width: 0;
 }
+
+/* ── Conversations Library: search + inline rename + pin ──────────────────────
+   The Chats tab wraps a static search bar over a scrolling list. `.library-list`
+   is no longer a direct child of `.library`, so the scroll container moves to
+   `.library-conversations` (fills the tab) with the list as the scroll area, so
+   the search box stays pinned above it. */
+.library-conversations {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.library-conversations-top {
+  flex: none;
+  padding: 0 10px 8px;
+}
+.library-conversations .library-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+.library-search {
+  width: 100%;
+  box-sizing: border-box;
+  font: inherit;
+  font-size: 12.5px;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 6px 9px;
+}
+.library-search::placeholder {
+  color: var(--text-muted);
+}
+.library-search:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+}
+
+/* Row action cluster: pin + rename + delete, hover-revealed like the old bare
+   delete button. A pinned row keeps its (accented) pin visible at rest so pin
+   state is glanceable without hovering. */
+.library-row-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
+}
+.library-row-pin,
+.library-row-rename {
+  width: 24px;
+  height: 24px;
+  opacity: 0;
+}
+.library-row:hover .library-row-actions .icon-btn,
+.library-row-actions .icon-btn:focus-visible {
+  opacity: 1;
+}
+.library-row-pin.pinned {
+  opacity: 1;
+  color: var(--accent);
+}
+.library-rename-input {
+  width: 100%;
+  box-sizing: border-box;
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  padding: 2px 6px;
+}
+
+/* Composer @-mention glyphs for the capability shortcuts, matching the ✦ Memory
+   / All-tabs convention (a muted mark before the title). */
+.mention-item.page .mention-title::before {
+  content: '▤ ';
+  color: var(--text-muted);
+}
+.mention-item.selection .mention-title::before {
+  content: '❝ ';
+  color: var(--text-muted);
+}
+.mention-item.screenshot .mention-title::before {
+  content: '⛶ ';
+  color: var(--text-muted);
+}
