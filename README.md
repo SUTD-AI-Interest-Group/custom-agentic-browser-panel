@@ -114,11 +114,36 @@ logic lives in `src/tools/toolDiscovery.ts`.
 | `QueryBrowserData` | History, bookmarks, top sites, downloads (only the sources you enable) |
 | `ListAllSkills` / `ReadSkill` / `SaveSkill` | Skills |
 | `StartResearch` | Kick off a background research task |
+| `mcp_<server>_<tool>` | Any tool exposed by an MCP server you connected (below) |
+| `ListMcpResources` / `ReadMcpResource` | Browse and read MCP server resources |
 
 `ToolSearch` and `GetTool` are the only ungated tools — they list and load, but
 the tool they load still stops on its own card. **Settings → Permissions** lets
 you set each tool to *ask* (default), *always*, or *never*; *never* removes it
 from the toolset entirely, so the model never learns it existed.
+
+## MCP servers
+
+Lychee speaks the [Model Context Protocol](https://modelcontextprotocol.io):
+connect remote MCP servers and the agent gets their **tools**, **resources**
+and **prompts**, behind the same approval gate as everything else.
+
+- **Configure in Settings → General → MCP servers.** The config *is* the
+  standard `mcpServers` JSON — upload your existing file, edit it in place, or
+  copy it out with one click. `stdio` entries round-trip untouched but are
+  greyed out (a browser can't spawn processes — point a local HTTP bridge like
+  `mcp-proxy` at them). OAuth servers get an **Authorize** button; the whole
+  OAuth 2.1 flow (discovery, dynamic registration, PKCE, refresh) runs through
+  `chrome.identity`, and tokens never appear in the exportable JSON.
+- **Permissions are two-level** — a per-server default with per-tool overrides,
+  in Settings → Permissions.
+- **Rich results land properly.** Text goes to the model; images, audio, video
+  and documents render as cards in the chat (stored locally, prunable in
+  Settings → Data); server prompts appear in the composer's `/` menu as
+  `/mcp:server:prompt`, with an inline form for prompt arguments.
+- **MCP Apps** (interactive `ui://` tool UIs) render live in a sandboxed iframe
+  in the chat; anything an app wants to do — call a tool, open a link — routes
+  back through the approval gate, scoped to the app's own server.
 
 ## Page control
 
