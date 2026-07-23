@@ -14,6 +14,8 @@ import { cancelRegionCapture, captureRegion, type CapturedImage } from '../platf
 import { ensureVisionCapability } from '../agent/vision'
 import { copyElementAsPng } from '../platform/domImage'
 import { getConversation, renameConversation, saveConversation } from '../data/conversations'
+import { COMPOSER_ACTION_MSG, drainComposerAction, type ComposerAction } from '../platform/composerActions'
+import { clearDraft, loadDraft, saveDraft } from './drafts'
 import { getShot, getShotThumb, type ShotThumb, type StoredShot } from '../data/screenshots'
 import { downloadImage } from '../platform/download'
 import { appendToEpisode, getMemoryContext } from '../data/memory'
@@ -141,9 +143,18 @@ interface TabMention {
   token: string
 }
 
-// Entries offered in the "@" popover: open tabs, plus special items — "memory"
-// (draw on long-term memory) and "all" (attach every open tab).
-type MentionCandidate = { kind: 'tab'; tab: TabSummary } | { kind: 'memory' } | { kind: 'all' }
+// Entries offered in the "@" popover: open tabs, special items — "memory"
+// (draw on long-term memory) and "all" (attach every open tab) — plus the
+// discoverability trio "page"/"selection"/"screenshot" (3c), each a shortcut
+// to an affordance that already exists elsewhere in the composer (see
+// selectMention).
+type MentionCandidate =
+  | { kind: 'tab'; tab: TabSummary }
+  | { kind: 'memory' }
+  | { kind: 'all' }
+  | { kind: 'page' }
+  | { kind: 'selection' }
+  | { kind: 'screenshot' }
 
 // The literal token that marks a message as memory-directed. Its presence in
 // the sent text (typed or inserted from the popover) is the user's request to
@@ -156,6 +167,12 @@ const MEMORY_TOKEN_RE = /(^|\s)@memory\b/i
 const ALL_TOKEN = '@all'
 const ALL_TOKEN_RE = /(^|\s)@all\b/i
 const MAX_ALL_TABS = 25
+
+// @page attaches the current tab, addressed by a fixed, memorable word
+// instead of its (possibly long) title. It becomes a real TabMention (see
+// selectMention) so it rides the same composer pill + sync-on-send path as
+// any @<tab title> mention.
+const PAGE_TOKEN = '@page'
 
 // Cap how much highlighted text we forward as context.
 const SELECTION_MAX = 4000
@@ -209,6 +226,30 @@ function stripToken(value: string, token: string): string {
   let rest = value.slice(i + token.length)
   if (rest.startsWith(' ')) rest = rest.slice(1)
   return value.slice(0, i) + rest
+}
+
+/** Fetch a right-clicked <img>'s srcUrl into a CapturedImage, the same shape
+ *  the camera-button capture path produces, so a context-menu "image" action
+ *  (3e) rides the composer's ordinary attachment pill and user-history image
+ *  part. host_permissions:["<all_urls>"] exempts this fetch from CORS, same
+ *  as the model-endpoint calls (see CLAUDE.md). */
+async function fetchImageAsCapturedImage(srcUrl: string): Promise<CapturedImage> {
+  const res = await fetch(srcUrl)
+  if (!res.ok) throw new Error(`Image fetch failed: ${res.status}`)
+  const blob = await res.blob()
+  const dataUrl = await new Promise<string>((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => resolve(String(reader.result))
+    reader.onerror = () => reject(reader.error ?? new Error('Could not read image data'))
+    reader.readAsDataURL(blob)
+  })
+  const { width, height } = await new Promise<{ width: number; height: number }>((resolve) => {
+    const img = new Image()
+    img.onload = () => resolve({ width: img.naturalWidth, height: img.naturalHeight })
+    img.onerror = () => resolve({ width: 0, height: 0 })
+    img.src = dataUrl
+  })
+  return { id: uid(), dataUrl, width, height }
 }
 
 // ---- Source favicons -----------------------------------------------------
@@ -487,17 +528,32 @@ export default function Chat({
   // runTurnChain (see QueuedSteer). Promises, so a steer still resolving its tab
   // context is never lost to a cycle that finishes first.
   const steerQueueRef = useRef<Promise<QueuedSteer>[]>([])
+  // Composer history-recall walk position (3b): -1 means "showing the live
+  // draft", 0..n-1 indexes into recallableUserTexts (0 = newest).
+  // preRecallDraftRef freezes whatever was typed before the first ArrowUp, so
+  // Escape or walking past the newest entry can restore it exactly.
+  const recallIndexRef = useRef(-1)
+  const preRecallDraftRef = useRef('')
+  // Always mirrors the current render's handleComposerAction (kept fresh by
+  // an effect below), so the mount-time mailbox drain and the
+  // COMPOSER_ACTION_MSG listener — both registered once — never call a stale
+  // closure over `selected`/`streaming` (3e).
+  const composerActionRef = useRef<(action: ComposerAction) => Promise<void>>(async () => {})
 
   const selected = getSelectedProvider(settings)
 
-  // The most recent user message's text, for ArrowUp recall in the composer.
-  const lastUserText = useMemo(() => {
+  // This conversation's previous user messages, newest first — the source
+  // list for ArrowUp/ArrowDown composer history recall (3b, see the
+  // textarea's onKeyDown). Read straight from the transcript already in
+  // state; no separate storage.
+  const recallableUserTexts = useMemo(() => {
+    const texts: string[] = []
     for (let i = messages.length - 1; i >= 0; i--) {
-      if (messages[i].role === 'user') {
-        return messages[i].parts.map((p) => (p.type === 'text' ? p.text : '')).join('')
-      }
+      if (messages[i].role !== 'user') continue
+      const t = messages[i].parts.map((p) => (p.type === 'text' ? p.text : '')).join('')
+      if (t) texts.push(t)
     }
-    return ''
+    return texts
   }, [messages])
 
   // Focus the composer as soon as the chat is ready — on panel open and on every
@@ -542,6 +598,56 @@ export default function Chat({
       cancelled = true
     }
   }, [conversationId])
+
+  /**
+   * On conversation mount: restore this chat's saved composer draft (3a),
+   * then drain any pending context-menu action (3e, composerActions.ts).
+   * Sequenced — not parallel — so a drained action always wins over a stale
+   * on-disk draft: "send immediately" never touches `input` at all (see
+   * handleComposerAction, so the draft underneath is untouched either way),
+   * and a no-provider "prefill" overwrites the just-loaded draft rather than
+   * racing it.
+   */
+  useEffect(() => {
+    let cancelled = false
+    void loadDraft(conversationId)
+      .then((text) => {
+        if (!cancelled && text) setInput(text)
+      })
+      .then(() => drainComposerAction())
+      .then((action) => {
+        if (cancelled || !action) return undefined
+        return composerActionRef.current(action)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [conversationId])
+
+  // A right-click "Ask Lychee about this" while the panel is already open
+  // broadcasts COMPOSER_ACTION_MSG (the mount-time drain above already ran
+  // and found nothing) — drain the same one-shot mailbox on receipt. Listener
+  // registered once; composerActionRef keeps the callback itself fresh.
+  useEffect(() => {
+    const onMessage = (msg: unknown) => {
+      if (!msg || typeof msg !== 'object' || (msg as { type?: string }).type !== COMPOSER_ACTION_MSG) return
+      void drainComposerAction().then((action) => {
+        if (action) return composerActionRef.current(action)
+        return undefined
+      })
+    }
+    chrome.runtime.onMessage.addListener(onMessage)
+    return () => chrome.runtime.onMessage.removeListener(onMessage)
+  }, [])
+
+  // Persist the composer's draft text (3a) so it survives a panel close or a
+  // conversation switch — debounced in drafts.ts so typing doesn't hammer
+  // storage. Fires on mount too (saving '' before the load above resolves),
+  // but that write is superseded by the loaded draft's own save before its
+  // debounce timer ever fires, so it's a harmless no-op.
+  useEffect(() => {
+    saveDraft(conversationId, input)
+  }, [conversationId, input])
 
   // Drop a finished research task into THIS conversation's transcript as a
   // message, so its report card scrolls with the chat and later turns follow it
@@ -964,6 +1070,29 @@ export default function Chat({
   // content read and synced into the model-facing message. Mentioning IS the
   // user's consent, so no approval card is involved.
 
+  /** Read the active tab's current text selection right now and store it,
+   *  clearing any stale dismissal so it surfaces as the removable selection
+   *  chip below the composer. Mirrors the passive polling effect above (which
+   *  does the same read on a timer) — this is the @selection mention's
+   *  explicit, immediate version of that same read. */
+  async function captureSelectionNow() {
+    const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true })
+    if (!tab || tab.id === undefined) return
+    try {
+      const [res] = await chrome.scripting.executeScript({
+        target: { tabId: tab.id },
+        func: () => window.getSelection()?.toString() ?? '',
+      })
+      const text = (res?.result ?? '').trim()
+      if (text) {
+        setSelection({ text, tabId: tab.id })
+        setDismissedSelection('')
+      }
+    } catch {
+      // chrome:// pages, the Web Store, and PDFs cannot be scripted — no-op.
+    }
+  }
+
   async function refreshMentionCandidates(m: { start: number; query: string }) {
     let tabs: TabSummary[]
     if (settings.tabAccess === 'all-tabs') {
@@ -983,6 +1112,12 @@ export default function Chat({
     // Offer the specials whenever the query is a prefix of their word (incl. empty).
     if ('memory'.startsWith(q)) candidates.push({ kind: 'memory' })
     if (settings.tabAccess === 'all-tabs' && 'all'.startsWith(q)) candidates.push({ kind: 'all' })
+    // Discoverability trio (3c): surface the camera/selection-chip/current-tab
+    // affordances from the @ menu too, for a user who never notices the
+    // toolbar buttons. @page only makes sense once there's a tab to attach.
+    if (currentTab && 'page'.startsWith(q)) candidates.push({ kind: 'page' })
+    if ('selection'.startsWith(q)) candidates.push({ kind: 'selection' })
+    if ('screenshot'.startsWith(q)) candidates.push({ kind: 'screenshot' })
     candidates.push(...filtered.slice(0, 8).map((t): MentionCandidate => ({ kind: 'tab', tab: t })))
     setMentionCandidates(candidates)
     setMentionIndex(0)
@@ -1019,6 +1154,10 @@ export default function Chat({
   }
 
   function handleInputChange(value: string, caret: number) {
+    // Any manual edit exits history-recall mode (3b) — the next ArrowUp
+    // starts a fresh walk from the newest message rather than continuing
+    // mid-walk from wherever the user had navigated to.
+    recallIndexRef.current = -1
     setInput(value)
     const m = detectMention(value, caret)
     setMentionQuery(m)
@@ -1030,13 +1169,32 @@ export default function Chat({
 
   function selectMention(candidate: MentionCandidate) {
     if (!mentionQuery) return
+    const caret = inputRef.current?.selectionStart ?? input.length
+    // "selection" and "screenshot" are one-shot triggers, not text the model
+    // reads back: they drive the same effect as their dedicated affordance
+    // (the auto-detected selection chip, the camera button) and then just
+    // erase the "@query" text they replaced — no token lingers in the composer.
+    if (candidate.kind === 'selection' || candidate.kind === 'screenshot') {
+      if (candidate.kind === 'selection') void captureSelectionNow()
+      else void capture()
+      const next = `${input.slice(0, mentionQuery.start)}${input.slice(caret)}`
+      setInput(next)
+      setMentionQuery(null)
+      const pos = mentionQuery.start
+      requestAnimationFrame(() => {
+        inputRef.current?.focus()
+        inputRef.current?.setSelectionRange(pos, pos)
+      })
+      return
+    }
     const token =
       candidate.kind === 'memory'
         ? MEMORY_TOKEN
         : candidate.kind === 'all'
           ? ALL_TOKEN
-          : `@${candidate.tab.title.trim().slice(0, 48)}`
-    const caret = inputRef.current?.selectionStart ?? input.length
+          : candidate.kind === 'page'
+            ? PAGE_TOKEN
+            : `@${candidate.tab.title.trim().slice(0, 48)}`
     const next = `${input.slice(0, mentionQuery.start)}${token} ${input.slice(caret)}`
     setInput(next)
     if (candidate.kind === 'tab') {
@@ -1044,6 +1202,13 @@ export default function Chat({
       setMentions((arr) => [
         ...arr.filter((x) => x.tabId !== tab.tabId),
         { tabId: tab.tabId, title: tab.title, url: tab.url, token },
+      ])
+    } else if (candidate.kind === 'page' && currentTab) {
+      // @page is just a fixed-name mention of the current tab — it rides the
+      // same TabMention/contextTabs pill path as any @<tab title> mention.
+      setMentions((arr) => [
+        ...arr.filter((x) => x.tabId !== currentTab.tabId),
+        { tabId: currentTab.tabId, title: currentTab.title, url: currentTab.url, token },
       ])
     }
     setMentionQuery(null)
@@ -1204,6 +1369,10 @@ export default function Chat({
     if (consumedSelection) setDismissedSelection(consumedSelection)
     setCaptureError(null)
     if (inputRef.current) inputRef.current.style.height = 'auto'
+    // A send starts the next draft (3a) and history-recall walk (3b) fresh.
+    void clearDraft(conversationId)
+    recallIndexRef.current = -1
+    preRecallDraftRef.current = ''
   }
 
   /**
@@ -1305,6 +1474,62 @@ export default function Chat({
     if (streaming) setQueued((prev) => (prev ? mergeQueuedSpec(prev, spec) : spec))
     else void startFreshTurn(spec)
   }
+
+  /**
+   * 3e: map a right-click "Ask Lychee about this" action (drained from the
+   * composerActions mailbox) to composer content, then send it through the
+   * normal path — idle starts a fresh turn, a running turn queues it exactly
+   * like a normal submit(). Unlike submit(), this never touches `input` on
+   * the send path, so it can't clobber whatever the user is mid-typing (3a).
+   * GUARD: no provider configured (the same `selected` gate that disables the
+   * textarea) prefills the composer instead of firing a request that would
+   * just fail.
+   */
+  async function handleComposerAction(action: ComposerAction) {
+    let images: CapturedImage[] = []
+    let text: string
+    let includeCurrentTab = false
+    if (action.kind === 'selection') {
+      text = `Explain this selection:\n\n${action.text}`
+      includeCurrentTab = true
+    } else if (action.kind === 'link') {
+      text = `Tell me about this page: ${action.url}`
+    } else if (action.kind === 'image') {
+      text = "What's in this image?"
+      try {
+        images = [await fetchImageAsCapturedImage(action.srcUrl)]
+      } catch {
+        // Hotlink-protected or otherwise unfetchable — fall back to text only.
+      }
+    } else {
+      text = 'Summarize this page.'
+      includeCurrentTab = true
+    }
+    if (!selected) {
+      setInput((prev) => (prev ? `${prev}\n\n${text}` : text))
+      if (images.length > 0) setAttachments((a) => [...a, ...images])
+      return
+    }
+    const spec: MessageSpec = {
+      text,
+      images,
+      activeMentions: [],
+      useMemory: false,
+      useAll: false,
+      includeCurrentTab,
+      includeDeicticTab: false,
+      activeSelection: null,
+    }
+    if (streaming) setQueued((prev) => (prev ? mergeQueuedSpec(prev, spec) : spec))
+    else void startFreshTurn(spec)
+  }
+
+  // Keep composerActionRef pointed at this render's handleComposerAction —
+  // the mailbox-drain effects above are registered once and would otherwise
+  // hold a stale closure over `selected`/`streaming` (see the ref's comment).
+  useEffect(() => {
+    composerActionRef.current = handleComposerAction
+  })
 
   /** "Steer now" on the queued message: inject it into the running turn. */
   function steerNow() {
@@ -1845,6 +2070,21 @@ export default function Chat({
                     <span className="mention-title">All tabs</span>
                     <span className="mention-url">Attach every open tab as context</span>
                   </>
+                ) : c.kind === 'page' ? (
+                  <>
+                    <span className="mention-title">This page</span>
+                    <span className="mention-url">Attach the current tab as context</span>
+                  </>
+                ) : c.kind === 'selection' ? (
+                  <>
+                    <span className="mention-title">Selection</span>
+                    <span className="mention-url">Capture the page's highlighted text</span>
+                  </>
+                ) : c.kind === 'screenshot' ? (
+                  <>
+                    <span className="mention-title">Screenshot</span>
+                    <span className="mention-url">Snip part of the page to attach</span>
+                  </>
                 ) : (
                   <>
                     <span className="mention-title">{c.tab.title}</span>
@@ -1982,12 +2222,58 @@ export default function Chat({
                   return
                 }
               }
-              // Shell-style recall: ArrowUp on an empty composer refills it with
-              // the previous message. Only when empty, so multi-line editing (and
-              // the mention/slash popovers above) keep ArrowUp for cursor movement.
-              if (e.key === 'ArrowUp' && input === '' && lastUserText) {
+              // Shell-style history recall (3b): ArrowUp on an empty composer
+              // (or with the caret at position 0) walks backward through this
+              // conversation's previous user messages, newest first;
+              // ArrowDown walks forward and then restores the live draft;
+              // Escape restores it directly. CRITICAL: only when neither
+              // popover above owns the Arrow/Escape keys.
+              const noPopover = !mentionQuery && !slashQuery
+              // Resize like a normal keystroke and put the caret at the end —
+              // matches the onChange handler's auto-grow behavior, since a
+              // programmatic setInput below doesn't fire onChange.
+              const syncAfterRecall = () => {
+                requestAnimationFrame(() => {
+                  const el = inputRef.current
+                  if (!el) return
+                  el.style.height = 'auto'
+                  el.style.height = `${Math.min(el.scrollHeight, 160)}px`
+                  const len = el.value.length
+                  el.setSelectionRange(len, len)
+                })
+              }
+              const recallAt = (index: number) => {
+                recallIndexRef.current = index
+                setInput(recallableUserTexts[index])
+                syncAfterRecall()
+              }
+              const restoreLiveDraft = () => {
+                recallIndexRef.current = -1
+                setInput(preRecallDraftRef.current)
+                syncAfterRecall()
+              }
+              const caret = e.currentTarget.selectionStart ?? 0
+              if (
+                e.key === 'ArrowUp' &&
+                noPopover &&
+                (input === '' || caret === 0) &&
+                recallableUserTexts.length > 0
+              ) {
                 e.preventDefault()
-                setInput(lastUserText)
+                if (recallIndexRef.current === -1) preRecallDraftRef.current = input
+                recallAt(Math.min(recallIndexRef.current + 1, recallableUserTexts.length - 1))
+                return
+              }
+              if (e.key === 'ArrowDown' && noPopover && recallIndexRef.current !== -1) {
+                e.preventDefault()
+                const next = recallIndexRef.current - 1
+                if (next < 0) restoreLiveDraft()
+                else recallAt(next)
+                return
+              }
+              if (e.key === 'Escape' && noPopover && recallIndexRef.current !== -1) {
+                e.preventDefault()
+                restoreLiveDraft()
                 return
               }
               if (e.key === 'Enter' && !e.shiftKey) {
