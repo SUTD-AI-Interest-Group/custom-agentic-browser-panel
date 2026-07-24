@@ -12,7 +12,8 @@
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
 import { SSEClientTransport } from '@modelcontextprotocol/sdk/client/sse.js'
-import { UnauthorizedError } from '@modelcontextprotocol/sdk/client/auth.js'
+import { auth, UnauthorizedError } from '@modelcontextprotocol/sdk/client/auth.js'
+import { CfWorkerJsonSchemaValidator } from '@modelcontextprotocol/sdk/validation/cfworker'
 import {
   PromptListChangedNotificationSchema,
   ResourceListChangedNotificationSchema,
@@ -95,6 +96,22 @@ const BACKOFF_CAP_MS = 60_000
 
 interface PersistedCatalog {
   [server: string]: { tools: McpToolInfo[]; resources: McpResourceInfo[]; prompts: McpPromptInfo[] }
+}
+
+/**
+ * Every Client this manager creates. The validator override is load-bearing:
+ * the SDK's default (Ajv) compiles JSON Schemas with `new Function`, which an
+ * MV3 extension page's CSP (`script-src 'self'`, no unsafe-eval, ever) rejects
+ * the moment listTools() pre-compiles tool output validators — the connection
+ * dies with "Evaluating a string as JavaScript violates …". The CfWorker
+ * validator interprets schemas without code generation, built for exactly
+ * these eval-banned runtimes.
+ */
+function newClient(): Client {
+  return new Client(
+    { name: 'lychee-ai', version: '0.1.0' },
+    { capabilities: {}, jsonSchemaValidator: new CfWorkerJsonSchemaValidator() },
+  )
 }
 
 export class McpManager {
@@ -216,7 +233,7 @@ export class McpManager {
     const authProvider = new ChromeOAuthProvider(name)
 
     const attempt = async (kind: 'http' | 'sse') => {
-      const client = new Client({ name: 'lychee-ai', version: '0.1.0' }, { capabilities: {} })
+      const client = newClient()
       const transport =
         kind === 'http'
           ? new StreamableHTTPClientTransport(url, { requestInit, authProvider })
@@ -386,47 +403,39 @@ export class McpManager {
   /**
    * Run the interactive OAuth flow for a server. MUST be called from a user
    * click (Authorize button / card action): it opens the browser's auth popup
-   * via chrome.identity, finishes the code exchange, then reconnects.
+   * via chrome.identity, exchanges the code, then reconnects.
+   *
+   * This deliberately does NOT run the popup through a client.connect(): a
+   * transport-driven flow launches the popup from inside the initialize
+   * request's send(), so the request's 60s timer keeps ticking while the user
+   * logs in and the whole authorization dies with "MCP error -32001: Request
+   * timed out". The SDK's auth() orchestrator runs the same discovery →
+   * registration → PKCE → exchange sequence with no MCP request in flight.
    */
   async authorize(name: string): Promise<void> {
     const slot = this.slots.get(name)
     if (!slot) throw new Error(`No MCP server named "${name}" is configured.`)
     this.teardown(name, slot)
-    const url = new URL(slot.entry.url as string)
+    const serverUrl = new URL(slot.entry.url as string)
     const provider = new ChromeOAuthProvider(name, { interactive: true })
-    const transport = new StreamableHTTPClientTransport(url, {
-      requestInit: slot.entry.headers ? { headers: slot.entry.headers } : undefined,
-      authProvider: provider,
-    })
-    // connect() → 401 → SDK drives discovery/registration → our provider runs
-    // launchWebAuthFlow and stashes the code → finishAuth completes the exchange.
-    const client = new Client({ name: 'lychee-ai', version: '0.1.0' }, { capabilities: {} })
     try {
-      await client.connect(transport)
-      // Authorization wasn't needed after all — keep the live connection.
-      slot.client = client
-      slot.transport = transport
-      slot.status = 'connected'
-      await this.listCatalog(name, slot)
-      this.notify()
-      return
-    } catch (err) {
-      if (!(err instanceof UnauthorizedError)) {
-        slot.status = 'error'
-        slot.error = err instanceof Error ? err.message : String(err)
-        this.notify()
-        throw err
+      // 'AUTHORIZED': existing/refreshed tokens suffice — no popup was needed.
+      // 'REDIRECT': our provider ran launchWebAuthFlow (awaited, so it has
+      // completed by now) and captured the code; a second auth() call
+      // exchanges it for tokens, which the provider persists.
+      const result = await auth(provider, { serverUrl })
+      if (result === 'REDIRECT') {
+        const code = provider.takeAuthorizationCode()
+        if (!code) throw new Error('Authorization was not completed.')
+        await auth(provider, { serverUrl, authorizationCode: code })
       }
-    }
-    const code = provider.takeAuthorizationCode()
-    if (!code) {
+    } catch (err) {
       slot.status = 'needs-auth'
+      slot.error = err instanceof Error ? err.message : String(err)
       this.notify()
-      throw new Error('Authorization was not completed.')
+      throw err
     }
-    await transport.finishAuth(code)
-    await client.close().catch(() => {})
-    // Tokens are stored; reconnect for real.
+    // Tokens are stored; connect for real.
     await this.ensureConnected(name)
   }
 
