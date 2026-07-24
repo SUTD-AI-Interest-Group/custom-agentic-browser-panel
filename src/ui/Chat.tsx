@@ -43,7 +43,7 @@ import { buildMcpTools } from '../mcp/tools'
 import { getMcpManager, type McpPromptArgInfo } from '../mcp/manager'
 import { mcpSettings, mcpToolPolicy } from '../mcp/config'
 import McpContentCard from './McpContentCard'
-import McpAppCard, { registerMcpAppToolCaller, type McpAppRef } from './McpAppCard'
+import McpAppCard, { registerMcpAppHostActions, type McpAppRef } from './McpAppCard'
 import { type ControlSession } from '../tools/pageControl'
 import { clearIndex } from '../platform/domIndex'
 import { unmountPresence, unmountAllPresence } from '../platform/presence'
@@ -1065,24 +1065,33 @@ export default function Chat({
     endSession: teardownSession,
   }
 
-  // MCP App cards can request tool calls after their turn is over (a button in
-  // the app). Route them through the same policy + approval card as the
-  // agent's own MCP calls, scoped to the app's producing server. Registered
-  // per render so the closure always sees current settings.
+  // MCP App cards can act after their turn is over (a button in the app, a
+  // status poll). Tool calls route through the same policy + approval card as
+  // the agent's own MCP calls, scoped to the app's producing server — and
+  // "Allow this chat" on that card is what makes a polling widget usable (one
+  // approval covers the poll loop). App-suggested chat text only ever becomes
+  // a composer draft the user reviews. Registered per render so the closures
+  // always see current settings/state.
   useEffect(() => {
-    registerMcpAppToolCaller(async (server, tool, args) => {
-      const mcp = mcpSettings(settings)
-      const policy = mcpToolPolicy(mcp, server, tool)
-      if (policy === 'never') throw new Error('This tool is disabled in your settings.')
-      if (policy !== 'always') {
-        const approved = await requestApproval({
-          toolName: `mcp_${server}_${tool}`,
-          summary: `The ${server} app wants to call “${tool}”`,
-          reason: 'Requested by the interactive app card in this chat.',
-        })
-        if (!approved) throw new Error('The user denied this call.')
-      }
-      return getMcpManager().callTool(server, tool, (args ?? {}) as Record<string, unknown>)
+    registerMcpAppHostActions({
+      callTool: async (server: string, tool: string, args: unknown) => {
+        const mcp = mcpSettings(settings)
+        const policy = mcpToolPolicy(mcp, server, tool)
+        if (policy === 'never') throw new Error('This tool is disabled in your settings.')
+        if (policy !== 'always') {
+          const approved = await requestApproval({
+            toolName: `mcp_${server}_${tool}`,
+            summary: `The ${server} app wants to call “${tool}”`,
+            reason: 'Requested by the interactive app card in this chat.',
+          })
+          if (!approved) throw new Error('The user denied this call.')
+        }
+        return getMcpManager().callTool(server, tool, (args ?? {}) as Record<string, unknown>)
+      },
+      draftMessage: (text: string) => {
+        setInput((current) => (current.trim() ? `${current}\n\n${text}` : text))
+        inputRef.current?.focus()
+      },
     })
   })
 
@@ -3383,6 +3392,14 @@ function ToolPill({ part }: { part: Extract<UIPart, { type: 'tool' }> }) {
   const artifactIds: string[] = Array.isArray(output?.artifactIds) ? output.artifactIds : []
   const needsAuthServer: string | null =
     output?.needsAuth && typeof output?.server === 'string' ? output.server : null
+  // A failed call's message, shown as a readable line inside the expanded pill
+  // — the raw input/output JSON below is the audit trail, not the explanation.
+  const errorText: string | null =
+    part.state === 'error'
+      ? part.errorText ?? null
+      : typeof output?.error === 'string'
+        ? output.error
+        : null
 
   // Successful screenshots never reach here — MessageView groups them into a
   // ShotCard/ShotCarousel of their own. What lands here is every other tool, plus
@@ -3402,6 +3419,7 @@ function ToolPill({ part }: { part: Extract<UIPart, { type: 'tool' }> }) {
           </svg>
           <span>{label}</span>
         </summary>
+        {errorText && <div className="tool-error-text">{errorText}</div>}
         <pre>{JSON.stringify({ input: part.input, output: part.output }, null, 2)}</pre>
       </details>
       {needsAuthServer && (

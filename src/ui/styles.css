@@ -5325,3 +5325,18 @@ body {
   font-size: 12px;
   color: var(--text-muted);
 }
+
+/* The human-readable failure line inside an expanded tool pill; the JSON
+   dump below it is the audit trail, not the explanation. */
+.tool-error-text {
+  margin: 6px 0 0;
+  padding: 6px 8px;
+  border: 1px solid var(--danger);
+  border-radius: 8px;
+  color: var(--danger);
+  font-size: 12px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 120px;
+  overflow: auto;
+}

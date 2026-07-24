@@ -29,15 +29,17 @@ const DENIED = {
 }
 
 /**
- * The `_meta` key MCP Apps use to point a tool at its ui:// output template.
- * (The registered form per SEP-1865; openai/outputTemplate is the interop alias
- * some servers still ship.)
+ * The `_meta` keys MCP Apps use to point a tool at its ui:// output template:
+ * the registered extension id (io.modelcontextprotocol/ui) per SEP-1865, the
+ * short `ui` form, and openai/outputTemplate — the interop alias some servers
+ * still ship.
  */
 function uiTemplateOf(meta: Record<string, unknown> | undefined): string | undefined {
-  const ui = meta?.['ui'] ?? meta?.['openai/outputTemplate']
+  const ui = meta?.['io.modelcontextprotocol/ui'] ?? meta?.['ui'] ?? meta?.['openai/outputTemplate']
   if (typeof ui === 'string' && ui.startsWith('ui://')) return ui
   if (typeof ui === 'object' && ui !== null) {
-    const uri = (ui as Record<string, unknown>).uri ?? (ui as Record<string, unknown>).resourceUri
+    const u = ui as Record<string, unknown>
+    const uri = u.uri ?? u.resourceUri ?? u.template
     if (typeof uri === 'string' && uri.startsWith('ui://')) return uri
   }
   return undefined

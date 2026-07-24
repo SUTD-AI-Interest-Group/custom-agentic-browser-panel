@@ -28,16 +28,20 @@ export interface McpAppRef {
 }
 
 /**
- * The approval-gated tool caller, registered by Chat on mount. A module-level
+ * Host actions the cards need from Chat, registered on mount. A module-level
  * registry rather than prop-drilling through the 4k-line transcript tree; the
  * panel has exactly one Chat. Calls made before registration (never in
- * practice) reject.
+ * practice) reject / no-op.
  */
-let appToolCaller: ((server: string, tool: string, args: unknown) => Promise<unknown>) | null = null
-export function registerMcpAppToolCaller(
-  fn: (server: string, tool: string, args: unknown) => Promise<unknown>,
-): void {
-  appToolCaller = fn
+export interface McpAppHostActions {
+  /** Approval-gated tool call, scoped by the caller to one server. */
+  callTool(server: string, tool: string, args: unknown): Promise<unknown>
+  /** Put app-suggested text in the composer as a draft the user reviews. */
+  draftMessage(text: string): void
+}
+let appHostActions: McpAppHostActions | null = null
+export function registerMcpAppHostActions(actions: McpAppHostActions): void {
+  appHostActions = actions
 }
 
 const MIN_H = 120
@@ -89,26 +93,40 @@ export default function McpAppCard({
 
     const host: AppBridgeHost = {
       callTool: (name, args) => {
-        if (!appToolCaller) return Promise.reject(new Error('Tool calls are unavailable.'))
+        if (!appHostActions) return Promise.reject(new Error('Tool calls are unavailable.'))
         // Scoped to the app's OWN server by construction — the app names only
         // a tool; the server is fixed to the one that produced this card.
-        return appToolCaller(app.server, name, args)
+        return appHostActions.callTool(app.server, name, args)
       },
+      // Same server scoping for resource reads (ui:// assets, data files).
+      readResource: (uri) => getMcpManager().readResource(app.server, uri),
       openLink: (url) => void chrome.tabs.create({ url }),
-      onSizeChange: (h) => setHeight(Math.max(MIN_H, Math.min(MAX_H, Math.round(h)))),
-      getContext: () => ({
-        theme: window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light',
-        toolInput,
-        toolOutput,
-      }),
+      onSizeChange: (_w, h) => setHeight(Math.max(MIN_H, Math.min(MAX_H, Math.round(h)))),
+      onUserMessage: (text) => appHostActions?.draftMessage(text),
+      context: () => {
+        const out = (toolOutput ?? {}) as { text?: unknown; structured?: unknown }
+        return {
+          theme: window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light',
+          toolName: app.tool,
+          toolInput,
+          // Rebuild an MCP-shaped result from what the tool layer kept: the
+          // budgeted text + structuredContent (raw media never rides history).
+          toolResult: {
+            content: typeof out.text === 'string' ? [{ type: 'text', text: out.text }] : [],
+            ...(out.structured !== undefined ? { structuredContent: out.structured } : {}),
+          },
+        }
+      },
     }
 
     const onMessage = (e: MessageEvent) => {
       if (e.source !== frame.contentWindow) return
       const data = e.data as { type?: string; payload?: unknown } | undefined
       if (data?.type !== 'mcp-app:rpc') return
-      void handleAppMessage(data.payload, host).then((response) => {
-        if (response) frame.contentWindow?.postMessage({ type: 'mcp-app:rpc-response', payload: response }, '*')
+      void handleAppMessage(data.payload, host).then((messages) => {
+        for (const payload of messages) {
+          frame.contentWindow?.postMessage({ type: 'mcp-app:rpc-response', payload }, '*')
+        }
       })
     }
     window.addEventListener('message', onMessage)
