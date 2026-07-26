@@ -23,7 +23,8 @@ import { mapResourceResult } from '../mcp/content'
 import { saveMcpArtifact } from '../data/mcpArtifacts'
 import { instrumentToolset, type Trace } from '../agent/observability'
 import { getExecHost } from '../exec/host'
-import { budgetOutcome, RUN_MEMORY_BYTES, RUN_TIMEOUT_MS } from '../exec/protocol'
+import { budgetOutcome, escapeHtml, RUN_MEMORY_BYTES, RUN_TIMEOUT_MS } from '../exec/protocol'
+import { saveArtifact, updateArtifactContent } from '../data/artifacts'
 import { createStartResearchTool } from './research'
 import { buildCatalog, searchCatalog, partitionToolNames, type CatalogEntry } from './toolDiscovery'
 import {
@@ -466,7 +467,7 @@ export function createAgentTools(
         if (!approved) return DENIED
         try {
           const raw = await getExecHost().run(code, { timeoutMs: RUN_TIMEOUT_MS, memoryBytes: RUN_MEMORY_BYTES })
-          const { outcome } = budgetOutcome(raw)
+          const { outcome, valueOverflow } = budgetOutcome(raw)
           if (!outcome.ok) {
             return {
               ok: false,
@@ -477,10 +478,76 @@ export function createAgentTools(
               durationMs: outcome.durationMs,
             }
           }
+          if (valueOverflow !== null) {
+            // The full value would bloat model history — spill it to a
+            // user-facing artifact and hand back the truncated form + the id.
+            const spilled = await saveArtifact({
+              title: 'RunCode output',
+              html:
+                '<!doctype html><meta charset="utf-8"><body style="margin:12px;font:13px monospace;white-space:pre-wrap">' +
+                escapeHtml(valueOverflow),
+              conversationId,
+            })
+            return {
+              ok: true,
+              value: outcome.value,
+              logs: outcome.logs,
+              durationMs: outcome.durationMs,
+              artifactId: spilled.id,
+              note: 'Full output was too large for chat and is shown to the user as an artifact.',
+            }
+          }
           return { ok: true, value: outcome.value, logs: outcome.logs, durationMs: outcome.durationMs }
         } catch (err) {
           return { error: `Sandbox failure: ${err instanceof Error ? err.message : String(err)}` }
         }
+      },
+    }),
+
+    CreateArtifact: tool({
+      description:
+        'Create a self-contained web artifact — one complete HTML document with inline CSS/JS — that the user can view and interact with as a card in the chat: a visualization, mini-app, formatted document, diagram, or game. It renders in a sealed sandbox with NO network (external scripts, CDNs and fonts will not load — inline everything), no storage, and no extension access. Returns an artifactId; revise the same artifact later with UpdateArtifact instead of creating a new one. Asks the user for permission first.',
+      inputSchema: z.object({
+        title: z.string().describe('Short human title shown on the card, e.g. "Loan repayment explorer"'),
+        html: z.string().describe('The complete standalone HTML document (inline <style> and <script> only).'),
+        reason: z.string().describe('Short reason shown to the user'),
+      }),
+      execute: async ({ title, html, reason }) => {
+        const approved = await requestApproval({
+          toolName: 'CreateArtifact',
+          summary: `Create artifact "${title}" (${(html.length / 1024).toFixed(1)} KB of HTML)`,
+          reason,
+        })
+        if (!approved) return DENIED
+        const saved = await saveArtifact({ title, html, conversationId })
+        return {
+          artifactId: saved.id,
+          title: saved.title,
+          revision: saved.revision,
+          note: 'The artifact is now rendered for the user. Use UpdateArtifact with this artifactId to revise it.',
+        }
+      },
+    }),
+
+    UpdateArtifact: tool({
+      description:
+        'Replace the HTML of an artifact you previously created with CreateArtifact, keeping its card and id. Send the COMPLETE new document, not a diff. Same sealed-sandbox rules: fully inline, no external URLs. Asks the user for permission first.',
+      inputSchema: z.object({
+        artifactId: z.string().describe('The artifactId returned by CreateArtifact.'),
+        html: z.string().describe('The complete replacement HTML document.'),
+        title: z.string().optional().describe('New title, only if it should change.'),
+        reason: z.string().describe('Short reason shown to the user'),
+      }),
+      execute: async ({ artifactId, html, title, reason }) => {
+        const approved = await requestApproval({
+          toolName: 'UpdateArtifact',
+          summary: `Update artifact ${title ? `"${title}"` : artifactId} (${(html.length / 1024).toFixed(1)} KB of HTML)`,
+          reason,
+        })
+        if (!approved) return DENIED
+        const updated = await updateArtifactContent(artifactId, { html, title })
+        if (!updated) return { error: `No artifact with id ${artifactId} — it may have been pruned. Use CreateArtifact.` }
+        return { artifactId: updated.id, revision: updated.revision }
       },
     }),
 
