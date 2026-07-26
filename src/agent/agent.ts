@@ -177,6 +177,24 @@ const checkpointTool = tool({
 })
 
 /**
+ * Remove the OpenAI Responses item id from an assistant part's provider
+ * metadata (the adapter reads `providerOptions` on replay and stamps
+ * `providerMetadata` on responses, so both spellings are cleared). Other
+ * metadata keys ride through untouched.
+ */
+function dropOpenAiItemId<T>(part: T): T {
+  let next = part as Record<string, Record<string, Record<string, unknown>> | undefined>
+  for (const key of ['providerOptions', 'providerMetadata'] as const) {
+    const openai = next[key]?.openai
+    if (openai && 'itemId' in openai) {
+      const { itemId: _drop, ...rest } = openai
+      next = { ...next, [key]: { ...next[key], openai: rest } }
+    }
+  }
+  return next as T
+}
+
+/**
  * Sanitise model messages before they are sent to the model or persisted. Two jobs:
  *
  * 1. **Drop `undefined`-valued keys** via a JSON round-trip. Tool executors can
@@ -189,13 +207,18 @@ const checkpointTool = tool({
  *    undefined recursively, keeping every turn valid — and repairs conversations
  *    already persisted with the bad shape.
  *
- * 2. **Strip assistant `reasoning` parts.** The app never renders them (the stream
- *    loop ignores reasoning chunks), and once persisted they lose the OpenAI
- *    Responses adapter's provider metadata — so replaying them only triggers a
- *    "Non-OpenAI reasoning parts are not supported. Skipping reasoning part"
- *    warning (the SDK drops them anyway; the request already succeeds without
- *    them). The final text and tool calls carry all the state the next turn needs.
- *    An assistant message left with no content is dropped whole.
+ * 2. **Strip assistant `reasoning` parts — and the OpenAI item ids of the parts
+ *    that survive.** The app never renders reasoning from model messages (display
+ *    reasoning rides a separate UI-part channel), so replayed reasoning carries no
+ *    value. But stripping it alone is not enough: the OpenAI Responses adapter
+ *    replays a text part whose `providerOptions.openai.itemId` survives as an
+ *    `item_reference` to `msg_…`, and GPT-5.x reasoning models reject a replayed
+ *    `msg_…` whose paired `rs_…` reasoning item is missing ("Item 'msg_…' of type
+ *    'message' was provided without its required 'reasoning' item"). Dropping the
+ *    item ids makes the surviving parts replay as plain content — no dangling
+ *    reference, and safe across mid-conversation model/provider switches. The
+ *    final text and tool calls carry all the state the next turn needs. An
+ *    assistant message left with no content is dropped whole.
  *
  * Falls back to the original message if it somehow isn't JSON-serializable.
  */
@@ -204,9 +227,11 @@ export function toValidModelMessages(messages: ModelMessage[]): ModelMessage[] {
   for (const m of messages) {
     let msg = m
     if (m.role === 'assistant' && Array.isArray(m.content)) {
-      const content = m.content.filter((p) => p.type !== 'reasoning')
+      const content = m.content
+        .filter((p) => p.type !== 'reasoning')
+        .map((p) => dropOpenAiItemId(p))
       if (content.length === 0) continue
-      if (content.length !== m.content.length) msg = { ...m, content } as ModelMessage
+      msg = { ...m, content } as ModelMessage
     }
     try {
       out.push(JSON.parse(JSON.stringify(msg)) as ModelMessage)

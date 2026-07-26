@@ -380,10 +380,9 @@ describe('agent steering: steerPending halts the loop at the next step boundary'
 })
 
 // Reasoning parts must be stripped from replayed history: the app never renders
-// them from the model messages, and once persisted they lose the OpenAI Responses
-// adapter's provider metadata, so replaying them only logs a "Non-OpenAI reasoning
-// parts are not supported" warning. (Display reasoning rides a separate UI-part
-// channel.)
+// them from the model messages (display reasoning rides a separate UI-part
+// channel). And because the reasoning pair is gone, the surviving parts must
+// lose their OpenAI item ids too — see the itemId test below.
 describe('toValidModelMessages strips reasoning from replay', () => {
   it('removes reasoning parts but keeps text and tool calls in the same message', () => {
     const msgs = [
@@ -412,6 +411,47 @@ describe('toValidModelMessages strips reasoning from replay', () => {
     const out = toValidModelMessages(msgs)
     expect(out.map((m) => m.role)).toEqual(['user', 'assistant'])
     expect((out[1].content as Array<{ type: string }>).map((p) => p.type)).toEqual(['text'])
+  })
+
+  // GPT-5.x models enforce that a replayed `msg_…` item id is accompanied by its
+  // paired `rs_…` reasoning item. We strip reasoning parts, so the surviving
+  // parts must lose their OpenAI item ids too — otherwise the adapter replays a
+  // dangling item_reference and the API 400s ("Item 'msg_…' of type 'message'
+  // was provided without its required 'reasoning' item").
+  it('drops OpenAI item ids from surviving assistant parts (their reasoning pair is gone)', () => {
+    const msgs = [
+      {
+        role: 'assistant',
+        content: [
+          {
+            type: 'reasoning',
+            text: 'thinking',
+            providerOptions: { openai: { itemId: 'rs_1' } },
+          },
+          {
+            type: 'text',
+            text: 'hello',
+            providerOptions: { openai: { itemId: 'msg_1', phase: 'final' } },
+          },
+          {
+            type: 'tool-call',
+            toolCallId: 'c1',
+            toolName: 'ReadPage',
+            input: {},
+            providerMetadata: { openai: { itemId: 'fc_1' } },
+          },
+        ],
+      },
+    ] as unknown as ModelMessage[]
+    const out = toValidModelMessages(msgs)
+    const content = out[0].content as unknown as Array<
+      Record<string, Record<string, Record<string, unknown>>>
+    >
+    expect(content.map((p) => p.type)).toEqual(['text', 'tool-call'])
+    expect(content[0].providerOptions?.openai?.itemId).toBeUndefined()
+    expect(content[1].providerMetadata?.openai?.itemId).toBeUndefined()
+    // Only the item id is dropped — other provider metadata rides through.
+    expect(content[0].providerOptions?.openai?.phase).toBe('final')
   })
 
   it('still removes nested undefined from tool results (its original job)', () => {
