@@ -1,0 +1,36 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <!--
+      The sealed code-execution sandbox. Manifest-sandboxed like sandbox.html
+      (unique origin, no chrome.*, CSP permits eval/wasm), but with a TIGHTER
+      profile: the meta CSP below removes network access entirely, so an
+      interpreter escape lands in a page that can reach nothing. It never
+      fetches its own assets — the panel transfers wasm bytes in by
+      postMessage (an opaque origin fails CORS against chrome-extension://).
+      The script is a classic (non-module) script for the same CORS reason,
+      built as an IIFE by vite.sandbox.config.ts, NOT the main build.
+    -->
+    <meta http-equiv="Content-Security-Policy" content="connect-src 'none'" />
+    <style>
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        height: 100%;
+        overflow: hidden;
+        background: transparent;
+      }
+      iframe {
+        display: block;
+        width: 100%;
+        height: 100%;
+        border: 0;
+      }
+    </style>
+  </head>
+  <body>
+    <script src="sandbox-exec.js"></script>
+  </body>
+</html>

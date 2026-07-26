@@ -5,7 +5,9 @@
   "type": "module",
   "scripts": {
     "dev": "vite build --watch --mode development",
-    "build": "tsc --noEmit && vite build",
+    "dev:sandbox": "vite build --watch --mode development -c vite.sandbox.config.ts",
+    "build": "tsc --noEmit && vite build && vite build -c vite.sandbox.config.ts",
+    "build:sandbox": "vite build -c vite.sandbox.config.ts",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest"

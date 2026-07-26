@@ -60,7 +60,8 @@
   },
   "sandbox": {
     "pages": [
-      "sandbox.html"
+      "sandbox.html",
+      "sandbox-exec.html"
     ]
   }
 }
