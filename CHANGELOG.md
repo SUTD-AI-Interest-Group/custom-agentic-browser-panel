@@ -17,6 +17,36 @@ for that history.
 
 ---
 
+## [2026-07-27] — Sandboxed code execution & artifacts
+
+The agent can now *run code* and *build things*, entirely client-side. A second
+manifest-sandboxed page (`sandbox-exec.html`) is the sealed execution surface: opaque origin,
+no `chrome.*`, no network (`connect-src 'none'` meta CSP), assets delivered by postMessage
+byte-transfer from the panel (an opaque origin fails CORS against `chrome-extension://`).
+Design + research trail in `docs/superpowers/specs/2026-07-27-sandboxed-code-execution-design.md`.
+
+### Added
+
+- **`RunCode` tool** — executes JavaScript in a throwaway QuickJS-wasm interpreter
+  (`quickjs-emscripten-core`, ~500 KB) inside the sealed sandbox, with a hard memory cap and an
+  instruction-level interrupt for wall-clock timeouts. Console output + completion value return
+  under strict budgets (`src/exec/protocol.ts`); oversized values spill to a user-facing
+  artifact instead of bloating model history. Gated by `requestApproval` with the code shown on
+  the card.
+- **Artifacts** — `CreateArtifact`/`UpdateArtifact` tools store self-contained HTML documents in
+  a new `lychee-artifacts` IndexedDB store (byte-cap pruned, newest always survives; new
+  Data-tab row; cascaded on chat delete) and render as `ArtifactCard`s that mount the sealed
+  sandbox in render mode — artifact scripts run in a nested scripts-only `srcdoc` iframe, never
+  `allow-same-origin`.
+- **Second Vite build** (`vite.sandbox.config.ts`) emits the sandbox runtime as a classic IIFE
+  (`dist/sandbox-exec.js`) — a module script would fail the opaque-origin CORS check — with the
+  emscripten wasm reference stubbed out (the panel transfers the real bytes, saving ~670 KB of
+  dead base64).
+- **Per-conversation delete cascade** — deleting a chat now also drops its screenshots, MCP
+  content and artifacts (the stores documented this intent but nothing called them).
+
+---
+
 ## [2026-07-20] — Providers & reasoning, agent steering, screenshots v2, resilient research
 
 The largest single-day drop in the project's history: a per-provider capability layer that makes
