@@ -44,6 +44,7 @@ import { getMcpManager, type McpPromptArgInfo } from '../mcp/manager'
 import { mcpSettings, mcpToolPolicy } from '../mcp/config'
 import McpContentCard from './McpContentCard'
 import McpAppCard, { registerMcpAppHostActions, type McpAppRef } from './McpAppCard'
+import { ArtifactCard } from './ArtifactCard'
 import { type ControlSession } from '../tools/pageControl'
 import { clearIndex } from '../platform/domIndex'
 import { unmountPresence, unmountAllPresence } from '../platform/presence'
@@ -3441,6 +3442,12 @@ function ToolPill({ part }: { part: Extract<UIPart, { type: 'tool' }> }) {
       ))}
       {output?.app && typeof output.app === 'object' && typeof output.app.server === 'string' && (
         <McpAppCard app={output.app as McpAppRef} toolInput={part.input} toolOutput={appOutput} />
+      )}
+      {typeof output?.artifactId === 'string' && (
+        <ArtifactCard
+          artifactId={output.artifactId}
+          revision={typeof output?.revision === 'number' ? output.revision : undefined}
+        />
       )}
     </>
   )

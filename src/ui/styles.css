@@ -5340,3 +5340,51 @@ body {
   max-height: 120px;
   overflow: auto;
 }
+
+/* ---- Artifact cards (agent-created web artifacts, sealed-sandbox preview) ---- */
+
+.artifact-card {
+  margin: 4px 0 8px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--pill-bg);
+  overflow: hidden;
+}
+
+.artifact-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border);
+}
+
+.artifact-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.artifact-rev {
+  font-size: 11px;
+  color: var(--muted, #888);
+}
+
+.artifact-card iframe {
+  display: block;
+  width: 100%;
+  border: 0;
+  /* Artifact HTML is authored against a light default, like any bare page. */
+  background: #fff;
+}
+
+.artifact-missing {
+  padding: 10px;
+  font-size: 12px;
+  font-style: italic;
+  color: var(--muted, #888);
+}

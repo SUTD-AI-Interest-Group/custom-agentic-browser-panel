@@ -6,6 +6,9 @@ import {
   togglePin,
   type ConversationSummary,
 } from '../../data/conversations'
+import { deleteShotsForConversation } from '../../data/screenshots'
+import { deleteMcpArtifactsForConversation } from '../../data/mcpArtifacts'
+import { deleteArtifactsForConversation } from '../../data/artifacts'
 import { relativeTime } from '../../platform/time'
 
 // The Library's Chats tab: the full conversation history as a list. Clicking a
@@ -55,6 +58,14 @@ export default function ConversationsList({
     if (!window.confirm('Delete this conversation? This can’t be undone.')) return
     try {
       await deleteConversation(id)
+      // The per-conversation stores cascade here (their clear-all path lives in
+      // storage.ts): a deleted chat takes its screenshots, MCP content and
+      // artifacts, or they'd sit unreachable in the quota forever.
+      await Promise.all([
+        deleteShotsForConversation(id).catch(() => {}),
+        deleteMcpArtifactsForConversation(id).catch(() => {}),
+        deleteArtifactsForConversation(id).catch(() => {}),
+      ])
     } finally {
       refresh()
       onConversationsChanged()
