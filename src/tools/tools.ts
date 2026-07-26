@@ -22,6 +22,8 @@ import { getMcpManager } from '../mcp/manager'
 import { mapResourceResult } from '../mcp/content'
 import { saveMcpArtifact } from '../data/mcpArtifacts'
 import { instrumentToolset, type Trace } from '../agent/observability'
+import { getExecHost } from '../exec/host'
+import { budgetOutcome, RUN_MEMORY_BYTES, RUN_TIMEOUT_MS } from '../exec/protocol'
 import { createStartResearchTool } from './research'
 import { buildCatalog, searchCatalog, partitionToolNames, type CatalogEntry } from './toolDiscovery'
 import {
@@ -445,6 +447,41 @@ export function createAgentTools(
           'Take a screenshot of one element on this page',
           reason,
         ),
+    }),
+
+    RunCode: tool({
+      description:
+        'Execute JavaScript in a sealed sandbox and get its console output and completion value back. Use it when running code beats reasoning: calculations, data transforms, parsing, checking an algorithm. Pure computation only — no DOM, no network, no timers, no page or extension access; promise chains settle but nothing can wait on time. The value of the last expression is the result. Asks the user for permission first.',
+      inputSchema: z.object({
+        code: z.string().describe("The JavaScript to run. The last expression's value is returned."),
+        reason: z.string().describe('Short reason shown to the user, e.g. "To compute the amortization table"'),
+      }),
+      execute: async ({ code, reason }) => {
+        const preview = code.length > 400 ? `${code.slice(0, 400)}…` : code
+        const approved = await requestApproval({
+          toolName: 'RunCode',
+          summary: `Run JavaScript in the sandbox:\n${preview}`,
+          reason,
+        })
+        if (!approved) return DENIED
+        try {
+          const raw = await getExecHost().run(code, { timeoutMs: RUN_TIMEOUT_MS, memoryBytes: RUN_MEMORY_BYTES })
+          const { outcome } = budgetOutcome(raw)
+          if (!outcome.ok) {
+            return {
+              ok: false,
+              error: outcome.timedOut
+                ? `Timed out after ${RUN_TIMEOUT_MS}ms. Break the work into smaller steps.`
+                : outcome.error,
+              logs: outcome.logs,
+              durationMs: outcome.durationMs,
+            }
+          }
+          return { ok: true, value: outcome.value, logs: outcome.logs, durationMs: outcome.durationMs }
+        } catch (err) {
+          return { error: `Sandbox failure: ${err instanceof Error ? err.message : String(err)}` }
+        }
+      },
     }),
 
     ReadPdf: tool({
