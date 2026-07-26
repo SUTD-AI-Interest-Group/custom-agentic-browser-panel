@@ -8,6 +8,7 @@
 import { clearConversations, conversationsUsage } from './conversations'
 import { clearMemory, memoryUsage } from './memory'
 import { clearMcpArtifacts, mcpArtifactsUsage } from './mcpArtifacts'
+import { clearArtifacts, artifactsUsage } from './artifacts'
 import { clearShots, shotsUsage } from './screenshots'
 import { clearSkills, skillsUsage } from './skills'
 import { clearTasks, tasksUsage } from './researchTasks'
@@ -16,10 +17,11 @@ import type { StorageReport, StoreKey, StoreUsage } from './usage'
 
 /** Read every store once and total it up. Counts are dozens, so one pass is cheap. */
 export async function storageReport(): Promise<StorageReport> {
-  const [conversations, screenshots, mcp, memory, skills, research] = await Promise.all([
+  const [conversations, screenshots, mcp, artifacts, memory, skills, research] = await Promise.all([
     conversationsUsage(),
     shotsUsage(),
     mcpArtifactsUsage(),
+    artifactsUsage(),
     memoryUsage(),
     skillsUsage(),
     tasksUsage(),
@@ -28,6 +30,7 @@ export async function storageReport(): Promise<StorageReport> {
     conversations,
     screenshots,
     mcp,
+    artifacts,
     memory,
     skills,
     research,
@@ -55,12 +58,16 @@ export async function clearStore(key: StoreKey): Promise<void> {
       await clearConversations()
       await clearShots()
       await clearMcpArtifacts()
+      await clearArtifacts()
       return
     case 'screenshots':
       await clearShots()
       return
     case 'mcp':
       await clearMcpArtifacts()
+      return
+    case 'artifacts':
+      await clearArtifacts()
       return
     case 'memory':
       await clearMemory()
@@ -82,6 +89,14 @@ export async function clearStore(key: StoreKey): Promise<void> {
  * returns an un-onboarded config and `App.tsx` renders the wizard on its own.
  */
 export async function eraseAllData(): Promise<void> {
-  await Promise.all([clearConversations(), clearShots(), clearMcpArtifacts(), clearMemory(), clearSkills(), clearTasks()])
+  await Promise.all([
+    clearConversations(),
+    clearShots(),
+    clearMcpArtifacts(),
+    clearArtifacts(),
+    clearMemory(),
+    clearSkills(),
+    clearTasks(),
+  ])
   await chrome.storage.local.clear()
 }

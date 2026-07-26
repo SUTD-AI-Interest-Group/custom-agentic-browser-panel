@@ -5,7 +5,7 @@
 // store would close a cycle, and neither module would compile alone.
 
 /** The clearable stores, in Data-tab display order. */
-export type StoreKey = 'conversations' | 'screenshots' | 'mcp' | 'memory' | 'skills' | 'research'
+export type StoreKey = 'conversations' | 'screenshots' | 'mcp' | 'artifacts' | 'memory' | 'skills' | 'research'
 
 export interface StoreUsage {
   /** Estimated bytes — see `estimateBytes`. */
