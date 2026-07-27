@@ -11,3 +11,6 @@ dist/
 
 # Publicity: standalone Remotion motion-graphics project, not part of the extension
 /publicity/
+
+# Chrome Web Store upload packages built by scripts/package.sh
+/lychee-ai-v*.zip

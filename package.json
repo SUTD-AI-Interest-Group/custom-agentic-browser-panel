@@ -9,6 +9,7 @@
     "build": "tsc --noEmit && vite build && vite build -c vite.sandbox.config.ts",
     "build:sandbox": "vite build -c vite.sandbox.config.ts",
     "typecheck": "tsc --noEmit",
+    "package": "bash scripts/package.sh",
     "test": "vitest run",
     "test:watch": "vitest"
   },

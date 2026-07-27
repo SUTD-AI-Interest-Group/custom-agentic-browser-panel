@@ -17,6 +17,37 @@ for that history.
 
 ---
 
+## [2026-07-27] — Chrome Web Store readiness
+
+Preparation for the first store submission. No behavioural change to the extension itself —
+one redundant permission dropped, plus the publishing paperwork the review process requires.
+
+### Added
+
+- **`CHROMEWEBSTORE.md`** — the single source of truth for the store listing: submission-ready
+  copy, a per-permission justification table written for reviewers, the data-use disclosure
+  derived from an audit of the real code paths, and review notes pre-empting the three things
+  most likely to draw scrutiny (single purpose, `<all_urls>`, and the remote-code question that
+  `RunCode` and MCP app views superficially resemble). Excluded from the upload package.
+- **`PRIVACY.md`** — the privacy policy the store requires, enumerating every endpoint the
+  extension actually contacts (the user's provider, DuckDuckGo, OpenAlex, Wikimedia Commons,
+  Openverse, user-added MCP servers, and opt-in Langfuse) and every local store. Must be hosted
+  at a publicly reachable URL before submission.
+- **`scripts/package.sh` + `npm run package`** — builds and zips `dist/` into an upload-ready
+  archive. Zips the *inside* of `dist/` so `manifest.json` lands at the archive root (Chrome
+  rejects a manifest one directory down), fails fast when `manifest.json` and `package.json`
+  versions disagree, asserts every entry point built, and strips source maps and `.DS_Store`.
+- **`homepage_url`** in the manifest, pointing at the repository.
+
+### Removed
+
+- **`activeTab` permission** — never used, and redundant beside `<all_urls>` + `tabs`, which
+  already cover every path that touches a tab. It could not have worked for this UI anyway:
+  `activeTab` is granted only on a direct gesture on the extension's own surfaces, which a
+  button inside the side panel is not. One fewer permission for review to question.
+
+---
+
 ## [2026-07-27] — Sandboxed code execution & artifacts
 
 The agent can now *run code* and *build things*, entirely client-side. A second
