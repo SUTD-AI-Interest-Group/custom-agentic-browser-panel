@@ -7,6 +7,8 @@
 import { useEffect, useRef, useState } from 'react'
 import { getArtifact, type CodeArtifact } from '../data/artifacts'
 
+// These sizes are quoted in the CreateArtifact/UpdateArtifact descriptions
+// (src/tools/tools.ts) so the model designs for the real viewport — keep in sync.
 const COLLAPSED_H = 360
 const EXPANDED_H = 720
 

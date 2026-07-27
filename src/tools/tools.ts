@@ -504,12 +504,19 @@ export function createAgentTools(
       },
     }),
 
+    // The viewport numbers in the description mirror ArtifactCard's
+    // COLLAPSED_H / EXPANDED_H — keep them in sync or the model designs for a
+    // canvas the card doesn't have.
     CreateArtifact: tool({
       description:
-        'Create a self-contained interactive web artifact — one complete HTML document with inline CSS and JavaScript — shown to the user as a live, interactive card right in the chat: a visualization, chart, mini-app, formatted document, diagram, demo, or game. This is THE way to display or render HTML/JS to the user. It runs in a sealed sandbox with NO network (external scripts, CDNs and fonts will not load — inline everything), no storage, and no extension access. Returns an artifactId; revise the same artifact later with UpdateArtifact instead of creating a new one. Asks the user for permission first.',
+        'Create a self-contained interactive web artifact — one complete HTML document with inline CSS and JavaScript — shown to the user as a live, interactive card right in the chat: a visualization, chart, mini-app, formatted document, diagram, demo, or game. This is THE way to display or render HTML/JS to the user. It runs in a sealed sandbox with NO network (external scripts, CDNs and fonts will not load — inline everything), no storage, and no extension access. The card viewport is SMALL and FIXED: a narrow side-panel column about 360px wide and 360px tall (720px if the user expands it) — anything taller is clipped behind a scrollbar, not shown. Design to fit: fluid width (no fixed pixel widths), html/body{margin:0;height:100%}, compact spacing, and put long content behind tabs, accordions, pagination, or an internal scroll region instead of growing the page taller. Never emit a long scrolling document. Returns an artifactId; revise the same artifact later with UpdateArtifact instead of creating a new one. Asks the user for permission first.',
       inputSchema: z.object({
         title: z.string().describe('Short human title shown on the card, e.g. "Loan repayment explorer"'),
-        html: z.string().describe('The complete standalone HTML document (inline <style> and <script> only).'),
+        html: z
+          .string()
+          .describe(
+            'The complete standalone HTML document (inline <style> and <script> only), designed to fit the ~360px-wide, ~360px-tall card viewport — compact and fluid, never a long scrolling page.',
+          ),
         reason: z.string().describe('Short reason shown to the user'),
       }),
       execute: async ({ title, html, reason }) => {
@@ -531,7 +538,7 @@ export function createAgentTools(
 
     UpdateArtifact: tool({
       description:
-        'Replace the HTML of an artifact you previously created with CreateArtifact, keeping its card and id. Send the COMPLETE new document, not a diff. Same sealed-sandbox rules: fully inline, no external URLs. Asks the user for permission first.',
+        'Replace the HTML of an artifact you previously created with CreateArtifact, keeping its card and id. Send the COMPLETE new document, not a diff. Same sealed-sandbox and sizing rules: fully inline, no external URLs, and designed to fit the ~360px-wide, ~360px-tall card viewport (720px expanded) — never a long scrolling page. Asks the user for permission first.',
       inputSchema: z.object({
         artifactId: z.string().describe('The artifactId returned by CreateArtifact.'),
         html: z.string().describe('The complete replacement HTML document.'),
