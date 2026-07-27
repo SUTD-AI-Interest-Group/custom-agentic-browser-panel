@@ -1,0 +1,2059 @@
+/* Lychee AI homepage — Workbench macrostructure.
+ * Tokens live in tokens.css; nothing here declares a raw colour or font family. */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  /* clip, never hidden — `hidden` on the root kills position:sticky in Safari */
+  overflow-x: clip;
+}
+
+body {
+  background: var(--color-bg);
+  color: var(--color-ink);
+  font-family: var(--font-body);
+  font-size: var(--text-body);
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+}
+
+h1,
+h2,
+h3 {
+  /* Display type is always roman. Emphasis is carried by weight and colour. */
+  font-style: normal;
+  font-weight: 700;
+  letter-spacing: -0.028em;
+  line-height: 1.06;
+  margin: 0;
+  /* Long unbroken strings (URLs, `chrome.storage.local`) must not force a
+     horizontal scrollbar at 320px. */
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+
+p {
+  margin: 0;
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+:focus-visible {
+  /* Never animated — the ring must appear the instant focus lands. */
+  outline: 2px solid var(--color-red);
+  outline-offset: 3px;
+  border-radius: 4px;
+}
+
+.shell {
+  max-width: var(--page-max);
+  margin-inline: auto;
+  padding-inline: var(--space-md);
+}
+
+/* ── Nav · N5 floating pill ─────────────────────────────────────────────── */
+
+.nav {
+  position: fixed;
+  top: var(--space-sm);
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  gap: var(--space-md);
+  padding: 0.5rem 0.5rem 0.5rem 1.25rem;
+  background: rgba(255, 255, 255, 0.82);
+  backdrop-filter: saturate(180%) blur(18px);
+  border: 1px solid var(--color-hairline);
+  border-radius: var(--radius-pill);
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.08);
+  max-width: calc(100vw - var(--space-md) * 2);
+}
+
+.nav__mark {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.nav__dot {
+  width: 15px;
+  height: 15px;
+  border-radius: 50%;
+  background: var(--color-red);
+  flex: none;
+}
+
+.nav__links {
+  display: flex;
+  gap: var(--space-md);
+  font-size: var(--text-sm);
+  color: var(--color-gray);
+}
+
+.nav__links a {
+  white-space: nowrap;
+  transition: color var(--dur-fast) var(--ease-out);
+}
+
+.nav__links a:hover {
+  color: var(--color-ink);
+}
+
+/* Below the pill's comfortable width the link list is the first thing to go —
+   the wordmark and the CTA are what the nav is for. */
+@media (max-width: 60rem) {
+  .nav__links {
+    display: none;
+  }
+}
+
+/* ── Buttons ────────────────────────────────────────────────────────────── */
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  padding: 0.875rem 1.625rem;
+  border-radius: var(--radius-pill);
+  border: 1px solid transparent;
+  font: inherit;
+  font-size: var(--text-body);
+  font-weight: 600;
+  /* A wrapped button label is a mobile tell — keep every CTA on one line. */
+  white-space: nowrap;
+  cursor: pointer;
+  transition:
+    transform var(--dur-fast) var(--ease-out),
+    background-color var(--dur-fast) var(--ease-out),
+    border-color var(--dur-fast) var(--ease-out);
+}
+
+.btn--primary {
+  background: var(--color-ink);
+  color: var(--color-surface);
+}
+
+.btn--primary:hover {
+  background: #000;
+}
+
+.btn--ghost {
+  background: transparent;
+  border-color: var(--color-hairline-hi);
+  color: var(--color-ink);
+  font-weight: 500;
+}
+
+.btn--ghost:hover {
+  border-color: var(--color-ink);
+}
+
+.btn--invert {
+  background: var(--color-surface);
+  color: var(--color-ink);
+}
+
+.btn--sm {
+  padding: 0.625rem 1.125rem;
+  font-size: var(--text-sm);
+}
+
+.btn:active {
+  transform: translateY(1px);
+}
+
+.btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* ── Hero · H7 demo video clipped by the viewport edge ──────────────────── */
+
+.hero {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr);
+  align-items: center;
+  gap: var(--space-2xl);
+  padding-block: clamp(7rem, 14vw, 11rem) var(--space-2xl);
+  /* The media deliberately runs past the right edge; the page clips it. */
+  overflow-x: clip;
+}
+
+.hero__eyebrow {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  letter-spacing: 0.09em;
+  color: var(--color-red);
+  margin-bottom: var(--space-sm);
+}
+
+.hero h1 {
+  font-size: var(--text-display);
+  margin-bottom: var(--space-md);
+}
+
+.hero__lead {
+  font-size: var(--text-lead);
+  color: var(--color-gray);
+  max-width: var(--measure);
+  margin-bottom: var(--space-lg);
+}
+
+.hero__ctas {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  margin-bottom: var(--space-md);
+}
+
+.hero__meta {
+  font-size: var(--text-xs);
+  color: var(--color-faint);
+}
+
+.hero__media {
+  position: relative;
+  /* The clip: the frame is wider than its track, so its right edge leaves the
+     viewport. Reads as "there's more product than fits the screen". */
+  width: calc(100% + 14vw);
+  aspect-ratio: 16 / 10;
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  background: var(--color-surface-dark);
+  box-shadow: var(--shadow-float);
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+  display: block;
+}
+
+.hero__media video,
+.hero__media img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.hero__play {
+  position: absolute;
+  inset: auto auto var(--space-sm) var(--space-sm);
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 0.875rem;
+  border-radius: var(--radius-pill);
+  background: rgba(0, 0, 0, 0.55);
+  backdrop-filter: blur(10px);
+  color: #fff;
+  font-size: var(--text-xs);
+  font-family: var(--font-mono);
+  transition: background-color var(--dur-fast) var(--ease-out);
+}
+
+.hero__media:hover .hero__play {
+  background: rgba(0, 0, 0, 0.75);
+}
+
+@media (max-width: 60rem) {
+  .hero {
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--space-lg);
+    padding-top: clamp(6rem, 20vw, 8rem);
+  }
+
+  .hero__media {
+    width: 100%;
+  }
+}
+
+/* ── Compatibility strip ────────────────────────────────────────────────── */
+
+.strip {
+  border-block: 1px solid var(--color-hairline);
+  padding-block: var(--space-md);
+  font-size: var(--text-sm);
+  color: var(--color-faint);
+}
+
+.strip__inner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem var(--space-md);
+  text-align: center;
+}
+
+.strip__inner strong {
+  color: var(--color-gray);
+  font-weight: 600;
+}
+
+/* ── Workbench blocks ───────────────────────────────────────────────────── */
+
+.block {
+  display: grid;
+  grid-template-columns: minmax(0, 0.85fr) minmax(0, 1.15fr);
+  align-items: center;
+  gap: var(--space-2xl);
+  padding-block: var(--space-3xl);
+}
+
+.block--flip .block__media {
+  order: -1;
+}
+
+.block h2 {
+  font-size: var(--text-h3);
+  margin-bottom: var(--space-sm);
+}
+
+.block p {
+  color: var(--color-gray);
+  font-size: var(--text-lead);
+  max-width: var(--measure);
+}
+
+.block__media {
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  background: var(--color-surface-dark);
+  box-shadow: var(--shadow-card);
+  aspect-ratio: 16 / 9;
+}
+
+.block__media img,
+.block__media video {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+@media (max-width: 60rem) {
+  .block {
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--space-lg);
+    padding-block: var(--space-2xl);
+  }
+
+  .block--flip .block__media {
+    order: 0;
+  }
+}
+
+/* ── Dark bands ─────────────────────────────────────────────────────────── */
+
+.band--dark {
+  background: var(--color-bg-dark);
+  color: var(--color-ink-dark);
+}
+
+.band--dark h2 {
+  color: var(--color-ink-dark);
+}
+
+.band--dark p {
+  color: var(--color-gray-dark);
+}
+
+.band--page {
+  background: var(--color-page);
+}
+
+.section {
+  padding-block: var(--space-3xl);
+}
+
+.section__head {
+  max-width: 46rem;
+  margin-bottom: var(--space-xl);
+}
+
+.section__head--center {
+  margin-inline: auto;
+  text-align: center;
+}
+
+.section__head h2 {
+  font-size: var(--text-h2);
+  margin-bottom: var(--space-sm);
+}
+
+.section__head p {
+  font-size: var(--text-lead);
+  color: var(--color-gray);
+}
+
+.eyebrow {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  letter-spacing: 0.09em;
+  color: var(--color-red-dark);
+  margin-bottom: var(--space-sm);
+}
+
+/* ── Privacy flow diagram ───────────────────────────────────────────────── */
+
+.flow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-md);
+  margin-bottom: var(--space-md);
+}
+
+.flow__node {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 1.25rem 1.625rem;
+  border-radius: var(--radius-md);
+  background: var(--color-surface-dark);
+  border: 1px solid var(--color-hairline-dark);
+  text-align: center;
+}
+
+.flow__node--live {
+  border-color: var(--color-leaf-dark);
+}
+
+.flow__label {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--color-ink-dark);
+}
+
+.flow__node--live .flow__label {
+  color: var(--color-leaf-dark);
+}
+
+.flow__sub {
+  font-size: var(--text-xs);
+  color: var(--color-gray-dark);
+}
+
+.flow__arrow {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  color: var(--color-leaf-dark);
+}
+
+.flow__arrow span {
+  display: block;
+  width: 4rem;
+  height: 2px;
+  background: currentColor;
+}
+
+.flow__caption {
+  text-align: center;
+  font-size: var(--text-sm);
+  color: var(--color-faint);
+}
+
+/* ── Provider chips ─────────────────────────────────────────────────────── */
+
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 0.75rem;
+  margin-bottom: var(--space-md);
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.625rem 1.125rem;
+  border-radius: var(--radius-pill);
+  background: var(--color-surface);
+  border: 1px solid var(--color-hairline);
+  font-size: var(--text-sm);
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.chip__dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--color-gray);
+  flex: none;
+}
+
+.chip--local .chip__dot {
+  background: var(--color-leaf);
+}
+
+.chips__note {
+  text-align: center;
+  font-size: var(--text-sm);
+  color: var(--color-faint);
+}
+
+/* ── 3D model marquee ───────────────────────────────────────────────────────
+   The backdrop behind "Your model. Your rules.": a plane of open-weight model
+   cards under an isometric projection (rotateX + rotateZ with no perspective,
+   so parallel edges stay parallel), its columns easing up and down forever.
+   It is decoration, so a scrim sits between it and the copy — the headline has
+   to stay the thing you read first. */
+
+.band--models {
+  position: relative;
+  overflow: hidden;
+  isolation: isolate;
+}
+
+.band--models > .shell {
+  position: relative;
+  z-index: 1;
+}
+
+/* The plane is a square rotated 45° and then flattened, so its silhouette over
+   the band is a rhombus with diagonals `√2·S` across and `√2·cos55°·S` down. A
+   rhombus covers a centred W×H box only while `W/dx + H/dy ≤ 1`, i.e. while
+   `S ≥ 0.71W + 1.23H` — hence the viewport-derived side below, with margin.
+   Sizing the plane rather than scaling a fixed one is what keeps the corners
+   filled on a 34" display and stops a phone rendering a plane ten times the
+   screen it has. Everything inside is a fraction of --plane for the same
+   reason: one variable sets the whole projection. */
+.marquee3d {
+  /* `svh` for the same reason the full-height sections use it, and with the
+     same `vh` fallback — here it matters more, because an unsupported unit
+     inside a custom property makes the width that consumes it invalid, and the
+     plane collapses rather than merely mis-sizing. */
+  --plane: calc(85vw + 145vh);
+  --plane: calc(85vw + 145svh);
+  --cols: 6;
+  --gap: calc(var(--plane) / 60);
+  --card-w: calc((var(--plane) - (var(--cols) - 1) * var(--gap)) / var(--cols));
+
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  user-select: none;
+}
+
+/* Centred with negative margins rather than by an alignment property: the
+   stage is deliberately several times wider than the band, and a grid or flex
+   track auto-sizes to that max-content width and then overflows to one side
+   only — which parks the whole plane off the bottom-right corner. */
+.marquee3d__stage {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: var(--plane);
+  height: var(--plane);
+  margin-top: calc(var(--plane) / -2);
+  margin-left: calc(var(--plane) / -2);
+}
+
+.marquee3d__grid {
+  display: grid;
+  grid-template-columns: repeat(var(--cols), 1fr);
+  gap: var(--gap);
+  width: 100%;
+  height: 100%;
+  /* Rotate about the centre, not the top-left corner: the stage is centred in
+     the band, so a centred origin is what keeps the rhombus centred with it. */
+  transform-origin: center;
+  transform: rotateX(55deg) rotateZ(-45deg);
+  transform-style: preserve-3d;
+}
+
+/* Centred, not top-aligned: a column carries more cards than the plane is tall
+   so the rows keep coming at every viewport shape, and centring spills that
+   surplus evenly off both ends instead of hanging it all off the bottom. */
+.marquee3d__col {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: var(--gap);
+  animation: marquee-drift 15s var(--ease-in-out) infinite alternate;
+}
+
+/* Desktop draws six of the eight columns; see ModelMarquee.tsx. */
+.marquee3d__col:nth-child(n + 7) {
+  display: none;
+}
+
+/* Alternate columns run slower and out of phase, so the plane never pulses as
+   one block. */
+.marquee3d__col:nth-child(even) {
+  animation-duration: 21s;
+  animation-direction: alternate-reverse;
+}
+
+@keyframes marquee-drift {
+  from {
+    transform: translateY(calc(var(--gap) * -1.4));
+  }
+
+  to {
+    transform: translateY(calc(var(--gap) * 1.4));
+  }
+}
+
+/* Faint rules along the columns and above each card — the grid the cards are
+   pinned to, fading out at both ends so it never terminates in a hard tick. */
+.marquee3d__col::before,
+.model-card::before {
+  content: '';
+  position: absolute;
+  background: var(--color-hairline);
+}
+
+.marquee3d__col::before {
+  top: calc(var(--gap) * -3);
+  bottom: calc(var(--gap) * -3);
+  left: calc(var(--gap) / -2);
+  width: 1px;
+  mask-image: linear-gradient(transparent, #000 12%, #000 88%, transparent);
+}
+
+.model-card::before {
+  top: calc(var(--gap) / -2);
+  left: calc(var(--gap) * -3);
+  right: calc(var(--gap) * -3);
+  height: 1px;
+  mask-image: linear-gradient(90deg, transparent, #000 12%, #000 88%, transparent);
+}
+
+/* Card text is sized in `em` off a root that tracks the card, so one plane
+   variable rescales the whole marquee — type included — instead of leaving
+   32px headings inside a 170px card on a phone. */
+.model-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 0.7em;
+  flex: none;
+  aspect-ratio: 970 / 700;
+  padding: 1.1em;
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  border: 1px solid var(--color-hairline-hi);
+  box-shadow: 0 18px 40px rgba(0, 0, 0, 0.1);
+  font-size: calc(var(--card-w) / 22);
+}
+
+.model-card__head {
+  display: flex;
+  align-items: center;
+  gap: 0.45em;
+}
+
+.model-card__mark {
+  display: grid;
+  place-items: center;
+  width: 1.6em;
+  height: 1.6em;
+  flex: none;
+  border-radius: var(--radius-sm);
+  background: var(--color-bg);
+  border: 1px solid var(--color-hairline);
+  font-family: var(--font-mono);
+  font-size: 0.8em;
+  font-weight: 600;
+  color: var(--color-red);
+}
+
+.model-card__org {
+  font-size: 0.72em;
+  color: var(--color-gray);
+  white-space: nowrap;
+}
+
+.model-card__name {
+  font-size: 1.3em;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  line-height: 1.1;
+}
+
+.model-card__foot {
+  display: flex;
+  align-items: center;
+  gap: 0.4em;
+  font-family: var(--font-mono);
+  font-size: 0.62em;
+}
+
+.model-card__size {
+  padding: 0.3em 0.7em;
+  border-radius: var(--radius-pill);
+  background: var(--color-bg);
+  border: 1px solid var(--color-hairline);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.model-card__license {
+  color: var(--color-faint);
+  white-space: nowrap;
+}
+
+/* The scrim. Bright and opaque under the headline, thinning towards the edges,
+   and closing to solid page colour at the top and bottom so the band meets its
+   neighbours on a clean seam rather than a cropped card. */
+.marquee3d::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(
+      ellipse 42rem 22rem at 50% 46%,
+      var(--color-bg) 30%,
+      color-mix(in srgb, var(--color-bg) 82%, transparent) 60%,
+      color-mix(in srgb, var(--color-bg) 20%, transparent) 100%
+    ),
+    linear-gradient(
+      var(--color-bg),
+      color-mix(in srgb, var(--color-bg) 30%, transparent) 20%,
+      color-mix(in srgb, var(--color-bg) 30%, transparent) 80%,
+      var(--color-bg)
+    );
+}
+
+/* A phone's plane is driven almost entirely by its height, so six columns of it
+   are wider than the screen — one card fills the viewport and reads as a blank
+   panel rather than a model card. Narrow screens therefore draw all eight. */
+@media (max-width: 720px) {
+  .marquee3d {
+    --cols: 8;
+  }
+
+  .marquee3d__col:nth-child(n + 7) {
+    display: flex;
+  }
+}
+
+/* ── Approval card ──────────────────────────────────────────────────────── */
+
+.card {
+  max-width: 28.75rem;
+  padding: var(--space-md);
+  background: var(--color-surface);
+  border: 1px solid var(--color-hairline);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-card);
+}
+
+.card__head {
+  display: flex;
+  align-items: center;
+  gap: 0.625rem;
+  margin-bottom: 0.625rem;
+  font-weight: 600;
+}
+
+.card__head svg {
+  color: var(--color-red);
+  flex: none;
+}
+
+.card__body {
+  font-size: var(--text-sm);
+  color: var(--color-gray);
+  margin-bottom: var(--space-sm);
+}
+
+.card__scope {
+  list-style: none;
+  margin: 0 0 var(--space-sm);
+  padding: 0.75rem 0.875rem;
+  background: var(--color-bg);
+  border-radius: var(--radius-sm);
+  display: grid;
+  gap: 0.5rem;
+  font-size: var(--text-xs);
+}
+
+.card__scope li {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+}
+
+.card__scope svg {
+  color: var(--color-leaf);
+  flex: none;
+  margin-top: 2px;
+}
+
+.card__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.625rem;
+}
+
+/* ── Capability grid ────────────────────────────────────────────────────── */
+
+.grid {
+  display: grid;
+  /* minmax(0, …) not bare 1fr — a bare 1fr lets content force overflow. */
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--space-md);
+}
+
+.cap {
+  padding: var(--space-md);
+  border-radius: var(--radius-md);
+  background: var(--color-surface-dark);
+  border: 1px solid var(--color-hairline-dark);
+}
+
+.cap svg {
+  color: var(--color-red-dark);
+  margin-bottom: 0.625rem;
+}
+
+.cap h3 {
+  font-size: 1.1875rem;
+  color: var(--color-ink-dark);
+  margin-bottom: 0.375rem;
+}
+
+.cap p {
+  font-size: var(--text-sm);
+  color: var(--color-gray-dark);
+}
+
+@media (max-width: 62rem) {
+  .grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 40rem) {
+  .grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* ── Steps ──────────────────────────────────────────────────────────────── */
+
+/* ── Quick start ────────────────────────────────────────────────────────────
+   Three steps that resolve in one screen — see components/QuickStart for why
+   this section is deliberately not scroll-driven like the two before it. */
+
+.quickstart {
+  display: flex;
+  flex-direction: column;
+  /* The head, the steps and the CTA are three beats, not a stack of blocks —
+     and at --space-xl the three of them push the section past one screen,
+     which is the one thing this layout exists to avoid. */
+  gap: var(--space-lg);
+}
+
+.quickstart .section__head {
+  margin-bottom: 0;
+}
+
+/* Tabular figures so the counting number doesn't shuffle the eyebrow's width
+   on every frame. */
+.quickstart__timer {
+  font-variant-numeric: tabular-nums;
+  color: var(--color-ink);
+}
+
+.quicksteps {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--space-lg);
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  /* The rail below is drawn per step and reaches into this gap. */
+  --rail-gap: var(--space-lg);
+}
+
+.quickstep {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  min-width: 0;
+}
+
+.quickstep__mark {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-sm);
+  margin-bottom: 0.25rem;
+}
+
+.quickstep__n {
+  width: 2.25rem;
+  height: 2.25rem;
+  border-radius: 50%;
+  background: var(--color-ink);
+  color: var(--color-surface);
+  display: grid;
+  place-items: center;
+  font-weight: 600;
+  flex: none;
+  /* Above the rail, so the line meets the badge rather than crossing it. */
+  position: relative;
+  z-index: 1;
+}
+
+.quickstep__time {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--color-faint);
+}
+
+/* The connector. Drawn on the step rather than as its own element so it always
+   starts at this badge and ends at the next one — it has to cross the grid gap,
+   which is why it reaches `-1 × --rail-gap` past the column's own edge. */
+.quickstep:not(:last-child)::before {
+  content: '';
+  position: absolute;
+  top: 1.125rem;
+  left: 2.75rem;
+  right: calc(var(--rail-gap) * -1);
+  height: 1px;
+  background: var(--color-hairline-hi);
+  mask-image: linear-gradient(90deg, #000 65%, transparent);
+}
+
+.quickstep__frame {
+  border-radius: var(--radius-md);
+  /* The mock draws its own window chrome and shadow; this only bounds it. */
+  overflow: visible;
+}
+
+.quickstep h3 {
+  font-size: 1.25rem;
+  margin-top: 0.5rem;
+}
+
+.quickstep p {
+  font-size: var(--text-sm);
+  color: var(--color-gray);
+}
+
+.quickstart__cta {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.quickstart__meta {
+  font-size: var(--text-xs);
+  color: var(--color-faint);
+}
+
+/* Stacks at 64rem, not the 52rem the older step grid used: these columns carry
+   a scaled mock, and three of them across a 900px viewport render the mock's
+   20px type at 8px. Below the breakpoint the frame is capped instead, so one
+   column doesn't blow a step card up to full shell width either.
+   The connector goes with the row — it would have to turn a corner, and a
+   vertical rail adds nothing the numbers don't already say. */
+@media (max-width: 64rem) {
+  .quicksteps {
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--space-lg);
+  }
+
+  /* Capped on the step, not just its frame: the cap has to govern the mark row
+     too, or `space-between` throws the ~20s label to the far edge of a
+     full-width column, a screen away from the badge it belongs to. */
+  .quickstep {
+    max-width: 30rem;
+  }
+
+  .quickstep:not(:last-child)::before {
+    display: none;
+  }
+}
+
+/* ── Quick-start step frames ────────────────────────────────────────────── */
+
+.stepmock .stepmock__window {
+  width: 100%;
+  height: 100%;
+  border-radius: 16px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-hairline);
+  box-shadow: var(--shadow-card);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.stepmock__head {
+  height: 46px;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 0 18px;
+  border-bottom: 1px solid var(--color-hairline);
+  background: #f7f7f9;
+  flex-shrink: 0;
+}
+
+.stepmock__url {
+  flex: 1;
+  min-width: 0;
+  margin-inline: 10px;
+  height: 28px;
+  border-radius: 999px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-hairline);
+  display: flex;
+  align-items: center;
+  padding-inline: 14px;
+  font-size: 16px;
+  color: var(--color-faint);
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.stepmock__body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 20px;
+}
+
+/* ── Final CTA ──────────────────────────────────────────────────────────── */
+
+.cta {
+  text-align: center;
+  padding-block: var(--space-3xl);
+}
+
+.cta h2 {
+  font-size: var(--text-h2);
+  margin-bottom: var(--space-sm);
+  color: var(--color-ink-dark);
+}
+
+.cta p {
+  font-size: var(--text-lead);
+  color: var(--color-gray-dark);
+  margin-bottom: var(--space-lg);
+}
+
+.cta__meta {
+  margin-top: var(--space-md);
+  font-size: var(--text-xs);
+  color: var(--color-faint);
+}
+
+/* ── Footer · Ft5 statement ─────────────────────────────────────────────── */
+
+.footer {
+  background: var(--color-bg-dark);
+  color: var(--color-ink-dark);
+  border-top: 1px solid var(--color-hairline-dark);
+  padding-block: var(--space-xl) var(--space-lg);
+}
+
+.footer__statement {
+  font-size: var(--text-h2);
+  margin-bottom: var(--space-lg);
+}
+
+.footer__bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-sm) var(--space-md);
+  justify-content: space-between;
+  padding-top: var(--space-md);
+  border-top: 1px solid var(--color-hairline-dark);
+  font-size: var(--text-sm);
+}
+
+.footer__links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-md);
+  color: var(--color-gray-dark);
+}
+
+.footer__links a {
+  white-space: nowrap;
+  transition: color var(--dur-fast) var(--ease-out);
+}
+
+.footer__links a:hover {
+  color: var(--color-ink-dark);
+}
+
+.footer__colophon {
+  color: var(--color-faint);
+  font-size: var(--text-xs);
+}
+
+/* ── Lightbox ───────────────────────────────────────────────────────────── */
+
+.lightbox {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: grid;
+  place-items: center;
+  padding: var(--space-md);
+  background: rgba(0, 0, 0, 0.86);
+  backdrop-filter: blur(8px);
+  border: 0;
+  animation: fade var(--dur-mid) var(--ease-out);
+}
+
+.lightbox video {
+  width: min(100%, 1100px);
+  max-height: 86vh;
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-float);
+}
+
+.lightbox__close {
+  position: absolute;
+  top: var(--space-md);
+  right: var(--space-md);
+  width: 2.5rem;
+  height: 2.5rem;
+  border-radius: 50%;
+  border: 1px solid var(--color-hairline-dark);
+  background: rgba(255, 255, 255, 0.08);
+  color: #fff;
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+}
+
+/* ── Scroll reveal ──────────────────────────────────────────────────────── */
+
+.reveal {
+  opacity: 0;
+  transform: translateY(18px);
+  transition:
+    opacity var(--dur-slow) var(--ease-out),
+    transform var(--dur-slow) var(--ease-out);
+}
+
+.reveal.is-in {
+  opacity: 1;
+  transform: none;
+}
+
+@keyframes fade {
+  from {
+    opacity: 0;
+  }
+}
+
+/* Spatial motion collapses to a short crossfade; nothing translates. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 150ms !important;
+  }
+
+  .reveal {
+    opacity: 1;
+    transform: none;
+    transition: opacity 150ms linear;
+  }
+}
+
+/* ── Document pages · engineering log + privacy ─────────────────────────── */
+
+.doc-page { padding-top: clamp(6.5rem, 12vw, 9rem); padding-bottom: var(--space-3xl); }
+.doc-head { max-width: 46rem; margin-bottom: var(--space-xl); }
+.doc-head h1 { font-size: var(--text-h2); margin-bottom: var(--space-sm); }
+.doc-head__lead { font-size: var(--text-lead); color: var(--color-gray); }
+.doc-head__meta { margin-top: var(--space-sm); font-family: var(--font-mono); font-size: var(--text-xs); color: var(--color-faint); }
+.eyebrow--ink { color: var(--color-red); }
+
+.doc-back {
+  display: inline-flex; align-items: center; gap: 0.375rem;
+  margin-bottom: var(--space-md); font-size: var(--text-sm);
+  color: var(--color-gray); white-space: nowrap;
+  transition: color var(--dur-fast) var(--ease-out);
+}
+.doc-back:hover { color: var(--color-ink); }
+
+/* ── Log index ──────────────────────────────────────────────────────────── */
+
+.log { max-width: 52rem; }
+.log__section + .log__section { margin-top: var(--space-xl); }
+.log__heading {
+  font-family: var(--font-mono); font-size: var(--text-xs); font-weight: 600;
+  letter-spacing: 0.09em; text-transform: uppercase; color: var(--color-faint);
+  padding-bottom: var(--space-xs); border-bottom: 1px solid var(--color-hairline);
+}
+.log__list { list-style: none; margin: 0; padding: 0; }
+.log__item {
+  display: grid; gap: 0.25rem; padding: var(--space-md) 0;
+  border-bottom: 1px solid var(--color-hairline);
+}
+.log__item:hover .log__item-title { color: var(--color-red); }
+.log__item-title {
+  font-size: 1.3125rem; font-weight: 600; letter-spacing: -0.02em;
+  transition: color var(--dur-fast) var(--ease-out);
+}
+.log__item-excerpt { color: var(--color-gray); font-size: var(--text-sm); max-width: var(--measure); }
+.log__item-meta { font-family: var(--font-mono); font-size: var(--text-xs); color: var(--color-faint); }
+
+/* ── Prose ──────────────────────────────────────────────────────────────── */
+
+.prose { max-width: 44rem; font-size: 1.0625rem; line-height: 1.7; color: #33333a; }
+.prose > * + * { margin-top: var(--space-sm); }
+.prose h2, .prose h3, .prose h4 { color: var(--color-ink); margin-top: var(--space-lg); line-height: 1.25; }
+.prose h2 { font-size: 1.75rem; padding-top: var(--space-sm); border-top: 1px solid var(--color-hairline); }
+.prose h3 { font-size: 1.3125rem; }
+.prose h4 { font-size: 1.0625rem; }
+.prose a { color: var(--color-red); text-decoration: underline; text-underline-offset: 2px; }
+.prose strong { color: var(--color-ink); font-weight: 600; }
+.prose ul, .prose ol { padding-left: 1.25rem; }
+.prose li + li { margin-top: 0.375rem; }
+.prose code {
+  font-family: var(--font-mono); font-size: 0.875em;
+  background: rgba(0,0,0,0.05); padding: 0.15em 0.4em; border-radius: 5px;
+  overflow-wrap: anywhere;
+}
+.prose pre {
+  background: var(--color-surface-dark); color: var(--color-ink-dark);
+  padding: var(--space-sm); border-radius: var(--radius-md); overflow-x: auto;
+}
+.prose pre code { background: none; padding: 0; overflow-wrap: normal; font-size: 0.8125rem; line-height: 1.6; }
+.prose blockquote { margin: 0; padding-left: var(--space-sm); border-left: 2px solid var(--color-red); color: var(--color-gray); }
+.prose img { max-width: 100%; height: auto; border-radius: var(--radius-sm); }
+.prose hr { border: 0; border-top: 1px solid var(--color-hairline); margin-block: var(--space-lg); }
+.prose table { border-collapse: collapse; width: 100%; font-size: var(--text-sm); display: block; overflow-x: auto; }
+.prose th, .prose td { text-align: left; padding: 0.625rem 0.875rem; border-bottom: 1px solid var(--color-hairline); vertical-align: top; }
+.prose th { color: var(--color-ink); font-weight: 600; white-space: nowrap; }
+
+/* ── Grid-blowout guards ────────────────────────────────────────────────── */
+
+/* A grid item defaults to `min-width: auto`, which means it refuses to shrink
+   below its content's intrinsic width. The hero video is 864px wide
+   intrinsically, so without this the hero track blows out to 864px and the
+   whole page overflows at 320px — even though the column is minmax(0, 1fr)
+   and the media is width:100%. The track constraint is not enough on its own;
+   the *item* has to be allowed to shrink too. */
+.hero > *,
+.block > * {
+  min-width: 0;
+}
+
+.hero__media,
+.block__media {
+  min-width: 0;
+  max-width: 100%;
+}
+
+/* Same reason: replaced elements carry their intrinsic size into layout. */
+.hero__media video,
+.hero__media img,
+.block__media video,
+.block__media img {
+  max-width: 100%;
+  min-width: 0;
+}
+
+/* The pill can't shrink past its nowrap contents, so below the point where the
+   wordmark + CTA stop fitting, the wordmark drops to its dot alone. The mark
+   still identifies the site; the CTA is what the nav is for. */
+@media (max-width: 26rem) {
+  .nav {
+    gap: var(--space-sm);
+    padding-left: 0.75rem;
+  }
+
+  .nav__mark {
+    font-size: 0;
+    gap: 0;
+  }
+
+  .nav__dot {
+    width: 18px;
+    height: 18px;
+  }
+}
+
+/* ── Full-height homepage sections ──────────────────────────────────────── */
+
+/* Every homepage section fills the viewport, so the page reads as a sequence
+   of deliberate frames rather than blocks of arbitrary height.
+   `svh` (small viewport height) rather than `vh`: on mobile, `100vh` is the
+   height with browser chrome *hidden*, so a `100vh` section is taller than
+   what you can actually see and every section starts slightly clipped.
+   `100vh` stays as the fallback for browsers without svh. */
+.home > section {
+  min-height: 100vh;
+  min-height: 100svh;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+
+/* The section is now the flex container, so its content child needs to span it
+   — otherwise `.shell`'s auto margins have no width to centre within. */
+.home > section > * {
+  width: 100%;
+}
+
+/* min-height, not height: a section whose content is taller than the viewport
+   (the six-card capability grid on a phone) still grows instead of clipping.
+   Padding drops to breathing room since the viewport now sets the height. */
+.home > section.section,
+.home > section .section {
+  padding-block: var(--space-2xl);
+}
+
+.home > section.block {
+  padding-block: var(--space-2xl);
+}
+
+/* The compatibility strip is a hairline divider between two full-height
+   frames, not a frame of its own — it stays thin on purpose. */
+
+/* Short and landscape viewports: forcing 100vh here squeezes real content into
+   a letterbox, so fall back to natural height and let the padding do the work. */
+@media (max-height: 34rem) {
+  .home > section {
+    min-height: 0;
+  }
+}
+
+/* The media boxes are aspect-ratio driven, so on a wide viewport they grow
+   taller than the screen and drag their section past 100vh — the hero was
+   1.71×vh. Capping the height lets `object-fit: cover` crop instead, which
+   keeps every section exactly one frame tall. */
+.home > section .hero__media {
+  max-height: 58svh;
+}
+
+.home > section .block__media {
+  max-height: 54svh;
+}
+
+/* The section now supplies the vertical centring, so the hero only needs
+   enough top padding to clear the fixed nav pill. */
+.home > section.hero {
+  padding-block: clamp(5.5rem, 9vw, 7rem) var(--space-xl);
+}
+
+/* ── Wireframe alignment ────────────────────────────────────────────────── */
+
+/* The wireframe gives the media roughly 880 of a 1248 content width and runs it
+   well past the right edge. The earlier 1.15fr / +14vw combination rendered it
+   noticeably smaller and barely clipped, so both are widened to match. */
+.hero {
+  grid-template-columns: minmax(0, 0.88fr) minmax(0, 1.28fr);
+  gap: var(--space-xl);
+}
+
+.hero__figure {
+  display: flex;
+  flex-direction: column;
+  gap: 0.625rem;
+  min-width: 0;
+}
+
+.hero__media {
+  width: calc(100% + 19vw);
+}
+
+/* Crop into the frame so the product fills the box. The film composes on a
+   light stage with generous margins, which reads as a small mockup floating in
+   a large empty frame unless it is scaled in. */
+.hero__media video,
+.hero__media img,
+.block__media img,
+.block__media video {
+  transform: scale(1.12);
+  transform-origin: center;
+}
+
+.hero__caption {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--color-faint);
+}
+
+.hero__caption svg {
+  flex: none;
+}
+
+/* Arrow drawn from two elements rather than a text glyph — the `›` character
+   rendered at a different weight and baseline than the rule it followed. */
+.flow__arrow {
+  gap: 0;
+}
+
+.flow__line {
+  display: block;
+  width: 4.5rem;
+  height: 2px;
+  background: currentColor;
+}
+
+.flow__head {
+  display: block;
+  width: 0;
+  height: 0;
+  border-top: 5px solid transparent;
+  border-bottom: 5px solid transparent;
+  border-left: 8px solid currentColor;
+}
+
+@media (max-width: 60rem) {
+  .hero {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .hero__media {
+    width: 100%;
+  }
+}
+
+/* `.home > section` (0,1,1) outranks `.hero` / `.block` (0,1,0), so the
+   full-height rule's `display: flex; flex-direction: column` was overriding
+   their `display: grid` and stacking the two columns. Those two keep their
+   grid and centre their rows with `align-content` instead. */
+.home > section.hero,
+.home > section.block {
+  display: grid;
+  align-content: center;
+}
+
+/* Copy column widened back: at 0.88fr the headline broke to three lines, and
+   the wireframe sets it in two. The media stays clipped either way. */
+.hero {
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr);
+}
+
+/* 1.12 cropped the top of the film's own card label. 1.05 still removes the
+   light margin the film composes with, without eating its content. */
+.hero__media video,
+.hero__media img,
+.block__media img,
+.block__media video {
+  transform: scale(1.05);
+}
+
+/* ── Scroll snapping ────────────────────────────────────────────────────── */
+
+/* Snapping lives on the scrolling element itself. `proximity`, not `mandatory`:
+   a section whose content exceeds the viewport (the six-card grid on a phone,
+   or any of the prose pages) becomes very hard to read under `mandatory`,
+   because the browser keeps yanking you back to the nearest edge. Proximity
+   snaps when you land close to a boundary and otherwise leaves you alone. */
+html {
+  scroll-snap-type: y proximity;
+  scroll-behavior: smooth;
+}
+
+.home > section,
+.features__trigger {
+  scroll-snap-align: start;
+  /* Never trap: a fast flick may pass several sections. */
+  scroll-snap-stop: normal;
+}
+
+/* Snapping a document you are trying to read is hostile — log and privacy
+   pages opt out entirely. */
+html:has(.doc-page) {
+  scroll-snap-type: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+    scroll-snap-type: none;
+  }
+}
+
+/* Short/landscape viewports already opt out of full-height sections, so the
+   snap points would no longer line up with anything meaningful. */
+@media (max-height: 34rem) {
+  html {
+    scroll-snap-type: none;
+  }
+}
+
+/* ── Feature sequence ───────────────────────────────────────────────────── */
+
+.features {
+  position: relative;
+  /* Five steps, each one screen of scroll. The stage below pins for the whole
+     distance, so the copy and image swap in place rather than scrolling past. */
+  height: 500svh;
+  background: var(--color-page);
+}
+
+.features__stage {
+  position: sticky;
+  top: 0;
+  height: 100svh;
+  display: flex;
+  align-items: center;
+  overflow: hidden;
+}
+
+.features__inner {
+  display: grid;
+  grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr);
+  align-items: center;
+  gap: var(--space-xl);
+  width: 100%;
+}
+
+/* Copy and media are both stacks of absolutely-layered states. The grid cell is
+   sized by the tallest state so nothing reflows as the active one changes. */
+.features__copy {
+  position: relative;
+  display: grid;
+  padding-left: var(--space-md);
+}
+
+.features__text {
+  grid-area: 1 / 1;
+  opacity: 0;
+  transition: opacity var(--dur-mid) var(--ease-out);
+  pointer-events: none;
+}
+
+.features__text.is-active {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.features__text h2 {
+  font-size: var(--text-h3);
+  margin-bottom: var(--space-sm);
+}
+
+.features__body {
+  color: var(--color-gray);
+  font-size: var(--text-lead);
+  max-width: var(--measure);
+}
+
+/* Progress rail — which of the five you are on. */
+.features__rail {
+  position: absolute;
+  left: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 10px;
+}
+
+.features__rail li {
+  width: 3px;
+  height: 22px;
+  border-radius: 2px;
+  background: var(--color-hairline-hi);
+  transition:
+    background-color var(--dur-mid) var(--ease-out),
+    height var(--dur-mid) var(--ease-out);
+}
+
+.features__rail li.is-active {
+  background: var(--color-red);
+  height: 34px;
+}
+
+.features__media {
+  position: relative;
+  display: grid;
+  aspect-ratio: 16 / 10;
+  max-height: 62svh;
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  background: var(--color-surface-dark);
+  box-shadow: var(--shadow-card);
+  min-width: 0;
+}
+
+.features__media img {
+  grid-area: 1 / 1;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  transform: scale(1.04);
+  opacity: 0;
+  transition: opacity var(--dur-slow) var(--ease-out);
+}
+
+.features__media img.is-active {
+  opacity: 1;
+}
+
+/* Invisible scroll/observe targets at each screen boundary. */
+.features__trigger {
+  position: absolute;
+  left: 0;
+  width: 1px;
+  height: 100svh;
+  pointer-events: none;
+}
+
+.features__trigger:nth-of-type(1) { top: 0; }
+.features__trigger:nth-of-type(2) { top: 100svh; }
+.features__trigger:nth-of-type(3) { top: 200svh; }
+.features__trigger:nth-of-type(4) { top: 300svh; }
+.features__trigger:nth-of-type(5) { top: 400svh; }
+
+@media (max-width: 60rem) {
+  .features__inner {
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--space-md);
+  }
+
+  .features__copy {
+    padding-left: var(--space-sm);
+  }
+
+  .features__rail {
+    gap: 6px;
+  }
+
+  .features__rail li {
+    height: 14px;
+  }
+
+  .features__rail li.is-active {
+    height: 22px;
+  }
+
+  .features__media {
+    max-height: 34svh;
+  }
+}
+
+/* Reduced motion: no cross-fade, and the rail stops resizing. */
+@media (prefers-reduced-motion: reduce) {
+  .features__text,
+  .features__media img,
+  .features__rail li {
+    transition-duration: 150ms;
+  }
+}
+
+/* A sticky element stays pinned for (container height − its own height) of
+   scrolling, so 500svh of container only buys 400svh of pinned travel and the
+   fifth step scrolled out from under the stage. One extra screen of height
+   gives all five triggers room inside the pinned range. */
+.features {
+  height: 600svh;
+}
+
+/* The film renders 4:3, so a 16:10 box cropped the bottom off every frame —
+   the side panel was being cut mid-card. Matching the box to the source shows
+   each beat whole, and the scale-in is no longer needed to hide the crop. */
+.features__media {
+  aspect-ratio: 4 / 3;
+  max-height: 66svh;
+}
+
+.features__media img {
+  transform: none;
+}
+
+/* ── Hero media · true viewport-edge cut ────────────────────────────────── */
+
+/* Two things kept the media floating short of the right edge:
+   1. `aspect-ratio` + `max-height` constrains BOTH axes — capping the height at
+      58svh silently capped the width too, so the box shrank to ~29vw instead of
+      running off screen.
+   2. `.hero` is `.shell`-bounded (max-width 1200, centred), so its own
+      `overflow-x: clip` cut the media at the shell edge, not the viewport —
+      leaving a visible gap on wide screens.
+   The media is now sized in viewport units and clipped by the root instead. */
+.hero {
+  overflow-x: visible;
+}
+
+.hero__media {
+  /* Left edge lands at ~50vw from the grid column; 72vw carries the right edge
+     past 100vw, so roughly 68% stays visible and the rest is cut — the 65–75%
+     band the wireframe draws. */
+  width: 72vw;
+  height: 62svh;
+  aspect-ratio: auto;
+  max-height: none;
+  /* Square off the cut edge: a rounded corner that never appears on screen
+     just reads as a rendering artifact at the crop line. */
+  border-radius: var(--radius-md) 0 0 var(--radius-md);
+}
+
+.hero__media video,
+.hero__media img {
+  object-fit: cover;
+  transform: none;
+}
+
+/* Below the two-column breakpoint the media is fully visible again, so it goes
+   back to a contained, correctly-proportioned figure. */
+@media (max-width: 60rem) {
+  .hero__media {
+    width: 100%;
+    height: auto;
+    aspect-ratio: 4 / 3;
+    border-radius: var(--radius-md);
+  }
+}
+
+/* ── Sequence assets sized to lead the eye ──────────────────────────────── */
+
+/* The stills were shell-bound (1200px) and split ~45/55 with the copy, leaving
+   each asset around 43vw — too small to be the thing you look at. The stage now
+   spans the full viewport and the media takes at least 60% of both axes. */
+.features__inner {
+  max-width: none;
+  width: 100%;
+  padding-inline: var(--space-lg);
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: var(--space-lg);
+}
+
+.features__media {
+  /* `min(60vw, 104svh)` bounds the box by *width* in both directions, so the
+     aspect ratio still drives height without `max-height` silently shrinking
+     the width — the coupling that made the hero media float short of the edge.
+     104svh × 3/4 ≈ 78svh, the tallest it may get on a short screen. */
+  width: min(60vw, 104svh);
+  aspect-ratio: 4 / 3;
+  max-height: none;
+}
+
+@media (max-width: 60rem) {
+  .features__inner {
+    grid-template-columns: minmax(0, 1fr);
+    padding-inline: var(--space-md);
+  }
+
+  .features__media {
+    width: 100%;
+    max-height: 40svh;
+  }
+}
+
+/* Two earlier rules were still clamping the hero media to its grid column:
+   `max-width: 100%` from the grid-blowout guard, and the full-height block's
+   `.home > section .hero__media { max-height: 58svh }` (specificity 0,3,0,
+   which outranks a bare `.hero__media`). Both are lifted here at matching
+   specificity so the 72vw width and 62svh height actually apply and the media
+   runs past the right edge. */
+.home > section .hero__media {
+  max-width: none;
+  max-height: none;
+  width: 72vw;
+  height: 62svh;
+}
+
+@media (max-width: 60rem) {
+  .home > section .hero__media {
+    width: 100%;
+    height: auto;
+  }
+}
+
+/* At 72vw × 62svh the box is ~1.86:1 against a 4:3 source, so `cover` crops
+   hard vertically and sliced the film's own card title in half at the top
+   edge. Biasing the crop window downward drops that title cleanly and keeps
+   the browser + side panel — the part that is actually the product. */
+.home > section .hero__media video,
+.home > section .hero__media img {
+  object-position: center 82%;
+}
+
+/* ── Live product mock (ported from the film's scene components) ─────────── */
+
+/* The media box now holds real DOM rather than a JPEG, so it loses the dark
+   fill and the cover-crop — the mock brings its own white window and is drawn
+   to fit exactly. Aspect ratio follows the film's 1220×830 window. */
+.features__media {
+  aspect-ratio: 1220 / 830;
+  background: none;
+  box-shadow: none;
+  border-radius: 0;
+  overflow: visible;
+}
+
+.features__scene {
+  grid-area: 1 / 1;
+  opacity: 0;
+  transition: opacity var(--dur-slow) var(--ease-out);
+  pointer-events: none;
+}
+
+.features__scene.is-active {
+  opacity: 1;
+}
+
+.mock {
+  width: 100%;
+  /* The inner tree is laid out at native size and scaled down, so anything
+     spilling past the box during a resize tick must be clipped. */
+  overflow: hidden;
+}
+
+.mock__inner {
+  transform: scale(var(--mock-scale, 1));
+  transform-origin: top left;
+  /* Sub-pixel text at scale reads soft otherwise. */
+  -webkit-font-smoothing: antialiased;
+}
+
+.mock__window {
+  width: 100%;
+  height: 100%;
+  border-radius: 22px;
+  background: #fff;
+  border: 1px solid rgba(0, 0, 0, 0.1);
+  box-shadow: 0 30px 80px rgba(0, 0, 0, 0.14), 0 4px 16px rgba(0, 0, 0, 0.06);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.mock__titlebar {
+  height: 60px;
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 0 24px;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.1);
+  flex-shrink: 0;
+  background: #f7f7f9;
+}
+
+.mock__url {
+  margin-left: 20px;
+  flex: 1;
+  height: 36px;
+  border-radius: 18px;
+  background: rgba(0, 0, 0, 0.05);
+  display: flex;
+  align-items: center;
+  padding-left: 18px;
+  font-size: 21px;
+  color: #6e6e73;
+  font-weight: 500;
+}
+
+.mock__panel {
+  width: 440px;
+  flex-shrink: 0;
+  border-left: 1px solid rgba(0, 0, 0, 0.1);
+  background: #fff;
+  display: flex;
+  flex-direction: column;
+}
+
+.mock__panelhead {
+  height: 56px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0 22px;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.1);
+  flex-shrink: 0;
+}
+
+.mock__panelbody {
+  flex: 1;
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 15px;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.mock__composer {
+  height: 54px;
+  border-radius: 15px;
+  border: 1px solid rgba(0, 0, 0, 0.18);
+  background: #fff;
+  display: flex;
+  align-items: center;
+  padding: 0 18px;
+  font-size: 21px;
+  color: #a1a1a6;
+}
+
+@media (max-width: 60rem) {
+  .features__media {
+    max-height: none;
+  }
+}
+
+/* `.mock__inner` is laid out at the film's native 1220px and only *visually*
+   shrunk by `transform` — transforms don't change layout size, so as a normal-
+   flow child it forced the grid item's `min-width: auto` up to 1220px and the
+   media box grew to ~85vw instead of the intended 60vw. Taking it out of flow
+   means the box is sized purely by its own width + aspect-ratio. */
+.features__scene {
+  min-width: 0;
+}
+
+.mock {
+  position: relative;
+}
+
+.mock__inner {
+  position: absolute;
+  top: 0;
+  left: 0;
+}
+
+/* ── Closing frame · CTA + footer as one section ────────────────────────── */
+
+/* The section keeps its 100svh minimum, but now holds two things: the CTA takes
+   the free space and centres in it, and the footer sits at the bottom edge. The
+   two were already the same black, so separating them into consecutive sections
+   only read as an unexplained seam. */
+.closing {
+  justify-content: space-between;
+}
+
+.closing .cta {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  padding-block: var(--space-2xl);
+}
+
+/* Nested, the footer no longer needs to redraw the background it now sits on;
+   the hairline stays as the divider between the two halves of the frame. */
+.closing .footer {
+  background: none;
+  width: 100%;
+  padding-bottom: var(--space-md);
+}
+
+/* ── Permission scrub ───────────────────────────────────────────────────── */
+
+/* The section is taller than the screen and pins a 16:9 stage inside it; the
+   difference between the two heights is the scroll distance that drives the
+   video's ten seconds. Two screens of travel is roughly one video frame per
+   7px of scroll — responsive without being twitchy.
+
+   Deliberately NO per-screen snap triggers here, unlike `.features`. Snapping
+   part-way through a continuous scrub would yank the animation to a fixed
+   frame mid-gesture; the section snaps at its own top edge and is otherwise
+   left alone. */
+.permscrub {
+  position: relative;
+}
+
+/* `.home > section` makes every section a vertically-centred flex column, which
+   is right for one-screen sections and wrong for this one: it centred the
+   100svh stage inside the 300svh section, parking it 100svh below the section
+   top. The stage then could not stick until you had already scrolled a full
+   screen into the section — by which point the scrub was at t≈5s, so the whole
+   opening split layout played out below the fold and was never seen.
+   `.features` never hit this because it is nested in a <div>, so the
+   direct-child selector misses it. Specificity here must beat `.home > section`
+   (0,1,1), hence the compound selector rather than a bare class. */
+.home > section.permscrub--scrub {
+  display: block;
+  min-height: 0;
+  height: 300svh;
+}
+
+.permscrub__stage {
+  position: sticky;
+  top: 0;
+  height: 100svh;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+}
+
+/* `contain`, not `cover`: this is a composed 16:9 frame and cropping it would
+   cut the browser window out of its own shot. The letterboxing is invisible
+   because the video's own background is authored to `--color-page`, the same
+   token this band is painted with. */
+.permscrub__video {
+  width: 100%;
+  max-height: 100svh;
+  aspect-ratio: 16 / 9;
+  object-fit: contain;
+  display: block;
+  background: var(--color-page);
+}
+
+/* Tablets don't scrub — the clip plays through once — so the section keeps the
+   ordinary one-screen flex-centred treatment every other section gets, and the
+   stage has no reason to pin. */
+.permscrub--play .permscrub__stage {
+  position: static;
+  height: auto;
+  padding-block: var(--space-2xl);
+}
+
+/* The reduced-motion fallback reuses `.block__media`'s slot without its
+   16:9 letterbox chrome — the card is the media. */
+.permscrub__card {
+  background: none;
+  box-shadow: none;
+  aspect-ratio: auto;
+  border-radius: 0;
+  overflow: visible;
+}
+
+/* Copy that the video renders as pixels but the document still owes to
+   screen readers and search engines. */
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}

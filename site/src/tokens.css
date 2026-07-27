@@ -1,0 +1,78 @@
+/* Hallmark · macrostructure: Workbench · hero: H7 clipped demo-video · nav: N5 floating pill
+ * footer: Ft5 statement · theme: custom (inherited from the launch film)
+ * paper-band: light · display-style: system-sans · accent-hue: warm
+ * tone: technical/editorial · audience: privacy-minded power users
+ *
+ * Every value below mirrors publicity/lychee-launch/src/theme.ts so the page and
+ * the film are one campaign, not two. Change them together or they drift.
+ */
+
+:root {
+  /* Light stage — the page's default ground */
+  --color-bg: #f5f5f7;
+  --color-surface: #ffffff;
+  --color-page: #fbfbfd;
+  --color-ink: #1d1d1f;
+  --color-gray: #6e6e73;
+  --color-faint: #a1a1a6;
+  --color-hairline: rgba(0, 0, 0, 0.1);
+  --color-hairline-hi: rgba(0, 0, 0, 0.18);
+
+  /* Dark stage — the film inverts to true black for its drama beats, and so
+     does the page: privacy, the agent loop, the closing CTA. */
+  --color-bg-dark: #000000;
+  --color-surface-dark: #1c1c1e;
+  --color-ink-dark: #f5f5f7;
+  --color-gray-dark: #a1a1a6;
+  --color-hairline-dark: rgba(255, 255, 255, 0.16);
+
+  /* Brand — red is rationed to accents, never a fill for large areas.
+     Leaf green means success or "this runs locally". */
+  --color-red: #c9304a;
+  --color-red-dark: #f2687e;
+  --color-leaf: #3e9e52;
+  --color-leaf-dark: #5fbf74;
+
+  /* Type — the film's native stack. SF on macOS with metric fallbacks, so the
+     page renders deterministically offline and needs no webfont request. */
+  --font-display: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Helvetica Neue', Arial, sans-serif;
+  --font-body: var(--font-display);
+  --font-mono: ui-monospace, 'SF Mono', 'Cascadia Code', Menlo, monospace;
+
+  /* Fluid display sizes. clamp() keeps the hero headline from overflowing at
+     320px without a media query per step. */
+  --text-display: clamp(2.75rem, 6.4vw, 4.75rem);
+  --text-h2: clamp(2rem, 4vw, 3.5rem);
+  --text-h3: clamp(1.75rem, 2.8vw, 2.5rem);
+  --text-lead: clamp(1.0625rem, 1.4vw, 1.25rem);
+  --text-body: 1.0625rem;
+  --text-sm: 0.9375rem;
+  --text-xs: 0.8125rem;
+
+  /* 4pt spacing scale */
+  --space-xs: 0.5rem;
+  --space-sm: 1rem;
+  --space-md: 1.5rem;
+  --space-lg: 2.5rem;
+  --space-xl: 4rem;
+  --space-2xl: 6rem;
+  --space-3xl: 8rem;
+
+  --radius-sm: 8px;
+  --radius-md: 14px;
+  --radius-pill: 999px;
+
+  /* Motion — the film's three easings, reused verbatim. */
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-pop: cubic-bezier(0.34, 1.56, 0.64, 1);
+  --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+  --dur-fast: 160ms;
+  --dur-mid: 320ms;
+  --dur-slow: 640ms;
+
+  --shadow-float: 0 30px 80px rgba(0, 0, 0, 0.14), 0 4px 16px rgba(0, 0, 0, 0.06);
+  --shadow-card: 0 18px 50px rgba(0, 0, 0, 0.12);
+
+  --measure: 34rem;
+  --page-max: 1200px;
+}
