@@ -45,8 +45,25 @@ describe('searchCatalog', () => {
     expect(searchCatalog(cat, 'READ').map((e) => e.name)).toEqual(['ReadPage', 'ReadTabs'])
     expect(searchCatalog(cat, 'bookmarks').map((e) => e.name)).toEqual(['QueryBrowserData'])
   })
-  it('returns [] when nothing matches', () => {
-    expect(searchCatalog(cat, 'zzz')).toEqual([])
+  it('matches ANY token of a multi-word query, best matches first', () => {
+    // "read tabs": ReadTabs hits both tokens, ReadPage only "read" — a literal
+    // substring match of the whole phrase would return nothing at all.
+    expect(searchCatalog(cat, 'read tabs').map((e) => e.name)).toEqual(['ReadTabs', 'ReadPage'])
+  })
+  it('finds an entry when only one token of the query appears in it', () => {
+    // The regression that motivated tokenization: a model asking for an
+    // "interactive visualization" must find the artifact tool even though its
+    // description says "interact with", not "interactive".
+    const artifacts: CatalogEntry[] = [
+      ...cat,
+      { name: 'CreateArtifact', description: 'a card the user can view and interact with: a visualization or mini-app' },
+    ]
+    expect(searchCatalog(artifacts, 'interactive visualization').map((e) => e.name)).toContain('CreateArtifact')
+  })
+  it('falls back to the whole catalog when nothing matches (same array reference)', () => {
+    // A missed query must not dead-end the model with [] — it would conclude
+    // the capability does not exist. The catalog is small; show everything.
+    expect(searchCatalog(cat, 'zzz')).toBe(cat)
   })
 })
 

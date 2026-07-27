@@ -31,11 +31,32 @@ export function buildCatalog(tools: Record<string, { description?: unknown }>): 
     .map(([name, t]) => ({ name, description: typeof t.description === 'string' ? t.description : '' }))
 }
 
-/** Case-insensitive substring match over name + description. Empty/omitted query returns the whole catalog. */
+/**
+ * Keyword search over name + description: the query is tokenized on
+ * whitespace and an entry matches when ANY token appears in it
+ * (case-insensitive substring), best-matching entries first. A literal
+ * whole-phrase match would make every realistic multi-word query ("create
+ * interactive visualization") return nothing — the model then wrongly
+ * concludes the capability does not exist.
+ *
+ * Empty/omitted query returns the whole catalog. So does a query with NO
+ * matches at all — a dead-end [] is worse than full disclosure at this
+ * catalog size — and the fallback returns the `catalog` array itself, so a
+ * caller can detect it by reference (`result === catalog`).
+ */
 export function searchCatalog(catalog: CatalogEntry[], query?: string): CatalogEntry[] {
   const q = (query ?? '').trim().toLowerCase()
   if (!q) return catalog
-  return catalog.filter((e) => `${e.name} ${e.description}`.toLowerCase().includes(q))
+  const tokens = q.split(/\s+/)
+  const scored = catalog
+    .map((e, i) => {
+      const hay = `${e.name} ${e.description}`.toLowerCase()
+      return { e, i, hits: tokens.filter((t) => hay.includes(t)).length }
+    })
+    .filter((s) => s.hits > 0)
+    .sort((a, b) => b.hits - a.hits || a.i - b.i)
+  if (!scored.length) return catalog
+  return scored.map((s) => s.e)
 }
 
 /** Split requested names into those present in the catalog and those that are not. */

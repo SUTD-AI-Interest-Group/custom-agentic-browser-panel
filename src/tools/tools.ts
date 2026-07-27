@@ -452,7 +452,7 @@ export function createAgentTools(
 
     RunCode: tool({
       description:
-        'Execute JavaScript in a sealed sandbox and get its console output and completion value back. Use it when running code beats reasoning: calculations, data transforms, parsing, checking an algorithm. Pure computation only — no DOM, no network, no timers, no page or extension access; promise chains settle but nothing can wait on time. The value of the last expression is the result. Asks the user for permission first.',
+        'Execute JavaScript in a sealed sandbox and get its console output and completion value back. Use it when running code beats reasoning: calculations, data transforms, parsing, checking an algorithm. Pure computation only — no DOM, no network, no timers, no page or extension access; promise chains settle but nothing can wait on time. The value of the last expression is the result. This tool cannot SHOW anything: to render an interactive page, chart, visualization, or mini-app for the user, use CreateArtifact instead (compute here first if needed). Asks the user for permission first.',
       inputSchema: z.object({
         code: z.string().describe("The JavaScript to run. The last expression's value is returned."),
         reason: z.string().describe('Short reason shown to the user, e.g. "To compute the amortization table"'),
@@ -506,7 +506,7 @@ export function createAgentTools(
 
     CreateArtifact: tool({
       description:
-        'Create a self-contained web artifact — one complete HTML document with inline CSS/JS — that the user can view and interact with as a card in the chat: a visualization, mini-app, formatted document, diagram, or game. It renders in a sealed sandbox with NO network (external scripts, CDNs and fonts will not load — inline everything), no storage, and no extension access. Returns an artifactId; revise the same artifact later with UpdateArtifact instead of creating a new one. Asks the user for permission first.',
+        'Create a self-contained interactive web artifact — one complete HTML document with inline CSS and JavaScript — shown to the user as a live, interactive card right in the chat: a visualization, chart, mini-app, formatted document, diagram, demo, or game. This is THE way to display or render HTML/JS to the user. It runs in a sealed sandbox with NO network (external scripts, CDNs and fonts will not load — inline everything), no storage, and no extension access. Returns an artifactId; revise the same artifact later with UpdateArtifact instead of creating a new one. Asks the user for permission first.',
       inputSchema: z.object({
         title: z.string().describe('Short human title shown on the card, e.g. "Loan repayment explorer"'),
         html: z.string().describe('The complete standalone HTML document (inline <style> and <script> only).'),
@@ -840,7 +840,14 @@ export function createAgentTools(
           .optional()
           .describe('Optional keywords to filter the list (matches name + description). Omit to list all.'),
       }),
-      execute: async ({ query }) => ({ tools: searchCatalog(catalog, query) }),
+      execute: async ({ query }) => {
+        const tools = searchCatalog(catalog, query)
+        // Reference equality IS the fallback signal (see searchCatalog): tell
+        // the model plainly, or it reads the full list as a strong match-set.
+        return query?.trim() && tools === catalog
+          ? { tools, note: 'No tool matched that query directly — this is the complete catalog instead.' }
+          : { tools }
+      },
     }),
 
     GetTool: tool({
