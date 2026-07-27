@@ -100,7 +100,7 @@ Whenever the user asks you to do something in the browser, load the tool and do 
 
 Ground your answers on the page. When your answer comes from a specific passage, clause, figure, or section of the page or PDF the user is viewing ("what are the terms…", "which part mentions…", "where does it say…"), load HighlightContent and mark that spot as part of answering — it scrolls their tab to the passage and highlights it so they can see where your answer came from. Do this proactively, without being asked to "show" it; highlight each key passage of a multi-part answer.
 
-Capabilities to load when needed: HighlightContent (scroll to and mark the passage/figure your answer came from), ReadTabs (other open tabs), RequestPageControl/ControlPage/AutofillForm (control a page — click, type, fill), NavigateTab (switch/open/load a tab), ExtractData (structured JSON from the page), RunCode (execute JavaScript in a sealed sandbox — compute, verify, transform data), CreateArtifact/UpdateArtifact (build a self-contained interactive HTML page, visualization, or mini-app rendered as a live card in the chat — the way to SHOW the user something you made), SaveMemory/SearchMemory (long-term memory), QueryBrowserData (history/bookmarks/top sites/downloads — only enabled sources), ListAllSkills/ReadSkill/SaveSkill (skills), StartResearch (background web research). Tools whose names start with mcp_ come from MCP servers the user connected (ListMcpResources/ReadMcpResource read those servers' resources) — list them with ToolSearch like any other capability. If the message is purely conversational and needs no browser action, just answer.`
+Capabilities to load when needed: HighlightContent (scroll to and mark the passage/figure your answer came from), ReadTabs (other open tabs — mode "gist" skims every tab with a one-line summary and flags duplicates, which is how you answer "what do I have open", "which tab had…", or start any tidy-up), GroupTabs (file tabs into named Chrome tab groups), CloseTabs (close tabs, or reopen the batch you last closed), RequestPageControl/ControlPage/AutofillForm (control a page — click, type, fill), NavigateTab (switch/open/load a tab), ExtractData (structured JSON from the page), RunCode (execute JavaScript in a sealed sandbox — compute, verify, transform data), CreateArtifact/UpdateArtifact (build a self-contained interactive HTML page, visualization, or mini-app rendered as a live card in the chat — the way to SHOW the user something you made), SaveMemory/SearchMemory (long-term memory), QueryBrowserData (history/bookmarks/top sites/downloads — only enabled sources), ListAllSkills/ReadSkill/SaveSkill (skills), StartResearch (background web research). Tools whose names start with mcp_ come from MCP servers the user connected (ListMcpResources/ReadMcpResource read those servers' resources) — list them with ToolSearch like any other capability. If the message is purely conversational and needs no browser action, just answer.`
 
 interface PendingApproval extends ApprovalRequest {
   resolve: (approved: boolean) => void
@@ -1117,17 +1117,33 @@ export default function Chat({
     })
   }
 
-  function settleApproval(approved: boolean, forSession = false) {
+  async function settleApproval(approved: boolean, forSession = false) {
     const pending = approvalRef.current
     if (!pending) return
-    if (approved && forSession) sessionAllowed.current.add(pending.toolName)
+    // Claim the pending approval up front so a double-click cannot request the
+    // same permission twice or resolve the same promise twice.
     approvalRef.current = null
+
+    // An optional Chrome permission is requested HERE, from inside the Allow
+    // click, because chrome.permissions.request only works during a user
+    // gesture. This must stay ahead of every await in this function — one await
+    // first and the gesture is spent, and Chrome silently refuses the prompt.
+    // Declining the Chrome dialog declines the tool call: the tool asked for
+    // that permission because it cannot do the job without it.
+    let granted = approved
+    if (approved && pending.needsPermissions?.length) {
+      granted = await chrome.permissions
+        .request({ permissions: pending.needsPermissions })
+        .catch(() => false)
+    }
+
     setApproval(null)
-    pending.resolve(approved)
+    if (granted && forSession) sessionAllowed.current.add(pending.toolName)
+    pending.resolve(granted)
   }
 
   function stop() {
-    settleApproval(false)
+    void settleApproval(false)
     // Discard any queued steers, and the pending follow-up too — the user asked to
     // stop, so it must not auto-send when streaming ends (see the flush effect).
     steerQueueRef.current = []
@@ -2003,7 +2019,7 @@ export default function Chat({
         trace?.end({ metadata: { error: message } })
       }
     } finally {
-      settleApproval(false)
+      void settleApproval(false)
       turnAllowed.current = new Set()
       // Discard any steers still queued at chain end (drained on success, dropped
       // on abort/error — the chain is over, so they have nothing to steer).
@@ -2180,9 +2196,9 @@ export default function Chat({
           <ApprovalCard
             approval={approval}
             sessionPlan={sessionPlan}
-            onDeny={() => settleApproval(false)}
-            onAllow={() => settleApproval(true)}
-            onAllowSession={() => settleApproval(true, true)}
+            onDeny={() => void settleApproval(false)}
+            onAllow={() => void settleApproval(true)}
+            onAllowSession={() => void settleApproval(true, true)}
           />
         )}
         {continuation && !streaming && (
@@ -3349,7 +3365,21 @@ function ToolPill({ part }: { part: Extract<UIPart, { type: 'tool' }> }) {
       ? `Read ${output.contents.length} tab${output.contents.length > 1 ? 's' : ''}`
       : output?.doms
         ? `Read DOM of ${output.doms.length} tab${output.doms.length > 1 ? 's' : ''}`
-        : `Listed ${output?.tabs?.length ?? 0} open tabs`
+        : (part.input as any)?.mode === 'gist'
+          ? `Skimmed ${output?.tabs?.length ?? 0} open tabs${output?.duplicates?.length ? ` · ${output.duplicates.length} duplicate set${output.duplicates.length > 1 ? 's' : ''}` : ''}`
+          : `Listed ${output?.tabs?.length ?? 0} open tabs`
+  else if (part.toolName === 'GroupTabs')
+    label = output?.error
+      ? 'Nothing to group'
+      : output?.ungrouped
+        ? `Ungrouped ${output.ungrouped.length} tab${output.ungrouped.length > 1 ? 's' : ''}`
+        : `Grouped tabs into ${output?.grouped?.length ?? 0} group${(output?.grouped?.length ?? 0) === 1 ? '' : 's'}${output?.grouped?.length ? ` · ${output.grouped.map((g: any) => g.name).join(', ')}` : ''}`
+  else if (part.toolName === 'CloseTabs')
+    label = output?.error
+      ? 'No tabs closed'
+      : typeof output?.reopened === 'number'
+        ? `Reopened ${output.reopened} tab${output.reopened === 1 ? '' : 's'}`
+        : `Closed ${output?.closed ?? 0} tab${output?.closed === 1 ? '' : 's'}`
   else if (part.toolName === 'NavigateTab')
     label = output?.error
       ? 'Navigation failed'
@@ -4043,8 +4073,9 @@ function ApprovalCard({
   onAllowSession: () => void
 }) {
   const isSession = !!sessionPlan
+  const items = approval.items ?? []
   return (
-    <div className={`approval-card ${isSession ? 'session' : ''}`}>
+    <div className={`approval-card ${isSession ? 'session' : ''} ${approval.danger ? 'danger' : ''}`}>
       <div className="approval-header">
         <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
           <rect x="2.5" y="6" width="9" height="6" rx="1.2" stroke="currentColor" strokeWidth="1.3" />
@@ -4055,6 +4086,26 @@ function ApprovalCard({
       {(isSession ? sessionPlan!.plan : approval.reason) && (
         <div className="approval-reason">{isSession ? sessionPlan!.plan : approval.reason}</div>
       )}
+      {/* A headline count is not consent — for a batch the user has to be able to
+          see exactly which tabs are affected before deciding. */}
+      {items.length > 0 && (
+        <ul className="approval-items">
+          {items.map((it, i) => (
+            <li key={i}>
+              <span className="approval-item-title" title={it.title}>
+                {it.title}
+              </span>
+              {it.host && <span className="approval-item-host">{it.host}</span>}
+              {it.note && <span className="approval-item-note">{it.note}</span>}
+            </li>
+          ))}
+        </ul>
+      )}
+      {approval.needsPermissions?.length && (
+        <div className="approval-permission-hint">
+          Chrome will ask for one extra permission the first time.
+        </div>
+      )}
       <div className="approval-actions">
         <button className="btn ghost" onClick={onDeny}>
           Deny
@@ -4064,7 +4115,7 @@ function ApprovalCard({
             Allow this chat
           </button>
         )}
-        <button className="btn primary" onClick={onAllow}>
+        <button className={`btn ${approval.danger ? 'danger-solid' : 'primary'}`} onClick={onAllow}>
           Allow
         </button>
       </div>

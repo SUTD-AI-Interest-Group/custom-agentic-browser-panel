@@ -1081,6 +1081,62 @@ body {
   margin-top: 12px;
 }
 
+/* Destructive batch (CloseTabs): the card and its confirm button carry the
+   danger colour so "Close 23 tabs" cannot be mistaken for a routine card. */
+.approval-card.danger {
+  border-color: var(--danger);
+}
+
+/* The itemized list of exactly what a batch call will act on. Capped and
+   scrollable: 40 rows must not push the Allow button off the panel, but the
+   user must still be able to reach every one of them before deciding. */
+.approval-items {
+  list-style: none;
+  margin: 8px 0 0 22px;
+  padding: 4px 6px 4px 0;
+  max-height: 180px;
+  overflow-y: auto;
+  border-left: 2px solid var(--border);
+  padding-left: 8px;
+  font-size: 12px;
+}
+
+.approval-items li {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 2px 0;
+  min-width: 0;
+}
+
+.approval-item-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.approval-item-host {
+  color: var(--text-muted);
+  flex: 0 0 auto;
+  font-size: 11px;
+}
+
+.approval-item-note {
+  color: var(--accent);
+  flex: 0 0 auto;
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.approval-permission-hint {
+  color: var(--text-muted);
+  font-size: 11.5px;
+  margin: 8px 0 0 22px;
+  font-style: italic;
+}
+
 /* ---- Long-horizon continuation ---- */
 
 /* Divider between auto-continued assistant bubbles (see MERGE_AUTO_CONTINUES). */

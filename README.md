@@ -103,7 +103,9 @@ logic lives in `src/tools/toolDiscovery.ts`.
 | --- | --- |
 | `ReadPage` | Read the active tab — text, DOM, or numbered interactive elements |
 | `ReadPdf` | Read/search a PDF (the open tab or a URL) — outline, page ranges, keyword search with page-numbered snippets, or render a page as an image |
-| `ReadTabs` | List all open tabs; read specific ones by id |
+| `ReadTabs` | List all open tabs; `mode:"gist"` skims every one (one-line summary, duplicates, pinned/asleep/blank state); read specific ones by id |
+| `GroupTabs` | File tabs into named, colored Chrome tab groups, or pull them back out |
+| `CloseTabs` | Close tabs (never the active, pinned, or last-in-window one), or reopen the batch last closed |
 | `GetScreenshot` | Look at the page as an image — the rendered viewport, or `fullPage:true` for a stitched full page |
 | `GetElementScreenshot` | Screenshot one element/region (`[rN]` from ReadPage regions, or a CSS selector) |
 | `ExtractData` | Pull structured data off the current page |

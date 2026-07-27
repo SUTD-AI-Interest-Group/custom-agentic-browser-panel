@@ -22,7 +22,8 @@
     "history",
     "bookmarks",
     "topSites",
-    "downloads"
+    "downloads",
+    "tabGroups"
   ],
   "host_permissions": [
     "<all_urls>"

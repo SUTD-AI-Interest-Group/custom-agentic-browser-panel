@@ -3,7 +3,19 @@ import { z } from 'zod'
 import { saveMemory, searchMemories, getProfileMemories } from '../data/memory'
 import { getSkill, listSkillMetas, saveSkill } from '../data/skills'
 import type { ProviderConfig, TabAccess, ToolPolicy } from '../data/settings'
-import { getActiveTab, listOpenTabs, navigateTab, readTabContent, readTabDom } from '../platform/tabs'
+import {
+  closeTabs,
+  getActiveTab,
+  listOpenTabs,
+  navigateTab,
+  readClosedStash,
+  readTabContent,
+  readTabDom,
+  reopenClosedTabs,
+} from '../platform/tabs'
+import { buildTabIndex, hostOf, listTabFacts, TAB_GIST_LIMIT } from '../platform/tabIndex'
+import { applyGrouping, ungroupTabs } from '../platform/tabGroups'
+import { planClosure, planGrouping, TAB_GROUP_COLORS } from './tabPolicy'
 import { getBrowsingHistory, getBookmarks, getTopSites, getDownloads } from '../platform/browsingData'
 import type { BrowsingCapability } from '../platform/permissions'
 import { snapshotPage, type PageSnapshot } from '../platform/domIndex'
@@ -47,6 +59,14 @@ import {
 // and rendering all come for free.
 // ---------------------------------------------------------------------------
 
+/** One row of a batch approval card's itemized list. */
+export interface ApprovalItem {
+  title: string
+  host: string
+  /** Optional trailing qualifier, e.g. "duplicate of #41" or "asleep". */
+  note?: string
+}
+
 export interface ApprovalRequest {
   toolName: string
   /** One-line, human-readable description of what will happen. */
@@ -55,6 +75,22 @@ export interface ApprovalRequest {
   reason: string
   /** When true, the card must NOT offer "Allow this chat" — the action must be confirmed every time (point-of-no-return page actions). */
   once?: boolean
+  /**
+   * The exact things this call will act on, listed on the card. A summary saying
+   * "Close 23 tabs" is not consent — the user has to be able to see *which* 23
+   * before they click. Rendered as a scrollable list.
+   */
+  items?: ApprovalItem[]
+  /** Destructive: tints the card and its primary button with the danger color. */
+  danger?: boolean
+  /**
+   * Optional Chrome permissions to request from inside the Allow click. The card's
+   * button handler is a genuine user gesture, which chrome.permissions.request
+   * requires — so an optional permission can be granted at the moment it is
+   * actually needed instead of sending the user hunting through Settings. Denying
+   * the Chrome dialog denies the whole call.
+   */
+  needsPermissions?: string[]
 }
 
 export type ApprovalGate = (request: ApprovalRequest) => Promise<boolean>
@@ -875,27 +911,59 @@ export function createAgentTools(
 
     ReadTabs: tool({
       description:
-        'List all tabs the user has open (titles, URLs, tab ids), and optionally read specific tabs by id. mode="text": visible text; mode="dom": cleaned HTML structure. Pass tabIds to read those tabs; omit tabIds to only list. Asks the user for permission first. Read only the tabs you need — each page is large.',
+        'List all tabs the user has open (titles, URLs, tab ids), and optionally read specific tabs by id. mode="gist": a one-line summary of EVERY tab plus duplicate detection and pinned/asleep/audible/blank state — the cheap way to understand a whole window before organizing it, and the right first step for any "what do I have open", "find the tab that…", "group my tabs" or "clean up my tabs" request. mode="text": full visible text of the tabs you name; mode="dom": their HTML structure. Pass tabIds to read those tabs; omit tabIds to only list. Asks the user for permission first. Prefer gist over reading many tabs — full pages are large.',
       inputSchema: z.object({
-        mode: z.enum(['text', 'dom']).describe('text = visible text; dom = HTML structure'),
+        mode: z
+          .enum(['gist', 'text', 'dom'])
+          .describe('gist = one-line summary of every tab; text = visible text; dom = HTML structure'),
         reason: z
           .string()
           .describe('Short reason shown to the user, e.g. "To find your open documentation tabs"'),
         tabIds: z
           .array(z.number())
           .optional()
-          .describe('Tab ids (from a previous listing) to read. Omit to only list tabs.'),
+          .describe('Tab ids (from a previous listing) to read. Omit to only list tabs. Ignored for gist, which covers every tab.'),
       }),
       execute: async ({ mode, reason, tabIds }) => {
-        const reading = tabIds && tabIds.length > 0
+        const reading = mode !== 'gist' && tabIds && tabIds.length > 0
         const approved = await requestApproval({
           toolName: 'ReadTabs',
-          summary: reading
-            ? `Read the ${mode === 'dom' ? 'DOM' : 'content'} of ${tabIds!.length} open tab${tabIds!.length > 1 ? 's' : ''}`
-            : 'See the list of your open tabs',
+          summary:
+            mode === 'gist'
+              ? 'Skim every open tab (title, site, and a one-line summary)'
+              : reading
+                ? `Read the ${mode === 'dom' ? 'DOM' : 'content'} of ${tabIds!.length} open tab${tabIds!.length > 1 ? 's' : ''}`
+                : 'See the list of your open tabs',
           reason,
         })
         if (!approved) return DENIED
+
+        if (mode === 'gist') {
+          const index = await buildTabIndex()
+          // The organizing cluster: a model that just skimmed the window is
+          // almost always about to file or close something, and making it pay a
+          // GetTool round-trip first is pure latency. Loading is not permission —
+          // both still raise their own card when actually called.
+          activeNames.add('GroupTabs')
+          activeNames.add('CloseTabs')
+          const asleep = index.tabs.filter((t) => t.discarded).length
+          return {
+            tabs: index.tabs,
+            duplicates: index.duplicates,
+            note: [
+              `${index.tabs.length} tab(s).`,
+              index.duplicates.length
+                ? `${index.duplicates.length} set(s) of duplicate pages.`
+                : 'No duplicate pages.',
+              asleep ? `${asleep} tab(s) are asleep and were not read (reading one would reload it).` : '',
+              index.probeLimitHit ? `Only the first ${TAB_GIST_LIMIT} tabs were summarized.` : '',
+              'Tabs with an empty gist have a "skipped" reason. You can now use GroupTabs and CloseTabs.',
+            ]
+              .filter(Boolean)
+              .join(' '),
+          }
+        }
+
         const tabs = await listOpenTabs()
         if (!reading) return { tabs }
         if (mode === 'dom') {
@@ -904,6 +972,159 @@ export function createAgentTools(
         }
         const contents = await Promise.all(tabIds!.map((id) => readTabContent(id)))
         return { tabs, contents }
+      },
+    }),
+
+    GroupTabs: tool({
+      description:
+        'Organize the user\'s open tabs into named, colored Chrome tab groups, or pull tabs back out of a group. Call ReadTabs with mode="gist" first so you are grouping by what the pages actually are. Only ungrouped tabs can be filed — groups the user made by hand are left alone — and a group cannot span windows, so a set spread across two windows becomes one group in each. Asks the user for permission first, showing them exactly which tabs move.',
+      inputSchema: z
+        .object({
+          action: z
+            .enum(['group', 'ungroup'])
+            .describe('group: file tabs into named groups; ungroup: pull tabs out of their group'),
+          reason: z
+            .string()
+            .describe('Short reason shown to the user, e.g. "To gather your thesis sources in one place"'),
+          groups: z
+            .array(
+              z.object({
+                name: z.string().describe('Short, specific group name, e.g. "Thesis sources" — not "Group 1".'),
+                color: z
+                  .enum(TAB_GROUP_COLORS)
+                  .optional()
+                  .describe('Chrome tab-group color. Omit to have one chosen.'),
+                tabIds: z.array(z.number()).min(1).describe('Tabs to put in this group.'),
+              }),
+            )
+            .optional()
+            .describe('Required for action="group".'),
+          tabIds: z.array(z.number()).optional().describe('Required for action="ungroup".'),
+        })
+        .refine((v) => (v.action === 'group' ? !!v.groups?.length : !!v.tabIds?.length), {
+          message: 'group requires groups; ungroup requires tabIds.',
+        }),
+      execute: async ({ action, reason, groups, tabIds }) => {
+        const open = await listTabFacts()
+        const byId = new Map(open.map((t) => [t.tabId, t]))
+
+        if (action === 'ungroup') {
+          const known = (tabIds ?? []).filter((id) => byId.has(id))
+          if (known.length === 0) return { error: 'None of those tabs are open any more.' }
+          const approved = await requestApproval({
+            toolName: 'GroupTabs',
+            summary: `Take ${known.length} tab${known.length > 1 ? 's' : ''} out of ${known.length > 1 ? 'their groups' : 'its group'}`,
+            reason,
+            items: known.map((id) => ({ title: byId.get(id)!.title, host: byId.get(id)!.host })),
+          })
+          if (!approved) return DENIED
+          return await ungroupTabs(known)
+        }
+
+        const plan = planGrouping(groups ?? [], open)
+        if (plan.groups.length === 0) {
+          return {
+            grouped: [],
+            rejected: plan.rejected,
+            error:
+              'Nothing could be grouped. Tabs already in a group are left alone, pinned tabs cannot be grouped, and a group needs at least 2 tabs in the same window.',
+          }
+        }
+        const total = plan.groups.reduce((n, g) => n + g.tabIds.length, 0)
+        const approved = await requestApproval({
+          toolName: 'GroupTabs',
+          summary: `Sort ${total} tabs into ${plan.groups.length} group${plan.groups.length > 1 ? 's' : ''}`,
+          reason,
+          // One row per tab, labelled with the group it is headed for, so the
+          // user is approving the actual filing rather than a headline number.
+          items: plan.groups.flatMap((g) =>
+            g.tabIds.map((id) => ({
+              title: byId.get(id)?.title ?? `Tab ${id}`,
+              host: byId.get(id)?.host ?? '',
+              note: `→ ${g.name}`,
+            })),
+          ),
+          // Naming and coloring a group is the whole point, and that needs the
+          // optional tabGroups permission. Requested from this card's Allow
+          // click, which is the user gesture Chrome requires.
+          needsPermissions: ['tabGroups'],
+        })
+        if (!approved) return DENIED
+        const outcome = await applyGrouping(plan.groups)
+        return {
+          grouped: outcome.created.map((g) => ({ name: g.name, color: g.color, tabIds: g.tabIds })),
+          failed: outcome.failed,
+          rejected: plan.rejected,
+        }
+      },
+    }),
+
+    CloseTabs: tool({
+      description:
+        "Close tabs the user no longer needs, or reopen the batch you last closed. Call ReadTabs with mode=\"gist\" first — it reports duplicates and blank tabs, which are what is usually worth closing. Never closes the tab the user is looking at, pinned tabs, or the last tab of a window. The user sees and confirms the full list every time.",
+      inputSchema: z
+        .object({
+          action: z
+            .enum(['close', 'reopen'])
+            .describe('close: close the listed tabs; reopen: restore the batch you last closed'),
+          reason: z
+            .string()
+            .describe('Short reason shown to the user, e.g. "These are duplicates of tabs you already have open"'),
+          tabIds: z.array(z.number()).optional().describe('Tabs to close. Required for action="close".'),
+        })
+        .refine((v) => (v.action === 'close' ? !!v.tabIds?.length : true), {
+          message: 'close requires tabIds.',
+        }),
+      execute: async ({ action, reason, tabIds }) => {
+        if (action === 'reopen') {
+          const stash = await readClosedStash()
+          if (!stash) return { error: 'Nothing was closed recently, so there is nothing to reopen.' }
+          const approved = await requestApproval({
+            toolName: 'CloseTabs',
+            summary: `Reopen ${stash.tabs.length} tab${stash.tabs.length > 1 ? 's' : ''} you closed earlier`,
+            reason,
+            items: stash.tabs.map((t) => ({ title: t.title, host: hostOf(t.url) })),
+          })
+          if (!approved) return DENIED
+          return await reopenClosedTabs()
+        }
+
+        const open = await listTabFacts()
+        const byId = new Map(open.map((t) => [t.tabId, t]))
+        const plan = planClosure(tabIds ?? [], open)
+        if (plan.close.length === 0) {
+          return {
+            closed: 0,
+            rejected: plan.rejected,
+            error: 'None of those tabs can be closed. The active tab, pinned tabs, and the last tab of a window are always kept.',
+          }
+        }
+        const approved = await requestApproval({
+          toolName: 'CloseTabs',
+          summary: `Close ${plan.close.length} tab${plan.close.length > 1 ? 's' : ''}`,
+          reason,
+          items: plan.close.map((id) => ({
+            title: byId.get(id)?.title ?? `Tab ${id}`,
+            host: byId.get(id)?.host ?? '',
+          })),
+          danger: true,
+          // No "Allow this chat" for closing. A standing allowance would mean a
+          // later batch closes with no card at all, which is not a trade anyone
+          // should be able to make in one click.
+          once: true,
+        })
+        if (!approved) return DENIED
+        const result = await closeTabs(plan.close)
+        if (result.error) return { closed: 0, error: result.error, rejected: plan.rejected }
+        const closed = plan.close.length
+        return {
+          closed,
+          rejected: plan.rejected,
+          note:
+            result.recoverable >= closed
+              ? 'Closed tabs were saved — call CloseTabs with action="reopen" to undo this.'
+              : `Only the first ${result.recoverable} of ${closed} closed tabs were saved; action="reopen" will restore those.`,
+        }
       },
     }),
 
@@ -1504,9 +1725,13 @@ export function createAgentTools(
   }
 
   // Honor the tab-visibility preference chosen in onboarding: in active-tab
-  // mode the model never even sees a tool that could enumerate other tabs.
+  // mode the model never even sees a tool that could enumerate other tabs —
+  // which covers organizing and closing them too, since both start from
+  // enumeration and both act on tabs the user never pointed at.
   if (tabAccess !== 'all-tabs') {
     delete tools.ReadTabs
+    delete tools.GroupTabs
+    delete tools.CloseTabs
   }
 
   // Browsing-data is hidden unless the user has granted at least one optional

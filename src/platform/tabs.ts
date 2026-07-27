@@ -225,6 +225,116 @@ export async function navigateTab(
   }
 }
 
+// ---------------------------------------------------------------------------
+// Closing tabs, and the one level of undo behind it
+//
+// Closing is the only destructive thing the agent can do to a window, so the
+// tabs it removes are stashed first. This is deliberately simpler than
+// chrome.sessions (which would restore per-tab history but needs another
+// permission): a URL, a title and a position are enough to put a window back
+// the way it looked, and "reopen what you just closed" is the only undo anyone
+// actually asks for. The stash holds the most recent batch only and is cleared
+// once consumed, so a second reopen cannot resurrect a batch twice.
+// ---------------------------------------------------------------------------
+
+const CLOSED_STASH_KEY = 'closedTabs:last'
+
+/** Beyond this, a stash is more of a liability than an undo. Comfortably above
+ *  tabIndex's 100-tab read limit, so a normal cleanup is always fully undoable. */
+const MAX_STASH = 300
+
+export interface StashedTab {
+  url: string
+  title: string
+  windowId: number
+  index: number
+  pinned: boolean
+}
+
+export interface ClosedStash {
+  at: number
+  tabs: StashedTab[]
+}
+
+export async function readClosedStash(): Promise<ClosedStash | null> {
+  const got = await chrome.storage.local.get(CLOSED_STASH_KEY)
+  const stash = got[CLOSED_STASH_KEY] as ClosedStash | undefined
+  return stash?.tabs?.length ? stash : null
+}
+
+export async function clearClosedStash(): Promise<void> {
+  await chrome.storage.local.remove(CLOSED_STASH_KEY)
+}
+
+/**
+ * Close `tabIds`, stashing them first so reopenClosedTabs can put them back.
+ * The caller is responsible for having run planClosure over the ids — this
+ * function does no vetting, it only records and removes.
+ */
+export async function closeTabs(
+  tabIds: number[],
+): Promise<{ closed: StashedTab[]; recoverable: number; error?: string }> {
+  if (tabIds.length === 0) return { closed: [], recoverable: 0 }
+  const stashed: StashedTab[] = []
+  for (const id of tabIds.slice(0, MAX_STASH)) {
+    const tab = await chrome.tabs.get(id).catch(() => undefined)
+    if (!tab) continue
+    stashed.push({
+      url: tab.url ?? '',
+      title: tab.title ?? '(untitled)',
+      windowId: tab.windowId,
+      index: tab.index,
+      pinned: tab.pinned ?? false,
+    })
+  }
+  try {
+    // Stash BEFORE removing: a crash between the two should cost the undo, not
+    // leave a stash describing tabs that are still open.
+    await chrome.storage.local.set({ [CLOSED_STASH_KEY]: { at: Date.now(), tabs: stashed } })
+    await chrome.tabs.remove(tabIds)
+    // `recoverable` can trail the closed count past MAX_STASH. Reported rather
+    // than hidden, so the model never promises an undo that cannot deliver.
+    return { closed: stashed, recoverable: stashed.length }
+  } catch (err) {
+    return { closed: [], recoverable: 0, error: err instanceof Error ? err.message : String(err) }
+  }
+}
+
+/**
+ * Reopen the most recently closed batch, restoring each tab's window and
+ * position where those still exist. A window that has since closed sends its
+ * tabs to the current window rather than dropping them.
+ */
+export async function reopenClosedTabs(): Promise<{ reopened: number; error?: string }> {
+  const stash = await readClosedStash()
+  if (!stash) return { reopened: 0, error: 'Nothing was closed recently, so there is nothing to reopen.' }
+  let reopened = 0
+  for (const t of stash.tabs) {
+    if (!t.url) continue
+    // Restore into the original window when it is still around; otherwise let
+    // Chrome place the tab in the current one.
+    const windowStillOpen = await chrome.windows.get(t.windowId).then(
+      () => true,
+      () => false,
+    )
+    try {
+      await chrome.tabs.create({
+        url: t.url,
+        index: t.index,
+        pinned: t.pinned,
+        active: false,
+        ...(windowStillOpen ? { windowId: t.windowId } : {}),
+      })
+      reopened++
+    } catch {
+      // A URL Chrome refuses to open (an expired blob, say) skips quietly —
+      // one bad entry must not cost the rest of the batch.
+    }
+  }
+  await clearClosedStash()
+  return { reopened }
+}
+
 /**
  * User-initiated jump to a page of a PDF (the ShotCard "open page" button —
  * no approval gate, the human clicked). Finds the tab already viewing this PDF
