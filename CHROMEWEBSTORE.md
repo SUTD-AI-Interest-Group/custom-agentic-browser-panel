@@ -126,7 +126,7 @@ reviewers want to see the extension in context.
 4. **Tool permissions** ✅ — the Never/Ask/Always controls with their one-line
    explanations, demonstrating that the user holds the switch.
 5. **Research report** ⬜ — a finished report with inline source citations. Not
-   captured; see "Research shot blocked" below.
+   captured; the bug that prevented it is fixed — see "Research shot" below.
 
 Two alternates are kept beside them for swapping into the listing:
 `alt-control-consent.png` (the "Let the agent control arxiv.org?" card, which states
@@ -140,12 +140,15 @@ that is an independent rejection reason. No API keys, personal data, or password
 fields appear in any shot. Note that the browser toolbar shows the capture
 profile's other extension icons; unpin them first if you want cleaner art.
 
-**Research shot blocked.** Background research fails on the `gpt-5.4-mini` model
-served by the custom "Taobao AI" OpenAI-compatible provider: the pipeline plans
-correctly, then parks on `Provider error (HTTP 400) — will retry` and never
-recovers. Foreground chat on the same model is fine, so this is specific to the
-research path's request shape, not the credentials. Capture #5 once that is fixed
-or from a provider that accepts the research payload.
+**Research shot — unblocked, needs capturing.** Background research used to park on
+`Provider error (HTTP 400) — will retry` and never recover, which is what stopped
+this shot being taken. Root cause found and fixed in `ab35d99`: two research tools
+were named `Notebook.write` / `Notebook.read`, and a dot is illegal in a tool name
+(`^[a-zA-Z0-9_-]+$`). Providers reject the *whole* request over one bad name, so
+that took the entire research toolset down with it — and because every failure is
+classified transient by design, it retried to the task's 24h deadline instead of
+surfacing. Foreground chat was unaffected because it never loads those two tools,
+which is exactly why it looked provider-specific. Capture #5 on the next run.
 
 **Why this cannot be fully automated.** Chrome's side panel is browser UI, not page
 content, so no headless or page-level automation tool can screenshot it — it has to
@@ -403,8 +406,9 @@ no response, that is the point to contact developer support.
 
 1. ~~Screenshots~~ — ✅ done 2026-07-28. Four 1280×800 captures from a real
    session live in `assets/store/screenshots/`, all verified sRGB with no alpha.
-   The optional fifth (research report) is still open because background research
-   errors on the current provider — see "Screenshot Notes" above.
+   The optional fifth (research report) is still uncaptured, but no longer
+   blocked: the HTTP 400 that stopped background research is fixed in `ab35d99`
+   — see "Screenshot Notes" above.
 2. ~~Privacy policy URL must resolve publicly~~ — ✅ done 2026-07-28.
    `https://lychee-ai.netlify.app/privacy` verified live, public, and anonymous.
 3. **Publisher name** — still to confirm against the actual developer account.
