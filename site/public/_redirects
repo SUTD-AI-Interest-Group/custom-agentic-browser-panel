@@ -1,0 +1,9 @@
+# Netlify rewrite rules for the Lychee AI site.
+#
+# The app is a hash router (see src/lib/router.ts), so the only real document is
+# index.html and every route lives after the `#`. These redirects exist purely
+# so the URLs we hand to other people — the Chrome Web Store listing, the
+# extension manifest's homepage_url — can be clean paths instead of `/#/privacy`,
+# which reads like a broken link and is awkward to paste into a form.
+/privacy   /#/privacy   302
+/log       /#/log       302
