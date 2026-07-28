@@ -1,6 +1,6 @@
 # Chrome Web Store Listing — Lychee AI
 
-> Last Updated: 2026-07-27 · Manifest version 0.2.0 · **Status: not yet submitted**
+> Last Updated: 2026-07-28 · Manifest version 0.2.0 · **Status: not yet submitted**
 
 This is the single source of truth for the store listing. Copy from here into the
 Developer Dashboard at submission time. This file must **not** ship in the upload
@@ -36,6 +36,9 @@ Ask about the article you're reading, and Lychee reads it. Ask it to pull the pr
 LET IT DRIVE, WHEN YOU SAY SO
 Lychee can click, type, scroll, and fill in forms for you. Every session starts with your explicit approval, you watch each step happen on the page, and anything you can't take back — submitting a form, leaving for another site, touching a password or payment field — stops and asks you again first. Nothing is submitted on your behalf without a confirmation.
 
+TIDY UP YOUR TABS
+Ask Lychee what you have open and it reads a one-line gist of each tab instead of loading them all, so it can tell you which forty tabs are actually the same three projects. It can then sort them into named groups or close the ones you are done with — always showing you the exact list of tabs first, never touching the tab you are on or a pinned one, and keeping the last batch it closed so you can put them back.
+
 BACKGROUND RESEARCH
 Give Lychee a research question and it plans, searches, reads sources, and writes you a cited report while you carry on working. It tells you when the report is ready. Every claim links back to the source it came from.
 
@@ -49,12 +52,13 @@ YOU'RE IN CONTROL
 Every action that touches a page, your data, or the network asks first, and you decide per-tool whether it should keep asking. Access to your history, bookmarks, and downloads is entirely optional — Chrome only asks for it if you switch those features on.
 
 PRIVACY
-There is no Lychee server. Your conversations, keys, and memories are stored on your own computer, and your page content goes only to the AI provider you configured, under your own account. We collect nothing, receive nothing, and sell nothing. Full policy: https://github.com/SUTD-AI-Interest-Group/custom-agentic-browser-panel/blob/main/PRIVACY.md
+There is no Lychee server. Your conversations, keys, and memories are stored on your own computer, and your page content goes only to the AI provider you configured, under your own account. We collect nothing, receive nothing, and sell nothing. Full policy: https://lychee-ai.netlify.app/#/privacy
 
 REQUIREMENTS
 Chrome 116 or later, and an API key from a supported provider (or a local model server). Open the panel with the toolbar icon or Ctrl+E / Cmd+E.
 
 SUPPORT
+More about Lychee: https://lychee-ai.netlify.app
 Questions, bugs, and feature requests: https://github.com/SUTD-AI-Interest-Group/custom-agentic-browser-panel/issues
 ```
 
@@ -85,16 +89,24 @@ English (United States)
 
 ## Graphics & Assets
 
+Generated store art lives in `assets/store/`, which sits outside `public/` and so
+never enters the extension bundle. Regenerate with `npm run store:assets`.
+
 | Asset | Dimensions | Status | Filename |
 |-------|-----------|--------|----------|
-| Store Icon [REQUIRED] | 128×128 PNG | ✅ Ready | `public/icons/icon-128.png` (verified 128×128) |
-| Screenshot 1 [REQUIRED] | 1280×800 | ⬜ Not created | |
+| Store Icon [REQUIRED] | 128×128 PNG | ✅ Ready | `assets/store/store-icon-128x128.png` (mark fitted to 96×96 inside the frame, per the store's icon padding guidance) |
+| Screenshot 1 [REQUIRED] | 1280×800 | ⬜ Not created | must be captured from a real session — see notes below |
 | Screenshot 2 [RECOMMENDED] | 1280×800 | ⬜ Not created | |
 | Screenshot 3 [RECOMMENDED] | 1280×800 | ⬜ Not created | |
 | Screenshot 4 | 1280×800 | ⬜ Not created | |
 | Screenshot 5 | 1280×800 | ⬜ Not created | |
-| Small Promo Tile [RECOMMENDED] | 440×280 | ⬜ Not created | can be cropped from `assets/banner.png` (2400×600) |
-| Marquee Promo Tile | 1400×560 | ⬜ Not created | can be derived from `assets/banner.png` |
+| Small Promo Tile [RECOMMENDED] | 440×280 | ✅ Ready | `assets/store/promo-small-440x280.png` (opaque, no alpha) |
+| Marquee Promo Tile | 1400×560 | ✅ Ready | `assets/store/promo-marquee-1400x560.png` (opaque, no alpha) |
+| Logo master (not uploaded) | 512×512 | ✅ Ready | `assets/store/logo-master-512x512.png` — transparent mark for press, README, or future placements |
+
+Both promo tiles are flattened onto the brand black with the alpha channel
+stripped: the dashboard rejects transparency in promo art, and a PNG that merely
+*looks* opaque can still carry an alpha channel and be refused.
 
 ### Screenshot Notes
 
@@ -116,6 +128,37 @@ want to see the extension in context.
 Use a neutral, non-branded page (avoid other companies' logos and trademarks —
 that is an independent rejection reason). Do not show real API keys, real personal
 data, or a real password field in any screenshot.
+
+**Why these cannot be scripted.** Chrome's side panel is browser UI, not page
+content, so no headless or automation tool can screenshot it — it has to be a real
+window capture. And the panel renders nothing but onboarding until a provider key
+is entered, so the capture has to be a genuine session with a real key. Compositing
+a fake conversation instead would be a fabricated product screenshot, which is both
+a policy problem and a bad look if a reviewer installs the extension and sees
+something different.
+
+**Capture recipe** (macOS):
+
+1. Load the built extension: `npm run build`, then `chrome://extensions` →
+   Developer mode → Load unpacked → `dist/`.
+2. Enter a real provider key and have the conversation you want to show.
+3. Size the window to exactly 1280×800 before capturing, so nothing is rescaled:
+   run this in DevTools console on any normal page (not `chrome://`),
+   which accounts for the browser chrome around the viewport —
+   ```js
+   window.resizeTo(1280 + (window.outerWidth - window.innerWidth),
+                   800  + (window.outerHeight - window.innerHeight))
+   ```
+   Then capture that window with `Cmd+Shift+4`, then `Space`, then click it.
+4. Normalise whatever comes out — a Retina display captures at 2×, and the store
+   wants exactly 1280×800:
+   ```sh
+   magick shot.png -resize 1280x800^ -gravity center -extent 1280x800 \
+     -background white -alpha remove -alpha off screenshot-1.png
+   ```
+   `-alpha remove` matters: the store rejects transparency in screenshots too.
+5. Confirm each one before uploading: `magick identify screenshot-1.png` must
+   report `1280x800` and `srgb` (not `srgba`).
 
 ---
 
@@ -142,6 +185,7 @@ the user-facing feature that requires it.
 | `bookmarks` | optional_permissions | Only requested if the user turns on browsing insights, so the assistant can find a page the user bookmarked earlier. Not requested at install. |
 | `topSites` | optional_permissions | Only requested if the user turns on browsing insights, so the assistant can reference the user's frequently visited sites. Not requested at install. |
 | `downloads` | optional_permissions | Only requested when the user asks the assistant to save a generated file, which opens Chrome's own Save dialog, or turns on browsing insights to search past downloads. Not requested at install. |
+| `tabGroups` | optional_permissions | Only requested when the user asks the assistant to tidy their open tabs into named groups, and only at the moment they approve that specific action — Chrome's own permission prompt appears when they click Allow on the request. Used to create and name tab groups and to read existing group names so the assistant does not duplicate a group the user already has. Not requested at install; the tidy-tabs feature is the only thing that uses it, and declining it leaves every other feature working. |
 
 **Remote code justification** (dashboard asks this explicitly — answer **No**):
 
@@ -176,7 +220,7 @@ receives no data and operates no server.
 | Personal communications | Yes — the user's chat messages | Yes — to the user's configured AI provider | Generating replies | No |
 | Location | No | — | — | — |
 | Web history | Optional — only if the user enables browsing insights and grants the permission | Yes — the matching results are included in the request to the user's provider when they ask | Answering questions about pages the user visited | No |
-| User activity | Yes — which pages the user asks the assistant to read or act on | Yes — to the user's configured AI provider | Carrying out the user's request on that page | No |
+| User activity | Yes — which pages the user asks the assistant to read or act on, and, when the user asks about their open tabs, the title, URL, and a short self-description of each tab in that window | Yes — to the user's configured AI provider | Carrying out the user's request on that page; grouping or closing tabs the user asked to tidy | No |
 | Website content | Yes — text, structure, and screenshots of pages the user asks about | Yes — to the user's configured AI provider | The assistant cannot summarise or act on a page it is not shown | No |
 
 **Not used:** `chrome.storage.sync` — nothing is uploaded to the user's Google
@@ -202,14 +246,24 @@ user opts in to tracing with their own account (off by default).
 **Privacy Policy URL** [REQUIRED]
 
 ```
+https://lychee-ai.netlify.app/#/privacy
+```
+
+✅ Verified 2026-07-28: loads anonymously and renders the full policy. The page is
+generated from `PRIVACY.md` by `site/scripts/sync-content.mjs`, so the policy the
+store links to and the policy in the repo cannot drift apart.
+
+Equivalent public mirror, if a fragment URL is ever a problem in the dashboard
+form (also verified public and server-rendered, which a fragment URL is not):
+
+```
 https://github.com/SUTD-AI-Interest-Group/custom-agentic-browser-panel/blob/main/PRIVACY.md
 ```
 
-⚠️ **Verify before submitting.** The repository is currently private or unpushed;
-this URL must load publicly and anonymously or the submission is auto-rejected.
-Open it in a private browsing window first. If the repo stays private, host the
-policy on GitHub Pages, a public Gist, or any stable public URL instead, and
-update this field and the link inside the detailed description.
+`site/public/_redirects` also maps the clean path `/privacy` → `/#/privacy`.
+That redirect has **not** been verified against a live deploy yet — confirm
+`https://lychee-ai.netlify.app/privacy` resolves before preferring it over the
+fragment URL above, which is the one actually tested.
 
 ---
 
@@ -252,8 +306,12 @@ https://github.com/SUTD-AI-Interest-Group/custom-agentic-browser-panel/issues
 **Homepage URL** [RECOMMENDED]
 
 ```
-https://github.com/SUTD-AI-Interest-Group/custom-agentic-browser-panel
+https://lychee-ai.netlify.app
 ```
+
+This must stay in step with `homepage_url` in `public/manifest.json` — Chrome
+shows the manifest value on the extension's own details page, and a listing that
+points somewhere else looks like a mismatch to a reviewer.
 
 ---
 
@@ -261,7 +319,7 @@ https://github.com/SUTD-AI-Interest-Group/custom-agentic-browser-panel
 
 | Version | Date | Changes | Status |
 |---------|------|---------|--------|
-| 0.2.0 | 2026-07-27 | First store submission. Side-panel assistant with bring-your-own-model support, page reading, approved page control, background research with citations, long-term memory, skills, MCP tool servers, and sandboxed code execution. | Draft — not yet submitted |
+| 0.2.0 | 2026-07-28 | First store submission. Side-panel assistant with bring-your-own-model support, page reading, approved page control, tab organising (grouping and closing, with undo), background research with citations, long-term memory, skills, MCP tool servers, and sandboxed code execution. | Draft — not yet submitted |
 
 ---
 
@@ -271,13 +329,16 @@ https://github.com/SUTD-AI-Interest-Group/custom-agentic-browser-panel
 
 ### Pre-submission blockers
 
-1. **Screenshots** — at least one 1280×800 image is mandatory. None exist yet. This
-   is the only hard blocker remaining.
-2. **Privacy policy URL must resolve publicly** — verify anonymously.
+1. **Screenshots** — at least one 1280×800 image is mandatory. None exist yet.
+   **This is the only hard blocker remaining.** They cannot be generated from the
+   repo: the panel shows nothing but onboarding without a provider key, so a real
+   session has to be run and captured. See "Screenshot Notes" above.
+2. ~~Privacy policy URL must resolve publicly~~ — ✅ done 2026-07-28.
+   `https://lychee-ai.netlify.app/#/privacy` verified public and anonymous.
 3. **Confirm publisher name and public contact email** (flagged above).
 4. **No LICENSE file exists** in the repository. Not a store requirement, but the
    listing links to a public repo, and an unlicensed public repo grants no usage
-   rights. Worth deciding before the repo is made public.
+   rights. Worth deciding now that the repo is public.
 
 ### Single-purpose defence
 

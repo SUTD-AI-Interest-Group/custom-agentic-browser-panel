@@ -56,6 +56,8 @@ LM Studio). That request can contain:
 
 - your messages and the conversation so far,
 - **the text, structure, and screenshots of web pages you ask it to read or act on**,
+- when you ask about your open tabs, the title, address, and a one-line
+  self-description of each tab in that window,
 - relevant saved memories,
 - results returned by tools it used.
 
@@ -131,6 +133,10 @@ when you invoke a feature that needs it.
 Access to browsing history, bookmarks, most-visited sites, and downloads is
 **optional** and not requested at install. Chrome asks you separately, and only if
 you switch those features on in Settings. You can revoke them at any time.
+
+Permission to manage tab groups is **optional** in the same way: Chrome asks for it
+the first time you approve a request to sort your tabs into groups, and declining
+it leaves every other feature working.
 
 ---
 
