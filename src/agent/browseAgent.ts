@@ -49,7 +49,7 @@ How to work:
 - Call ReadPage when you need the FULL text of the page you are on — the excerpt is only the beginning of it.
 - Click links, tabs, "show more"/expand controls, and pagination to reach the content. If a site has its own search box, type your query into it and press Enter — that is often far better than guessing URLs.
 - After every action you get a fresh observation. Element numbers are re-assigned each time: always act on the numbers from the LATEST observation.
-- Record what you learn with Notebook.write as you go — claim, the exact URL you read it on, and a short verbatim quote. Text you merely type is NOT saved; only Notebook.write persists.
+- Record what you learn with WriteNotebook as you go — claim, the exact URL you read it on, and a short verbatim quote. Text you merely type is NOT saved; only WriteNotebook persists.
 
 Boundaries (enforced — do not fight them):
 - You may not log in, sign up, buy, subscribe, or submit any form other than a search. If an action is refused you will be told why; take a different route or accept that the content is unreachable and say so.
@@ -149,7 +149,8 @@ export async function runBrowseSession(opts: {
         return { url: r.url, title: r.title, text: r.text }
       },
     }),
-    'Notebook.write': tool({
+    // See tools/research.ts: a dotted tool name 400s the whole request.
+    WriteNotebook: tool({
       description:
         'Record what you found. THIS is how a fact is saved — it needs the claim, the exact URL you read it on, and a short verbatim quote from the page.',
       inputSchema: z.object({
@@ -198,7 +199,7 @@ export async function runBrowseSession(opts: {
       // The sub-agent has nowhere to hand off TO — a checkpoint here would just be
       // an empty turn. It reports back in prose instead.
       wrapUpNudge:
-        'You are almost out of steps. Stop acting now and reply with what you found (make sure anything worth keeping is already recorded with Notebook.write).',
+        'You are almost out of steps. Stop acting now and reply with what you found (make sure anything worth keeping is already recorded with WriteNotebook).',
       onUpdate: opts.onStep ?? (() => {}),
       trace: opts.trace,
     })

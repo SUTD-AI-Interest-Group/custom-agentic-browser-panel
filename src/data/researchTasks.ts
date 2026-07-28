@@ -218,6 +218,22 @@ export type ResearchMsg =
       error?: string
     }
 
+/**
+ * Send one research message, fire-and-forget. Every hop in this protocol is
+ * one-way — replies come back as their own `*Result` message, never as a
+ * sendResponse — but `chrome.runtime.sendMessage` returns a promise that
+ * *rejects* whenever the other end isn't there to take it: a panel the user just
+ * closed, an offscreen host evicted mid-task, a listener that closed the channel
+ * without answering. Unhandled, each of those lands in chrome://extensions as an
+ * "Uncaught (in promise)" error even though the protocol is designed to tolerate
+ * a dropped message (the SW re-derives state from storage; the watchdog
+ * re-dispatches). Swallowing here is the contract, in one place, rather than a
+ * `.catch(() => {})` every caller has to remember.
+ */
+export function postResearchMsg(msg: ResearchMsg): void {
+  void chrome.runtime.sendMessage(msg).catch(() => {})
+}
+
 const KEY = 'researchTasks'
 
 // researchTasks shares the ~10MB chrome.storage.local namespace with settings/memory/

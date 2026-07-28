@@ -16,8 +16,10 @@ import {
   taskDeadline,
   isActiveStatus,
   heartbeat,
+  postResearchMsg,
   MAX_RESEARCH_DURATION_MS,
 } from './data/researchTasks'
+import { registerContextMenus, CONTEXT_MENU_IDS } from './platform/contextMenus'
 import { loadSettings, getSelectedProvider, observabilityConfig, resolveDreamIntervalMs } from './data/settings'
 import { isFetchableUrl } from './platform/webFetch'
 import { renderPage } from './platform/researchRender'
@@ -61,14 +63,14 @@ chrome.runtime.onInstalled.addListener(() => {
   void scheduleDreamAlarm()
   scheduleWatchdog()
   void resumeStrandedResearch()
-  registerContextMenus()
+  void registerContextMenus()
 })
 chrome.runtime.onStartup.addListener(() => {
   void scheduleDreamAlarm()
   scheduleWatchdog()
   // Chrome just restarted — resume any research that was mid-flight when it closed.
   void resumeStrandedResearch()
-  registerContextMenus()
+  void registerContextMenus()
 })
 
 // Re-arm the alarm when the user changes the dream interval, so a new cadence
@@ -149,48 +151,12 @@ chrome.commands.onCommand.addListener((command, tab) => {
 
 // ---------------------------------------------------------------------------
 // "Ask Lychee about this" context menu: right-click a selection, link, image, or
-// the page itself to hand it straight to the panel. The mailbox contract
-// (src/platform/composerActions.ts) carries the action across the gap between
-// "panel may be closed" and "panel mounts and drains it"; here we only stage it
-// and open the panel, in that order, on the gesture.
+// the page itself to hand it straight to the panel. The menu items themselves are
+// registered in src/platform/contextMenus.ts; what lives here is the click half.
+// The mailbox contract (src/platform/composerActions.ts) carries the action across
+// the gap between "panel may be closed" and "panel mounts and drains it"; here we
+// only stage it and open the panel, in that order, on the gesture.
 // ---------------------------------------------------------------------------
-
-const CONTEXT_MENU_IDS = {
-  selection: 'lychee-ask-selection',
-  link: 'lychee-ask-link',
-  image: 'lychee-ask-image',
-  page: 'lychee-ask-page',
-} as const
-
-/**
- * (Re)create the "Ask Lychee about this" menu items. removeAll() first, since
- * onInstalled/onStartup can both fire across a single install (e.g. update then
- * a later browser restart) and chrome.contextMenus.create rejects a duplicate id.
- */
-function registerContextMenus(): void {
-  chrome.contextMenus.removeAll(() => {
-    chrome.contextMenus.create({
-      id: CONTEXT_MENU_IDS.selection,
-      title: 'Ask Lychee about this selection',
-      contexts: ['selection'],
-    })
-    chrome.contextMenus.create({
-      id: CONTEXT_MENU_IDS.link,
-      title: 'Ask Lychee about this link',
-      contexts: ['link'],
-    })
-    chrome.contextMenus.create({
-      id: CONTEXT_MENU_IDS.image,
-      title: 'Ask Lychee about this image',
-      contexts: ['image'],
-    })
-    chrome.contextMenus.create({
-      id: CONTEXT_MENU_IDS.page,
-      title: 'Ask Lychee about this page',
-      contexts: ['page'],
-    })
-  })
-}
 
 /** Map a context-menu click to the ComposerAction the panel should act on. */
 function buildComposerAction(info: chrome.contextMenus.OnClickData, tab?: chrome.tabs.Tab): ComposerAction | null {
@@ -289,7 +255,7 @@ async function startResearchTask(taskId: string, opts: { resume?: boolean } = {}
     return
   }
   await ensureOffscreen()
-  chrome.runtime.sendMessage({
+  postResearchMsg({
     type: 'research.start',
     taskId,
     question: task.question,
@@ -326,7 +292,15 @@ async function resumeStrandedResearch(): Promise<void> {
   }
 }
 
-chrome.runtime.onMessage.addListener((msg: ResearchMsg) => {
+// Returning `true` tells Chrome "a response is coming asynchronously" and holds
+// the message channel open until sendResponse fires — which also keeps this
+// worker alive for the await chain below (a research dispatch must not be cut in
+// half by an eviction). Nothing in this protocol actually wants a reply, so the
+// response is an empty ack sent in a finally: without it the channel stays open
+// until the sender is torn down, and every sender that did not attach a .catch
+// gets "A listener indicated an asynchronous response by returning true, but the
+// message channel closed before a response was received" as an uncaught rejection.
+chrome.runtime.onMessage.addListener((msg: ResearchMsg, _sender, sendResponse) => {
   ;(async () => {
     try {
       if (msg?.type === 'research.ensureAndStart') {
@@ -408,39 +382,45 @@ chrome.runtime.onMessage.addListener((msg: ResearchMsg) => {
         // Interactive browse: the offscreen sub-agent drives the isolated tab one
         // policy-checked step at a time (see platform/researchBrowse.ts).
         const result = await handleBrowseOp(msg.sessionId, msg.op)
-        chrome.runtime.sendMessage({
+        postResearchMsg({
           type: 'research.browseResult',
           taskId: msg.taskId,
           requestId: msg.requestId,
           result,
-        } satisfies ResearchMsg)
+        })
       } else if (msg?.type === 'research.searchTab') {
         // Tab-search fallback: the keyless fetch was throttled, so run the search in
         // a real tab that can clear the bot wall (see platform/researchSearch.ts).
         const { results, error } = await searchInTab(msg.query, msg.maxResults)
-        chrome.runtime.sendMessage({
+        postResearchMsg({
           type: 'research.searchTabResult',
           taskId: msg.taskId,
           requestId: msg.requestId,
           results,
           error,
-        } satisfies ResearchMsg)
+        })
       } else if (msg?.type === 'research.renderPage') {
         // Hybrid-escalation broker: the offscreen agent can't touch tabs, so it asks
         // the SW to render a hard URL in an isolated tab and return the text/shot.
         const guard = isFetchableUrl(msg.url)
         const outcome = guard.ok ? await renderPage(msg.url, msg.want) : { error: `refused (${guard.reason})` }
-        chrome.runtime.sendMessage({
+        postResearchMsg({
           type: 'research.renderResult',
           taskId: msg.taskId,
           requestId: msg.requestId,
           ...outcome,
-        } satisfies ResearchMsg)
+        })
       }
     } catch (err) {
       // A storage/quota failure (or anything else unguarded above) would otherwise
       // become a silent unhandled rejection inside this fire-and-forget IIFE.
       console.error('[bg] message handler failed', msg?.type, err)
+    } finally {
+      // Close the channel. Throws if the sender is already gone (a panel that
+      // navigated away mid-dispatch) — that is nothing to report.
+      try {
+        sendResponse()
+      } catch {}
     }
   })()
   return true

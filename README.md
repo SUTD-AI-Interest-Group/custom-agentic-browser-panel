@@ -202,7 +202,7 @@ round is a fresh turn seeded from a notebook *summary* rather than a growing
 transcript.
 
 Its tools — `WebSearch`, `FetchUrl`, `ExtractTable`, `SearchAcademic`,
-`SearchImages`, `HarvestImages`, `Notebook.read/write` — are read-only and
+`SearchImages`, `HarvestImages`, `ReadNotebook`/`WriteNotebook` — are read-only and
 ungated, because no user is present to approve anything. When a page refuses to
 be fetched (403, bot wall, login wall), the agent escalates to **`BrowseSite`**:
 a nested sub-agent drives a real, isolated, minimized browser tab, and every

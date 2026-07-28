@@ -1,6 +1,6 @@
 // The structured research notebook: the long-horizon memory that replaces
 // "just grow the message array". The controller (research.ts) and the ungated
-// Notebook.* tools (tools/research.ts) both mutate one NotebookHandle; the
+// ungated WriteNotebook/ReadNotebook tools (tools/research.ts) both mutate one NotebookHandle; the
 // controller persists it onto the ResearchTask and injects a compact summary
 // into each phase's context (so context doesn't explode on big topics).
 //

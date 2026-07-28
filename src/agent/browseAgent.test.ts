@@ -102,7 +102,7 @@ describe('runBrowseSession', () => {
         { tool: 'ClickElement', input: { index: 0 } },
         { tool: 'ReadPage', input: {} },
         {
-          tool: 'Notebook.write',
+          tool: 'WriteNotebook',
           input: {
             findings: [{ claim: 'The plan costs $40/mo', sourceUrl: 'https://site.test/after', quote: '$40 per month' }],
           },
@@ -122,7 +122,7 @@ describe('runBrowseSession', () => {
     expect(notebook.get().sources.some((s) => s.url.includes('site.test'))).toBe(true)
     // It visited the start page and wherever the click led.
     expect(outcome.visited).toEqual(['https://site.test/docs', 'https://site.test/after'])
-    // Notebook.write is local — it is the only tool that does not hit the browser.
+    // WriteNotebook is local — it is the only tool that does not hit the browser.
     expect(ops.map((o) => o.kind)).toEqual(['open', 'act', 'read', 'close'])
   })
 

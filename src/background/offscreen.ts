@@ -1,6 +1,6 @@
 // Offscreen document: the headless research host. Only chrome.runtime messaging
 // + Web APIs are available here — NO chrome.storage/tabs/notifications.
-import type { BrowseOp, BrowseResult, ResearchMsg } from '../data/researchTasks'
+import { postResearchMsg, type BrowseOp, type BrowseResult, type ResearchMsg } from '../data/researchTasks'
 import { runResearch } from '../agent/research'
 import type { BrowseBroker, RenderBroker, SearchBroker } from '../tools/research'
 
@@ -70,7 +70,7 @@ function makeRenderBroker(taskId: string, signal: AbortSignal): RenderBroker {
         signal,
         RENDER_TIMEOUT_MS,
         (requestId) =>
-          chrome.runtime.sendMessage({ type: 'research.renderPage', taskId, requestId, url, want } satisfies ResearchMsg),
+          postResearchMsg({ type: 'research.renderPage', taskId, requestId, url, want }),
         { error: 'render timed out' },
         { error: 'aborted' },
       ).then((r: any) =>
@@ -91,7 +91,7 @@ function makeBrowseBroker(taskId: string, signal: AbortSignal): BrowseBroker {
         signal,
         BROWSE_TIMEOUT_MS,
         (requestId) =>
-          chrome.runtime.sendMessage({ type: 'research.browse', taskId, requestId, sessionId, op } satisfies ResearchMsg),
+          postResearchMsg({ type: 'research.browse', taskId, requestId, sessionId, op }),
         { ok: false, message: 'the browser did not respond in time' },
         { ok: false, message: 'the research task was cancelled' },
       )
@@ -108,7 +108,7 @@ function makeSearchBroker(taskId: string, signal: AbortSignal): SearchBroker {
         signal,
         SEARCH_TIMEOUT_MS,
         (requestId) =>
-          chrome.runtime.sendMessage({ type: 'research.searchTab', taskId, requestId, query, maxResults } satisfies ResearchMsg),
+          postResearchMsg({ type: 'research.searchTab', taskId, requestId, query, maxResults }),
         { error: 'tab search timed out' },
         { error: 'aborted' },
       ).then((r: any) => (r.error !== undefined ? { error: r.error } : { results: r.results ?? [] }))
@@ -127,7 +127,7 @@ chrome.runtime.onMessage.addListener((msg: ResearchMsg) => {
     running.set(msg.taskId, ctrl)
     const heartbeat = setInterval(() => {
       if (ctrl.signal.aborted) return
-      void chrome.runtime.sendMessage({ type: 'research.heartbeat', taskId: msg.taskId } satisfies ResearchMsg).catch(() => {})
+      postResearchMsg({ type: 'research.heartbeat', taskId: msg.taskId })
     }, HEARTBEAT_MS)
     runResearch({
       taskId: msg.taskId,
@@ -143,20 +143,18 @@ chrome.runtime.onMessage.addListener((msg: ResearchMsg) => {
       browseBroker: makeBrowseBroker(msg.taskId, ctrl.signal),
       searchBroker: makeSearchBroker(msg.taskId, ctrl.signal),
       onUpdate: (steps, notebook) =>
-        chrome.runtime.sendMessage({ type: 'research.update', taskId: msg.taskId, steps, notebook } satisfies ResearchMsg),
+        postResearchMsg({ type: 'research.update', taskId: msg.taskId, steps, notebook }),
       // Transient-failure transitions drive the UI's paused/waiting state.
       onPause: ({ reason, nextRetryAt }) =>
-        void chrome.runtime
-          .sendMessage({ type: 'research.paused', taskId: msg.taskId, reason, nextRetryAt } satisfies ResearchMsg)
-          .catch(() => {}),
+        postResearchMsg({ type: 'research.paused', taskId: msg.taskId, reason, nextRetryAt }),
       onResume: () =>
-        void chrome.runtime.sendMessage({ type: 'research.resumed', taskId: msg.taskId } satisfies ResearchMsg).catch(() => {}),
+        postResearchMsg({ type: 'research.resumed', taskId: msg.taskId }),
     })
       .then(({ report, sources, notebook, verification, partial }) => {
         // The SW already persisted status:'cancelled' when research.cancel fired;
         // a late resolve/reject here must not overwrite that with done/error.
         if (ctrl.signal.aborted) return
-        chrome.runtime.sendMessage({
+        postResearchMsg({
           type: 'research.done',
           taskId: msg.taskId,
           report,
@@ -164,11 +162,11 @@ chrome.runtime.onMessage.addListener((msg: ResearchMsg) => {
           notebook,
           verification,
           partial,
-        } satisfies ResearchMsg)
+        })
       })
       .catch((err) => {
         if (ctrl.signal.aborted) return
-        chrome.runtime.sendMessage({ type: 'research.error', taskId: msg.taskId, error: err instanceof Error ? err.message : String(err) } satisfies ResearchMsg)
+        postResearchMsg({ type: 'research.error', taskId: msg.taskId, error: err instanceof Error ? err.message : String(err) })
       })
       .finally(() => {
         clearInterval(heartbeat)

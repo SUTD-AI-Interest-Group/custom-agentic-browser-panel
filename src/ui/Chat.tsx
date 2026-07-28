@@ -52,7 +52,7 @@ import { unmountPresence, unmountAllPresence } from '../platform/presence'
 import { clearAllHighlights } from '../platform/highlight'
 import { grantedCapabilities, type BrowsingCapability } from '../platform/permissions'
 import { getSkill, listSkillMetas, listSkills } from '../data/skills'
-import { listTasks, isActiveStatus, type ResearchTask, type ResearchStatus, type ResearchMsg, type ResearchVerification } from '../data/researchTasks'
+import { listTasks, isActiveStatus, postResearchMsg, type ResearchTask, type ResearchStatus, type ResearchVerification } from '../data/researchTasks'
 
 // How long a finished research task lingers in the composer dock (as a ✓/✕/⊘
 // bar) after it completes before auto-dismissing. Its report has already
@@ -1166,7 +1166,7 @@ export default function Chat({
   // Cancel a running research task. The SW persists status:'cancelled'; the
   // storage.onChanged listener above then refreshes this card.
   function cancelResearchTask(taskId: string) {
-    chrome.runtime.sendMessage({ type: 'research.cancel', taskId } satisfies ResearchMsg)
+    postResearchMsg({ type: 'research.cancel', taskId })
   }
 
   // Tapping a dock bar: an active task (running or paused/waiting) opens its

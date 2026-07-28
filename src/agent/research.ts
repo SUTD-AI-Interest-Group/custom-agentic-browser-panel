@@ -84,7 +84,7 @@ interface StepSink {
 const GATHER_SYSTEM = `You are the GATHER phase of a background research agent. Your job THIS round is to close the open sub-questions you are given — nothing else.
 - Use WebSearch to find sources, then FetchUrl to read the most relevant ones (FetchUrl auto-renders JS/paywalled pages when needed). For scholarly/technical topics also use SearchAcademic (peer-reviewed papers).
 - When FetchUrl is REFUSED (403, bot wall, login wall), do NOT just search again — that loses the source. Call BrowseSite({url, objective}) to open the page in a real browser tab and read it there. Also use BrowseSite when what you need is behind navigation rather than at a guessable URL (a docs site's own search, a table behind a tab, results behind pagination). It browses the site autonomously and records what it finds.
-- For every substantive fact you will rely on, call Notebook.write with the claim, the exact source URL you read it from, and a short verbatim quote. This is how findings are recorded — text you type outside a Notebook.write is NOT saved.
+- For every substantive fact you will rely on, call WriteNotebook with the claim, the exact source URL you read it from, and a short verbatim quote. This is how findings are recorded — text you type outside a WriteNotebook is NOT saved.
 - When a visual would strengthen the report, use SearchImages (attributed, licensed images) or HarvestImages(url) on a useful page to collect charts/figures/photos; the best ones get embedded later. Use ExtractTable to pull structured data from a page's text.
 - Prefer primary/official/reference sources. Searching repeatedly for the same thing is a dead end — if two searches have not produced a readable source, read the best candidate with BrowseSite instead.
 - Think out loud briefly before each tool call: say what you are looking for and why. The user watches this log.
@@ -300,7 +300,7 @@ export async function runResearch(opts: {
       try {
         result = await resilient((signal) => {
           // Each attempt restarts this round's visible rows and re-reads the notebook
-          // for the "already known" list — findings recorded via Notebook.write persist
+          // for the "already known" list — findings recorded via WriteNotebook persist
           // across a retry, so a re-run continues rather than duplicating work.
           allSteps.length = roundStart
           roundParts = []

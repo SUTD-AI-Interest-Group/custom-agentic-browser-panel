@@ -10,6 +10,7 @@ import { loadPdf } from '../platform/pdf'
 import { searchAcademic, searchImages, harvestImages, type ImageResult } from '../platform/researchSources'
 import { summarizeNotebook, type NotebookHandle } from '../agent/notebook'
 import { runBrowseSession, type BrowseBroker } from '../agent/browseAgent'
+import { postResearchMsg } from '../data/researchTasks'
 import type { UIPart } from '../agent/agent'
 import type { ApprovalGate } from './tools'
 
@@ -237,7 +238,7 @@ export function createResearchTools(deps: {
 
     SearchAcademic: tool({
       description:
-        'Search academic literature (OpenAlex) for papers on a topic. Returns {title, abstract, authors, year, url, pdfUrl}. Use for scholarly/technical questions; record facts with Notebook.write citing the paper url.',
+        'Search academic literature (OpenAlex) for papers on a topic. Returns {title, abstract, authors, year, url, pdfUrl}. Use for scholarly/technical questions; record facts with WriteNotebook citing the paper url.',
       inputSchema: z.object({
         query: z.string().describe('Search query (topic, method, author…)'),
         maxResults: z.number().optional().describe('Default 8, max 25'),
@@ -300,7 +301,11 @@ export function createResearchTools(deps: {
       },
     }),
 
-    'Notebook.write': tool({
+    // Named WriteNotebook/ReadNotebook, not Notebook.write/.read: a provider
+    // validates tool names against ^[a-zA-Z0-9_-]{1,64}$ and 400s the WHOLE
+    // request over a dot, so one dotted name takes every other tool down with it
+    // (src/tools/toolNames.test.ts locks this down).
+    WriteNotebook: tool({
       description:
         'Record one or more findings in the research notebook. THIS is how facts are saved — a finding needs a claim, the exact source URL you read it from, and a short verbatim quote that supports it.',
       inputSchema: z.object({
@@ -325,7 +330,7 @@ export function createResearchTools(deps: {
       },
     }),
 
-    'Notebook.read': tool({
+    ReadNotebook: tool({
       description:
         'Read a compact summary of the research notebook so far: plan, per-sub-question coverage, findings, and numbered sources.',
       inputSchema: z.object({}),
@@ -397,7 +402,7 @@ export function createStartResearchTool(requestApproval: ApprovalGate, conversat
         const taskId = `r-${Date.now()}-${Math.floor(performance.now())}`
         // Tag the task with the launching conversation so its dock bar / report
         // card surface only in that chat (not globally in every conversation).
-        chrome.runtime.sendMessage({ type: 'research.ensureAndStart', taskId, question, conversationId })
+        postResearchMsg({ type: 'research.ensureAndStart', taskId, question, conversationId })
         return {
           started: true,
           taskId,
