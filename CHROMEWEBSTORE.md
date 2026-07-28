@@ -95,11 +95,11 @@ never enters the extension bundle. Regenerate with `npm run store:assets`.
 | Asset | Dimensions | Status | Filename |
 |-------|-----------|--------|----------|
 | Store Icon [REQUIRED] | 128×128 PNG | ✅ Ready | `assets/store/store-icon-128x128.png` (mark fitted to 96×96 inside the frame, per the store's icon padding guidance) |
-| Screenshot 1 [REQUIRED] | 1280×800 | ⬜ Not created | must be captured from a real session — see notes below |
-| Screenshot 2 [RECOMMENDED] | 1280×800 | ⬜ Not created | |
-| Screenshot 3 [RECOMMENDED] | 1280×800 | ⬜ Not created | |
-| Screenshot 4 | 1280×800 | ⬜ Not created | |
-| Screenshot 5 | 1280×800 | ⬜ Not created | |
+| Screenshot 1 [REQUIRED] | 1280×800 | ✅ Ready | `assets/store/screenshots/screenshot-1-reading-a-page.png` — summarising an arXiv paper |
+| Screenshot 2 [RECOMMENDED] | 1280×800 | ✅ Ready | `assets/store/screenshots/screenshot-2-permission-gate.png` — approval card mid-conversation |
+| Screenshot 3 [RECOMMENDED] | 1280×800 | ✅ Ready | `assets/store/screenshots/screenshot-3-page-control.png` — presence overlay + agent cursor mid-click |
+| Screenshot 4 | 1280×800 | ✅ Ready | `assets/store/screenshots/screenshot-4-tool-permissions.png` — the Never/Ask/Always controls |
+| Screenshot 5 | 1280×800 | ⬜ Not created | intended to be a research report with citations — blocked, see notes |
 | Small Promo Tile [RECOMMENDED] | 440×280 | ✅ Ready | `assets/store/promo-small-440x280.png` (opaque, no alpha) |
 | Marquee Promo Tile | 1400×560 | ✅ Ready | `assets/store/promo-marquee-1400x560.png` (opaque, no alpha) |
 | Logo master (not uploaded) | 512×512 | ✅ Ready | `assets/store/logo-master-512x512.png` — transparent mark for press, README, or future placements |
@@ -110,55 +110,85 @@ stripped: the dashboard rejects transparency in promo art, and a PNG that merely
 
 ### Screenshot Notes
 
-**This is the only remaining blocker for submission.** Capture at 1280×800 with the
-side panel open next to a real page. Do not screenshot the panel alone — reviewers
-want to see the extension in context.
+Four are captured and store-legal; a fifth is optional. All were shot at 1280×800
+with the side panel open next to a real page — never the panel alone, because
+reviewers want to see the extension in context.
 
-1. **Reading a page** — a long article open, Lychee's summary in the panel with the
-   page visible alongside. Establishes the core value in one glance.
-2. **Permission gate** — an approval card mid-conversation showing exactly what the
-   assistant wants to do. This directly answers the reviewer's trust question and is
-   worth placing second.
-3. **Page control in progress** — the on-page highlight/cursor overlay while Lychee
-   fills a form, with the session banner visible.
-4. **Research report** — a finished report with inline source citations.
-5. **Settings → permissions** — the per-tool always/ask/never controls, demonstrating
-   user control.
+1. **Reading a page** ✅ — the "Attention Is All You Need" arXiv abstract open, with
+   the panel showing the tool trail (`ToolSearch` → `GetTool` → `HighlightContent`)
+   above a real summary. Establishes the core value in one glance.
+2. **Permission gate** ✅ — the approval card for "Highlight a region on this page",
+   naming the reason and offering Deny / Allow this chat / Allow. This directly
+   answers the reviewer's trust question and is worth placing second.
+3. **Page control in progress** ✅ — the page dimmed by the presence overlay with the
+   agent's cursor and a spotlight ring on the control it is about to click, and the
+   panel reading "Started controlling the page → Clicked element 2".
+4. **Tool permissions** ✅ — the Never/Ask/Always controls with their one-line
+   explanations, demonstrating that the user holds the switch.
+5. **Research report** ⬜ — a finished report with inline source citations. Not
+   captured; see "Research shot blocked" below.
 
-Use a neutral, non-branded page (avoid other companies' logos and trademarks —
-that is an independent rejection reason). Do not show real API keys, real personal
-data, or a real password field in any screenshot.
+Two alternates are kept beside them for swapping into the listing:
+`alt-control-consent.png` (the "Let the agent control arxiv.org?" card, which states
+the full plan before acting — arguably a stronger trust artefact than #2) and
+`alt-control-done.png` (the same task finished, with the typed text visible on the
+page and the panel confirming it did *not* submit the form).
 
-**Why these cannot be scripted.** Chrome's side panel is browser UI, not page
-content, so no headless or automation tool can screenshot it — it has to be a real
-window capture. And the panel renders nothing but onboarding until a provider key
-is entered, so the capture has to be a genuine session with a real key. Compositing
-a fake conversation instead would be a fabricated product screenshot, which is both
-a policy problem and a bad look if a reviewer installs the extension and sees
-something different.
+The page used is an arXiv abstract: long-form, obviously a real document, and
+carrying no competitor branding. Avoid other companies' logos and trademarks —
+that is an independent rejection reason. No API keys, personal data, or password
+fields appear in any shot. Note that the browser toolbar shows the capture
+profile's other extension icons; unpin them first if you want cleaner art.
+
+**Research shot blocked.** Background research fails on the `gpt-5.4-mini` model
+served by the custom "Taobao AI" OpenAI-compatible provider: the pipeline plans
+correctly, then parks on `Provider error (HTTP 400) — will retry` and never
+recovers. Foreground chat on the same model is fine, so this is specific to the
+research path's request shape, not the credentials. Capture #5 once that is fixed
+or from a provider that accepts the research payload.
+
+**Why this cannot be fully automated.** Chrome's side panel is browser UI, not page
+content, so no headless or page-level automation tool can screenshot it — it has to
+be a real window capture. And the panel renders nothing but onboarding until a
+provider key is entered, so the capture has to be a genuine session with a real
+key. Compositing a fake conversation instead would be a fabricated product
+screenshot, which is both a policy problem and a bad look if a reviewer installs
+the extension and sees something different.
+
+It *can* be driven end to end on macOS if the controlling app is granted
+Accessibility permission, which is how the current set was shot: AppleScript sizes
+the window, Quartz `CGEvent`s type into the panel and click the approval cards, and
+`screencapture -R` grabs the rect.
 
 **Capture recipe** (macOS):
 
 1. Load the built extension: `npm run build`, then `chrome://extensions` →
    Developer mode → Load unpacked → `dist/`.
 2. Enter a real provider key and have the conversation you want to show.
-3. Size the window to exactly 1280×800 before capturing, so nothing is rescaled:
-   run this in DevTools console on any normal page (not `chrome://`),
-   which accounts for the browser chrome around the viewport —
-   ```js
-   window.resizeTo(1280 + (window.outerWidth - window.innerWidth),
-                   800  + (window.outerHeight - window.innerHeight))
-   ```
-   Then capture that window with `Cmd+Shift+4`, then `Space`, then click it.
-4. Normalise whatever comes out — a Retina display captures at 2×, and the store
-   wants exactly 1280×800:
+3. Size the window to exactly 1280×800 before capturing, so nothing is rescaled.
+   Driving Chrome directly is more reliable than resizing from inside the page,
+   because it sets the outer frame rather than the viewport:
    ```sh
-   magick shot.png -resize 1280x800^ -gravity center -extent 1280x800 \
-     -background white -alpha remove -alpha off screenshot-1.png
+   osascript -e 'tell application "Google Chrome" to set bounds of window 1 to {260, 90, 1540, 890}'
+   ```
+   Then capture exactly that rect — on a Retina display this yields 2560×1600:
+   ```sh
+   screencapture -x -t png -R260,90,1280,800 shot.raw.png
+   ```
+   (`screencapture -l<windowid>` is the tidier form, but it needs window metadata
+   that a sandboxed shell is not allowed to read.)
+4. Normalise down to the exact canvas the store wants:
+   ```sh
+   magick shot.raw.png -resize 1280x800 -background white -gravity center \
+     -extent 1280x800 -alpha remove -alpha off -strip \
+     -colorspace sRGB -define png:color-type=2 screenshot-1.png
    ```
    `-alpha remove` matters: the store rejects transparency in screenshots too.
-5. Confirm each one before uploading: `magick identify screenshot-1.png` must
-   report `1280x800` and `srgb` (not `srgba`).
+   Downsampling a 2× capture also keeps text far crisper than shooting at 1×.
+5. Confirm each one before uploading — it must report `1280x800` and `sRGB`:
+   ```sh
+   magick identify -format '%wx%h %[colorspace] alpha=%A\n' screenshot-1.png
+   ```
 
 ---
 
@@ -371,10 +401,10 @@ no response, that is the point to contact developer support.
 
 ### Pre-submission blockers
 
-1. **Screenshots** — at least one 1280×800 image is mandatory. None exist yet.
-   **This is the only hard blocker remaining.** They cannot be generated from the
-   repo: the panel shows nothing but onboarding without a provider key, so a real
-   session has to be run and captured. See "Screenshot Notes" above.
+1. ~~Screenshots~~ — ✅ done 2026-07-28. Four 1280×800 captures from a real
+   session live in `assets/store/screenshots/`, all verified sRGB with no alpha.
+   The optional fifth (research report) is still open because background research
+   errors on the current provider — see "Screenshot Notes" above.
 2. ~~Privacy policy URL must resolve publicly~~ — ✅ done 2026-07-28.
    `https://lychee-ai.netlify.app/privacy` verified live, public, and anonymous.
 3. **Publisher name** — still to confirm against the actual developer account.
