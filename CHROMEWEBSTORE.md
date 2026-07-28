@@ -52,7 +52,7 @@ YOU'RE IN CONTROL
 Every action that touches a page, your data, or the network asks first, and you decide per-tool whether it should keep asking. Access to your history, bookmarks, and downloads is entirely optional — Chrome only asks for it if you switch those features on.
 
 PRIVACY
-There is no Lychee server. Your conversations, keys, and memories are stored on your own computer, and your page content goes only to the AI provider you configured, under your own account. We collect nothing, receive nothing, and sell nothing. Full policy: https://lychee-ai.netlify.app/#/privacy
+There is no Lychee server. Your conversations, keys, and memories are stored on your own computer, and your page content goes only to the AI provider you configured, under your own account. We collect nothing, receive nothing, and sell nothing. Full policy: https://lychee-ai.netlify.app/privacy
 
 REQUIREMENTS
 Chrome 116 or later, and an API key from a supported provider (or a local model server). Open the panel with the toolbar icon or Ctrl+E / Cmd+E.
@@ -246,24 +246,20 @@ user opts in to tracing with their own account (off by default).
 **Privacy Policy URL** [REQUIRED]
 
 ```
-https://lychee-ai.netlify.app/#/privacy
+https://lychee-ai.netlify.app/privacy
 ```
 
-✅ Verified 2026-07-28: loads anonymously and renders the full policy. The page is
+✅ Verified live 2026-07-28: loads anonymously, 302s to `/#/privacy` via
+`site/public/_redirects`, and renders the full current policy. The page is
 generated from `PRIVACY.md` by `site/scripts/sync-content.mjs`, so the policy the
 store links to and the policy in the repo cannot drift apart.
 
-Equivalent public mirror, if a fragment URL is ever a problem in the dashboard
-form (also verified public and server-rendered, which a fragment URL is not):
+Equivalent public mirrors, if the dashboard ever objects to the redirect:
 
 ```
+https://lychee-ai.netlify.app/#/privacy
 https://github.com/SUTD-AI-Interest-Group/custom-agentic-browser-panel/blob/main/PRIVACY.md
 ```
-
-`site/public/_redirects` also maps the clean path `/privacy` → `/#/privacy`.
-That redirect has **not** been verified against a live deploy yet — confirm
-`https://lychee-ai.netlify.app/privacy` resolves before preferring it over the
-fragment URL above, which is the one actually tested.
 
 ---
 
@@ -334,7 +330,7 @@ points somewhere else looks like a mismatch to a reviewer.
    repo: the panel shows nothing but onboarding without a provider key, so a real
    session has to be run and captured. See "Screenshot Notes" above.
 2. ~~Privacy policy URL must resolve publicly~~ — ✅ done 2026-07-28.
-   `https://lychee-ai.netlify.app/#/privacy` verified public and anonymous.
+   `https://lychee-ai.netlify.app/privacy` verified live, public, and anonymous.
 3. **Confirm publisher name and public contact email** (flagged above).
 4. **No LICENSE file exists** in the repository. Not a store requirement, but the
    listing links to a public repo, and an unlicensed public repo grants no usage
