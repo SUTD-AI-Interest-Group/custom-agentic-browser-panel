@@ -1,4 +1,8 @@
-node_modules/
+# No trailing slash: `node_modules/` matches a directory but NOT a symlink, and a
+# git worktree symlinks node_modules at the main checkout. That gap let `git add -A`
+# commit the symlink, which on merge REPLACED the real node_modules directory in the
+# main checkout with a dangling link. Match both forms.
+node_modules
 dist/
 *.local
 
