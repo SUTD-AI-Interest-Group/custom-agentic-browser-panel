@@ -8,6 +8,12 @@
   long web research in the background — entirely client-side, with no server.
 </p>
 
+<p align="center">
+  <a href="https://lychee-ai.netlify.app">Website</a> ·
+  <a href="https://lychee-ai.netlify.app/#/privacy">Privacy policy</a> ·
+  <a href="https://github.com/SUTD-AI-Interest-Group/custom-agentic-browser-panel/wiki">Engineering log</a>
+</p>
+
 ---
 
 Lychee AI is a Manifest V3 Chrome extension (React 18 + Vite 6 + TypeScript,
