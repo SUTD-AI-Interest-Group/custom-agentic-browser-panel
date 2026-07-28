@@ -13,7 +13,8 @@ import { repairMessageText, type Complete } from '../agent/mathRepair'
 import { cancelRegionCapture, captureRegion, type CapturedImage } from '../platform/capture'
 import { ensureVisionCapability } from '../agent/vision'
 import { copyElementAsPng } from '../platform/domImage'
-import { getConversation, renameConversation, saveConversation } from '../data/conversations'
+import { getConversation, renameConversation, saveConversation, type RegenTarget } from '../data/conversations'
+import { buildRetryNote } from './regenerate'
 import { COMPOSER_ACTION_MSG, drainComposerAction, type ComposerAction } from '../platform/composerActions'
 import { clearDraft, loadDraft, saveDraft } from './drafts'
 import { getShot, getShotThumb, type ShotThumb, type StoredShot } from '../data/screenshots'
@@ -578,6 +579,12 @@ export default function Chat({
   // Seamless auto-continuations used in the current chain, reset when the user
   // starts or explicitly continues a task (see runTurnChain / MAX_AUTO_CONTINUES).
   const autoContinuesRef = useRef(0)
+  // Undo point for the most recent turn, behind the Regenerate button under the
+  // last reply. Written when a chain opens its first bubble, restored with the
+  // conversation, and overwritten by every subsequent chain — so it always
+  // describes the turn the user can still see the tail of. State, not a ref: the
+  // button's presence is rendered from it.
+  const [regenTarget, setRegenTarget] = useState<RegenTarget | null>(null)
   // The open page-control session (RequestPageControl → ControlPage), if any.
   const pageSessionRef = useRef<ControlSession | null>(null)
   const [sessionPlan, setSessionPlan] = useState<{ plan: string; host: string } | null>(null)
@@ -681,6 +688,7 @@ export default function Chat({
         setMessages(c.messages)
         historyRef.current = c.history
         titledRef.current = c.title !== null
+        setRegenTarget(c.regen ?? null)
       }
       setRestored(true)
     })
@@ -806,6 +814,10 @@ export default function Chat({
       id: conversationId,
       messages: messages.map((m) => (m.fixingMath ? { ...m, fixingMath: false } : m)),
       history: historyRef.current,
+      // Persisted alongside the transcript so Regenerate survives a panel
+      // reopen — the undo point can't be recovered from `history` alone,
+      // since a failed turn pops its own user message back off it.
+      regen: regenTarget ?? undefined,
     }).then(onConversationsChanged)
     // Persist is driven solely by turnSeq; messages is read fresh from the
     // render that bumped it.
@@ -1600,6 +1612,9 @@ export default function Chat({
     // so the user can read what was marked (see src/platform/highlight.ts).
     void clearAllHighlights()
     const { message, attachedSources, notes } = await buildUserTurn(spec)
+    // Captured before the push: regenerating rewinds to here and replays
+    // `message` itself, which a failed chain will have popped back off.
+    const historyLen = historyRef.current.length
     historyRef.current.push(message)
     if (activeSkill) notes.push(`[invoked skill: ${activeSkill.name}]`)
     const journalUserText = [text, ...notes].filter(Boolean).join('\n')
@@ -1614,6 +1629,7 @@ export default function Chat({
       activeSkill: activeSkill ? { name: activeSkill.name, body: activeSkill.body } : null,
       journalUserText,
       droppableTail: true,
+      regen: { historyLen, opener: message },
     })
   }
 
@@ -1769,6 +1785,13 @@ export default function Chat({
     /** True when the caller (send) left a trailing user message a total failure
      *  should drop; false for continueTask (history ends on the checkpoint). */
     droppableTail: boolean
+    /** Where to rewind to if the user regenerates this turn: history's length
+     *  before the caller pushed anything, and the opener to replay (null when
+     *  resuming a checkpoint — that history already ends where it should). */
+    regen: { historyLen: number; opener: ModelMessage | null }
+    /** Set only when this chain IS a regeneration: what the discarded attempt
+     *  ran into, appended to the system prompt so the retry can correct for it. */
+    retryNote?: string
   }) {
     if (!selected) return
     const model = selected
@@ -1812,7 +1835,7 @@ export default function Chat({
     const activeSkills = ctx.activeSkill
       ? `\n\n## Active skill: ${ctx.activeSkill.name}\nThe user invoked this skill. Follow these instructions for this task:\n\n${ctx.activeSkill.body}`
       : ''
-    const system = `${settings.systemPrompt}${TOOL_DISCLOSURE_NOTE}${accessNote}${browsingInsightsNote(granted)}${MATH_FORMATTING_NOTE}${memoryContext ? `\n\n${memoryContext}` : ''}${skillsCatalog}${activeSkills}`
+    const system = `${settings.systemPrompt}${TOOL_DISCLOSURE_NOTE}${accessNote}${browsingInsightsNote(granted)}${MATH_FORMATTING_NOTE}${memoryContext ? `\n\n${memoryContext}` : ''}${skillsCatalog}${activeSkills}${ctx.retryNote ?? ''}`
 
     // Progressive disclosure: the tools the model may call beyond the always-on
     // core (ToolSearch, GetTool, ReadPage). Built once for the chain and shared
@@ -1851,6 +1874,20 @@ export default function Chat({
     let mergedParts: UIPart[] = []
     setMessages((m) => [...m, { id: assistantId, role: 'assistant', parts: [], sources: ctx.attachedSources }])
     assistantIds.add(assistantId)
+    // The undo point is complete only now that the chain's first bubble exists —
+    // that bubble is where the transcript gets cut on a regenerate. Recorded up
+    // front, not on success, so the failure path (which is what the user most
+    // wants to retry) is covered too.
+    setRegenTarget({
+      historyLen: ctx.regen.historyLen,
+      opener: ctx.regen.opener,
+      firstBubbleId: assistantId,
+      attachedSources: ctx.attachedSources,
+      activeSkill: ctx.activeSkill,
+      journalUserText: ctx.journalUserText,
+      droppableTail: ctx.droppableTail,
+      allowed: [...turnAllowed.current],
+    })
 
     // Chain-scoped, NOT per-cycle: a perception tool can push an image on the very
     // step that trips stopWhen (budget/Checkpoint/steer), after which no further
@@ -2106,8 +2143,59 @@ export default function Chat({
       activeSkill: null,
       journalUserText: '[continued the task]',
       droppableTail: false,
+      // No opener to replay: history already ends on the model's checkpoint, so
+      // rewinding here and re-running is exactly "continue again".
+      regen: { historyLen: historyRef.current.length, opener: null },
     })
   }
+
+  /**
+   * Discard the last turn's reply and run it again, telling the retry what the
+   * discarded attempt hit (see buildRetryNote). Rewinds three things in step:
+   * model history to the turn's recorded length (re-pushing its opener, which a
+   * failed chain popped), the transcript to just before the turn's first bubble
+   * — taking any auto-continue bubbles and mid-task steers with it, so the retry
+   * replays the original request cleanly — and the turn-scoped permissions the
+   * chain started from. The undo point itself is left alone, so a regeneration
+   * can be regenerated in turn.
+   */
+  async function regenerate() {
+    const target = regenTarget
+    // `selected` is checked here as well as inside runTurnChain: the chain
+    // returns silently without a provider, which would leave the reply already
+    // torn out of the transcript with nothing run to replace it.
+    if (!target || streaming || !selected) return
+    const cut = messagesRef.current.findIndex((m) => m.id === target.firstBubbleId)
+    if (cut < 0) return
+    // Read the failures out of the bubbles before they are dropped — they are
+    // the only record of what went wrong.
+    const retryNote = buildRetryNote(messagesRef.current.slice(cut))
+    setMessages((m) => m.slice(0, cut))
+    historyRef.current.length = target.historyLen
+    if (target.opener) historyRef.current.push(target.opener)
+    // A retry is a fresh attempt at the same page: sweep the highlights the
+    // discarded one left behind, exactly as startFreshTurn does.
+    void clearAllHighlights()
+    steerQueueRef.current = []
+    turnAllowed.current = new Set(target.allowed)
+    autoContinuesRef.current = 0
+    setContinuation(null)
+    await runTurnChain({
+      startedAt: Date.now(),
+      attachedSources: target.attachedSources,
+      activeSkill: target.activeSkill,
+      journalUserText: `${target.journalUserText}\n[regenerated]`,
+      droppableTail: target.droppableTail,
+      regen: { historyLen: target.historyLen, opener: target.opener },
+      retryNote,
+    })
+  }
+
+  // Regenerate is offered once a turn has recorded an undo point whose first
+  // bubble is still on screen. A conversation restored from before this existed
+  // (or one truncated since) simply doesn't offer it until its next turn.
+  const canRegenerate =
+    !streaming && regenTarget !== null && messages.some((m) => m.id === regenTarget.firstBubbleId)
 
   // The pages attached to the next message, rendered as a pill row in the
   // composer: the first MAX_VISIBLE_CONTEXT with favicon + host, the rest
@@ -2189,6 +2277,15 @@ export default function Chat({
               message={msg}
               streaming={streaming && i === messages.length - 1}
               turnStartedAt={turnStartedAt}
+              // Regenerate is offered on the last reply only. Anything appended
+              // after a turn — a background-research report landing in the
+              // transcript — makes that reply non-last, so the button withdraws
+              // rather than offering to delete the card sitting under it.
+              onRegenerate={
+                i === messages.length - 1 && msg.role === 'assistant' && !msg.research && canRegenerate
+                  ? () => void regenerate()
+                  : undefined
+              }
             />
           </Fragment>
         ))}
@@ -2853,10 +2950,13 @@ function MessageView({
   message,
   streaming,
   turnStartedAt,
+  onRegenerate,
 }: {
   message: UIMessage
   streaming: boolean
   turnStartedAt: number | null
+  /** Set only on the transcript's last reply, and only when it can be re-run. */
+  onRegenerate?: () => void
 }) {
   const bodyRef = useRef<HTMLDivElement>(null)
 
@@ -2965,7 +3065,7 @@ function MessageView({
         )}
       </div>
       {message.parts.length > 0 && !streaming && (
-        <MessageToolbar message={message} targetRef={bodyRef} />
+        <MessageToolbar message={message} targetRef={bodyRef} onRegenerate={onRegenerate} />
       )}
     </div>
   )
@@ -3020,13 +3120,17 @@ function ReasoningBlock({ text, active }: { text: string; active: boolean }) {
 }
 
 // Actions on a completed assistant message: the shared copy-as-image /
-// copy-as-markdown group, plus the message's source favicons.
+// copy-as-markdown group, plus the message's source favicons. `onRegenerate` is
+// supplied only for the last reply in the transcript (see the message map), and
+// adds a third button to the copy group.
 function MessageToolbar({
   message,
   targetRef,
+  onRegenerate,
 }: {
   message: UIMessage
   targetRef: React.RefObject<HTMLDivElement>
+  onRegenerate?: () => void
 }) {
   const markdown = message.parts
     .map((p) => (p.type === 'text' ? p.text : ''))
@@ -3036,9 +3140,43 @@ function MessageToolbar({
   return (
     <div className="msg-toolbar">
       {/* Picture only the response prose — drop the reasoning + tool-use blocks. */}
-      <CopyActions targetRef={targetRef} markdown={markdown} excludeFromImage=".reasoning-block, .tool-pill" />
+      <CopyActions
+        targetRef={targetRef}
+        markdown={markdown}
+        excludeFromImage=".reasoning-block, .tool-pill"
+        trailing={onRegenerate && <RegenerateButton onClick={onRegenerate} />}
+      />
       <SourceBar sources={deriveSources(message)} />
     </div>
+  )
+}
+
+// Discard this reply and re-run the turn that produced it. Sits third in the
+// copy group; only ever rendered for the transcript's last reply.
+function RegenerateButton({ onClick }: { onClick: () => void }) {
+  return (
+    <button
+      className="msg-tool-btn"
+      data-tooltip="Regenerate response"
+      aria-label="Regenerate response"
+      onClick={onClick}
+    >
+      <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+        <path
+          d="M13 8a5 5 0 1 1-1.6-3.7"
+          stroke="currentColor"
+          strokeWidth="1.3"
+          strokeLinecap="round"
+        />
+        <path
+          d="M13.2 2.3v2.6h-2.6"
+          stroke="currentColor"
+          strokeWidth="1.3"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        />
+      </svg>
+    </button>
   )
 }
 
@@ -3050,12 +3188,16 @@ function CopyActions({
   targetRef,
   markdown,
   excludeFromImage,
+  trailing,
 }: {
   targetRef: React.RefObject<HTMLElement>
   markdown: string
   // CSS selector for blocks to leave out of the copied PNG (e.g. reasoning and
   // tool-use pills under an assistant reply). Omitted → the whole element.
   excludeFromImage?: string
+  // Extra buttons rendered after the two copy buttons, inside the same group.
+  // Assistant replies pass Regenerate here; research report cards pass nothing.
+  trailing?: React.ReactNode
 }) {
   const [imageState, setImageState] = useState<'idle' | 'done' | 'error'>('idle')
   const [copyState, setCopyState] = useState<'idle' | 'done' | 'error'>('idle')
@@ -3115,6 +3257,7 @@ function CopyActions({
           </svg>
         )}
       </button>
+      {trailing}
     </div>
   )
 }

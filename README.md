@@ -276,6 +276,7 @@ src/background/offscreen.ts   Offscreen host: runs background research
 src/ui/App.tsx                Shell: top bar, routing between panels
 src/ui/Chat.tsx               Turn chain, approval cards, page-control gate, composer
 src/ui/Markdown.tsx           Rich rendering: code, KaTeX, citations, link cards
+src/ui/regenerate.ts          Pure: what a regenerated turn is told about the one it replaced
 src/ui/library/               Tabbed library: Chats / Skills / Research
 src/ui/settings/              General, Permissions, Memory, Skills tabs
 src/ui/Onboarding.tsx         Three-step first-run wizard

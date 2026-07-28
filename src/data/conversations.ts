@@ -5,8 +5,33 @@
 // has to coordinate schema versions with the other.
 
 import type { ModelMessage } from 'ai'
-import type { UIMessage } from '../agent/agent'
+import type { MessageSource, UIMessage } from '../agent/agent'
 import { estimateBytes, type StoreUsage } from './usage'
+
+/**
+ * Everything needed to re-run the most recent turn from scratch, behind the
+ * Regenerate button under the last reply. Captured when a continuation chain
+ * starts rather than reconstructed from `history` at click time, because a
+ * failed chain pops its own user message back off history (see runTurnChain's
+ * catch) — after exactly the failure the user most wants to retry, history no
+ * longer holds the message to replay. Persisted with the conversation so the
+ * button survives a side-panel reopen.
+ */
+export interface RegenTarget {
+  /** `history` length before the chain pushed anything — its rollback point. */
+  historyLen: number
+  /** The user message that opened the chain; null for a resumed checkpoint. */
+  opener: ModelMessage | null
+  /** id of the first UI bubble the chain created; the transcript cuts here. */
+  firstBubbleId: string
+  /** The chain's context, replayed verbatim (see runTurnChain's ctx). */
+  attachedSources: MessageSource[]
+  activeSkill: { name: string; body: string } | null
+  journalUserText: string
+  droppableTail: boolean
+  /** Tools pre-authorized for the turn (e.g. @memory → SearchMemory). */
+  allowed: string[]
+}
 
 export interface StoredConversation {
   id: string
@@ -18,6 +43,10 @@ export interface StoredConversation {
   history: ModelMessage[]
   /** Pinned conversations sort first in the Library. Absent means false. */
   pinned?: boolean
+  /** Undo point for the last turn. Absent on chats saved before this existed
+   *  (and on any whose last turn predates it) — Regenerate is simply not
+   *  offered until their next turn writes one. */
+  regen?: RegenTarget
 }
 
 /** Lightweight row for the history dropdown (no message bodies). */
@@ -135,6 +164,7 @@ export async function saveConversation(input: {
   id: string
   messages: UIMessage[]
   history: ModelMessage[]
+  regen?: RegenTarget
 }): Promise<void> {
   const now = Date.now()
   await mutate(input.id, (existing) => ({
@@ -148,6 +178,10 @@ export async function saveConversation(input: {
     // spread), so the pin must be carried forward explicitly or every
     // transcript save would silently unpin the conversation.
     pinned: existing?.pinned ?? false,
+    // Likewise the undo point: a save that can't name one (an older chat whose
+    // last turn predates the field) must leave the stored one alone rather
+    // than retire a Regenerate button that still works.
+    regen: input.regen ?? existing?.regen,
   }))
 }
 
