@@ -20,6 +20,7 @@ import {
   MAX_RESEARCH_DURATION_MS,
 } from './data/researchTasks'
 import { registerContextMenus, CONTEXT_MENU_IDS } from './platform/contextMenus'
+import { sweepHighlightsForWindow } from './platform/highlight'
 import { loadSettings, getSelectedProvider, observabilityConfig, resolveDreamIntervalMs } from './data/settings'
 import { isFetchableUrl } from './platform/webFetch'
 import { renderPage } from './platform/researchRender'
@@ -132,7 +133,12 @@ chrome.runtime.onConnect.addListener((port) => {
     }
   })
   port.onDisconnect.addListener(() => {
-    if (windowId !== undefined && openPanels.get(windowId) === port) openPanels.delete(windowId)
+    if (windowId === undefined) return
+    if (openPanels.get(windowId) === port) openPanels.delete(windowId)
+    // The panel is gone, so the chat that explained the marks is gone: sweep the
+    // passage highlights it left on this window's pages. Only the worker can —
+    // the panel context that tracked them is already being destroyed.
+    void sweepHighlightsForWindow(windowId).catch(() => {})
   })
 })
 

@@ -392,7 +392,12 @@ export function createAgentTools(
               url: snap.url,
               title: snap.title,
               regions: snap.text,
-              note: 'Pass a region number to GetElementScreenshot as `region` (e.g. region: 2 for [r2]) to look at it, or to HighlightContent to point the user at it.',
+              note:
+                'Pass a region number to GetElementScreenshot as `region` (e.g. region: 2 for [r2]) to look at it. ' +
+                'This list is only the page\'s visual blocks — charts, tables, figures, sections. Most of the page is ' +
+                'not in it: a paragraph, a heading, a line of prose or a rendered equation has no [rN]. So if you want ' +
+                'to point the user at WORDS, do not pick the nearest region here — call HighlightContent with `text` ' +
+                'quoting those words.',
             }
           } catch (err) {
             return { error: `Cannot read this page (${err instanceof Error ? err.message : String(err)}).` }
@@ -768,16 +773,20 @@ export function createAgentTools(
 
     HighlightContent: tool({
       description:
-        'Show the user exactly WHERE on the page your answer comes from: scroll the active tab to a passage or region and mark it like a highlighter pen. Use this proactively whenever your answer is grounded in a specific passage, clause, figure, or section of the page or PDF the user is viewing ("which part mentions…", "what are the terms…"). Pass `text` (the passage, quoted exactly from the page/PDF) or `region` (an [rN] from ReadPage mode:"regions"); calls accumulate, so highlight each clause of a multi-part answer. On a PDF tab the viewer jumps to the page and the user is shown that page rendered with the passage marked. Highlights stay visible after your answer. Asks the user for permission first (except while a page-control session already owns this tab).',
+        'Show the user exactly WHERE on the page your answer comes from: scroll the active tab to a passage or region and mark it like a highlighter pen. Use this proactively whenever your answer is grounded in a specific passage, clause, figure, or section of the page or PDF the user is viewing ("which part mentions…", "what are the terms…"). ALMOST ALWAYS PASS `text` — the passage quoted exactly from the page — because that is the only form that can point at a specific line, and the only one that is verified against the page. `region` marks a whole block by its [rN] number and is for things with no quotable words: a chart, a photo, a diagram. If you are pointing at words, use `text`, even when those words sit inside a table or a figure. Calls accumulate, so highlight each clause of a multi-part answer. On a PDF tab the viewer jumps to the page and the user is shown that page rendered with the passage marked. Highlights stay visible after your answer, until the next question or until the user closes the panel. Asks the user for permission first (except while a page-control session already owns this tab).',
       inputSchema: z.object({
         text: z
           .string()
           .optional()
-          .describe('The passage to highlight, quoted exactly as it appears on the page or PDF (a phrase to a couple of sentences).'),
+          .describe(
+            'PREFERRED. The passage to highlight, quoted exactly as it appears on the page or PDF (a phrase to a couple of sentences). Use this for anything made of words.',
+          ),
         region: z
           .number()
           .optional()
-          .describe('A region number from ReadPage(mode:"regions"), e.g. 2 for [r2] — for charts/figures/tables (webpages only).'),
+          .describe(
+            'A region number from ReadPage(mode:"regions"), e.g. 2 for [r2]. Marks that whole block — only for charts, images and diagrams with no quotable text. Never guess a number: if you have not just listed the regions, use `text`.',
+          ),
         label: z.string().optional().describe('Optional short callout shown beside the highlight, e.g. "Termination clause".'),
         page: z
           .number()
@@ -867,7 +876,9 @@ export function createAgentTools(
 
         if (region !== undefined) {
           const r = await highlightRegionOnPage(tab.id, region, label)
-          return r.found ? { ok: true, note: r.message } : { error: r.message }
+          // `highlighted` is the ground truth the model needs to catch itself
+          // aiming at the wrong block — surface it as data, not just prose.
+          return r.found ? { ok: true, region, highlighted: r.hit, note: r.message } : { error: r.message }
         }
         const r = await highlightTextOnPage(tab.id, text!, label)
         return r.found ? { ok: true, occurrences: r.count, note: r.message } : { error: r.message }
