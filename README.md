@@ -347,3 +347,7 @@ brand red reserved for the accent and the loader.
 Both accents clear WCAG AA in both roles the token plays — as text on the canvas
 *and* as a fill under `--accent-text`. The logo's brighter crimson (`#d93a54`)
 does not, which is why the UI red is a shade deeper than the mark's.
+
+## License
+
+[MIT](LICENSE) © SUTD AI Interest Group.

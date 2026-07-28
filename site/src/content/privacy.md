@@ -176,5 +176,5 @@ version history is public in the project repository.
 
 Questions about privacy, or a request about your data:
 
-- **Email:** angkahshin@gmail.com
+- **Email:** ai@sso.sutd.edu.sg
 - **Issues:** https://github.com/SUTD-AI-Interest-Group/custom-agentic-browser-panel/issues

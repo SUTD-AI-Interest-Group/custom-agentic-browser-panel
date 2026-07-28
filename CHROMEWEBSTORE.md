@@ -286,12 +286,13 @@ Publishing under an organisation name requires that account's verified identity.
 **Contact Email** [REQUIRED] — displayed publicly on the listing
 
 ```
-angkahshin@gmail.com
+ai@sso.sutd.edu.sg
 ```
 
-⚠️ Confirm before submitting. This address is shown publicly and is where Google
-sends takedown and policy notices, so it must be monitored. A group alias may be
-preferable to a personal address for a published extension.
+A group address rather than a personal one, so the listing survives handover and
+no individual's inbox is published on a public page. It must be **monitored** —
+this is where Google sends takedown and policy notices, and a missed one can pull
+the extension. Confirm someone is actually watching it before you submit.
 
 **Support URL** [RECOMMENDED]
 
@@ -331,10 +332,14 @@ points somewhere else looks like a mismatch to a reviewer.
    session has to be run and captured. See "Screenshot Notes" above.
 2. ~~Privacy policy URL must resolve publicly~~ — ✅ done 2026-07-28.
    `https://lychee-ai.netlify.app/privacy` verified live, public, and anonymous.
-3. **Confirm publisher name and public contact email** (flagged above).
-4. **No LICENSE file exists** in the repository. Not a store requirement, but the
-   listing links to a public repo, and an unlicensed public repo grants no usage
-   rights. Worth deciding now that the repo is public.
+3. **Publisher name** — still to confirm against the actual developer account.
+   The listing says "SUTD AI Interest Group", and Google will only show that name
+   if the account is registered and verified as that organisation; a personal
+   account cannot simply type a group name into the field. ✅ Contact email
+   settled: `ai@sso.sutd.edu.sg` (someone must be monitoring it).
+4. ~~No LICENSE file exists~~ — ✅ done 2026-07-28. MIT, copyright SUTD AI
+   Interest Group. Every dependency in the tree is MIT / Apache-2.0 / ISC / BSD
+   with no copyleft, so nothing in the stack constrained the choice.
 
 ### Single-purpose defence
 
