@@ -10,6 +10,7 @@
     "build:sandbox": "vite build -c vite.sandbox.config.ts",
     "typecheck": "tsc --noEmit",
     "package": "bash scripts/package.sh",
+    "store:assets": "node scripts/store-assets.mjs",
     "test": "vitest run",
     "test:watch": "vitest"
   },
