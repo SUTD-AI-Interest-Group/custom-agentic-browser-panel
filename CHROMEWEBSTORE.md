@@ -312,6 +312,51 @@ points somewhere else looks like a mismatch to a reviewer.
 
 ---
 
+## Submission Process
+
+Two of these are irreversible or block publishing outright, so read before paying
+the fee.
+
+**1. Account setup — the email choice is permanent.**
+
+- Register at <https://chrome.google.com/webstore/devconsole> and pay the one-time
+  developer registration fee (US$5).
+- **The Google account's email cannot be changed after the account is created.**
+  Decide up front whether the account is owned by a person or by the group, and
+  register with the account the group will still control in two years. This is the
+  single most common thing new publishers get stuck on.
+- **2-Step Verification must be enabled on that Google account** before you can
+  publish or update anything. Turn it on first.
+- The public **contact email** (`ai@sso.sutd.edu.sg`) is a *separate* field added
+  on the account page, and it must be **verified by clicking a link Google emails
+  to it**. Publishing is blocked while it is blank. So that address has to receive
+  mail and someone has to action the link — confirm this before submission day.
+- Publisher display name: the listing says "SUTD AI Interest Group". Confirm the
+  account is registered such that it can display that name; a personal account
+  cannot simply type a group name into the field.
+
+**2. Filling the listing.** Four tabs in the dashboard, all sourced from this file:
+
+| Dashboard tab | What it wants | Where it is here |
+|---|---|---|
+| Store listing | Name, descriptions, category, language, icon, screenshots, promo tiles, support + homepage URLs | "Store Listing", "Graphics & Assets", "Developer Info" |
+| Privacy | Single purpose, permission justifications (one field each), remote-code answer, data-use disclosures + 3 certification checkboxes | "Single Purpose", "Permissions Justification", "Privacy & Data Use" |
+| Distribution | Visibility, regions, pricing | "Distribution" |
+| Test instructions | Reviewer credentials/notes — **not optional for us** | "Reviewer testing note" in Review Notes |
+
+The test-instructions field matters more than usual here: the extension does
+nothing without a user-supplied API key, so a reviewer who installs it sees only
+the onboarding screen. Paste the prepared note or the review may stall.
+
+**3. Expect an extended review.** Google states most reviews finish in a few days
+but can take a few weeks, and names three things that slow it down — broad host
+permissions, sensitive permissions like `tabs` and `downloads`, and code volume.
+Lychee has all three, plus first-time-developer scrutiny. Budget weeks, not days,
+and do not schedule a launch around a fast approval. If it passes three weeks with
+no response, that is the point to contact developer support.
+
+---
+
 ## Version History
 
 | Version | Date | Changes | Status |
