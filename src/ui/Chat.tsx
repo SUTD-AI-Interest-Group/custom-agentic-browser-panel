@@ -2784,6 +2784,22 @@ const THINKING_WORDS = [
   'In my thinking era', 'Brain going brrr', 'Spinning up the neurons',
   'Doing the thing', 'Locking in fr', 'No thoughts just cooking',
   "Chef's kiss incoming", 'Working on the glow-up',
+  // Turning it over
+  'Turning it over', 'Rotating the mental image', 'Zooming out', 'Zooming back in',
+  'Squinting at it', 'Reading it twice', 'Pulling on that thread',
+  'Following the thread', 'Untying the knot', 'Getting my ducks in a row',
+  'Triangulating', 'Extrapolating', 'Rummaging', 'Consulting the archives',
+  // Visibly busy
+  'Sharpening pencils', 'Pacing about', 'Staring into the middle distance',
+  'Counting on fingers', 'Doing sums', 'Rubber-ducking it', 'Yak-shaving',
+  'Arguing with myself', 'Second-guessing', 'Third-guessing',
+  'Going down a rabbit hole', 'Rolling for insight',
+  // Self-aware
+  'Overthinking (as a treat)', 'Buffering… emotionally', 'Having a moment',
+  'Thinking thoughts', 'Consulting my one brain cell', 'Making it make sense',
+  'Mind palace loading', 'Running it back', 'Peak brain activity',
+  'Absolutely locked in', 'One sec, cooking', 'Almost got it',
+  'Doing a little dance about it', 'Giving it the old college try',
 ]
 
 // Shown in the gap right after a tool result, while the model reads what came
@@ -2797,6 +2813,15 @@ const DIGESTING_WORDS = [
   'Doing the math', 'Vibe-checking the output', 'Catching up on the tea',
   'Fact-checking the vibes', 'Putting the pieces together fr',
   'Decoding the lore',
+  'Skimming the good bits', 'Highlighting things', 'Taking notes', 'Filing it away',
+  'Separating signal from noise', 'Boiling it down', 'Chewing it over',
+  'Double-checking', 'Squaring the numbers', 'Lining it up', 'Comparing notes',
+  'Auditing the findings', 'Reconciling it', 'Triaging', 'Getting the gist',
+  'Reading between the lines', 'Checking the fine print', 'Seeing what sticks',
+  'Cross-examining the results', 'Assembling the takeaway',
+  'Wrapping my head around it', 'Tidying the findings', 'Rereading the tricky part',
+  'Marking my own homework', 'Sorting the wheat from the chaff',
+  'Speed-running the summary', 'Vibe-sorting the data', 'Plating it up',
 ]
 
 // The mascot's exercise repertoire. Each name matches an `.anim-<name>`
