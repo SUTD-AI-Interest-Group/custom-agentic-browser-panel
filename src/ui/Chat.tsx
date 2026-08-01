@@ -40,6 +40,7 @@ import { getActiveTab, listOpenTabs, openPdfAtPage, readTabContent, type TabCont
 import { looksLikePdfUrl } from '../platform/pdfText'
 import { loadPdf } from '../platform/pdf'
 import { createAgentTools, type ApprovalRequest, type PageControlGate } from '../tools/tools'
+import type { ChatStatus } from './tabChats'
 import { buildMcpTools } from '../mcp/tools'
 import { getMcpManager, type McpPromptArgInfo } from '../mcp/manager'
 import { mcpSettings, mcpToolPolicy } from '../mcp/config'
@@ -474,6 +475,9 @@ export default function Chat({
   onConversationsChanged,
   pendingResearchId,
   onPendingResearchHandled,
+  hidden = false,
+  boundTabId,
+  onStatusChange,
 }: {
   conversationId: string
   settings: Settings
@@ -485,6 +489,26 @@ export default function Chat({
   pendingResearchId?: string | null
   /** Called once the pending research has been revealed, so App clears it. */
   onPendingResearchHandled?: () => void
+  /**
+   * This chat is mounted but not on screen — the user has switched to another
+   * tab (and so another chat) while this one is still working.
+   *
+   * It suppresses the chat's *ambient* effects only: the current-tab chip, the
+   * selection poll, mention/slash candidates, the relative-time ticker and the
+   * focus grabs. Those all resolve "the active tab", which is no longer this
+   * chat's tab — leaving them running is not just wasted work, it is wrong. The
+   * turn loop, transcript persistence and research effects deliberately keep
+   * running: that is the entire point of staying mounted.
+   */
+  hidden?: boolean
+  /**
+   * The tab this chat is bound to (src/ui/tabChats.ts). Its page tools act on
+   * this tab rather than whichever one happens to be in front, so a turn the
+   * user walked away from keeps answering the question they actually asked.
+   */
+  boundTabId?: number
+  /** Reports what this chat is doing, so App can keep it mounted and announce it. */
+  onStatusChange?: (conversationId: string, status: ChatStatus) => void
 }) {
   const [messages, setMessages] = useState<UIMessage[]>([])
   const [input, setInput] = useState('')
@@ -498,6 +522,10 @@ export default function Chat({
   // model's checkpoint and, on click, resumes with a fresh budget. Ephemeral —
   // the checkpoint itself rides in the message history, so it survives a reload.
   const [continuation, setContinuation] = useState<{ checkpoint: Checkpoint | null } | null>(null)
+  // Set when a page tool stopped the turn because this chat's tab is no longer in
+  // front (see PageTarget in tools.ts). Holds the human-readable reason for the
+  // strip; cleared when the user returns to the tab and the chain resumes.
+  const [parkedReason, setParkedReason] = useState<string | null>(null)
   const [approval, setApproval] = useState<PendingApproval | null>(null)
   const [currentTab, setCurrentTab] = useState<CurrentTabInfo | null>(null)
   const [attachments, setAttachments] = useState<CapturedImage[]>([])
@@ -627,9 +655,9 @@ export default function Chat({
   // so the user can start typing immediately. Skipped when no provider is
   // configured, since the textarea is disabled and can't take focus.
   useEffect(() => {
-    if (restored && selected) inputRef.current?.focus()
+    if (restored && selected && !hidden) inputRef.current?.focus()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [restored])
+  }, [restored, hidden])
 
   // Stray typing focuses the composer: with the panel open but focus elsewhere
   // (the transcript, a card, nothing), starting to type should just work.
@@ -891,7 +919,13 @@ export default function Chat({
 
   // Passive context pill (Dia-style): shows which tab the agent would see if
   // granted access. Purely informational — access still goes through tools.
+  //
+  // Skipped entirely while hidden: this chat is bound to a tab the user has
+  // switched away from, so "the active tab" is somebody else's page. A hidden
+  // chat that kept refreshing would end up displaying — and, on return, quietly
+  // attaching — a page this conversation was never about.
   useEffect(() => {
+    if (hidden) return
     let cancelled = false
     const refresh = async () => {
       const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true })
@@ -916,7 +950,7 @@ export default function Chat({
       chrome.tabs.onActivated.removeListener(onActivated)
       chrome.tabs.onUpdated.removeListener(onUpdated)
     }
-  }, [])
+  }, [hidden])
 
   // Research task cards: load persisted tasks on mount (so a task that
   // finished while the panel was closed still shows), then refresh from
@@ -943,14 +977,18 @@ export default function Chat({
   // drops the bar when it crosses DOCK_LINGER_MS. Depending on `now` re-runs
   // this each tick, which lets it self-stop (clear the interval) once the last
   // lingering task ages out — no idle timer when nothing is finishing.
+  // Nothing to drive while hidden — the dock isn't on screen. The effect re-runs
+  // when `hidden` flips, so returning to this chat restarts the tick and the bar
+  // ages out within a second of being seen again.
   useEffect(() => {
+    if (hidden) return
     const lingering = researchTasks.some(
       (t) => !isActiveStatus(t.status) && now - t.updatedAt < DOCK_LINGER_MS,
     )
     if (!lingering) return
     const id = setInterval(() => setNow(Date.now()), 1000)
     return () => clearInterval(id)
-  }, [researchTasks, now])
+  }, [researchTasks, now, hidden])
 
   // @all attaches every open tab; it's only honored when the user has granted
   // all-tabs visibility. The composer previews each attached page as a pill.
@@ -984,7 +1022,13 @@ export default function Chat({
   // Watch the active tab for a text selection and surface it as removable
   // context. Reading requires injecting into the page, so we only poll while
   // the panel is visible and refresh eagerly when the user returns to it.
+  //
+  // A hidden chat must not poll at all. Besides being wrong (the selection would
+  // belong to another chat's page), every hidden chat would otherwise inject a
+  // script into the user's page once a second, on top of the visible chat's own
+  // poll — the cost scales with how many turns are still running.
   useEffect(() => {
+    if (hidden) return
     let cancelled = false
     const readSelection = async () => {
       if (document.visibilityState !== 'visible') return
@@ -1030,7 +1074,7 @@ export default function Chat({
       window.removeEventListener('focus', onFocus)
       chrome.tabs.onActivated.removeListener(onActivated)
     }
-  }, [])
+  }, [hidden])
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight })
@@ -1160,6 +1204,9 @@ export default function Chat({
     // stop, so it must not auto-send when streaming ends (see the flush effect).
     steerQueueRef.current = []
     setQueued(null)
+    // Drop any park, or returning to the tab would silently restart the very turn
+    // the user just stopped.
+    setParkedReason(null)
     abortRef.current?.abort()
   }
 
@@ -1623,6 +1670,8 @@ export default function Chat({
     turnAllowed.current = spec.useMemory ? new Set(['SearchMemory']) : new Set()
     autoContinuesRef.current = 0
     setContinuation(null)
+    // A new question supersedes whatever the old turn was waiting to look at.
+    setParkedReason(null)
     await runTurnChain({
       startedAt: Date.now(),
       attachedSources,
@@ -1896,6 +1945,11 @@ export default function Chat({
     // next cycle's first prepareStep pick up what the last one left behind. The
     // same instance is handed to createAgentTools + runAgentTurn every cycle below.
     const imageQueue: QueuedImage[] = []
+    // Raised by a page tool that needs this chat's tab in front (see PageTarget
+    // in tools.ts). Chain-scoped like imageQueue, but CLEARED at the top of each
+    // cycle: a park ends one cycle, and the cycle that resumes when the user
+    // comes back must start unparked or it would halt on its very first step.
+    let parked: string | null = null
     // Messages pushed into historyRef.current since the last cycle that completed
     // successfully (steer messages spliced in below). If the NEXT cycle throws
     // (abort/error) before answering them, they're dangling user turns with no
@@ -1905,6 +1959,7 @@ export default function Chat({
 
     try {
       while (true) {
+        parked = null
         const base = MERGE_AUTO_CONTINUES ? mergedParts : []
         // MCP server tools join the ToolSet through createAgentTools's
         // extraTools (NOT spread in here) so the disclosure catalog sees them.
@@ -1935,6 +1990,16 @@ export default function Chat({
             activeNames,
             trace,
             mcpTools,
+            {
+              // Pin this turn's page tools to the tab the chat belongs to, so a
+              // turn the user walked away from keeps acting on the page they
+              // asked about. Falls back to the active tab for a chat with no
+              // binding yet (the very first turn of a freshly opened panel).
+              resolveTab: boundTabId === undefined
+                ? undefined
+                : () => chrome.tabs.get(boundTabId).catch(() => undefined),
+              park: (reason) => { parked = reason },
+            },
           ),
           abortSignal: controller.signal,
           onUpdate: patch(assistantId, base),
@@ -1945,6 +2010,9 @@ export default function Chat({
           // has queued a mid-task steer, so the drain below can splice it into
           // history and continue the chain.
           steerPending: () => steerQueueRef.current.length > 0,
+          // Tab parking: halt this cycle at the next step boundary once a page
+          // tool has reported it needs the bound tab in front.
+          parkPending: () => parked !== null,
         })
         patch(assistantId, base)(result.parts)
         historyRef.current.push(...result.responseMessages)
@@ -2001,6 +2069,16 @@ export default function Chat({
           ])
           assistantIds.add(assistantId)
           continue
+        }
+
+        // Parked: a page tool needs this chat's tab in front and the user is
+        // elsewhere. Checked BEFORE the auto-continue branch — continuing now
+        // would walk straight back into the same impossible capture and burn the
+        // quota doing it. The chain ends here; returning to the tab resumes it
+        // (see the resume effect), which is why nothing is torn down.
+        if (result.stop.reason === 'parked') {
+          setParkedReason(parked)
+          break
         }
 
         if (result.stop.reason === 'completed') break
@@ -2148,6 +2226,95 @@ export default function Chat({
       regen: { historyLen: historyRef.current.length, opener: null },
     })
   }
+
+  /**
+   * Resume a turn parked because this chat's tab wasn't in front. Same shape as
+   * continueTask — the parking tool's result is already in history, so a fresh
+   * chain just carries on — with one difference: the auto-continue tally is
+   * carried over rather than reset. A park is not the model running long, so it
+   * must not be charged for one; but resetting the tally would let a model that
+   * parks repeatedly refill its own quota, and the user is not choosing to
+   * extend anything here, they are just switching tabs.
+   */
+  /** Bring the parked chat's tab to the front; the resume effect does the rest. */
+  async function goToBoundTab() {
+    if (boundTabId === undefined) return
+    try {
+      const tab = await chrome.tabs.get(boundTabId)
+      await chrome.tabs.update(boundTabId, { active: true })
+      if (tab.windowId !== undefined) await chrome.windows.update(tab.windowId, { focused: true })
+    } catch {
+      // Tab's gone — the strip stays put rather than pretending it worked.
+    }
+  }
+
+  async function resumeFromPark() {
+    if (streaming) return
+    setParkedReason(null)
+    await runTurnChain({
+      startedAt: Date.now(),
+      attachedSources: [],
+      activeSkill: null,
+      journalUserText: '[resumed after returning to the tab]',
+      droppableTail: false,
+      regen: { historyLen: historyRef.current.length, opener: null },
+    })
+  }
+
+  // Resume as soon as the user comes back to the tab this chat is parked on.
+  // Deliberately automatic and cardless: the user already asked for this work,
+  // and a "Continue?" prompt for something they interrupted by glancing at
+  // another tab would be noise. Fires on activation and on window focus, since
+  // returning from another *window* activates no tab.
+  useEffect(() => {
+    if (parkedReason === null || boundTabId === undefined || streaming) return
+    let cancelled = false
+    const check = async () => {
+      if (cancelled) return
+      try {
+        const tab = await chrome.tabs.get(boundTabId)
+        const [live] = await chrome.tabs.query({ active: true, windowId: tab.windowId })
+        if (!cancelled && live?.id === boundTabId) void resumeFromPark()
+      } catch {
+        // The tab was closed while parked. Leave the chat parked rather than
+        // resuming into a turn whose every page tool would fail; the transcript
+        // and the strip both still say what it was waiting for.
+      }
+    }
+    void check()
+    const onActivated = () => void check()
+    const onFocusChanged = () => void check()
+    chrome.tabs.onActivated.addListener(onActivated)
+    chrome.windows.onFocusChanged.addListener(onFocusChanged)
+    return () => {
+      cancelled = true
+      chrome.tabs.onActivated.removeListener(onActivated)
+      chrome.windows.onFocusChanged.removeListener(onFocusChanged)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [parkedReason, boundTabId, streaming])
+
+  // Report what this chat is doing so App can keep it mounted while it works and
+  // announce it when it stops. Ordered by urgency: an unanswered approval card
+  // outranks the fact that the turn is technically still streaming, because it
+  // is the thing the user has to act on.
+  useEffect(() => {
+    const status: ChatStatus = approval
+      ? 'needs-you'
+      : parkedReason !== null
+        ? 'parked'
+        : streaming
+          ? 'running'
+          : 'idle'
+    onStatusChange?.(conversationId, status)
+  }, [approval, parkedReason, streaming, conversationId, onStatusChange])
+
+  // A chat that unmounts must not leave App believing it is still working —
+  // that would pin it in the live set forever and keep it mounted for good.
+  useEffect(() => {
+    return () => onStatusChange?.(conversationId, 'idle')
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [conversationId])
 
   /**
    * Discard the last turn's reply and run it again, telling the retry what the
@@ -2304,6 +2471,20 @@ export default function Chat({
             onContinue={() => void continueTask()}
             onDismiss={() => setContinuation(null)}
           />
+        )}
+        {parkedReason !== null && !streaming && (
+          // No Continue button: this resumes by itself the moment the user is
+          // back on the tab. The strip exists so a stalled-looking chat explains
+          // itself rather than appearing to have died mid-thought.
+          <div className="park-strip" role="status">
+            <span className="park-strip-dot" aria-hidden="true" />
+            <span className="park-strip-text">
+              Paused — {parkedReason}. This picks up again when you go back to that tab.
+            </span>
+            <button className="park-strip-go" onClick={() => void goToBoundTab()}>
+              Go there
+            </button>
+          </div>
         )}
       </div>
 

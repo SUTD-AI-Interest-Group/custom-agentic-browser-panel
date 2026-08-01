@@ -2168,6 +2168,64 @@ body {
 }
 
 /* Highlighted page text, offered as removable context. */
+/* A turn paused because its tab isn't in front. Deliberately quiet — it is a
+   statement of what the chat is waiting for, not an error, and it clears itself
+   as soon as the user goes back to the tab. */
+.park-strip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 8px 4px;
+  padding: 8px 10px;
+  background: var(--pill-bg);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.park-strip-dot {
+  flex-shrink: 0;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  /* Same slow pulse the thinking indicator uses: still working, not stuck. */
+  animation: park-pulse 2s ease-in-out infinite;
+}
+
+@keyframes park-pulse {
+  0%, 100% { opacity: 0.35; }
+  50% { opacity: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .park-strip-dot {
+    animation: none;
+    opacity: 0.7;
+  }
+}
+
+.park-strip-text {
+  flex: 1;
+  min-width: 0;
+}
+
+.park-strip-go {
+  flex-shrink: 0;
+  padding: 3px 8px;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 11.5px;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.park-strip-go:hover {
+  background: var(--surface);
+}
+
 .selection-chip {
   display: flex;
   align-items: center;
