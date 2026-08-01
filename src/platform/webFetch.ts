@@ -14,6 +14,14 @@ export function parseJsonLoose(text: string): unknown {
   return JSON.parse(unfenced.slice(start, end + 1))
 }
 
+// Fixed, well-known cloud metadata hostnames — reachable by design via a plain
+// hostname specifically to dodge IP-based filters (GCP's is the canonical
+// example: metadata.google.internal, or its bare "metadata" shorthand inside a
+// GCE network). Unlike DNS rebinding (a hostname whose A-record happens to
+// point somewhere private — see the KNOWN RESIDUAL RISK comment below), these
+// are fixed literal names, so a denylist works without needing resolution.
+const METADATA_HOSTNAMES = new Set(['metadata.google.internal', 'metadata'])
+
 /** True only for public http(s) URLs — blocks localhost/private-IP/link-local/.local and non-web schemes (SSRF guard). */
 export function isFetchableUrl(raw: string): { ok: boolean; reason?: string } {
   let u: URL
@@ -21,13 +29,21 @@ export function isFetchableUrl(raw: string): { ok: boolean; reason?: string } {
   if (u.protocol !== 'http:' && u.protocol !== 'https:') return { ok: false, reason: `blocked scheme ${u.protocol}` }
   const h = u.hostname.toLowerCase().replace(/\.+$/, '')
   if (h.startsWith('[')) return { ok: false, reason: 'blocked IPv6 literal' }
-  if (h === 'localhost' || h.endsWith('.local') || h === '0.0.0.0') {
+  if (h === 'localhost' || h.endsWith('.local') || h === '0.0.0.0' || METADATA_HOSTNAMES.has(h)) {
     return { ok: false, reason: 'blocked host' }
   }
   const m = h.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/)
   if (m) {
     const [a, b] = [Number(m[1]), Number(m[2])]
-    if (a === 127 || a === 10 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (a === 169 && b === 254)) {
+    if (
+      a === 127 ||
+      a === 10 ||
+      a === 0 || // the rest of 0.0.0.0/8 ("this network") — Linux commonly routes it to loopback
+      (a === 100 && b >= 64 && b <= 127) || // RFC 6598 carrier-grade NAT — Alibaba Cloud's metadata service lives at 100.100.100.200
+      (a === 172 && b >= 16 && b <= 31) ||
+      (a === 192 && b === 168) ||
+      (a === 169 && b === 254)
+    ) {
       return { ok: false, reason: 'blocked private IP' }
     }
     // A normal public dotted-decimal quad (e.g. 8.8.8.8) — allow it. Returning
@@ -72,8 +88,13 @@ export function resolveDdgHref(href: string): string {
   try {
     const abs = href.startsWith('//') ? `https:${href}` : href
     const u = new URL(abs, 'https://duckduckgo.com')
+    // URLSearchParams.get() already fully percent-decodes the value per the
+    // x-www-form-urlencoded algorithm — a second decodeURIComponent() here
+    // (the previous behavior) double-decodes any target URL that carries its
+    // own percent-escapes (an encoded space/%/&/# in its own query string),
+    // corrupting it. uddg is already the real, decoded target.
     const uddg = u.searchParams.get('uddg')
-    return uddg ? decodeURIComponent(uddg) : abs
+    return uddg || abs
   } catch {
     return href
   }

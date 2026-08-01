@@ -107,6 +107,50 @@ describe('isSafeResearchAction — click', () => {
   })
 })
 
+describe('isSafeResearchAction — click, blind controls (no href, no accessible name)', () => {
+  // Mirrors pageControl.test.ts's equivalent table: el.type reads undefined on
+  // anything that isn't a native form control, so a <div role="button">/plain
+  // onclick <span>/icon-only <button type="button"> reports type:undefined and
+  // name:'' — passing every check above unnoticed. No human is watching this
+  // browser, so "cannot classify what this does" must resolve to deny.
+  it('denies an ARIA-role div button with no accessible name', () => {
+    const v = isSafeResearchAction({ kind: 'click', index: 1 }, el({ tag: 'div', role: 'button', name: '' }))
+    expect(v.ok).toBe(false)
+  })
+
+  it('denies a plain onclick-driven span with no role and no name', () => {
+    const v = isSafeResearchAction({ kind: 'click', index: 1 }, el({ tag: 'span', name: '' }))
+    expect(v.ok).toBe(false)
+  })
+
+  it('denies a native <button type="button"> icon button with no accessible name', () => {
+    const v = isSafeResearchAction({ kind: 'click', index: 1 }, el({ tag: 'button', type: 'button', name: '' }))
+    expect(v.ok).toBe(false)
+  })
+
+  it('denies an <a> with no href and no name', () => {
+    const v = isSafeResearchAction({ kind: 'click', index: 1 }, el({ tag: 'a', href: '', name: '' }))
+    expect(v.ok).toBe(false)
+  })
+
+  it('denies a role=tab/switch/menuitem control with no accessible name, not just role=button', () => {
+    for (const role of ['tab', 'switch', 'menuitem', 'option']) {
+      const v = isSafeResearchAction({ kind: 'click', index: 1 }, el({ tag: 'div', role, name: '' }))
+      expect(v.ok, `role=${role}`).toBe(false)
+    }
+  })
+
+  it('still allows an ARIA button that has an accessible name', () => {
+    const v = isSafeResearchAction({ kind: 'click', index: 1 }, el({ tag: 'div', role: 'button', name: 'Expand section' }))
+    expect(v.ok).toBe(true)
+  })
+
+  it('still allows a link with a real href even when it has no visible text', () => {
+    const v = isSafeResearchAction({ kind: 'click', index: 1 }, el({ tag: 'a', name: '', href: 'https://example.com/x' }))
+    expect(v.ok).toBe(true)
+  })
+})
+
 describe('isSafeResearchAction — type', () => {
   it('allows typing into a search input', () => {
     const v = isSafeResearchAction({ kind: 'type', index: 2, text: 'pricing' }, el({ tag: 'input', type: 'search', name: 'Search' }))

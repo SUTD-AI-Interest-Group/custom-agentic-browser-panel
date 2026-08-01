@@ -5,14 +5,41 @@
     <!--
       The sealed code-execution sandbox. Manifest-sandboxed like sandbox.html
       (unique origin, no chrome.*, CSP permits eval/wasm), but with a TIGHTER
-      profile: the meta CSP below removes network access entirely, so an
-      interpreter escape lands in a page that can reach nothing. It never
-      fetches its own assets — the panel transfers wasm bytes in by
-      postMessage (an opaque origin fails CORS against chrome-extension://).
-      The script is a classic (non-module) script for the same CORS reason,
-      built as an IIFE by vite.sandbox.config.ts, NOT the main build.
+      profile: the meta CSP below is default-deny, so an interpreter escape —
+      or a malicious/prompt-injected CreateArtifact/UpdateArtifact payload
+      rendered here (see runtime.ts's exec:render) — lands in a page that can
+      reach nothing. It never fetches its own assets — the panel transfers
+      wasm bytes in by postMessage (an opaque origin fails CORS against
+      chrome-extension://). The script is a classic (non-module) script for
+      the same CORS reason, built as an IIFE by vite.sandbox.config.ts, NOT
+      the main build.
+
+      Each allowance beyond default-src 'none' is load-bearing — do not widen
+      without re-verifying against a real Chromium instance (a directive left
+      unset is UNRESTRICTED unless default-src covers it, and per the CSP
+      spec, form-action does NOT fall back to default-src, so it must stay
+      explicit):
+        - script-src 'self'           the outer page's own <script
+                                       src="sandbox-exec.js"> (dropping this
+                                       breaks RunCode/artifacts entirely)
+        - script-src 'unsafe-inline'  inline <script> in model-authored
+                                       artifact HTML — the whole point of
+                                       CreateArtifact/UpdateArtifact
+        - style-src 'unsafe-inline'   inline <style>/style="" in artifact HTML
+        - img-src data:               data: URI images only — no remote host
+        - form-action 'none'          forms in artifact HTML render but can
+                                       never submit anywhere
+      Everything else (connect-src, media-src, frame-src, font-src,
+      object-src, worker-src, …) falls back to default-src 'none' and stays
+      closed. Confirmed via a real-Chromium Playwright repro: a remote
+      <script src>/<img src>/cross-origin <form> are all blocked and never
+      reach the network under this policy, while inline script/style and a
+      data: image still render.
     -->
-    <meta http-equiv="Content-Security-Policy" content="connect-src 'none'" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; form-action 'none'"
+    />
     <style>
       html,
       body {

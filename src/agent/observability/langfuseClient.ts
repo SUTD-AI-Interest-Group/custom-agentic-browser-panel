@@ -23,6 +23,15 @@ interface QueuedEvent {
 const MAX_BATCH_BYTES = 3_000_000
 const MAX_BATCH_EVENTS = 100
 const FLUSH_DEBOUNCE_MS = 2_000
+/**
+ * dream.ts awaits `observer.flush()` at the end of a dream cycle "to
+ * guarantee delivery" (its own comment) — but a deliberate await around an
+ * unbounded fetch is still unbounded. Without this, a slow/unreachable/
+ * misconfigured Langfuse host hangs that await indefinitely, freezing the
+ * Memory panel's "Dream now" button even though the actual consolidation
+ * already succeeded before the flush call (d14 F4).
+ */
+const DEFAULT_FLUSH_TIMEOUT_MS = 10_000
 
 function uuid(): string {
   try {
@@ -38,8 +47,16 @@ export class LangfuseIngestionClient {
   private approxBytes = 0
   private readonly url: string
   private readonly auth: string
+  /** Serializes overlapping flush() calls — see `flush()`'s own comment. */
+  private inFlight: Promise<void> = Promise.resolve()
 
-  constructor(host: string, publicKey: string, secretKey: string) {
+  constructor(
+    host: string,
+    publicKey: string,
+    secretKey: string,
+    /** Test-only override; production call sites always take the default. */
+    private readonly timeoutMs: number = DEFAULT_FLUSH_TIMEOUT_MS,
+  ) {
     this.url = `${host.replace(/\/+$/, '')}/api/public/ingestion`
     this.auth = `Basic ${btoa(`${publicKey}:${secretKey}`)}`
   }
@@ -68,8 +85,26 @@ export class LangfuseIngestionClient {
     }, FLUSH_DEBOUNCE_MS)
   }
 
-  /** POST whatever is buffered. Awaited at the end of an operation to guarantee delivery. */
-  async flush(): Promise<void> {
+  /**
+   * POST whatever is buffered. Awaited at the end of an operation to
+   * guarantee delivery.
+   *
+   * Overlapping calls are chained onto `inFlight` rather than run
+   * concurrently (d14 F6): without this, a slow/degraded host plus enough
+   * enqueue traffic to cross the eager-flush threshold (MAX_BATCH_EVENTS/
+   * MAX_BATCH_BYTES) twice before the first request settles spawns a second,
+   * fully independent `fetch()` — repeating with no cap for the length of a
+   * long session. Chaining serializes requests instead: each waits for the
+   * previous to settle (never throws — see doFlush's own try/catch — so the
+   * chain itself can never wedge on a prior failure) before checking
+   * whatever is buffered by the time its turn comes.
+   */
+  flush(): Promise<void> {
+    this.inFlight = this.inFlight.then(() => this.doFlush())
+    return this.inFlight
+  }
+
+  private async doFlush(): Promise<void> {
     if (this.timer) {
       clearTimeout(this.timer)
       this.timer = null
@@ -82,6 +117,9 @@ export class LangfuseIngestionClient {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: this.auth },
         body: JSON.stringify({ batch }),
+        // Bounds the worst case (unreachable/firewalled/hung host) instead of
+        // hanging an awaited flush indefinitely — see DEFAULT_FLUSH_TIMEOUT_MS.
+        signal: AbortSignal.timeout(this.timeoutMs),
       })
       const payload = await readJson(res)
       // CRITICAL: Langfuse answers *input* errors with 207 + a per-event `errors`
@@ -100,9 +138,10 @@ export class LangfuseIngestionClient {
         console.info(`[langfuse] ingested ${n} event(s)`)
       }
     } catch (err) {
-      // Network / CORS / bad host. Still non-fatal for the turn, but never silent:
-      // a swallowed error here is exactly why a missing trace is undiagnosable.
-      console.warn('[langfuse] ingestion request failed (network/CORS/host):', err)
+      // Network / CORS / bad host / timed-out abort. Still non-fatal for the
+      // turn, but never silent: a swallowed error here is exactly why a
+      // missing trace is undiagnosable.
+      console.warn('[langfuse] ingestion request failed (network/CORS/host/timeout):', err)
     }
   }
 }

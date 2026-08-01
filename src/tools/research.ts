@@ -43,6 +43,24 @@ export interface SearchBroker {
  *  candidate for tab escalation when a broker is available. */
 const THIN_TEXT = 400
 
+/** Merge whichever abort signals are actually defined into one — used so a page
+ *  walk can be cut short by EITHER the task-level signal (a real Stop) OR the AI
+ *  SDK's own per-call abortSignal (resilient()'s 900s per-attempt timeout),
+ *  instead of only ever honoring one of them. Degrades gracefully where
+ *  AbortSignal.any is unavailable, matching the pattern already used by
+ *  research.ts's withAttemptTimeout / resilience.ts's defaultAttemptSignal. */
+function mergeAbortSignals(...signals: (AbortSignal | undefined)[]): AbortSignal {
+  const defined = signals.filter((s): s is AbortSignal => !!s)
+  if (defined.length === 0) return new AbortController().signal
+  if (defined.length === 1) return defined[0]
+  try {
+    if (typeof AbortSignal !== 'undefined' && 'any' in AbortSignal) return AbortSignal.any(defined)
+  } catch {
+    /* fall through */
+  }
+  return defined[0]
+}
+
 /** Page walks are the expensive tool; cap how many one task may spend. */
 export interface BrowseBudget {
   remaining: number
@@ -312,9 +330,14 @@ export function createResearchTools(deps: {
         findings: z
           .array(
             z.object({
-              claim: z.string().describe('A single factual claim, in your own words'),
+              // Capped: an unbounded claim/quote lets summarizeNotebook's output
+              // (fed uncapped-in-bytes into Synthesize) grow large enough to blow
+              // a smaller model's context window, which classifyError now treats
+              // as a permanent, non-retryable 400 — capping here reduces how often
+              // that's even reached.
+              claim: z.string().max(500).describe('A single factual claim, in your own words'),
               sourceUrl: z.string().describe('The exact URL you read this from (must be a page you fetched)'),
-              quote: z.string().optional().describe('A short verbatim quote from the source supporting the claim'),
+              quote: z.string().max(500).optional().describe('A short verbatim quote from the source supporting the claim'),
               confidence: z.enum(['high', 'med', 'low']).optional(),
             }),
           )
@@ -366,7 +389,12 @@ export function createResearchTools(deps: {
           broker: browseBroker,
           model: createModel(deps.selected.provider, deps.selected.modelId),
           notebook,
-          signal: deps.signal ?? abortSignal ?? new AbortController().signal,
+          // Either the task-level signal (a real Stop) OR the per-call abortSignal
+          // (resilient()'s 900s per-attempt timeout) must be able to end a page
+          // walk early — preferring only deps.signal (which is always defined)
+          // made the per-attempt timeout dead code and let a hung page walk
+          // outlive its own retry attempt, holding the shared tab lease.
+          signal: mergeAbortSignals(deps.signal, abortSignal),
           trace: deps.trace,
           onStep: (parts) => deps.onBrowseStep?.(toolCallId, parts),
         })

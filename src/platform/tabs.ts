@@ -276,9 +276,17 @@ export async function closeTabs(
 ): Promise<{ closed: StashedTab[]; recoverable: number; error?: string }> {
   if (tabIds.length === 0) return { closed: [], recoverable: 0 }
   const stashed: StashedTab[] = []
+  // Ids chrome.tabs.get actually confirmed exist — a tab closed for real in
+  // the human-reaction-time gap between the approval card and the user's
+  // click is skipped here, and must be kept out of the remove() call below
+  // too: chrome.tabs.remove() aborts (or partially applies) its WHOLE batch
+  // on the first id it can't find, so one stale id must never be allowed to
+  // take the still-valid ones down with it.
+  const validIds: number[] = []
   for (const id of tabIds.slice(0, MAX_STASH)) {
     const tab = await chrome.tabs.get(id).catch(() => undefined)
     if (!tab) continue
+    validIds.push(id)
     stashed.push({
       url: tab.url ?? '',
       title: tab.title ?? '(untitled)',
@@ -287,11 +295,12 @@ export async function closeTabs(
       pinned: tab.pinned ?? false,
     })
   }
+  if (validIds.length === 0) return { closed: [], recoverable: 0 }
   try {
     // Stash BEFORE removing: a crash between the two should cost the undo, not
     // leave a stash describing tabs that are still open.
     await chrome.storage.local.set({ [CLOSED_STASH_KEY]: { at: Date.now(), tabs: stashed } })
-    await chrome.tabs.remove(tabIds)
+    await chrome.tabs.remove(validIds)
     // `recoverable` can trail the closed count past MAX_STASH. Reported rather
     // than hidden, so the model never promises an undo that cannot deliver.
     return { closed: stashed, recoverable: stashed.length }
@@ -308,8 +317,14 @@ export async function closeTabs(
 export async function reopenClosedTabs(): Promise<{ reopened: number; error?: string }> {
   const stash = await readClosedStash()
   if (!stash) return { reopened: 0, error: 'Nothing was closed recently, so there is nothing to reopen.' }
+  // Recreate in ascending (window, index) order: chrome.tabs.create inserts
+  // each tab at its requested index, so restoring a higher index before a
+  // lower one in the same window pushes the earlier tab rightward and
+  // scrambles their relative order — the stash array itself is just whatever
+  // order the model named the tabs in, which need not already be sorted.
+  const ordered = [...stash.tabs].sort((a, b) => a.windowId - b.windowId || a.index - b.index)
   let reopened = 0
-  for (const t of stash.tabs) {
+  for (const t of ordered) {
     if (!t.url) continue
     // Restore into the original window when it is still around; otherwise let
     // Chrome place the tab in the current one.

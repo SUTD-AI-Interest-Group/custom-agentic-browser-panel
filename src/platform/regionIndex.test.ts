@@ -1,5 +1,10 @@
-import { describe, it, expect } from 'vitest'
-import { rankRegions, serializeRegions, type RawRegion, type VisualRegion } from './regionIndex'
+import { describe, it, expect, afterEach } from 'vitest'
+import { readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
+import { dirname, join } from 'node:path'
+import { createRequire } from 'node:module'
+import { execFileSync } from 'node:child_process'
+import { rankRegions, serializeRegions, SEMANTIC_TAG_SOURCE, type RawRegion, type VisualRegion } from './regionIndex'
 
 // Real pages wrap everything: div.card > figure > img, all three within a few
 // pixels of the same box. Offering the model three addresses for one chart
@@ -136,5 +141,92 @@ describe('serializeRegions', () => {
 
   it('says so plainly when a page has nothing worth photographing', () => {
     expect(serializeRegions([])).toBe('(no visual regions found on this page)')
+  })
+})
+
+// MEDIUM (d04 F5): same shadow-DOM gap as domIndex.ts's buildInteractiveIndex
+// — a plain querySelectorAll('*') never descends into an open shadow root, so
+// a chart/table living inside a web component was entirely invisible to the
+// region index. Runs the REAL buildRegionIndex (extracted from the source and
+// stripped of TypeScript syntax) against a fixture with an actual open shadow
+// root, so this proves the fix landed in the function chrome.scripting.
+// executeScript actually injects, not a stand-in. See domIndex.test.ts and
+// pageActions.test.ts for the same extraction technique and its rationale.
+const HERE = fileURLToPath(import.meta.url)
+const SRC_PATH = join(dirname(HERE), 'regionIndex.ts')
+const source = readFileSync(SRC_PATH, 'utf-8')
+const require = createRequire(import.meta.url)
+const esbuildBin = join(dirname(require.resolve('esbuild/package.json')), 'bin', 'esbuild')
+
+function extractFunctionSource(name: string): string {
+  const start = source.indexOf(`function ${name}(`)
+  if (start < 0) throw new Error(`could not find function ${name} in regionIndex.ts`)
+  let depth = 0
+  let bodyStarted = false
+  let end = -1
+  for (let i = start; i < source.length; i++) {
+    const ch = source[i]
+    if (ch === '{') {
+      depth++
+      bodyStarted = true
+    } else if (ch === '}') {
+      depth--
+      if (bodyStarted && depth === 0) {
+        end = i + 1
+        break
+      }
+    }
+  }
+  if (end < 0) throw new Error(`could not brace-match function ${name} in regionIndex.ts`)
+  return source.slice(start, end)
+}
+
+function extractInjected(name: string): (...args: any[]) => any {
+  const raw = extractFunctionSource(name)
+  const code = execFileSync(esbuildBin, ['--loader=ts', '--target=es2022'], { input: raw, encoding: 'utf-8' })
+  // eslint-disable-next-line no-new-func -- executing the real, extracted+stripped source, not hand-written logic
+  return new Function(`"use strict"; return (${code})`)()
+}
+
+describe('regionIndex — shadow DOM piercing (F5)', () => {
+  const savedRect = Element.prototype.getBoundingClientRect
+  const savedScrollWidth = Object.getOwnPropertyDescriptor(Element.prototype, 'scrollWidth')
+  const savedScrollHeight = Object.getOwnPropertyDescriptor(Element.prototype, 'scrollHeight')
+
+  afterEach(() => {
+    document.body.innerHTML = ''
+    Element.prototype.getBoundingClientRect = savedRect
+    if (savedScrollWidth) Object.defineProperty(Element.prototype, 'scrollWidth', savedScrollWidth)
+    if (savedScrollHeight) Object.defineProperty(Element.prototype, 'scrollHeight', savedScrollHeight)
+  })
+
+  it('indexes a figure living inside an open shadow root', () => {
+    document.body.innerHTML = '<my-widget></my-widget>'
+    const host = document.querySelector('my-widget')!
+    const shadow = (host as any).attachShadow ? host.attachShadow({ mode: 'open' }) : null
+    if (!shadow) return // jsdom build without Shadow DOM support — skip rather than false-fail
+    // aria-label rather than a <figcaption>: nameOf() falls back to innerText
+    // for a caption-less figure, which jsdom does not compute (no layout
+    // engine) — aria-label sidesteps that unrelated gap.
+    shadow.innerHTML = '<figure aria-label="Q3 revenue"></figure>'
+    const figure = shadow.querySelector('figure') as HTMLElement
+
+    // buildRegionIndex needs a document large enough that the fixture's own
+    // rect isn't mistaken for "the whole page" (MAX_AREA_RATIO), and a real
+    // rect for the figure — jsdom's real getBoundingClientRect always reports
+    // 0x0 (no layout engine). Both are Chrome runtime facts this fixture has
+    // to fake; the shadow-piercing behavior under test is otherwise untouched.
+    Object.defineProperty(document.documentElement, 'scrollWidth', { value: 1200, configurable: true })
+    Object.defineProperty(document.documentElement, 'scrollHeight', { value: 2000, configurable: true })
+    Element.prototype.getBoundingClientRect = function (this: Element) {
+      const zero = { x: 0, y: 0, top: 0, left: 0, right: 0, bottom: 0, width: 0, height: 0, toJSON() {} }
+      if (this === figure) return { ...zero, right: 600, bottom: 400, width: 600, height: 400 } as DOMRect
+      return zero as DOMRect
+    }
+
+    const buildRegionIndex = extractInjected('buildRegionIndex')
+    const result = buildRegionIndex('data-agent-region', 240, SEMANTIC_TAG_SOURCE)
+    const names = (result.regions as Array<{ name: string }>).map((r) => r.name)
+    expect(names).toContain('Q3 revenue')
   })
 })

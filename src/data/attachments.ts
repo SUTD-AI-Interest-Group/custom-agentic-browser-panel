@@ -88,7 +88,7 @@ function requestOf<T>(mode: IDBTransactionMode, fn: (s: IDBObjectStore) => IDBRe
 }
 
 /** A data URL's payload is base64: 4 chars per 3 bytes. Close enough to prune on. */
-function approxBytes(dataUrl: string): number {
+export function approxBytes(dataUrl: string): number {
   const comma = dataUrl.indexOf(',')
   return Math.round(((dataUrl.length - comma - 1) * 3) / 4)
 }

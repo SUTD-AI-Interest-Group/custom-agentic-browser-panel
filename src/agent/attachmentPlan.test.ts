@@ -90,6 +90,23 @@ describe('planAttachmentDelivery', () => {
     expect(planAttachmentDelivery(pdf(1024, 5), compatBlind)).toEqual({ route: 'pdf-text', budget: PDF_TEXT_BUDGET })
   })
 
+  it('treats a 0-page PDF like an unknown page count, not zero pages shown', () => {
+    // pageCount:0 is a degenerate-but-parseable PDF shape; `?? 1` doesn't catch
+    // it (0 isn't null/undefined), so `pages` used to come out `[]` and the
+    // caller built a garbled "page undefined of 0" caption. Should behave
+    // exactly like pageCount:undefined does above.
+    expect(planAttachmentDelivery(pdf(1024, 0), compatVision)).toEqual({
+      route: 'pdf-pages',
+      pages: [1],
+      truncationNote: null,
+    })
+  })
+
+  it('routes exactly at the native-doc byte cap, degrades one byte over', () => {
+    expect(planAttachmentDelivery(pdf(native.nativeDocMaxBytes, 5), native)).toEqual({ route: 'native-pdf' })
+    expect(planAttachmentDelivery(pdf(native.nativeDocMaxBytes + 1, 5), native).route).toBe('pdf-pages')
+  })
+
   it('text files inline everywhere', () => {
     const t = { kind: 'text' as const, name: 'notes.md', byteSize: 100 }
     expect(planAttachmentDelivery(t, native).route).toBe('inline-text')
@@ -110,6 +127,16 @@ describe('formatInlineTextBlock', () => {
     const b = formatInlineTextBlock('big.txt', 'x'.repeat(200), 100)
     expect(b).toContain('[truncated — file continues')
     expect(b.length).toBeLessThan(400)
+  })
+
+  it('does not split a UTF-16 surrogate pair at the truncation boundary', () => {
+    // '😀' is two UTF-16 code units; a budget of 10 lands the cut exactly
+    // between them (9 'a's + the high surrogate) — a plain .slice(0, 10)
+    // leaves a lone high surrogate that a later UTF-8 encode (fetch's request
+    // body) replaces with U+FFFD.
+    const text = 'a'.repeat(9) + '😀' + 'b'.repeat(10)
+    const b = formatInlineTextBlock('emoji.txt', text, 10)
+    expect(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/.test(b)).toBe(false)
   })
 })
 

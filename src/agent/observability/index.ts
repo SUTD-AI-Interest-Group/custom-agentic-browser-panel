@@ -2,6 +2,7 @@
 export { getObserver, NOOP_OBSERVER, mapUsage, sanitize } from './observer'
 export { instrumentToolset } from './instrumentTools'
 export { testLangfuseConnection } from './langfuseClient'
+export { redactSecrets } from './redact'
 export type {
   Observer,
   Trace,

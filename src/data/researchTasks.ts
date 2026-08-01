@@ -236,6 +236,13 @@ export function postResearchMsg(msg: ResearchMsg): void {
 
 const KEY = 'researchTasks'
 
+/**
+ * Bumped by clearTasks() on every clear — the cross-context guard for the race
+ * below. Deliberately a SEPARATE storage key from KEY: it must be readable
+ * without paying the cost of (or racing on) the full task-map read/write.
+ */
+const CLEARED_AT_KEY = 'researchTasksClearedAt'
+
 // researchTasks shares the ~10MB chrome.storage.local namespace with settings/memory/
 // conversations; nothing else removes old task records, so cap growth on every insert.
 const MAX_TASKS = 50
@@ -251,10 +258,20 @@ const MAX_STEPS = 200
 /** Cap a task's step log to the most recent `max` entries. When entries are
  *  trimmed, a single marker `phase` step is prepended so the sheet shows that
  *  earlier history was dropped rather than silently starting mid-log. Pure and
- *  idempotent — safe to call on every persisted update, not just once. */
+ *  idempotent — safe to call on every persisted update, not just once.
+ *
+ *  The marker itself counts toward `max` (kept = max − 1 real steps + 1 marker):
+ *  without that, trimming an already-at-the-cap array produced max + 1 entries,
+ *  which is STILL over the cap, so a second call would re-trim and replace the
+ *  marker again — discarding the original drop-count and understating how much
+ *  history was actually lost across repeated calls. That is not hypothetical:
+ *  the live step log (research.ts's emit()) now caps its own onUpdate payload
+ *  the same way, so a `research.update` message routinely already IS a
+ *  previously-capped array by the time applyUpdate() caps it again for storage. */
 export function capSteps(steps: ResearchStep[], max: number = MAX_STEPS): ResearchStep[] {
   if (steps.length <= max) return steps
-  const dropped = steps.length - max
+  const kept = Math.max(0, max - 1)
+  const dropped = steps.length - kept
   const marker: ResearchStep = {
     tool: 'Log',
     summary: `…${dropped} earlier step${dropped === 1 ? '' : 's'} trimmed`,
@@ -262,7 +279,7 @@ export function capSteps(steps: ResearchStep[], max: number = MAX_STEPS): Resear
     status: 'done',
     kind: 'phase',
   }
-  return [marker, ...steps.slice(-max)]
+  return [marker, ...steps.slice(-kept)]
 }
 
 // Serialize read-modify-write so concurrent saveTask/applyUpdate calls (e.g. rapid
@@ -277,6 +294,36 @@ function serialize<T>(fn: () => Promise<T>): Promise<T> {
 async function all(): Promise<Record<string, ResearchTask>> {
   const got = await chrome.storage.local.get(KEY)
   return (got[KEY] as Record<string, ResearchTask>) ?? {}
+}
+
+async function clearedAt(): Promise<number> {
+  const got = await chrome.storage.local.get(CLEARED_AT_KEY)
+  return (got[CLEARED_AT_KEY] as number) ?? 0
+}
+
+/**
+ * Write `map` to storage UNLESS a clearTasks() landed after `seenClearedAt` was
+ * captured. This is the cross-context guard: the SW and the side panel each
+ * import this module as their own JS execution context, so the module-scoped
+ * `writeChain` above only serializes writes WITHIN one context — it cannot stop
+ * a panel-issued clearTasks() from racing an in-flight SW saveTask/applyUpdate/
+ * heartbeat (or vice versa), since neither side's writeChain knows the other
+ * exists. Re-checking this shared, storage-backed marker immediately before the
+ * write narrows that race to "one extra read right before the write" instead of
+ * "the whole read-modify-write window": a write that started before a concurrent
+ * clear now skips itself instead of resurrecting the just-cleared data with a
+ * stale map.
+ *
+ * This is a mitigation, not a full fix — a pathological-enough interleaving
+ * between this recheck and the write below could still land wrong. The
+ * watertight fix is routing the panel's clear through a message the SW handles
+ * (so every write funnels through ONE writeChain), which needs changes outside
+ * this file's owned surface (background.ts's message handler, and the
+ * clear-research-tasks call site in the settings/data UI).
+ */
+async function writeMapUnlessCleared(map: Record<string, ResearchTask>, seenClearedAt: number): Promise<void> {
+  if ((await clearedAt()) !== seenClearedAt) return
+  await chrome.storage.local.set({ [KEY]: map })
 }
 
 /** Keep the newest `max` tasks by startedAt, but never drop an active (running or
@@ -294,10 +341,11 @@ export function pruneTasks(map: Record<string, ResearchTask>, max: number): Reco
 
 export async function saveTask(t: ResearchTask): Promise<void> {
   await serialize(async () => {
+    const seenClearedAt = await clearedAt()
     const map = await all()
     map[t.id] = { ...t, steps: capSteps(t.steps) }
     try {
-      await chrome.storage.local.set({ [KEY]: pruneTasks(map, MAX_TASKS) })
+      await writeMapUnlessCleared(pruneTasks(map, MAX_TASKS), seenClearedAt)
     } catch (err) {
       // A quota/storage failure here would otherwise be a silent unhandled rejection
       // in the fire-and-forget message listener that calls this.
@@ -319,6 +367,7 @@ export async function applyUpdate(
   patch: Partial<ResearchTask> | ((cur: ResearchTask) => Partial<ResearchTask>),
 ): Promise<ResearchTask | undefined> {
   return serialize(async () => {
+    const seenClearedAt = await clearedAt()
     const map = await all()
     const cur = map[id]
     if (!cur) return undefined
@@ -327,7 +376,7 @@ export async function applyUpdate(
     if (next.steps) next.steps = capSteps(next.steps)
     map[id] = next
     try {
-      await chrome.storage.local.set({ [KEY]: map })
+      await writeMapUnlessCleared(map, seenClearedAt)
     } catch (err) {
       console.error('[researchTasks] persist failed', err)
     }
@@ -342,12 +391,13 @@ export async function applyUpdate(
  */
 export async function heartbeat(id: string): Promise<void> {
   await serialize(async () => {
+    const seenClearedAt = await clearedAt()
     const map = await all()
     const cur = map[id]
     if (!cur || !isActiveStatus(cur.status)) return
     map[id] = { ...cur, updatedAt: Date.now() }
     try {
-      await chrome.storage.local.set({ [KEY]: map })
+      await writeMapUnlessCleared(map, seenClearedAt)
     } catch (err) {
       console.error('[researchTasks] persist failed', err)
     }
@@ -361,6 +411,11 @@ export async function heartbeat(id: string): Promise<void> {
  */
 export async function clearTasks(): Promise<void> {
   await serialize(async () => {
+    // Stamp the marker BEFORE removing the map: a writer (in the OTHER context)
+    // that captured its own seenClearedAt earlier than this will see it change on
+    // its pre-write recheck (writeMapUnlessCleared) and skip, instead of
+    // resurrecting what we are about to clear.
+    await chrome.storage.local.set({ [CLEARED_AT_KEY]: Date.now() })
     await chrome.storage.local.remove(KEY)
   })
 }

@@ -69,6 +69,17 @@ test('resolveDdgHref unwraps the uddg redirect and passes plain URLs through', (
   expect(resolveDdgHref('https://plain.com/p')).toBe('https://plain.com/p')
 })
 
+test('resolveDdgHref does not double-decode a target URL that has its own percent-escapes', () => {
+  // URLSearchParams.get('uddg') already fully decodes once; a stray second
+  // decodeURIComponent() turns this target's own %20/%25 into a literal space
+  // and a mangled "%do" — this is invisible to the test above because that
+  // target has no percent-escapes of its own (decoding it twice or once gives
+  // the same string).
+  const target = 'https://example.com/search?q=hello%20world&x=100%25done'
+  const wrapped = '/l/?uddg=' + encodeURIComponent(target)
+  expect(resolveDdgHref(wrapped)).toBe(target)
+})
+
 test('SSRF guard rejects trailing-dot localhost bypass', () => {
   expect(isFetchableUrl('http://localhost./').ok).toBe(false)
 })
@@ -144,6 +155,58 @@ test('SSRF guard still allows a normal public dotted-decimal IP', () => {
 test('SSRF guard still allows normal public https URLs', () => {
   expect(isFetchableUrl('https://example.com/page').ok).toBe(true)
   expect(isFetchableUrl('https://sub.example.com/page?x=1').ok).toBe(true)
+})
+
+// --- S4: reserved ranges, metadata hostnames, and adversarial URL shapes ---
+// (hardening pass — table-driven over the classes an SSRF blocklist bypass
+// typically exploits, not just one example each)
+
+test('SSRF guard rejects the rest of the 0.0.0.0/8 block, not just the exact literal', () => {
+  expect(isFetchableUrl('http://0.0.0.1/').ok).toBe(false)
+  expect(isFetchableUrl('http://0.1.2.3/').ok).toBe(false)
+  expect(isFetchableUrl('http://0.255.255.255/').ok).toBe(false)
+})
+
+test('SSRF guard still allows a public IP starting with 1, just outside the 0.0.0.0/8 block', () => {
+  expect(isFetchableUrl('http://1.1.1.1/').ok).toBe(true)
+})
+
+test('SSRF guard rejects the RFC 6598 carrier-grade-NAT range (Alibaba Cloud metadata lives at 100.100.100.200)', () => {
+  expect(isFetchableUrl('http://100.64.0.1/').ok).toBe(false)
+  expect(isFetchableUrl('http://100.100.100.200/').ok).toBe(false)
+  expect(isFetchableUrl('http://100.127.255.255/').ok).toBe(false)
+})
+
+test('SSRF guard still allows public 100.x addresses just outside the CGN range', () => {
+  expect(isFetchableUrl('http://100.63.255.255/').ok).toBe(true)
+  expect(isFetchableUrl('http://100.128.0.1/').ok).toBe(true)
+})
+
+test('SSRF guard rejects known cloud-metadata hostnames', () => {
+  expect(isFetchableUrl('http://metadata.google.internal/').ok).toBe(false)
+  expect(isFetchableUrl('http://METADATA.GOOGLE.INTERNAL/').ok).toBe(false)
+  expect(isFetchableUrl('http://metadata.google.internal./').ok).toBe(false) // trailing dot
+  expect(isFetchableUrl('http://metadata/computeMetadata/v1/').ok).toBe(false) // GCE's bare shorthand
+})
+
+test('SSRF guard blocks every IPv6 literal outright, so loopback/link-local/unique-local are covered too', () => {
+  expect(isFetchableUrl('http://[::1]/').ok).toBe(false)
+  expect(isFetchableUrl('http://[fe80::1]/').ok).toBe(false)
+  expect(isFetchableUrl('http://[fd00::1]/').ok).toBe(false)
+  expect(isFetchableUrl('http://[fc00::1]/').ok).toBe(false)
+})
+
+test('SSRF guard resolves the real connection target through userinfo, not the credentials substring', () => {
+  // WHATWG URL parsing (not naive string/regex matching) decides what's after
+  // "@" is the real host in both directions — a scary-looking credential
+  // cannot smuggle a private target past the check, nor false-flag a public one.
+  expect(isFetchableUrl('http://trusted.example.com@127.0.0.1/').ok).toBe(false)
+  expect(isFetchableUrl('http://127.0.0.1@trusted.example.com/').ok).toBe(true)
+})
+
+test('SSRF guard is unaffected by an uppercase scheme', () => {
+  expect(isFetchableUrl('HTTP://127.0.0.1/').ok).toBe(false)
+  expect(isFetchableUrl('HTTP://example.com/').ok).toBe(true)
 })
 
 test('KNOWN RESIDUAL RISK: a DNS-rebinding hostname is not caught by string inspection alone', () => {

@@ -18,3 +18,6 @@ dist/
 
 # Chrome Web Store upload packages built by scripts/package.sh
 /lychee-ai-v*.zip
+
+# Playwright MCP scratch traces (browser verification runs)
+.playwright-mcp/

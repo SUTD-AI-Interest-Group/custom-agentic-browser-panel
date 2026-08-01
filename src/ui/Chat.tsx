@@ -55,10 +55,11 @@ import { createAgentTools, type ApprovalRequest, type PageControlGate } from '..
 import type { ChatStatus } from './tabChats'
 import { buildMcpTools } from '../mcp/tools'
 import { getMcpManager, type McpPromptArgInfo } from '../mcp/manager'
-import { mcpSettings, mcpToolPolicy } from '../mcp/config'
+import { mcpSettings, mcpToolName, mcpToolPolicy } from '../mcp/config'
 import McpContentCard from './McpContentCard'
 import McpAppCard, { registerMcpAppHostActions, type McpAppRef } from './McpAppCard'
 import { ArtifactCard } from './ArtifactCard'
+import { ApprovalQueue } from './approvalQueue'
 import { type ControlSession } from '../tools/pageControl'
 import { clearIndex } from '../platform/domIndex'
 import { unmountPresence, unmountAllPresence } from '../platform/presence'
@@ -116,8 +117,17 @@ Ground your answers on the page. When your answer comes from a specific passage,
 
 Capabilities to load when needed: HighlightContent (scroll to and mark the passage/figure your answer came from), ReadTabs (other open tabs — mode "gist" skims every tab with a one-line summary and flags duplicates, which is how you answer "what do I have open", "which tab had…", or start any tidy-up), GroupTabs (file tabs into named Chrome tab groups), CloseTabs (close tabs, or reopen the batch you last closed), RequestPageControl/ControlPage/AutofillForm (control a page — click, type, fill), NavigateTab (switch/open/load a tab), ExtractData (structured JSON from the page), RunCode (execute JavaScript in a sealed sandbox — compute, verify, transform data), CreateArtifact/UpdateArtifact (build a self-contained interactive HTML page, visualization, or mini-app rendered as a live card in the chat — the way to SHOW the user something you made), SaveMemory/SearchMemory (long-term memory), QueryBrowserData (history/bookmarks/top sites/downloads — only enabled sources), ListAllSkills/ReadSkill/SaveSkill (skills), StartResearch (background web research). Tools whose names start with mcp_ come from MCP servers the user connected (ListMcpResources/ReadMcpResource read those servers' resources) — list them with ToolSearch like any other capability. If the message is purely conversational and needs no browser action, just answer.`
 
+/**
+ * A pending approval as shown in the card. No longer carries its own
+ * `resolve` — settlement is owned by the ApprovalQueue (approvalQueue.ts) so
+ * a second concurrent request can queue behind an unanswered one instead of
+ * silently replacing it (see requestApproval below).
+ */
 interface PendingApproval extends ApprovalRequest {
-  resolve: (approved: boolean) => void
+  /** Set only for a RequestPageControl session card — branches the rendered
+   *  card to the "Let the agent control host?" variant instead of an
+   *  ordinary tool-approval summary (see pageControl.requestSession below). */
+  session?: { plan: string; host: string }
 }
 
 interface CurrentTabInfo {
@@ -658,7 +668,14 @@ export default function Chat({
   // by id+url. Lets a deictic reference re-share the current tab only after the
   // user navigates to a different page. Resets when the chat remounts.
   const sharedTabsRef = useRef<Set<string>>(new Set())
-  const approvalRef = useRef<PendingApproval | null>(null)
+  // FIFO of pending approval cards (see approvalQueue.ts): the AI SDK runs
+  // every tool call from one model step concurrently, so a second gated tool
+  // call while one is still awaiting its card is the default case, not an
+  // edge case — it must queue behind the first, never silently replace it.
+  const approvalQueueRef = useRef(new ApprovalQueue<PendingApproval>())
+  // Guards settleApproval's own claim-then-await-permission window (see
+  // below) against a double-click resolving the wrong queued entry.
+  const settlingApprovalRef = useRef(false)
   const sessionAllowed = useRef<Set<string>>(new Set())
   // Tools pre-authorized for the current turn only (e.g. SearchMemory when the
   // user typed @memory — the mention itself is their consent).
@@ -674,7 +691,6 @@ export default function Chat({
   const [regenTarget, setRegenTarget] = useState<RegenTarget | null>(null)
   // The open page-control session (RequestPageControl → ControlPage), if any.
   const pageSessionRef = useRef<ControlSession | null>(null)
-  const [sessionPlan, setSessionPlan] = useState<{ plan: string; host: string } | null>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
   // Steers queued during the running chain, drained at each cycle boundary in
@@ -1174,7 +1190,6 @@ export default function Chat({
   function teardownSession() {
     const s = pageSessionRef.current
     pageSessionRef.current = null
-    setSessionPlan(null)
     if (s) {
       void clearIndex(s.tabId)
       void unmountPresence(s.tabId)
@@ -1183,33 +1198,28 @@ export default function Chat({
 
   // Real page-control gate: RequestPageControl suspends on a session card
   // (reusing the approval-card machinery, branched to the session variant via
-  // sessionPlan); ControlPage reads/mutates the ref-backed session directly.
+  // PendingApproval.session); ControlPage reads/mutates the ref-backed session
+  // directly. Goes through the same approvalQueueRef as requestApproval below
+  // — a RequestPageControl call is just another gated request that must queue
+  // behind whatever's already pending rather than clobber it.
   const pageControl: PageControlGate = {
-    requestSession: ({ plan, host, origin, tabId }) =>
-      new Promise<boolean>((resolve) => {
-        // Close out any previously-open session before offering a new one.
-        if (pageSessionRef.current) teardownSession()
-        // Reuse the approval card machinery, but branch the UI to a session card.
-        setSessionPlan({ plan, host })
-        approvalRef.current = {
-          toolName: 'RequestPageControl',
-          summary: `Control ${host}`,
-          reason: plan,
-          resolve: (approved: boolean) => {
-            setSessionPlan(null)
-            if (approved) {
-              pageSessionRef.current = {
-                tabId,
-                origin,
-                plan,
-                active: true,
-              }
-            }
-            resolve(approved)
-          },
-        }
-        setApproval(approvalRef.current)
-      }),
+    requestSession: ({ plan, host, origin, tabId }) => {
+      // Close out any previously-open session before offering a new one.
+      if (pageSessionRef.current) teardownSession()
+      const promise = approvalQueueRef.current.request({
+        toolName: 'RequestPageControl',
+        summary: `Control ${host}`,
+        reason: plan,
+        session: { plan, host },
+      })
+      // Reuse the approval card machinery, but branch the UI to a session
+      // card whenever this request is the one actually shown.
+      setApproval(approvalQueueRef.current.front)
+      return promise.then((approved) => {
+        if (approved) pageSessionRef.current = { tabId, origin, plan, active: true }
+        return approved
+      })
+    },
     session: () => pageSessionRef.current,
     endSession: teardownSession,
   }
@@ -1220,16 +1230,21 @@ export default function Chat({
   // "Allow this chat" on that card is what makes a polling widget usable (one
   // approval covers the poll loop). App-suggested chat text only ever becomes
   // a composer draft the user reviews. Registered per render so the closures
-  // always see current settings/state.
+  // always see current settings/state, and keyed by conversationId (not a bare
+  // global) so a background conversation's card is never serviced by whatever
+  // OTHER conversation's Chat last rendered — see mcpAppHostRegistry.ts.
   useEffect(() => {
-    registerMcpAppHostActions({
+    return registerMcpAppHostActions(conversationId, {
       callTool: async (server: string, tool: string, args: unknown) => {
         const mcp = mcpSettings(settings)
         const policy = mcpToolPolicy(mcp, server, tool)
         if (policy === 'never') throw new Error('This tool is disabled in your settings.')
         if (policy !== 'always') {
           const approved = await requestApproval({
-            toolName: `mcp_${server}_${tool}`,
+            // Same sanitized/capped name the agent's own MCP calls use
+            // (mcp/tools.ts), so an "Allow this chat" grant from either
+            // surface covers the other for the same (server, tool) pair.
+            toolName: mcpToolName(server, tool, new Set()),
             summary: `The ${server} app wants to call “${tool}”`,
             reason: 'Requested by the interactive app card in this chat.',
           })
@@ -1253,40 +1268,54 @@ export default function Chat({
       if (sessionAllowed.current.has(request.toolName)) return Promise.resolve(true)
       if (turnAllowed.current.has(request.toolName)) return Promise.resolve(true)
     }
-    return new Promise<boolean>((resolve) => {
-      const pending = { ...request, resolve }
-      approvalRef.current = pending
-      setApproval(pending)
-    })
+    // Queues behind whatever's already pending instead of overwriting it — the
+    // AI SDK runs every tool call in a model step concurrently, so a second
+    // gated call (two RunCode calls, RunCode + CreateArtifact, ...) landing
+    // here while the first is still awaiting its card is the default case,
+    // not an edge case. Overwriting would drop the first call's resolve
+    // forever, hanging that tool's execute() (and the whole chat) permanently.
+    const promise = approvalQueueRef.current.request(request)
+    setApproval(approvalQueueRef.current.front)
+    return promise
   }
 
   async function settleApproval(approved: boolean, forSession = false) {
-    const pending = approvalRef.current
+    // Guards the claim-then-await-permission window below: a double-click (or
+    // Stop firing mid permission-prompt, which instead drains the queue
+    // directly — see stop()) must not settle the same front entry twice or
+    // reach into whatever's now queued behind it.
+    if (settlingApprovalRef.current) return
+    const pending = approvalQueueRef.current.front
     if (!pending) return
-    // Claim the pending approval up front so a double-click cannot request the
-    // same permission twice or resolve the same promise twice.
-    approvalRef.current = null
+    settlingApprovalRef.current = true
+    try {
+      // An optional Chrome permission is requested HERE, from inside the Allow
+      // click, because chrome.permissions.request only works during a user
+      // gesture. This must stay ahead of every await in this function — one
+      // await first and the gesture is spent, and Chrome silently refuses the
+      // prompt. Declining the Chrome dialog declines the tool call: the tool
+      // asked for that permission because it cannot do the job without it.
+      let granted = approved
+      if (approved && pending.needsPermissions?.length) {
+        granted = await chrome.permissions
+          .request({ permissions: pending.needsPermissions })
+          .catch(() => false)
+      }
 
-    // An optional Chrome permission is requested HERE, from inside the Allow
-    // click, because chrome.permissions.request only works during a user
-    // gesture. This must stay ahead of every await in this function — one await
-    // first and the gesture is spent, and Chrome silently refuses the prompt.
-    // Declining the Chrome dialog declines the tool call: the tool asked for
-    // that permission because it cannot do the job without it.
-    let granted = approved
-    if (approved && pending.needsPermissions?.length) {
-      granted = await chrome.permissions
-        .request({ permissions: pending.needsPermissions })
-        .catch(() => false)
+      if (granted && forSession) sessionAllowed.current.add(pending.toolName)
+      // Resolve the front and reveal whatever's queued behind it, if anything.
+      setApproval(approvalQueueRef.current.settleFront(granted))
+    } finally {
+      settlingApprovalRef.current = false
     }
-
-    setApproval(null)
-    if (granted && forSession) sessionAllowed.current.add(pending.toolName)
-    pending.resolve(granted)
   }
 
   function stop() {
-    void settleApproval(false)
+    // Deny everything pending immediately — front and anything queued behind
+    // it — rather than routing through settleApproval, so Stop doesn't wait on
+    // a Chrome permission prompt and can't be blocked by settlingApprovalRef.
+    approvalQueueRef.current.drainAll(false)
+    setApproval(null)
     // Discard any queued steers, and the pending follow-up too — the user asked to
     // stop, so it must not auto-send when streaming ends (see the flush effect).
     steerQueueRef.current = []
@@ -2301,7 +2330,11 @@ export default function Chat({
         trace?.end({ metadata: { error: message } })
       }
     } finally {
-      void settleApproval(false)
+      // Deny anything still pending — front AND everything queued behind it —
+      // so a chain that ends (any reason) never leaves an orphaned tool call
+      // awaiting a card nobody will ever answer.
+      approvalQueueRef.current.drainAll(false)
+      setApproval(null)
       turnAllowed.current = new Set()
       // Discard any steers still queued at chain end (drained on success, dropped
       // on abort/error — the chain is over, so they have nothing to steer).
@@ -2617,6 +2650,7 @@ export default function Chat({
               message={msg}
               streaming={streaming && i === messages.length - 1}
               turnStartedAt={turnStartedAt}
+              conversationId={conversationId}
               // Regenerate is offered on the last reply only. Anything appended
               // after a turn — a background-research report landing in the
               // transcript — makes that reply non-last, so the button withdraws
@@ -2632,7 +2666,7 @@ export default function Chat({
         {approval && (
           <ApprovalCard
             approval={approval}
-            sessionPlan={sessionPlan}
+            sessionPlan={approval.session ?? null}
             onDeny={() => void settleApproval(false)}
             onAllow={() => void settleApproval(true)}
             onAllowSession={() => void settleApproval(true, true)}
@@ -3377,12 +3411,16 @@ function MessageView({
   streaming,
   turnStartedAt,
   onRegenerate,
+  conversationId,
 }: {
   message: UIMessage
   streaming: boolean
   turnStartedAt: number | null
   /** Set only on the transcript's last reply, and only when it can be re-run. */
   onRegenerate?: () => void
+  /** Threaded down to McpAppCard so an app card's tool calls are scoped to
+   *  THIS conversation's approval/session state (see mcpAppHostRegistry.ts). */
+  conversationId: string
 }) {
   const bodyRef = useRef<HTMLDivElement>(null)
 
@@ -3494,7 +3532,7 @@ function MessageView({
           ) : part.type === 'reasoning' ? (
             <ReasoningBlock key={i} text={part.text} active={streaming && i === parts.length - 1} />
           ) : (
-            <ToolPill key={part.toolCallId} part={part} />
+            <ToolPill key={part.toolCallId} part={part} conversationId={conversationId} />
           )
         })}
         {streaming &&
@@ -3928,7 +3966,14 @@ function controlActionLabel(input: any, output: any): string {
   return 'Page action'
 }
 
-function ToolPill({ part }: { part: Extract<UIPart, { type: 'tool' }> }) {
+function ToolPill({
+  part,
+  conversationId,
+}: {
+  part: Extract<UIPart, { type: 'tool' }>
+  /** Threaded down to McpAppCard — see mcpAppHostRegistry.ts. */
+  conversationId: string
+}) {
   const output = part.output as any
   // Stable identity for the app card's init context: a fresh object literal
   // here would be a changed effect dep in McpAppCard on every transcript
@@ -4067,7 +4112,12 @@ function ToolPill({ part }: { part: Extract<UIPart, { type: 'tool' }> }) {
         <McpContentCard key={id} artifactId={id} />
       ))}
       {output?.app && typeof output.app === 'object' && typeof output.app.server === 'string' && (
-        <McpAppCard app={output.app as McpAppRef} toolInput={part.input} toolOutput={appOutput} />
+        <McpAppCard
+          app={output.app as McpAppRef}
+          toolInput={part.input}
+          toolOutput={appOutput}
+          conversationId={conversationId}
+        />
       )}
       {typeof output?.artifactId === 'string' && (
         <ArtifactCard

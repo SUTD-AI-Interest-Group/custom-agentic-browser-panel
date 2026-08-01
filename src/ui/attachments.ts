@@ -19,7 +19,7 @@ import {
   type AttachmentDescriptor,
 } from '../agent/attachmentPlan'
 import { lycheeProviderOptions } from '../data/attachmentRefs'
-import { saveAttachment, type AttachmentMeta } from '../data/attachments'
+import { saveAttachment, approxBytes, type AttachmentMeta } from '../data/attachments'
 import { makeThumb } from '../data/screenshots'
 import { loadPdfFromBytes, renderPdfPageFromBytes, PdfError } from '../platform/pdf'
 import { assemblePagesText } from '../platform/pdfText'
@@ -191,7 +191,7 @@ export function attachmentUiMetas(atts: ComposerAttachment[]): AttachmentMeta[] 
     id: a.id,
     kind: a.kind,
     name: a.name,
-    byteSize: a.kind === 'image' ? Math.round((a.dataUrl.length * 3) / 4) : a.byteSize,
+    byteSize: a.kind === 'image' ? approxBytes(a.dataUrl) : a.byteSize,
     ...(a.kind === 'pdf' ? { pageCount: a.pageCount } : {}),
     ...(a.kind === 'image' ? { thumbDataUrl: a.thumbDataUrl } : {}),
   }))
@@ -244,10 +244,14 @@ export async function assembleAttachments(
     const descriptor: AttachmentDescriptor = {
       kind: att.kind,
       name: att.name,
-      byteSize: att.kind === 'image' ? Math.round((att.dataUrl.length * 3) / 4) : att.byteSize,
+      byteSize: att.kind === 'image' ? approxBytes(att.dataUrl) : att.byteSize,
       ...(att.kind === 'pdf' ? { pageCount: att.pageCount } : {}),
     }
     const plan = planAttachmentDelivery(descriptor, ctx)
+    // Computed at most once per PDF attachment (native-pdf's outgoing part and
+    // the persistence step below both want the same encode) — bytesToDataUrl
+    // is an expensive main-thread-blocking pass on the largest attachments.
+    let pdfDataUrl: string | undefined
     try {
       if (plan.route === 'image-part' && att.kind === 'image') {
         parts.push({
@@ -259,29 +263,53 @@ export async function assembleAttachments(
       } else if (plan.route === 'image-note') {
         blocks.push(plan.note)
       } else if (plan.route === 'native-pdf' && att.kind === 'pdf') {
+        pdfDataUrl = bytesToDataUrl(att.bytes, 'application/pdf')
         parts.push({
           type: 'file',
           mediaType: 'application/pdf',
           filename: att.name,
-          data: bytesToDataUrl(att.bytes, 'application/pdf'),
+          data: pdfDataUrl,
           providerOptions: lycheeProviderOptions({ id: att.id }),
         })
         blocks.push(`[The user attached the PDF "${att.name}" (${att.pageCount} pages).]`)
       } else if (plan.route === 'pdf-pages' && att.kind === 'pdf') {
+        // Each page renders independently — a failure on page k must not
+        // orphan pages 1..k-1 as uncaptioned image parts (already pushed,
+        // already shown to the model) nor propagate to the outer catch below,
+        // which would also skip persisting the attachment entirely. Stop at
+        // the first failure and caption exactly what was actually attached.
+        const rendered: number[] = []
+        let failure: { page: number; message: string } | null = null
         for (const page of plan.pages) {
-          const rendered = await renderPdfPageFromBytes(att.bytes, att.id, page)
-          parts.push({
-            type: 'file',
-            mediaType: 'image',
-            data: rendered.dataUrl,
-            providerOptions: lycheeProviderOptions({ id: att.id, page }),
-          })
+          try {
+            const r = await renderPdfPageFromBytes(att.bytes, att.id, page)
+            parts.push({
+              type: 'file',
+              mediaType: 'image',
+              data: r.dataUrl,
+              providerOptions: lycheeProviderOptions({ id: att.id, page }),
+            })
+            rendered.push(page)
+          } catch (err) {
+            failure = { page, message: err instanceof Error ? err.message : String(err) }
+            break
+          }
         }
-        const first = plan.pages[0]
-        const last = plan.pages[plan.pages.length - 1]
-        blocks.push(
-          `[The user attached the PDF "${att.name}" (${att.pageCount} pages). Its pages are attached as images, in order: ${pageCaption(att.name, first, att.pageCount)} through ${pageCaption(att.name, last, att.pageCount)}.]${plan.truncationNote ? `\n${plan.truncationNote}` : ''}`,
-        )
+        if (rendered.length === 0) {
+          const why = failure ? ` (${failure.message})` : ''
+          blocks.push(`[The user attached the PDF "${att.name}" (${att.pageCount} pages), but no pages could be rendered as images${why}.]`)
+        } else {
+          const first = rendered[0]
+          const last = rendered[rendered.length - 1]
+          const partialNote = failure
+            ? ` Page ${failure.page} failed to render (${failure.message}), so later pages are omitted.`
+            : plan.truncationNote
+              ? `\n${plan.truncationNote}`
+              : ''
+          blocks.push(
+            `[The user attached the PDF "${att.name}" (${att.pageCount} pages). Its pages are attached as images, in order: ${pageCaption(att.name, first, att.pageCount)} through ${pageCaption(att.name, last, att.pageCount)}.]${partialNote}`,
+          )
+        }
       } else if (plan.route === 'pdf-text' && att.kind === 'pdf') {
         const loaded = await loadPdfFromBytes(att.bytes, att.id, att.name)
         const assembled = assemblePagesText(
@@ -310,11 +338,14 @@ export async function assembleAttachments(
     }
     // Persist the original once per send; the transcript and history refer to it
     // by id. Best-effort — losing bookkeeping must not lose the user's message.
+    // Reuses the native-pdf route's encode above when there is one, computes it
+    // fresh (once) otherwise — pdf-pages/pdf-text still persist the original
+    // file regardless of which delivery route was used to show it to the model.
     const dataUrl =
       att.kind === 'image'
         ? att.dataUrl
         : att.kind === 'pdf'
-          ? bytesToDataUrl(att.bytes, 'application/pdf')
+          ? (pdfDataUrl ?? bytesToDataUrl(att.bytes, 'application/pdf'))
           : bytesToDataUrl(new TextEncoder().encode(att.text), 'text/plain')
     const meta = attachmentUiMetas([att])[0]
     await saveAttachment({ id: att.id, conversationId: o.conversationId, meta, dataUrl }).catch((err) => {

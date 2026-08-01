@@ -270,14 +270,36 @@ function buildRegionIndex(attr: string, maxCandidates: number, semanticSource: s
 
   document.querySelectorAll('[' + attr + ']').forEach((n) => n.removeAttribute(attr))
 
+  // Same shadow-DOM gap as domIndex.ts's buildInteractiveIndex — see its
+  // comment for the full rationale. Recurse into each open shadow root so a
+  // chart/table living inside a web component is not silently invisible.
+  const collectAll = (root: ParentNode): Element[] => {
+    const found: Element[] = []
+    for (const el of Array.from(root.querySelectorAll('*'))) {
+      found.push(el)
+      if (el.shadowRoot) found.push(...collectAll(el.shadowRoot))
+    }
+    return found
+  }
+
   // Type annotations are erased before this function is serialized into the page,
   // so naming a module type here costs nothing at runtime (same as domIndex).
   const out: RawRegion[] = []
   // Maps an element to its index in `out`, so a child can name its nearest
   // indexed ancestor without a second tree walk.
   const idOf = new Map<Element, number>()
-  const all = Array.from(document.querySelectorAll('*'))
+  const all = collectAll(document)
   let truncated = false
+
+  // el.parentElement is null at the very top of a shadow root (a ShadowRoot
+  // is a DocumentFragment, not an Element) even though the host element sits
+  // conceptually right above it — bridge that gap via .host so the
+  // nested-dedupe parent chain doesn't dead-end at a shadow boundary.
+  const parentOrHost = (node: Element): Element | null => {
+    if (node.parentElement) return node.parentElement
+    const root = node.getRootNode()
+    return root instanceof ShadowRoot ? root.host : null
+  }
 
   for (const el of all) {
     if (out.length >= maxCandidates) {
@@ -298,14 +320,14 @@ function buildRegionIndex(attr: string, maxCandidates: number, semanticSource: s
     // Nearest already-indexed ancestor. Walking up from here is cheap because
     // ancestors are always visited before descendants in document order.
     let parentId = -1
-    let p: Element | null = el.parentElement
+    let p: Element | null = parentOrHost(el)
     while (p) {
       const found = idOf.get(p)
       if (found !== undefined) {
         parentId = found
         break
       }
-      p = p.parentElement
+      p = parentOrHost(p)
     }
 
     const id = out.length

@@ -60,6 +60,58 @@ interface CacheEntry {
 // calls for the same document share one load. Map insertion order is the LRU.
 const cache = new Map<string, Promise<CacheEntry>>()
 
+// Counts callers currently "checked out" of a cache entry via getEntry/
+// getBytesEntry (acquired before the caller's await, released in their
+// finally). Concurrent history hydration can fire many renderPdfPageFromBytes
+// calls across several distinct documents at once, all sharing this one small
+// cache — an in-flight canvas render or text-content fetch still holds the
+// doc/task, and destroy()ing it out from under that caller aborts pdf.js's
+// worker mid-operation. See planEviction.
+const refCounts = new Map<string, number>()
+
+function acquire(key: string) {
+  refCounts.set(key, (refCounts.get(key) ?? 0) + 1)
+}
+
+function release(key: string) {
+  const n = (refCounts.get(key) ?? 0) - 1
+  if (n <= 0) refCounts.delete(key)
+  else refCounts.set(key, n)
+}
+
+/**
+ * Which cache keys to evict, oldest-first, to bring the cache back to `max`
+ * entries — skipping any key `isInUse` flags rather than destroying it purely
+ * by recency. Left over-capacity when every entry is in use (safety over
+ * strict capacity). Pure and exported for testing; `evictExcess` is the
+ * impure shell that acts on its answer (destroying the corresponding pdf.js
+ * task).
+ */
+export function planEviction(
+  keysOldestFirst: string[],
+  max: number,
+  isInUse: (key: string) => boolean,
+): string[] {
+  const evict: string[] = []
+  let size = keysOldestFirst.length
+  for (const key of keysOldestFirst) {
+    if (size <= max) break
+    if (isInUse(key)) continue
+    evict.push(key)
+    size--
+  }
+  return evict
+}
+
+function evictExcess() {
+  const doomed = planEviction([...cache.keys()], CACHE_MAX, (k) => (refCounts.get(k) ?? 0) > 0)
+  for (const k of doomed) {
+    const v = cache.get(k)
+    cache.delete(k)
+    v?.then((e) => e.task.destroy().catch(() => {})).catch(() => {})
+  }
+}
+
 async function getPdfjs() {
   const pdfjs = await import('pdfjs-dist')
   if (!pdfjs.GlobalWorkerOptions.workerSrc) pdfjs.GlobalWorkerOptions.workerSrc = workerUrl
@@ -248,28 +300,40 @@ async function parsePdfBytes(
   }
 }
 
+/** A checked-out cache entry plus the release the caller must call (in a
+ * finally) once done touching its doc — see the refcount comment on `cache`. */
+interface CheckedOutEntry {
+  entry: CacheEntry
+  release: () => void
+}
+
 async function getEntry(
   url: string,
   opts?: { credentials?: RequestCredentials; signal?: AbortSignal },
-): Promise<CacheEntry> {
+): Promise<CheckedOutEntry> {
   const credentials = opts?.credentials ?? 'omit'
   const key = `${credentials}:${url}`
-  const hit = cache.get(key)
-  if (hit) {
+  let pending = cache.get(key)
+  if (pending) {
     // Refresh recency (Map order is the LRU order).
     cache.delete(key)
-    cache.set(key, hit)
-    return hit
+    cache.set(key, pending)
+  } else {
+    pending = doLoad(url, credentials, opts?.signal)
+    cache.set(key, pending)
+    pending.catch(() => cache.delete(key))
   }
-  const pending = doLoad(url, credentials, opts?.signal)
-  cache.set(key, pending)
-  pending.catch(() => cache.delete(key))
-  for (const [k, v] of cache) {
-    if (cache.size <= CACHE_MAX) break
-    cache.delete(k)
-    v.then((e) => e.task.destroy().catch(() => {})).catch(() => {})
+  // Acquire before eviction runs, so this key (freshly touched/inserted) can
+  // never be the one evictExcess picks even in a fully-saturated cache.
+  acquire(key)
+  evictExcess()
+  try {
+    const entry = await pending
+    return { entry, release: () => release(key) }
+  } catch (err) {
+    release(key) // the load failed — no caller will get a release() to call
+    throw err
   }
-  return pending
 }
 
 /**
@@ -282,7 +346,9 @@ export async function loadPdf(
   url: string,
   opts?: { credentials?: RequestCredentials; signal?: AbortSignal },
 ): Promise<LoadedPdf> {
-  return (await getEntry(url, opts)).loaded
+  const { entry, release } = await getEntry(url, opts)
+  release() // .loaded is already fully computed — no further async pdf.js work to protect
+  return entry.loaded
 }
 
 /**
@@ -290,31 +356,40 @@ export async function loadPdf(
  * file). Cached under `bytes:<key>` in the same LRU, so the 20 sequential page
  * renders of one attached document parse it once. `key` is the attachment id.
  */
-async function getBytesEntry(bytes: Uint8Array, key: string, titleFallback?: string): Promise<CacheEntry> {
+async function getBytesEntry(
+  bytes: Uint8Array,
+  key: string,
+  titleFallback?: string,
+): Promise<CheckedOutEntry> {
   const cacheKey = `bytes:${key}`
-  const hit = cache.get(cacheKey)
-  if (hit) {
+  let pending = cache.get(cacheKey)
+  if (pending) {
     // Refresh recency (Map order is the LRU order).
     cache.delete(cacheKey)
-    cache.set(cacheKey, hit)
-    return hit
+    cache.set(cacheKey, pending)
+  } else {
+    if (bytes.byteLength > MAX_PDF_BYTES) throw new PdfError('This PDF is larger than the 50 MB limit.')
+    if (!sniffPdf(bytes)) throw new PdfError('This file is not a PDF (no %PDF header found).')
+    // pdf.js TRANSFERS the buffer it is handed to its worker, detaching the
+    // caller's Uint8Array — without this copy the attachment's bytes silently
+    // become zero-length after the attach-time parse and persist as an empty
+    // record. The URL path (doLoad) needs no copy: its fetched bytes are
+    // single-use. Keep this slice.
+    pending = parsePdfBytes(bytes.slice(), `attachment:${key}`, titleFallback ?? key)
+    cache.set(cacheKey, pending)
+    pending.catch(() => cache.delete(cacheKey))
   }
-  if (bytes.byteLength > MAX_PDF_BYTES) throw new PdfError('This PDF is larger than the 50 MB limit.')
-  if (!sniffPdf(bytes)) throw new PdfError('This file is not a PDF (no %PDF header found).')
-  // pdf.js TRANSFERS the buffer it is handed to its worker, detaching the
-  // caller's Uint8Array — without this copy the attachment's bytes silently
-  // become zero-length after the attach-time parse and persist as an empty
-  // record. The URL path (doLoad) needs no copy: its fetched bytes are
-  // single-use. Keep this slice.
-  const pending = parsePdfBytes(bytes.slice(), `attachment:${key}`, titleFallback ?? key)
-  cache.set(cacheKey, pending)
-  pending.catch(() => cache.delete(cacheKey))
-  for (const [k, v] of cache) {
-    if (cache.size <= CACHE_MAX) break
-    cache.delete(k)
-    v.then((e) => e.task.destroy().catch(() => {})).catch(() => {})
+  // Acquire before eviction runs, so this key (freshly touched/inserted) can
+  // never be the one evictExcess picks even in a fully-saturated cache.
+  acquire(cacheKey)
+  evictExcess()
+  try {
+    const entry = await pending
+    return { entry, release: () => release(cacheKey) }
+  } catch (err) {
+    release(cacheKey) // the load failed — no caller will get a release() to call
+    throw err
   }
-  return pending
 }
 
 /** loadPdf for raw bytes (a dropped file). Same caching, errors, and shape. */
@@ -323,7 +398,9 @@ export async function loadPdfFromBytes(
   key: string,
   titleFallback?: string,
 ): Promise<LoadedPdf> {
-  return (await getBytesEntry(bytes, key, titleFallback)).loaded
+  const { entry, release } = await getBytesEntry(bytes, key, titleFallback)
+  release() // .loaded is already fully computed — no further async pdf.js work to protect
+  return entry.loaded
 }
 
 // Long edge of a rendered page in device pixels — legible for the model without
@@ -356,17 +433,22 @@ export async function renderPdfPage(
   pageNumber: number,
   opts?: { credentials?: RequestCredentials; signal?: AbortSignal },
 ): Promise<{ dataUrl: string; width: number; height: number; pageCount: number; title: string }> {
-  const { doc, loaded } = await getEntry(url, opts)
-  if (pageNumber < 1 || pageNumber > doc.numPages) {
-    throw new PdfError(`No page ${pageNumber} — this PDF has ${doc.numPages} pages.`)
-  }
-  const { canvas } = await renderPageToCanvas(doc, pageNumber)
-  return {
-    dataUrl: canvas.toDataURL('image/png'),
-    width: canvas.width,
-    height: canvas.height,
-    pageCount: doc.numPages,
-    title: loaded.info.title,
+  const { entry, release } = await getEntry(url, opts)
+  try {
+    const { doc, loaded } = entry
+    if (pageNumber < 1 || pageNumber > doc.numPages) {
+      throw new PdfError(`No page ${pageNumber} — this PDF has ${doc.numPages} pages.`)
+    }
+    const { canvas } = await renderPageToCanvas(doc, pageNumber)
+    return {
+      dataUrl: canvas.toDataURL('image/png'),
+      width: canvas.width,
+      height: canvas.height,
+      pageCount: doc.numPages,
+      title: loaded.info.title,
+    }
+  } finally {
+    release()
   }
 }
 
@@ -376,17 +458,22 @@ export async function renderPdfPageFromBytes(
   key: string,
   pageNumber: number,
 ): Promise<{ dataUrl: string; width: number; height: number; pageCount: number; title: string }> {
-  const { doc, loaded } = await getBytesEntry(bytes, key)
-  if (pageNumber < 1 || pageNumber > doc.numPages) {
-    throw new PdfError(`No page ${pageNumber} — this PDF has ${doc.numPages} pages.`)
-  }
-  const { canvas } = await renderPageToCanvas(doc, pageNumber)
-  return {
-    dataUrl: canvas.toDataURL('image/png'),
-    width: canvas.width,
-    height: canvas.height,
-    pageCount: doc.numPages,
-    title: loaded.info.title,
+  const { entry, release } = await getBytesEntry(bytes, key)
+  try {
+    const { doc, loaded } = entry
+    if (pageNumber < 1 || pageNumber > doc.numPages) {
+      throw new PdfError(`No page ${pageNumber} — this PDF has ${doc.numPages} pages.`)
+    }
+    const { canvas } = await renderPageToCanvas(doc, pageNumber)
+    return {
+      dataUrl: canvas.toDataURL('image/png'),
+      width: canvas.width,
+      height: canvas.height,
+      pageCount: doc.numPages,
+      title: loaded.info.title,
+    }
+  } finally {
+    release()
   }
 }
 
@@ -421,39 +508,44 @@ export async function renderPdfPageHighlighted(
   matched: boolean
   matchCount: number
 }> {
-  const { doc, loaded } = await getEntry(url, opts)
-  if (pageNumber < 1 || pageNumber > doc.numPages) {
-    throw new PdfError(`No page ${pageNumber} — this PDF has ${doc.numPages} pages.`)
-  }
-  const { page, canvas, ctx, viewport } = await renderPageToCanvas(doc, pageNumber)
-  const content = await page.getTextContent()
-  const items = (content.items as unknown[]).filter(
-    (it): it is PdfTextItem => typeof (it as PdfTextItem).str === 'string',
-  )
-  const m = findTextInChunks(items.map((it) => it.str), query)
-  if (m.first) {
-    const pdfjs = await getPdfjs()
-    ctx.globalCompositeOperation = 'multiply'
-    ctx.fillStyle = 'rgba(255,213,79,0.6)'
-    for (let i = m.first.startChunk; i <= m.first.endChunk; i++) {
-      const it = items[i]
-      // Item transform is in PDF space; composing with the viewport transform
-      // yields the device-space baseline origin. Glyph height falls out of the
-      // composed matrix's scale component.
-      const tx = pdfjs.Util.transform(viewport.transform, it.transform)
-      const h = Math.hypot(tx[2], tx[3]) || it.height * viewport.scale
-      const w = it.width * viewport.scale
-      ctx.fillRect(tx[4] - 1, tx[5] - h, w + 2, h * 1.2)
+  const { entry, release } = await getEntry(url, opts)
+  try {
+    const { doc, loaded } = entry
+    if (pageNumber < 1 || pageNumber > doc.numPages) {
+      throw new PdfError(`No page ${pageNumber} — this PDF has ${doc.numPages} pages.`)
     }
-    ctx.globalCompositeOperation = 'source-over'
-  }
-  return {
-    dataUrl: canvas.toDataURL('image/png'),
-    width: canvas.width,
-    height: canvas.height,
-    pageCount: doc.numPages,
-    title: loaded.info.title,
-    matched: m.first !== null,
-    matchCount: m.count,
+    const { page, canvas, ctx, viewport } = await renderPageToCanvas(doc, pageNumber)
+    const content = await page.getTextContent()
+    const items = (content.items as unknown[]).filter(
+      (it): it is PdfTextItem => typeof (it as PdfTextItem).str === 'string',
+    )
+    const m = findTextInChunks(items.map((it) => it.str), query)
+    if (m.first) {
+      const pdfjs = await getPdfjs()
+      ctx.globalCompositeOperation = 'multiply'
+      ctx.fillStyle = 'rgba(255,213,79,0.6)'
+      for (let i = m.first.startChunk; i <= m.first.endChunk; i++) {
+        const it = items[i]
+        // Item transform is in PDF space; composing with the viewport transform
+        // yields the device-space baseline origin. Glyph height falls out of the
+        // composed matrix's scale component.
+        const tx = pdfjs.Util.transform(viewport.transform, it.transform)
+        const h = Math.hypot(tx[2], tx[3]) || it.height * viewport.scale
+        const w = it.width * viewport.scale
+        ctx.fillRect(tx[4] - 1, tx[5] - h, w + 2, h * 1.2)
+      }
+      ctx.globalCompositeOperation = 'source-over'
+    }
+    return {
+      dataUrl: canvas.toDataURL('image/png'),
+      width: canvas.width,
+      height: canvas.height,
+      pageCount: doc.numPages,
+      title: loaded.info.title,
+      matched: m.first !== null,
+      matchCount: m.count,
+    }
+  } finally {
+    release()
   }
 }

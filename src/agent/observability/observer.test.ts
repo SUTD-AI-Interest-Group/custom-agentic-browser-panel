@@ -5,10 +5,20 @@ import type { ObservabilityConfig } from '../../data/settings'
 // A fresh fetch mock per test; different keys per test give each getObserver()
 // call a distinct live observer (keyed by config signature), so buffers/flushes
 // don't leak across tests.
+// A real Response-shaped mock, not `{ok:true, status:207}` alone: Langfuse's
+// own CRITICAL warning (see langfuseClient.ts) is that a 207 with a non-empty
+// per-event `errors` array is a REJECTION, not a success — readJson() calls
+// `await res.json()`, so a mock with no working `.json()` would throw (caught,
+// returns null), silently skipping the very check this shape is supposed to
+// exercise. See langfuseClient.test.ts for the dedicated errors-array case.
 let fetchMock: ReturnType<typeof vi.fn>
 let keySeq = 0
 beforeEach(() => {
-  fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 207 })
+  fetchMock = vi.fn().mockResolvedValue({
+    ok: true,
+    status: 207,
+    json: async () => ({ errors: [] }),
+  })
   globalThis.fetch = fetchMock as unknown as typeof fetch
   keySeq += 1
 })
@@ -62,6 +72,40 @@ test('sanitize strips images unless kept, and caps long strings', () => {
   const nested = sanitize({ a: [{ b: img }], c: 'ok' }, false) as any
   expect(nested.a[0].b).toBe('[image omitted]')
   expect(nested.c).toBe('ok')
+})
+
+// d14 F5: sanitize() used to collapse Date/Map/Set/Error into `{}` (they have
+// no own-enumerable properties, so a plain Object.entries walk sees nothing)
+// with no signal anything was lost — degrading trace usefulness exactly when
+// it's needed most (debugging a failure that surfaced as a caught Error).
+test('sanitize converts Date/Map/Set/Error instead of silently losing them', () => {
+  const when = new Date('2026-01-02T03:04:05.000Z')
+  expect(sanitize({ when }, true)).toEqual({ when: '2026-01-02T03:04:05.000Z' })
+
+  const m = new Map([['a', 1], ['b', 2]])
+  expect(sanitize({ m }, true)).toEqual({ m: { a: 1, b: 2 } })
+
+  const s = new Set(['x', 'y'])
+  expect(sanitize({ s }, true)).toEqual({ s: ['x', 'y'] })
+
+  const err = new Error('boom')
+  const out = sanitize({ err }, true) as any
+  expect(out.err.name).toBe('Error')
+  expect(out.err.message).toBe('boom')
+})
+
+// d14 F5 (second half): a circular reference anywhere in the tree used to
+// throw RangeError inside walk(), caught by sanitize's own top-level catch —
+// which returned `undefined` for the ENTIRE value, not just the cyclic
+// branch. One cyclic field anywhere in a large tool input/output dropped the
+// whole observation.
+test('sanitize marks a circular reference instead of dropping the whole value', () => {
+  const obj: Record<string, unknown> = { a: 1, nested: { b: 2 } }
+  ;(obj.nested as Record<string, unknown>).loop = obj
+  const out = sanitize(obj, true) as any
+  expect(out.a).toBe(1)
+  expect(out.nested.b).toBe(2)
+  expect(out.nested.loop).toBe('[Circular]')
 })
 
 // --- disabled path (no-op) ------------------------------------------------

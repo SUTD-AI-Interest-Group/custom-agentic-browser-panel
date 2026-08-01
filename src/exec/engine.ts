@@ -21,12 +21,18 @@ export interface RunOutcome {
   /** JSON text of the completion value (or its String() form when not JSON-able). */
   value?: string
   logs: string[]
+  /** Lines discarded once MAX_LOG_LINES was hit; absent/0 when nothing was dropped. */
+  logsDropped?: number
   error?: string
   timedOut: boolean
   durationMs: number
 }
 
 const MAX_LOG_LINES = 200
+// A hard stop on one console argument's captured text, well above the panel's
+// eventual per-line display trim (protocol.ts's LOG_LINE_MAX) but far below
+// "whatever fits in the whole VM's heap" — the only bound before this fix.
+const ARG_TEXT_MAX = 4_000
 
 /**
  * Run one script in a throwaway QuickJS runtime. The value of the last
@@ -42,6 +48,7 @@ export async function runJs(
 ): Promise<RunOutcome> {
   const started = now()
   const logs: string[] = []
+  const logCounter = { dropped: 0 }
   const runtime = mod.newRuntime()
   let timedOut = false
   const deadline = started + limits.timeoutMs
@@ -55,14 +62,15 @@ export async function runJs(
     return false
   })
   const context = runtime.newContext()
-  const done = (partial: Omit<RunOutcome, 'logs' | 'timedOut' | 'durationMs'>): RunOutcome => ({
+  const done = (partial: Omit<RunOutcome, 'logs' | 'logsDropped' | 'timedOut' | 'durationMs'>): RunOutcome => ({
     ...partial,
     logs,
+    logsDropped: logCounter.dropped || undefined,
     timedOut,
     durationMs: now() - started,
   })
   try {
-    installConsole(context, logs)
+    installConsole(context, logs, logCounter)
     const result = context.evalCode(code)
     if (result.error) {
       const message = errorText(context, result.error)
@@ -101,11 +109,14 @@ export async function runJs(
 }
 
 /** console.{log,info,warn,error,debug} → captured lines (objects as JSON). */
-function installConsole(context: QuickJSContext, logs: string[]) {
+function installConsole(context: QuickJSContext, logs: string[], counter: { dropped: number }) {
   const consoleObj = context.newObject()
   for (const level of ['log', 'info', 'warn', 'error', 'debug'] as const) {
     const fn = context.newFunction(level, (...args) => {
-      if (logs.length >= MAX_LOG_LINES) return
+      if (logs.length >= MAX_LOG_LINES) {
+        counter.dropped++
+        return
+      }
       logs.push(args.map((h) => argText(context, h)).join(' '))
     })
     context.setProp(consoleObj, level, fn)
@@ -115,13 +126,23 @@ function installConsole(context: QuickJSContext, logs: string[]) {
   consoleObj.dispose()
 }
 
-/** One console argument as text. Argument handles are borrowed — never disposed here. */
+/**
+ * One console argument as text. Argument handles are borrowed — never
+ * disposed here. Capped well below the VM-wide memory ceiling — that ceiling
+ * is the only bound a single huge argument otherwise has before it reaches
+ * the sandbox→panel postMessage (structured-clone) boundary.
+ */
 function argText(context: QuickJSContext, handle: QuickJSHandle): string {
   try {
     const v = context.dump(handle)
-    if (typeof v === 'string') return v
-    const json = JSON.stringify(v)
-    return json === undefined ? String(v) : json
+    let text: string
+    if (typeof v === 'string') {
+      text = v
+    } else {
+      const json = JSON.stringify(v)
+      text = json === undefined ? String(v) : json
+    }
+    return text.length > ARG_TEXT_MAX ? `${text.slice(0, ARG_TEXT_MAX)}… [truncated]` : text
   } catch {
     return '[unserializable]'
   }

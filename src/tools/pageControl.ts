@@ -78,6 +78,19 @@ const COMMITTING_NAME =
   /\b(buy|purchase|checkout|pay|payment|order now|add to (cart|bag)|subscribe|unsubscribe|donate|sign\s*up|signup|register|log\s*in|login|sign\s*in|signin|delete|remove|cancel|confirm|apply now|submit application|place order|continue)\b/i
 
 /**
+ * A click target the approval card could not describe at all: no href (so it
+ * is not a link going somewhere nameable) and no accessible name (aria-label,
+ * visible text, placeholder, value, title, and name attribute all empty).
+ *
+ * `el.type` is a native-IDL-only property: it silently reads `undefined` on a
+ * `<div role="button">` or a plain onclick-driven `<span>`, so those elements
+ * carry no signal at all and sail past every check above them. If we cannot
+ * even describe what the element does — the card would show an empty label —
+ * assume the worst rather than assume it is safe.
+ */
+const isBlindClick = (el: IndexedElement): boolean => !el.href && !el.name.trim()
+
+/**
  * True when an action must show an individual approval card even inside a
  * granted session: form submits, cross-origin navigation, sensitive fields,
  * or a model self-flag.
@@ -97,8 +110,39 @@ export function isPointOfNoReturn(
     if (el.href && hostOf(el.href) !== sessionOrigin) return true
     if (el.type === 'submit' || el.type === 'image') return true
     if (COMMITTING_NAME.test(el.name)) return true
+    if (isBlindClick(el)) return true
   }
   return false
+}
+
+/**
+ * Did the element at this index change in a way that could invalidate an
+ * approval card the user already read? Compares exactly the fields the card's
+ * summary and the point-of-no-return decision are built from: name, type,
+ * href, sensitivity, and tag. Deliberately ignores `value`/`rect` — those
+ * drift on every ordinary reflow (a live value update, a layout shift) and
+ * are not evidence that a *different* element now sits at this index.
+ *
+ * The gap this closes: the card's summary is built from a snapshot taken
+ * BEFORE the human reaction-time wait inside requestApproval. An ordinary
+ * async re-render (a price/coupon recalculation relabeling the very button
+ * the card described) can swap what the stamped index points to while the
+ * card is still on screen — the user approves what the card said, but the
+ * element that actually gets clicked may no longer match it.
+ */
+export function hasElementChanged(
+  before: IndexedElement | undefined,
+  after: IndexedElement | undefined,
+): boolean {
+  if (!before && !after) return false
+  if (!before || !after) return true
+  return (
+    before.name !== after.name ||
+    before.type !== after.type ||
+    before.href !== after.href ||
+    before.sensitive !== after.sensitive ||
+    before.tag !== after.tag
+  )
 }
 
 export interface ControlStepDeps {

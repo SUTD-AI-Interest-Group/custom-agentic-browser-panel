@@ -124,7 +124,10 @@ export function planAttachmentDelivery(
       return { route: 'native-pdf' }
     }
     if (ctx.visionCapable) {
-      const total = att.pageCount ?? 1
+      // `??` only falls back on null/undefined — pageCount:0 (a degenerate but
+      // parseable PDF) would pass straight through and yield an empty `pages`
+      // array downstream. Treat it like an unknown count instead.
+      const total = att.pageCount || 1
       const shown = Math.min(total, PAGE_BUDGET)
       const pages = Array.from({ length: shown }, (_, i) => i + 1)
       const truncationNote =
@@ -144,12 +147,27 @@ export function pageCaption(name: string, page: number, pageCount: number): stri
 }
 
 /**
+ * Slice `text[0:end]` without splitting a UTF-16 surrogate pair at the cut —
+ * .slice() counts code units, not code points, so a cut landing between a
+ * pair's high and low half leaves a lone surrogate at the end of the string.
+ * The byte-level UTF-8 encode a provider performs on the request replaces that
+ * lone surrogate with U+FFFD, so trim it rather than send a corrupted char.
+ */
+function safeSliceEnd(text: string, end: number): string {
+  if (end > 0 && end < text.length) {
+    const code = text.charCodeAt(end - 1)
+    if (code >= 0xd800 && code <= 0xdbff) return text.slice(0, end - 1)
+  }
+  return text.slice(0, end)
+}
+
+/**
  * Wrap a text file's content in a named fence for the model text, truncating
  * to `budget` chars with an explicit notice (never a silent cut).
  */
 export function formatInlineTextBlock(name: string, text: string, budget: number): string {
   const truncated = text.length > budget
-  const body = truncated ? text.slice(0, budget) : text
+  const body = truncated ? safeSliceEnd(text, budget) : text
   const tail = truncated
     ? `\n[truncated — file continues past the ${budget.toLocaleString()}-character budget]`
     : ''

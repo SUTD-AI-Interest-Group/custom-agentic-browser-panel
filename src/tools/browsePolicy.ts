@@ -42,6 +42,16 @@ const CREDENTIAL_TYPE = /^(password|email|tel|number|date|file|checkbox|radio)$/
 const SEARCH_NAME = /\b(search|query|filter|find|lookup)\b/i
 
 /**
+ * Same "cannot describe it, so do not trust it" rule as pageControl.ts's
+ * isBlindClick — see that file for the full rationale (el.type reads
+ * undefined on anything that is not a native form control, so a
+ * `<div role="button">` or onclick-driven `<span>` carries no signal at all
+ * and would otherwise sail past every check below). No human is watching this
+ * browser, so "cannot classify" must resolve to deny, not allow.
+ */
+const isBlindClick = (el: IndexedElement): boolean => !el.href && !el.name.trim()
+
+/**
  * Is this element a site-search / filter box — the one input the research browser
  * is allowed to type into? Deliberately narrow: a search-shaped *name* never
  * promotes a credential-shaped *type* (a password field labelled "search" stays
@@ -100,6 +110,10 @@ export function isSafeResearchAction(action: BrowseAction, el?: IndexedElement):
       if (el.href) {
         const guard = isFetchableUrl(el.href)
         if (!guard.ok) return deny(`refused to click a link to a blocked target (${guard.reason})`)
+      } else if (isBlindClick(el)) {
+        return deny(
+          `refused to click "${el.tag}" — it has no href and no accessible name, so its effect cannot be verified as safe`,
+        )
       }
       return ALLOW
     }

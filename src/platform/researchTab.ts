@@ -19,6 +19,21 @@ const IDLE_TEARDOWN_MS = 60_000
 /** Survives a service-worker restart, so an orphaned window can be swept. */
 const ORPHAN_KEY = 'researchRenderWindowId'
 
+/**
+ * Set synchronously the instant sweepOrphanWindow is called (before its first
+ * await) and resolved once the sweep finishes. background.ts calls
+ * sweepOrphanWindow unconditionally at SW startup, before any message
+ * listener can fire, so this is always set by the time a message-triggered
+ * ensureTab() could possibly run. Gating ensureTab's ORPHAN_KEY write on it
+ * closes the TOCTOU where a fast-retrying acquireTab() (e.g. the offscreen
+ * host immediately retrying a browse `open` after its old session died across
+ * a SW restart — the exact case this sweep exists to clean up after) could
+ * write a fresh window id before the sweep's read-then-remove of the STALE id
+ * has finished, causing the sweep to remove the live window a brand-new lease
+ * just handed out.
+ */
+let sweepGate: Promise<void> | undefined
+
 let renderWindowId: number | undefined
 let renderTabId: number | undefined
 let usingIncognito = false
@@ -104,6 +119,7 @@ async function ensureTab(): Promise<number> {
   if (renderTabId === undefined) throw new Error('could not open a research tab')
   // Remember it across a service-worker restart so sweepOrphanWindow can close it.
   if (renderWindowId !== undefined) {
+    if (sweepGate) await sweepGate
     await chrome.storage.session.set({ [ORPHAN_KEY]: renderWindowId }).catch(() => {})
   }
   return renderTabId
@@ -176,16 +192,24 @@ function teardown(): void {
  * worker at any time, which drops the module-scope tab handle and leaves the
  * (minimized, invisible) window open forever. Call once on SW startup.
  */
-export async function sweepOrphanWindow(): Promise<void> {
-  try {
-    const got = await chrome.storage.session.get(ORPHAN_KEY)
-    const id = got[ORPHAN_KEY] as number | undefined
-    if (id === undefined) return
-    await chrome.storage.session.remove(ORPHAN_KEY)
-    await chrome.windows.remove(id).catch(() => {})
-  } catch {
-    /* nothing to sweep */
-  }
+export function sweepOrphanWindow(): Promise<void> {
+  let release!: () => void
+  sweepGate = new Promise((r) => {
+    release = r
+  })
+  return (async () => {
+    try {
+      const got = await chrome.storage.session.get(ORPHAN_KEY)
+      const id = got[ORPHAN_KEY] as number | undefined
+      if (id === undefined) return
+      await chrome.storage.session.remove(ORPHAN_KEY)
+      await chrome.windows.remove(id).catch(() => {})
+    } catch {
+      /* nothing to sweep */
+    } finally {
+      release()
+    }
+  })()
 }
 
 /** For diagnostics/telemetry: whether the research tab has an isolated cookie jar. */

@@ -69,6 +69,28 @@ export function parsePageRange(
 }
 
 /** One page's search hit: how many times the query occurs and one snippet around the first occurrence. */
+/**
+ * Slice `text[start:end]` without splitting a UTF-16 surrogate pair at either
+ * cut — `.slice()` counts code units, not code points, so a cut landing
+ * between a pair's two halves leaves a lone surrogate at that edge. The
+ * byte-level UTF-8 encode a provider performs on the request replaces a lone
+ * surrogate with U+FFFD, so nudge each boundary inward by one rather than
+ * send a corrupted character.
+ */
+function safeSlice(text: string, start: number, end: number): string {
+  let s = start
+  if (s > 0 && s < text.length) {
+    const code = text.charCodeAt(s)
+    if (code >= 0xdc00 && code <= 0xdfff) s += 1 // lone low surrogate at the start -> drop it
+  }
+  let e = end
+  if (e > 0 && e < text.length) {
+    const code = text.charCodeAt(e - 1)
+    if (code >= 0xd800 && code <= 0xdbff) e -= 1 // lone high surrogate at the end -> drop it
+  }
+  return text.slice(s, e)
+}
+
 export interface PdfSearchMatch {
   page: number
   count: number
@@ -119,7 +141,7 @@ export function searchPages(
       const start = Math.max(0, first - SNIPPET_RADIUS)
       const end = Math.min(haystack.length, first + needle.length + SNIPPET_RADIUS)
       const snippet =
-        (start > 0 ? '…' : '') + haystack.slice(start, end).trim() + (end < haystack.length ? '…' : '')
+        (start > 0 ? '…' : '') + safeSlice(haystack, start, end).trim() + (end < haystack.length ? '…' : '')
       matches.push({ page, count, snippet })
     }
   }
@@ -156,7 +178,7 @@ export function assemblePagesText(
     }
     const room = budget - spent
     const truncated = text.length > room
-    const slice = truncated ? text.slice(0, room) : text
+    const slice = truncated ? safeSlice(text, 0, room) : text
     blocks.push({ page, text: slice, truncated })
     spent += slice.length
   }

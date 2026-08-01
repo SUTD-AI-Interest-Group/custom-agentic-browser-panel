@@ -54,6 +54,13 @@ export interface SpanOptions {
   input?: unknown
   metadata?: Record<string, unknown>
   parentObservationId?: string
+  /**
+   * ISO start time; defaults to now. Set explicitly when the span is created
+   * after the work it describes already finished (see instrumentTools.ts,
+   * which must not create a tool-call span — and so must not emit its input —
+   * until the tool's own approval gate has resolved).
+   */
+  startTime?: string
 }
 
 export interface SpanEnd {

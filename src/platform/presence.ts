@@ -26,7 +26,7 @@ const NAV_HOLD_MS = 650
 const NAV_DARKEN_MS = 550
 const NAV_TINT = 'rgba(8,10,18,0.55)'
 
-function injMount(rootId: string, tint: string) {
+function injMount(rootId: string, tint: string, glideMs: number) {
   if (document.getElementById(rootId)) return
   const root = document.createElement('div')
   root.id = rootId
@@ -46,7 +46,7 @@ function injMount(rootId: string, tint: string) {
   spot.className = 'spot'
   spot.style.cssText =
     'position:absolute;display:none;border:1.5px solid #7ab8ff;border-radius:6px;' +
-    `box-shadow:0 0 0 99999px ${tint};transition:all ${450}ms cubic-bezier(.22,.61,.36,1);`
+    `box-shadow:0 0 0 99999px ${tint};transition:all ${glideMs}ms cubic-bezier(.22,.61,.36,1);`
 
   // The Apple-Intelligence-style ambient frame: a soft light-blue inset glow
   // hugging the viewport edge, gently breathing via the Web Animations API
@@ -63,7 +63,7 @@ function injMount(rootId: string, tint: string) {
   cursor.className = 'cursor'
   cursor.style.cssText =
     'position:absolute;width:36px;height:36px;left:0;top:0;transition:transform ' +
-    `${450}ms cubic-bezier(.22,.61,.36,1);will-change:transform;` +
+    `${glideMs}ms cubic-bezier(.22,.61,.36,1);will-change:transform;` +
     `transform:translate(${root.dataset.cx}px,${root.dataset.cy}px);`
   cursor.innerHTML =
     '<svg width="36" height="36" viewBox="0 0 18 18"><path d="M2 2l5.5 13 2-5.5 5.5-2z" fill="#7ab8ff" stroke="white" stroke-width="1"/></svg>'
@@ -254,7 +254,7 @@ async function run(tabId: number, func: (...a: any[]) => void, args: any[]): Pro
 /** Mount the persistent presence overlay on the tab (ambient: frame only, no tint). */
 export function mountPresence(tabId: number): Promise<void> {
   mounted.add(tabId)
-  return run(tabId, injMount, [ROOT_ID, TINT])
+  return run(tabId, injMount, [ROOT_ID, TINT, GLIDE_MS])
 }
 
 /** Turn the soft dark tint on (entering active control) or off (back to ambient). */

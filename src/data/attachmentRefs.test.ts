@@ -41,6 +41,15 @@ describe('dehydrateHistory', () => {
     ]
     expect(dehydrateHistory(history)).toEqual(history)
   })
+
+  it('is idempotent — dehydrating an already-dehydrated history is a no-op', () => {
+    // refOfPart keys off providerOptions.lychee, never off the current `data`
+    // string, so a second pass must not try to re-sentinel the sentinel.
+    const once = dehydrateHistory([msg([filePart('data:application/pdf;base64,AAAA', 'a1')])])
+    const twice = dehydrateHistory(once)
+    expect(partsOf(twice[0])[0].data).toBe('lychee-attachment:a1')
+    expect(twice).toEqual(once)
+  })
 })
 
 describe('hydrateHistory', () => {
@@ -79,5 +88,35 @@ describe('hydrateHistory', () => {
       throw new Error('must not be called')
     })
     expect(out).toEqual(history)
+  })
+
+  it('resolves some refs and reports others missing within the same message', async () => {
+    // The exact shape a pdf-pages-routed multi-page attachment produces: many
+    // file parts in one message, tagged with different attachment ids.
+    const history = [
+      msg([
+        filePart('d', 'ok', 1),
+        filePart('d', 'gone', 2),
+        filePart('d', 'ok', 3),
+      ]),
+    ]
+    const out = await hydrateHistory(dehydrateHistory(history), async (ref) =>
+      ref.id === 'ok' ? `data:application/pdf;base64,PAGE${ref.page}` : null,
+    )
+    const parts = partsOf(out[0])
+    expect(parts[0]).toMatchObject({ type: 'file', data: 'data:application/pdf;base64,PAGE1' })
+    expect(parts[1]).toMatchObject({ type: 'text' })
+    expect(parts[1].text).toContain('no longer available')
+    expect(parts[2]).toMatchObject({ type: 'file', data: 'data:application/pdf;base64,PAGE3' })
+  })
+
+  it('treats a sentinel with a non-numeric page suffix as a plain (pageless) ref', async () => {
+    const seen: AttachmentRef[] = []
+    const history: ModelMessage[] = [msg([{ type: 'file', mediaType: 'application/pdf', data: 'lychee-attachment:abc#page=xyz' }])]
+    await hydrateHistory(history, async (ref) => {
+      seen.push(ref)
+      return 'd'
+    })
+    expect(seen).toEqual([{ id: 'abc' }])
   })
 })

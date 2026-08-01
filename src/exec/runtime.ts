@@ -1,9 +1,17 @@
 // The sandbox-side entry, bundled as a classic IIFE into dist/sandbox-exec.js
 // (see vite.sandbox.config.ts). Runs inside sandbox-exec.html: no chrome.*,
-// no network (connect-src 'none'), parent-postMessage only. Two duties:
-// execute code (exec:init + exec:run, via the engine) and preview artifact
-// HTML (exec:render, in a nested scripts-only srcdoc iframe — never
+// default-deny CSP (see that file's meta tag for the exact allowances and why
+// each is needed), parent-postMessage only. Two duties: execute code
+// (exec:init + exec:run, via the engine) and preview artifact HTML
+// (exec:render, in a nested scripts-only srcdoc iframe — never
 // allow-same-origin). All policy (approval, budgets) lives in the panel.
+//
+// exec:render's nested iframe inherits the host page's CSP (srcdoc documents
+// inherit their creator's policy), which is what actually contains a
+// malicious/prompt-injected artifact — inline script/style and data: images
+// still work, but a remote <script src>/<img src>/cross-origin <form> are all
+// blocked before they ever reach the network (verified against a real
+// Chromium instance).
 
 import { newQuickJSWASMModuleFromVariant, newVariant } from 'quickjs-emscripten-core'
 import type { QuickJSWASMModule } from 'quickjs-emscripten-core'

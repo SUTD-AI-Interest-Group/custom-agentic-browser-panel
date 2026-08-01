@@ -44,11 +44,16 @@ const ATTR = 'data-agent-idx'
 // Runs inside the target page. Fully self-contained (serialized by
 // executeScript). Returns raw element records + page meta.
 function buildInteractiveIndex(attr: string, maxElements: number) {
+  // \bcc[-_]?(num|number|no)\b and \bacct catch the near-universal
+  // credit-card/account abbreviations (ccNumber, cc-number, cc_num, acctNum)
+  // that the literal "card"/"account" alternatives above miss entirely.
+  // \bacct has no trailing \b: camelCase names (acctNum) run straight from
+  // "acct" into the next word with no boundary between "t" and "N".
   const SENSITIVE_RE =
-    /card|cvv|ccv|ssn|passw|social security|routing|account\s*(number|no)|\bpin\b|security code|\botp\b|verification code|one[-\s]?time|iban|sort code/i
+    /card|cvv|ccv|ssn|passw|social security|routing|account\s*(number|no)|\bcc[-_]?(num|number|no)\b|\bacct|\bpin\b|security code|\botp\b|verification code|one[-\s]?time|iban|sort code/i
   const INTERACTIVE_TAGS = /^(A|BUTTON|INPUT|SELECT|TEXTAREA)$/
   const INTERACTIVE_ROLES =
-    /^(button|link|checkbox|radio|tab|menuitem|switch|option|combobox|textbox)$/
+    /^(button|link|checkbox|radio|tab|menuitem|switch|option|combobox|textbox)$/i
   const vw = window.innerWidth
   const vh = window.innerHeight
 
@@ -93,6 +98,22 @@ function buildInteractiveIndex(attr: string, maxElements: number) {
   // Clear any stamps from a previous snapshot before re-indexing.
   document.querySelectorAll(`[${attr}]`).forEach((n) => n.removeAttribute(attr))
 
+  // A plain querySelectorAll('*') never descends into an element's shadow
+  // root (a separate tree, not part of the light DOM this walks) — so any
+  // interactive element inside a web component (payment widgets, many
+  // design-system components, cookie banners built as custom elements) was
+  // entirely invisible to this index. Recurse into each open shadow root
+  // encountered; closed shadow roots stay genuinely inaccessible, same as a
+  // cross-origin iframe — an acknowledged residual limit, not fixed here.
+  const collectAll = (root: ParentNode): Element[] => {
+    const found: Element[] = []
+    for (const el of Array.from(root.querySelectorAll('*'))) {
+      found.push(el)
+      if (el.shadowRoot) found.push(...collectAll(el.shadowRoot))
+    }
+    return found
+  }
+
   const out: Array<{
     index: number
     tag: string
@@ -105,7 +126,7 @@ function buildInteractiveIndex(attr: string, maxElements: number) {
     href?: string
     formMethod?: string
   }> = []
-  const all = Array.from(document.querySelectorAll('*'))
+  const all = collectAll(document)
   let index = 0
   let truncated = false
   for (const el of all) {

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { isPointOfNoReturn } from './pageControl'
+import { hasElementChanged, isPointOfNoReturn } from './pageControl'
 import type { ControlSpec } from './pageControl'
 import type { IndexedElement } from '../platform/domIndex'
 
@@ -125,6 +125,97 @@ describe('isPointOfNoReturn — navigate', () => {
 
   it('does not flag a navigate spec with no url', () => {
     expect(isPointOfNoReturn(spec({ action: 'navigate' }), undefined, ORIGIN)).toBe(false)
+  })
+})
+
+describe('isPointOfNoReturn — click, blind controls (no href, no accessible name)', () => {
+  // el.type is a native-IDL-only property: it silently reads as `undefined` on
+  // anything that isn't a real <button>/<input>/<select>, and accessibleName()
+  // returns '' for an icon-only control with no aria-label/text/title/name. A
+  // <div role="button">, a plain onclick-driven <span>, or a <button
+  // type="button"> wired to a destructive JS handler all report exactly this
+  // shape — type undefined, name '' — which sails past every other check in
+  // isPointOfNoReturn with no signal at all. These must all be flagged.
+  it('flags an ARIA-role div button with a destructive handler and no accessible name', () => {
+    const target = el({ tag: 'div', role: 'button', type: undefined, name: '' })
+    expect(isPointOfNoReturn(spec({ action: 'click', index: 0 }), target, ORIGIN)).toBe(true)
+  })
+
+  it('flags a plain onclick-driven span with no role and no name', () => {
+    const target = el({ tag: 'span', role: undefined, type: undefined, name: '' })
+    expect(isPointOfNoReturn(spec({ action: 'click', index: 0 }), target, ORIGIN)).toBe(true)
+  })
+
+  it('flags a native <button type="button"> icon button with no accessible name', () => {
+    const target = el({ tag: 'button', type: 'button', name: '' })
+    expect(isPointOfNoReturn(spec({ action: 'click', index: 0 }), target, ORIGIN)).toBe(true)
+  })
+
+  it('flags an <a> with no href and no name (JS-navigated, not a real link)', () => {
+    const target = el({ tag: 'a', href: '', name: '' })
+    expect(isPointOfNoReturn(spec({ action: 'click', index: 0 }), target, ORIGIN)).toBe(true)
+  })
+
+  it('flags a role=tab/switch/menuitem control with no accessible name, not just role=button', () => {
+    for (const role of ['tab', 'switch', 'menuitem', 'option']) {
+      const target = el({ tag: 'div', role, name: '' })
+      expect(isPointOfNoReturn(spec({ action: 'click', index: 0 }), target, ORIGIN), `role=${role}`).toBe(true)
+    }
+  })
+
+  // Boundary: the new check must not swallow the existing, more permissive
+  // behavior for controls that CAN be described.
+  it('does not flag an ARIA button that has an accessible name', () => {
+    const target = el({ tag: 'div', role: 'button', name: 'Toggle menu' })
+    expect(isPointOfNoReturn(spec({ action: 'click', index: 0 }), target, ORIGIN)).toBe(false)
+  })
+
+  it('does not flag a same-origin link with a real href even when it has no visible text', () => {
+    const target = el({ tag: 'a', name: '', href: `${ORIGIN}/x` })
+    expect(isPointOfNoReturn(spec({ action: 'click', index: 0 }), target, ORIGIN)).toBe(false)
+  })
+})
+
+describe('hasElementChanged (F4 — approval card re-validation)', () => {
+  const base = el({ tag: 'button', type: 'button', name: 'Delete my account' })
+
+  it('is false when nothing meaningful changed', () => {
+    expect(hasElementChanged(base, { ...base })).toBe(false)
+  })
+
+  it('ignores value/rect drift — these change on every ordinary reflow, not just a swapped element', () => {
+    const after = { ...base, value: 'something typed', rect: { x: 999, y: 999, width: 1, height: 1 } }
+    expect(hasElementChanged(base, after)).toBe(false)
+  })
+
+  it('is true when the name changed (e.g. an async price recalculation relabeled the button)', () => {
+    expect(hasElementChanged(base, { ...base, name: 'Apply discount' })).toBe(true)
+  })
+
+  it('is true when the type changed', () => {
+    expect(hasElementChanged(base, { ...base, type: 'submit' })).toBe(true)
+  })
+
+  it('is true when the href changed', () => {
+    const withHref = el({ tag: 'a', name: 'Docs', href: 'https://example.test/a' })
+    expect(hasElementChanged(withHref, { ...withHref, href: 'https://evil.test/x' })).toBe(true)
+  })
+
+  it('is true when sensitivity changed', () => {
+    expect(hasElementChanged(base, { ...base, sensitive: true })).toBe(true)
+  })
+
+  it('is true when the tag changed', () => {
+    expect(hasElementChanged(base, { ...base, tag: 'div' })).toBe(true)
+  })
+
+  it('is true when the element disappeared, or a different one now occupies the same index', () => {
+    expect(hasElementChanged(base, undefined)).toBe(true)
+    expect(hasElementChanged(undefined, base)).toBe(true)
+  })
+
+  it('is false when there was never a target element on either side (e.g. a navigate spec)', () => {
+    expect(hasElementChanged(undefined, undefined)).toBe(false)
   })
 })
 

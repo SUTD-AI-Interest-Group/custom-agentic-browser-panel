@@ -90,7 +90,11 @@ export const RUN_MEMORY_BYTES = 64 * 1024 * 1024
 export function budgetOutcome(o: RunOutcome): { outcome: RunOutcome; valueOverflow: string | null } {
   let logs = o.logs.map((l) => (l.length > LOG_LINE_MAX ? `${l.slice(0, LOG_LINE_MAX)}…` : l))
   if (logs.length > LOGS_MAX) {
-    const dropped = logs.length - LOGS_MAX
+    // "+N more" must also count lines the engine itself already discarded
+    // once its own MAX_LOG_LINES cap was hit (o.logsDropped) — otherwise a
+    // heavily-logging script's note understates how much output actually
+    // existed (e.g. "+40 more" when 4,960 lines were really lost).
+    const dropped = logs.length - LOGS_MAX + (o.logsDropped ?? 0)
     logs = [...logs.slice(0, LOGS_MAX), `… [+${dropped} more line${dropped === 1 ? '' : 's'}]`]
   }
   let value = o.value

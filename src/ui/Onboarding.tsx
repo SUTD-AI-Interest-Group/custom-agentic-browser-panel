@@ -22,6 +22,60 @@ const PRESETS: Array<{ name: string; baseURL: string; placeholderModel: string; 
 
 type Step = 'endpoint' | 'test' | 'access'
 
+/**
+ * The provider-shaped subset of onboarding state that a preset pick replaces
+ * wholesale. `apiKey` lives here deliberately alongside `baseURL`/`modelId`:
+ * every preset is a distinct authentication realm (OpenAI/Anthropic/
+ * OpenRouter/Groq each mint their own key format — see PRESETS' `keyHint`),
+ * so a key typed for one must never survive a switch to another — carrying
+ * it over would silently send it to a different endpoint as a Bearer/
+ * x-api-key header (the model-list-less "test" call, or the first chat
+ * request).
+ */
+export interface OnboardingDraft {
+  presetName: string | null
+  name: string
+  baseURL: string
+  apiKey: string
+  modelId: string
+}
+
+/**
+ * Applies a preset pick to the current draft. Every field below is replaced
+ * wholesale, never merged from `draft` — `apiKey` most importantly, since it
+ * is exactly the field the previous version of this wizard forgot to reset
+ * (see the CRITICAL cross-provider key disclosure this locks down). Exported
+ * and pure so the regression test doesn't need to mount the component.
+ */
+export function applyPreset(
+  draft: OnboardingDraft,
+  preset: Pick<(typeof PRESETS)[number], 'name' | 'baseURL'>,
+): OnboardingDraft {
+  return {
+    ...draft,
+    presetName: preset.name,
+    name: preset.name === 'Custom' ? '' : preset.name,
+    baseURL: preset.baseURL,
+    apiKey: '',
+    modelId: '',
+  }
+}
+
+/**
+ * This wizard only ever configures an HTTP(S) API endpoint — reject any other
+ * scheme (`javascript:`, `file:`, `data:`, a bare `localhost:` typo missing
+ * its leading `//`, ...) so "Continue" can't be reached with one, rather than
+ * accepting literally any non-empty string and only failing later at fetch.
+ */
+export function hasValidEndpointScheme(url: string): boolean {
+  try {
+    const scheme = new URL(url.trim()).protocol
+    return scheme === 'http:' || scheme === 'https:'
+  } catch {
+    return false
+  }
+}
+
 export default function Onboarding({
   settings,
   onComplete,
@@ -40,13 +94,16 @@ export default function Onboarding({
   const [result, setResult] = useState<TestResult | null>(null)
 
   const preset = PRESETS.find((p) => p.name === presetName)
-  const endpointValid = baseURL.trim().length > 0 && modelId.trim().length > 0
+  const endpointValid =
+    baseURL.trim().length > 0 && modelId.trim().length > 0 && hasValidEndpointScheme(baseURL)
 
   function pickPreset(p: (typeof PRESETS)[number]) {
-    setPresetName(p.name)
-    setName(p.name === 'Custom' ? '' : p.name)
-    setBaseURL(p.baseURL)
-    setModelId('')
+    const next = applyPreset({ presetName, name, baseURL, apiKey, modelId }, p)
+    setPresetName(next.presetName)
+    setName(next.name)
+    setBaseURL(next.baseURL)
+    setApiKey(next.apiKey)
+    setModelId(next.modelId)
     setResult(null)
   }
 
