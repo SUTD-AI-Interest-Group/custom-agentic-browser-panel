@@ -10,6 +10,7 @@ import {
   type McpServerEntry,
   type McpSettings,
 } from '../../mcp/config'
+import { hasStoredAuth } from '../../mcp/auth'
 import { getMcpManager } from '../../mcp/manager'
 
 /**
@@ -155,10 +156,8 @@ function ServerRow({
   // Whether OAuth credentials are stored for this server — drives "Sign out".
   const [hasAuth, setHasAuth] = useState(false)
   useEffect(() => {
-    const key = `mcpAuth:${name}`
-    chrome.storage.local
-      .get(key)
-      .then((d) => setHasAuth(!!(d[key] as { tokens?: unknown } | undefined)?.tokens))
+    hasStoredAuth(name)
+      .then(setHasAuth)
       .catch(() => {})
   }, [name, live?.state])
   return (

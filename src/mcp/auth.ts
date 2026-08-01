@@ -18,6 +18,8 @@ import type {
   OAuthClientMetadata,
   OAuthTokens,
 } from '@modelcontextprotocol/sdk/shared/auth.js'
+import { openSecret, sealSecret } from '../data/vault'
+import { isSealed } from '../data/vaultFormat'
 
 interface StoredAuth {
   clientInformation?: OAuthClientInformationMixed
@@ -25,22 +27,55 @@ interface StoredAuth {
   codeVerifier?: string
 }
 
+/** At-rest shape since the vault: the whole StoredAuth JSON sealed as one unit. */
+interface SealedStoredAuth {
+  v: 1
+  sealed: string
+}
+
+function isSealedShape(value: unknown): value is SealedStoredAuth {
+  return typeof value === 'object' && value !== null && typeof (value as SealedStoredAuth).sealed === 'string'
+}
+
 const keyFor = (server: string) => `mcpAuth:${server}`
 
 async function load(server: string): Promise<StoredAuth> {
   const key = keyFor(server)
   const data = await chrome.storage.local.get(key)
-  return (data[key] as StoredAuth | undefined) ?? {}
+  const stored = data[key] as StoredAuth | SealedStoredAuth | undefined
+  if (!stored) return {}
+  if (isSealedShape(stored)) {
+    const json = await openSecret(stored.sealed)
+    if (json === null) return {} // lost KEK / corrupt — the user re-authorizes
+    try {
+      return JSON.parse(json) as StoredAuth
+    } catch {
+      return {} // vault down returns the sealed string verbatim → not JSON → re-auth this session
+    }
+  }
+  return stored // legacy plaintext record — resealed by the next persist()
+}
+
+/** Write the full record, sealed. Falls back to the legacy plaintext shape when the vault is down. */
+async function persist(server: string, auth: StoredAuth): Promise<void> {
+  const sealed = await sealSecret(JSON.stringify(auth))
+  const value: SealedStoredAuth | StoredAuth = isSealed(sealed) ? { v: 1, sealed } : auth
+  await chrome.storage.local.set({ [keyFor(server)]: value })
 }
 
 async function save(server: string, patch: Partial<StoredAuth>): Promise<void> {
   const current = await load(server)
-  await chrome.storage.local.set({ [keyFor(server)]: { ...current, ...patch } })
+  await persist(server, { ...current, ...patch })
 }
 
 /** Forget a server's tokens, registration and in-flight verifier ("sign out"). */
 export async function clearAuth(server: string): Promise<void> {
   await chrome.storage.local.remove(keyFor(server))
+}
+
+/** Whether a server has stored tokens (drives the Sign-out button) — reads both at-rest shapes. */
+export async function hasStoredAuth(server: string): Promise<boolean> {
+  return Boolean((await load(server)).tokens)
 }
 
 /** MV3 promise shim over launchWebAuthFlow (callback form, for older @types). */
@@ -118,7 +153,7 @@ export class ChromeOAuthProvider implements OAuthClientProvider {
     if (scope === 'client') delete current.clientInformation
     if (scope === 'tokens') delete current.tokens
     if (scope === 'verifier') delete current.codeVerifier
-    await chrome.storage.local.set({ [keyFor(this.server)]: current })
+    await persist(this.server, current)
   }
 
   async redirectToAuthorization(authorizationUrl: URL): Promise<void> {
