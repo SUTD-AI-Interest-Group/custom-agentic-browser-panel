@@ -17,6 +17,37 @@ for that history.
 
 ---
 
+## [2026-08-01] — Envelope encryption for secrets at rest
+
+Every secret Lychee stores — provider API keys, Langfuse keys, MCP OAuth tokens, and MCP
+header values — is now envelope-encrypted at rest instead of sitting in `chrome.storage.local`
+as plaintext. Existing installs migrate automatically the first time they load; there is no
+user-facing change and no action required. Design + threat model in
+`docs/superpowers/specs/2026-08-01-envelope-encryption-design.md`.
+
+### Added
+
+- **A device-bound key vault** (`src/data/vault.ts`) — a non-extractable AES-KW
+  key-encryption key lives in IndexedDB (`lychee-vault`) and wraps an AES-256-GCM data key;
+  the DEK itself is never persisted extractable, so no JS in the origin can ever read its raw
+  bytes. Sealed values are self-describing `lysec1.<iv>.<ciphertext>` strings
+  (`src/data/vaultFormat.ts`), versioned for crypto-agility.
+- **Seal/open at the existing chokepoints, not the call sites** — `saveSettings()`/
+  `loadSettings()` seal and open `providers[].apiKey`, `observability.publicKey/secretKey`,
+  and every MCP server's `headers` value (`src/data/settingsVault.ts`); `src/mcp/auth.ts` seals
+  stored OAuth tokens as one unit. In-memory `Settings` stay fully plaintext, so the ~13
+  key-reading call sites, the offscreen research handoff, and MCP "Copy JSON" export are
+  untouched.
+- **Automatic migration** — a plaintext field found on load is sealed, round-trip-verified in
+  memory, and written back; the plaintext-read fallback stays permanently, since it is also the
+  format detector. A vault that's unavailable (IndexedDB broken/blocked) degrades to plaintext
+  writes with a one-time warning rather than bricking key storage, and an undecryptable sealed
+  value (lost KEK) resolves to `''` so the user just re-enters the key.
+- **`resetVault()` on erase-all** — wiping all data now also destroys the KEK/DEK, so a fresh
+  onboarding starts from a fresh vault rather than reusing old key material.
+
+---
+
 ## [2026-08-01] — Per-tab chats
 
 A chat now belongs to the tab it was opened on, and a turn survives you walking

@@ -13,6 +13,7 @@ import { clearShots, shotsUsage } from './screenshots'
 import { clearSkills, skillsUsage } from './skills'
 import { clearTasks, tasksUsage } from './researchTasks'
 import { seedBuiltinSkills } from './builtinSkills'
+import { resetVault } from './vault'
 import type { StorageReport, StoreKey, StoreUsage } from './usage'
 
 /** Read every store once and total it up. Counts are dozens, so one pass is cheap. */
@@ -99,4 +100,5 @@ export async function eraseAllData(): Promise<void> {
     clearTasks(),
   ])
   await chrome.storage.local.clear()
+  await resetVault()
 }

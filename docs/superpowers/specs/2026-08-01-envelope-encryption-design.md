@@ -163,3 +163,7 @@ lysec1.<base64url(iv)>.<base64url(ciphertext‖tag)>
   as a *second* wrap of the same DEK; device wrap removed only when the user opts into
   lock-required mode.
 - **WebAuthn PRF** KEK (Chrome 122+): needs a feasibility spike from the side panel first.
+- **MCP stdio `env` values**: stdio server entries are preserved-but-unrunnable config; their
+  `env` can also carry secrets and currently round-trips exports in plaintext. Sealing it was
+  deliberately left out of v1 scope (approved scope was the four surfaces) — same mechanism
+  applies if it graduates.
