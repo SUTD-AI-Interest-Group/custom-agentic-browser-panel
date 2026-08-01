@@ -30,12 +30,25 @@ export async function sealSettings(settings: Settings): Promise<Settings> {
 /**
  * Open every secret field after load. `hadPlaintext` reports whether any
  * non-empty secret was stored unsealed — the caller's cue to migrate. A sealed
- * value that no longer decrypts resolves to '' (the user re-enters the key).
+ * value that positively fails to decrypt (lost KEK, corrupt blob) resolves to
+ * '' (the user re-enters the key). A sealed value that simply couldn't be
+ * reached *this load* — the vault transiently unavailable, e.g. IndexedDB down
+ * — instead passes through still-sealed (`openSecret`'s vault-down branch);
+ * `hadUnavailable` reports whether that happened, so `loadSettings` can warn.
+ * This passthrough is deliberate, not a bug: `sealSecret` short-circuits on an
+ * already-sealed string, so a save made during the outage just re-writes the
+ * same ciphertext (a no-op) — whereas resolving to '' here would let that save
+ * overwrite the real ciphertext with an empty field, destroying the secret.
+ * `hadUnavailable` is derived by re-checking `isSealed` on the *opened* values:
+ * only the vault-down path can leave one still sealed after mapping.
  */
-export async function openSettings(settings: Settings): Promise<{ settings: Settings; hadPlaintext: boolean }> {
+export async function openSettings(
+  settings: Settings,
+): Promise<{ settings: Settings; hadPlaintext: boolean; hadUnavailable: boolean }> {
   const hadPlaintext = secretValues(settings).some((v) => v !== '' && !isSealed(v))
   const opened = await mapSecrets(settings, async (value) => (await openSecret(value)) ?? '')
-  return { settings: opened, hadPlaintext }
+  const hadUnavailable = secretValues(opened).some(isSealed)
+  return { settings: opened, hadPlaintext, hadUnavailable }
 }
 
 async function mapSecrets(settings: Settings, fn: (value: string) => Promise<string>): Promise<Settings> {

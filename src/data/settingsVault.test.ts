@@ -1,5 +1,5 @@
 import 'fake-indexeddb/auto'
-import { beforeEach, describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { resetVault } from './vault'
 import { isSealed } from './vaultFormat'
 import { openSettings, sealSettings, secretValues } from './settingsVault'
@@ -59,10 +59,12 @@ describe('settingsVault', () => {
     const sealed = await sealSettings(sampleSettings())
     const fromSealed = await openSettings(sealed)
     expect(fromSealed.hadPlaintext).toBe(false)
+    expect(fromSealed.hadUnavailable).toBe(false)
     expect(fromSealed.settings.providers[0].apiKey).toBe('sk-one')
     expect(fromSealed.settings.mcp!.servers.ctx.headers!.Authorization).toBe('Bearer tok-123')
     const fromPlain = await openSettings(sampleSettings())
     expect(fromPlain.hadPlaintext).toBe(true)
+    expect(fromPlain.hadUnavailable).toBe(false)
     expect(fromPlain.settings.providers[0].apiKey).toBe('sk-one')
   })
 
@@ -72,5 +74,24 @@ describe('settingsVault', () => {
     const sealed = await sealSettings(bare)
     const opened = await openSettings(sealed)
     expect(opened.hadPlaintext).toBe(false)
+    expect(opened.hadUnavailable).toBe(false)
+  })
+
+  it('passes sealed values through verbatim and reports hadUnavailable when the vault is down', async () => {
+    const sealed = await sealSettings(sampleSettings())
+    const { _resetDekCacheForTests } = await import('./vault')
+    const original = globalThis.indexedDB
+    vi.stubGlobal('indexedDB', undefined)
+    _resetDekCacheForTests()
+    try {
+      const opened = await openSettings(sealed)
+      expect(opened.hadUnavailable).toBe(true)
+      // Not blanked to '' — still the original sealed ciphertext, recoverable later.
+      expect(opened.settings.providers[0].apiKey).toBe(sealed.providers[0].apiKey)
+      expect(isSealed(opened.settings.providers[0].apiKey)).toBe(true)
+    } finally {
+      vi.stubGlobal('indexedDB', original)
+      _resetDekCacheForTests()
+    }
   })
 })

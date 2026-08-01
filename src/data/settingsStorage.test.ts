@@ -101,4 +101,40 @@ describe('settings storage sealing', () => {
       _resetDekCacheForTests()
     }
   })
+
+  it('preserves ciphertext (never blanks to \'\') when the vault is transiently down for an already-sealed install, and warns once', async () => {
+    const store = stubChromeStorage()
+    const { _resetDekCacheForTests } = await import('./vault')
+
+    // Save with a real key while the vault works: sealed at rest.
+    await saveSettings(withKey())
+    const sealedApiKey = (store.settings as Settings).providers[0].apiKey
+    expect(isSealed(sealedApiKey)).toBe(true)
+
+    // Simulate a transient vault outage.
+    const original = globalThis.indexedDB
+    vi.stubGlobal('indexedDB', undefined)
+    _resetDekCacheForTests()
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    let loaded: Settings
+    try {
+      loaded = await loadSettings()
+      // Not silently blanked to '' — still the original sealed ciphertext.
+      expect(loaded.providers[0].apiKey).not.toBe('')
+      expect(isSealed(loaded.providers[0].apiKey)).toBe(true)
+      expect(loaded.providers[0].apiKey).toBe(sealedApiKey)
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('[vault] some secrets could not be decrypted this load'))
+    } finally {
+      warnSpy.mockRestore()
+      vi.stubGlobal('indexedDB', original)
+      _resetDekCacheForTests()
+    }
+
+    // Load-bearing: saving the still-sealed settings during the outage must
+    // not destroy the ciphertext. sealSecret's isSealed short-circuit makes
+    // this re-save a no-op, so the original plaintext survives.
+    await saveSettings(loaded)
+    const roundTripped = await loadSettings()
+    expect(roundTripped.providers[0].apiKey).toBe('sk-live-1')
+  })
 })

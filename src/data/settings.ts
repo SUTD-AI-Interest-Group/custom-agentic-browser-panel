@@ -351,9 +351,26 @@ export async function loadSettings(): Promise<Settings> {
   // Secrets are sealed at rest (see src/data/vault.ts). Open them here so every
   // consumer of Settings sees plaintext; a pre-vault install is migrated in
   // place on first load.
-  const { settings: opened, hadPlaintext } = await openSettings(settings)
+  const { settings: opened, hadPlaintext, hadUnavailable } = await openSettings(settings)
+  if (hadUnavailable) warnVaultUnavailable()
   if (hadPlaintext) await migrateSecretsToSealed(stored, opened)
   return opened
+}
+
+let warnedVaultUnavailable = false
+
+/**
+ * One-time warning that some secrets came back from `loadSettings` still
+ * sealed because the vault was transiently unreachable (mirrors the
+ * once-flag pattern in `src/data/vault.ts`). The values themselves are left
+ * alone — see `openSettings`'s doc for why that passthrough is deliberate.
+ */
+function warnVaultUnavailable(): void {
+  if (warnedVaultUnavailable) return
+  warnedVaultUnavailable = true
+  console.warn(
+    '[vault] some secrets could not be decrypted this load — the vault is temporarily unavailable; sealed values are preserved and will decrypt on a later load',
+  )
 }
 
 export async function saveSettings(settings: Settings): Promise<void> {
@@ -370,6 +387,10 @@ export async function saveSettings(settings: Settings): Promise<void> {
  * whatever is still plaintext. Concurrent migrations of the SAME plaintext
  * both write valid ciphertext of it, so last-writer-wins between those two is
  * safe — this guard exists only for a *different* concurrent write racing in.
+ * A residual TOCTOU window remains between the re-read and the `set` just
+ * below it: `chrome.storage` has no compare-and-swap, so a write landing in
+ * that single microtask gap is still clobbered. Accepted — the window is one
+ * microtask wide, and the next load's re-check self-heals whatever it missed.
  */
 async function migrateSecretsToSealed(before: Partial<Settings> | undefined, opened: Settings): Promise<void> {
   try {
