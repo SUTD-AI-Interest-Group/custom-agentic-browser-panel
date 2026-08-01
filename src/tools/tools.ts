@@ -60,6 +60,43 @@ import {
 // ---------------------------------------------------------------------------
 
 /**
+ * Which tab a turn's page tools act on, and what happens when that tab isn't the
+ * one in front.
+ *
+ * A chat is bound to the tab it was opened on (src/ui/tabChats.ts). Pinning
+ * matters because a turn can outlive the user's attention: they ask a question,
+ * switch tabs, and the turn keeps going. Without a pin, its next `ReadPage`
+ * would quietly describe whatever page they moved to.
+ */
+export interface PageTarget {
+  /** Defaults to the active tab — right for any caller that isn't tab-bound. */
+  resolveTab?: () => Promise<chrome.tabs.Tab | undefined>
+  /**
+   * Raised by a tool that cannot proceed while its tab is in the background.
+   * The caller ends the turn at this step boundary and resumes it when the user
+   * comes back (see `parkPending` in src/agent/agent.ts).
+   */
+  park?: (reason: string) => void
+}
+
+/**
+ * Is this tab the one its window is currently showing? Captures and page-control
+ * steps need it to be: chrome.tabs.captureVisibleTab only ever returns the
+ * *active* tab's viewport, and clicking a background tab shows the user nothing.
+ * Window focus is deliberately not part of the test — an unfocused window's
+ * active tab still captures fine.
+ */
+async function isForeground(tab: chrome.tabs.Tab): Promise<boolean> {
+  if (tab.id === undefined || tab.windowId === undefined) return false
+  try {
+    const [live] = await chrome.tabs.query({ active: true, windowId: tab.windowId })
+    return live?.id === tab.id
+  } catch {
+    return false
+  }
+}
+
+/**
  * What a page tool reports when `resolveTab` comes back empty. Worded to be true
  * of both callers: an unbound turn that has no active tab, and a tab-bound chat
  * (src/ui/tabChats.ts) whose tab the user closed while the turn was still going.
@@ -223,17 +260,25 @@ export function createAgentTools(
    * self-healed by the repair hook — an unloaded call would dead-end.
    */
   extraTools?: ToolSet,
-  /**
-   * Which tab this turn's tools act on. A chat is bound to the tab it was opened
-   * on (src/ui/tabChats.ts) and pins its tools to that tab, so a turn that is
-   * still running after the user switches away keeps reading the page it was
-   * asked about instead of silently following them to the new one.
-   *
-   * Defaults to the active tab, which is the right answer for any caller that
-   * hasn't bound itself to one.
-   */
-  resolveTab: () => Promise<chrome.tabs.Tab | undefined> = getActiveTab,
+  /** Which tab this turn acts on, and what to do when it isn't in front. */
+  pageTarget?: PageTarget,
 ): ToolSet {
+  const resolveTab = pageTarget?.resolveTab ?? getActiveTab
+
+  /**
+   * Park the turn: this chat's tab is in the background, and the action needs it
+   * in front. Returns a result that tells the model plainly not to retry — the
+   * turn is over and resumes on its own — because a model told merely that
+   * something "failed" will spend its remaining steps trying again.
+   */
+  const parkFor = (tab: chrome.tabs.Tab, action: string) => {
+    const where = hostLabel(tab.url ?? '')
+    pageTarget?.park?.(`needs ${where} in front to ${action}`)
+    return {
+      parked: true as const,
+      note: `Cannot ${action}: the user has switched away from ${where}, and only the tab in front of them can be seen or clicked. This turn is now paused and will resume by itself when they return to that tab. Do not retry and do not call another tool — stop here.`,
+    }
+  }
   const BROWSING_SOURCES = ['history', 'bookmarks', 'topSites', 'downloads'] as const
   const grantedSources = BROWSING_SOURCES.filter((s) => granted.has(s))
   const sourcesLabel = grantedSources.length ? grantedSources.join(', ') : 'none currently enabled'
@@ -260,6 +305,10 @@ export function createAgentTools(
   ) => {
     const tab = await resolveTab()
     if (tab?.id === undefined) return { error: NO_TAB_ERROR }
+
+    // Checked BEFORE the approval card: asking the user to approve a capture that
+    // then can't happen would spend their attention on nothing.
+    if (!(await isForeground(tab))) return parkFor(tab, 'capture this page')
 
     // Same exemption as ReadPage's perception modes: inside an open control session
     // the user has already granted sight of this tab, and a card between every click
@@ -1169,6 +1218,9 @@ export function createAgentTools(
       execute: async ({ plan }) => {
         const tab = await resolveTab()
         if (tab?.id === undefined) return { error: NO_TAB_ERROR }
+        // Before the consent card, not after: a control session the user cannot
+        // watch is precisely what the presence overlay exists to prevent.
+        if (!(await isForeground(tab))) return parkFor(tab, 'take control of this page')
         const host = (() => {
           try {
             return new URL(tab.url ?? '').host
@@ -1231,6 +1283,10 @@ export function createAgentTools(
         const tab = await resolveTab()
         if (tab?.id === undefined || tab.id !== session.tabId)
           return { error: 'The controlled tab is no longer active.' }
+        // Park rather than click blind. The session itself survives — the user
+        // granted it and hasn't revoked it — so returning to the tab resumes the
+        // flow mid-plan instead of asking for control a second time.
+        if (!(await isForeground(tab))) return parkFor(tab, 'act on this page')
         // The presence overlay lives in the page's DOM, which any navigation
         // wipes. For the life of a session the overlay must persist, so
         // re-establish it at the top of every step: idempotent when it's still
@@ -1360,6 +1416,9 @@ export function createAgentTools(
         if (!session || !session.active) return { error: 'No page-control session is open. Call RequestPageControl first.' }
         const tab = await resolveTab()
         if (tab?.id === undefined || tab.id !== session.tabId) return { error: 'The controlled tab is no longer active.' }
+        // Typing into a page the user cannot see is the least watchable thing
+        // this agent does — park it like any other control step.
+        if (!(await isForeground(tab))) return parkFor(tab, 'fill in this form')
         const profile = await getProfileMemories()
         const filled: number[] = []
         for (const f of fields) {

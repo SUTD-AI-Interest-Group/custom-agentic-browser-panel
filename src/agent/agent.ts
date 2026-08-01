@@ -89,7 +89,7 @@ export interface UIMessage {
  *  - `budget`     — the model hit the hard step ceiling mid-tool-call without
  *                   checkpointing (a cut-off, no reflection).
  */
-export type TurnStopReason = 'completed' | 'checkpoint' | 'budget'
+export type TurnStopReason = 'completed' | 'checkpoint' | 'budget' | 'parked'
 
 /**
  * An image waiting to be shown to the model, with the words that explain it.
@@ -290,6 +290,20 @@ export async function runAgentTurn(options: {
    */
   steerPending?: () => boolean
   /**
+   * Tab parking: set by a page tool that cannot act because the tab this chat is
+   * bound to is no longer frontmost (a capture or a page-control step — see
+   * `PageTarget` in src/tools/tools.ts). OR'd into `stopWhen` exactly like
+   * `steerPending`, so the turn halts at the next step boundary rather than
+   * letting the model burn its remaining steps retrying something physically
+   * impossible: chrome.tabs.captureVisibleTab only ever returns the *active*
+   * tab's viewport.
+   *
+   * A park is a stop, not an error — history, `activeNames` and any page-control
+   * grant survive it, and the caller resumes the chain when the user returns to
+   * the bound tab.
+   */
+  parkPending?: () => boolean
+  /**
    * Optional Langfuse trace for this turn (created by the caller). When present,
    * each model step is recorded as a generation with token usage; when absent,
    * observability is off and nothing here runs. Tool spans are emitted separately
@@ -333,6 +347,7 @@ export async function runAgentTurn(options: {
       isStepCount(maxSteps),
       hasToolCall(CHECKPOINT_TOOL),
       () => options.steerPending?.() ?? false,
+      () => options.parkPending?.() ?? false,
     ],
     abortSignal,
     // Observability: record one Langfuse generation per model step (tokens,
@@ -644,11 +659,18 @@ export async function runAgentTurn(options: {
   // Treat it as 'budget' too — the reply is incomplete text, not a finished
   // answer — so runTurnChain auto-continues instead of showing a truncated reply
   // as the final one.
+  // A park outranks 'budget': the loop stopped because the bound tab isn't in
+  // front, not because the model ran out of runway, and the caller resumes the
+  // two differently (a park waits for the user to come back and is NOT charged
+  // against the auto-continue allowance). It yields to an explicit Checkpoint,
+  // which is the model's own hand-off and carries strictly more state.
   const reason: TurnStopReason = checkpoint
     ? 'checkpoint'
-    : (stepsUsed >= maxSteps && finishReason !== 'stop') || finishReason === 'length'
-      ? 'budget'
-      : 'completed'
+    : (options.parkPending?.() ?? false)
+      ? 'parked'
+      : (stepsUsed >= maxSteps && finishReason !== 'stop') || finishReason === 'length'
+        ? 'budget'
+        : 'completed'
   // v7: use result.responseMessages (accumulated assistant/tool history across
   // every step) — result.response is now final-step-only and would drop earlier
   // tool calls/results. Keep it valid for the next turn: strip any nested

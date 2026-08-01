@@ -377,6 +377,63 @@ describe('agent steering: steerPending halts the loop at the next step boundary'
     expect(result.stop.stepsUsed).toBe(4)
     expect(result.stop.reason).toBe('budget')
   })
+
+  // Tab parking rides the same stop-condition machinery as steering. A page tool
+  // raises it when the chat's bound tab is no longer the one in front, because a
+  // capture of a background tab is impossible (captureVisibleTab only ever
+  // returns the ACTIVE tab) and a click on one is invisible to the user. Without
+  // the halt, a model told "not right now" spends its whole remaining budget
+  // retrying. The distinct 'parked' reason is what tells runTurnChain to wait for
+  // the user to come back rather than auto-continue immediately.
+  it('halts with reason "parked" when a page tool parks the turn', async () => {
+    const result = await runAgentTurn({
+      model: alwaysCallsATool(),
+      system: 's',
+      history: [{ role: 'user', content: 'go' }],
+      tools: makeTools(new Set()),
+      abortSignal: new AbortController().signal,
+      maxSteps: 8,
+      onUpdate: () => {},
+      parkPending: () => true,
+    })
+
+    expect(result.stop.stepsUsed).toBe(1)
+    expect(result.stop.reason).toBe('parked')
+  })
+
+  // A park outranks the step ceiling: both are true when a turn parks on its last
+  // step, but only 'parked' waits for the user. Reporting 'budget' there would
+  // auto-continue straight back into the same impossible capture.
+  it('reports "parked" rather than "budget" when both apply', async () => {
+    const result = await runAgentTurn({
+      model: alwaysCallsATool(),
+      system: 's',
+      history: [{ role: 'user', content: 'go' }],
+      tools: makeTools(new Set()),
+      abortSignal: new AbortController().signal,
+      maxSteps: 1,
+      onUpdate: () => {},
+      parkPending: () => true,
+    })
+
+    expect(result.stop.reason).toBe('parked')
+  })
+
+  it('runs normally when nothing has parked', async () => {
+    const result = await runAgentTurn({
+      model: alwaysCallsATool(),
+      system: 's',
+      history: [{ role: 'user', content: 'go' }],
+      tools: makeTools(new Set()),
+      abortSignal: new AbortController().signal,
+      maxSteps: 3,
+      onUpdate: () => {},
+      parkPending: () => false,
+    })
+
+    expect(result.stop.stepsUsed).toBe(3)
+    expect(result.stop.reason).toBe('budget')
+  })
 })
 
 // Reasoning parts must be stripped from replayed history: the app never renders
