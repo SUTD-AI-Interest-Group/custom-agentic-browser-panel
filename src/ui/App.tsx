@@ -272,6 +272,14 @@ export default function App() {
     }
   }, [])
 
+  // Retire the bar once the user is looking at the chat it announces — however
+  // they got there. Clicking "Go to it" is only one route; switching to the tab
+  // by hand is the likelier one, and the bar must not still be advertising a
+  // chat that is now on screen.
+  useEffect(() => {
+    if (landed && landed.conversationId === conversationId) setLanded(null)
+  }, [landed, conversationId])
+
   // MCP: reconcile server connections with settings — on load and every save.
   // The manager lives in this panel context and dies with it; refresh() is
   // cheap when nothing changed.
