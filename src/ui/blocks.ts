@@ -23,8 +23,10 @@ const BULLET = /^\s*(?:[-*+]|\d+[.)])\s+/
 const MD_LINK = /^!?\[([^\]]*)\]\(\s*(\S+?)\s*(?:"[^"]*")?\)$/
 const ANGLE = /^<(\S+)>$/
 const FENCE = /^\s{0,3}(```|~~~)(.*)$/
-/** Cap on JSON body size rendered as a tree; larger falls back to a code block. */
-const JSON_MAX = 20000
+/** Cap on JSON body size rendered as a tree; larger falls back to a code block.
+ *  Exported so jsonTreeLimits.ts's own depth cap can be tested against what's
+ *  actually reachable through this size limit (see jsonTreeLimits.test.ts). */
+export const JSON_MAX = 20000
 
 function asUrl(token: string): URL | null {
   try {

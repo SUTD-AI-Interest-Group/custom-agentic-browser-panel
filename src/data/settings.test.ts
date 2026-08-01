@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import {
   DEFAULT_DREAM_INTERVAL_MS,
   DEFAULT_SYSTEM_PROMPT,
@@ -14,6 +14,14 @@ import {
   type ProviderConfig,
   type Settings,
 } from './settings'
+
+// resetSettingsKeepingProviders drops Settings.mcp entirely; F5 (d07) is that
+// the per-server OAuth tokens each server accumulates live in a SEPARATE
+// mcpAuth:<server> sidecar key (src/mcp/auth.ts) this reset never touches —
+// mocked here (rather than exercised against a real chrome.storage.local)
+// since ../mcp/auth is outside this file's ownership and this test only needs
+// to confirm the cleanup call happens, not auth.ts's own storage behavior.
+vi.mock('../mcp/auth', () => ({ clearAuth: vi.fn(async () => {}) }))
 
 function base(overrides: Partial<Settings> = {}): Settings {
   return {
@@ -96,6 +104,36 @@ describe('resetSettingsKeepingProviders', () => {
     const next = resetSettingsKeepingProviders(configured)
     next.providers[0].apiKey = 'changed'
     expect(configured.providers[0].apiKey).toBe('sk-secret')
+  })
+
+  it('drops the MCP server list', () => {
+    // Documents current behavior precisely (d13 F4's chosen fix is correcting
+    // the UI copy, not changing this) — mcp is not among what "Reset settings"
+    // preserves.
+    const withMcp = base({ ...configured, mcp: { servers: { s1: { command: 'x' } } } })
+    expect(resetSettingsKeepingProviders(withMcp).mcp).toBeUndefined()
+  })
+
+  it('clears each dropped MCP server\'s orphaned OAuth sidecar entry (F5)', async () => {
+    const { clearAuth } = await import('../mcp/auth')
+    vi.mocked(clearAuth).mockClear()
+    const withMcp = base({
+      ...configured,
+      mcp: { servers: { s1: { command: 'x' }, s2: { url: 'https://example.com' } } },
+    })
+    resetSettingsKeepingProviders(withMcp)
+    // mcpAuth:<server> lives outside Settings entirely (src/mcp/auth.ts) — the
+    // reset must not silently orphan it just because settings.mcp itself is
+    // dropped above.
+    expect(clearAuth).toHaveBeenCalledWith('s1')
+    expect(clearAuth).toHaveBeenCalledWith('s2')
+  })
+
+  it('does not touch mcpAuth when there were no configured servers', async () => {
+    const { clearAuth } = await import('../mcp/auth')
+    vi.mocked(clearAuth).mockClear()
+    resetSettingsKeepingProviders(configured)
+    expect(clearAuth).not.toHaveBeenCalled()
   })
 })
 

@@ -45,3 +45,19 @@ test('OpenRouter sends the reasoning object, never a bare reasoning_effort', () 
   expect(out).toMatchObject({ reasoning: { effort: 'high' } })
   expect(out).not.toHaveProperty('reasoning_effort')
 })
+
+// d01 F1: `effort` resolves from a provider-wide default independently of
+// whether the CURRENT model is a reasoning model — a user who sets the
+// Providers tab's "Reasoning effort" dropdown while on a reasoning model, then
+// switches to (or titleModel/dreamModel independently resolves to) a plain
+// model on the SAME provider, leaves `effort` defined even though `reasoning`
+// is correctly false for the new model. The gate must not let that stale
+// effort inject reasoning fields into a request for a model explicitly
+// classified non-reasoning — Groq 400s outright on an unsupported field.
+for (const kind of ['groq', 'ollama', 'openrouter', 'lmstudio', 'custom'] as const) {
+  test(`a non-reasoning model on ${kind} with a stale/leftover effort is left untouched`, () => {
+    const transform = reasoningBodyTransform(profileFor(kind), 'high', false)
+    const body = { model: 'plain-non-reasoning-model', tools: [{}] }
+    expect(transform(body)).toEqual(body)
+  })
+}

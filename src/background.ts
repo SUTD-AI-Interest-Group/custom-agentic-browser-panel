@@ -18,6 +18,7 @@ import {
   heartbeat,
   postResearchMsg,
   MAX_RESEARCH_DURATION_MS,
+  clearTasksNow,
 } from './data/researchTasks'
 import { registerContextMenus, CONTEXT_MENU_IDS } from './platform/contextMenus'
 import { sweepHighlightsForWindow } from './platform/highlight'
@@ -50,7 +51,7 @@ function scheduleWatchdog(): void {
  * 30-minute interval genuinely fires every 30 minutes; dreamIfDue re-checks the
  * real gap and idle guard before consolidating.
  */
-function dreamAlarmPeriodMinutes(settings: Awaited<ReturnType<typeof loadSettings>>): number {
+export function dreamAlarmPeriodMinutes(settings: Awaited<ReturnType<typeof loadSettings>>): number {
   const minutes = Math.round(resolveDreamIntervalMs(settings) / 60_000)
   return Math.min(Math.max(minutes, 1), 60)
 }
@@ -156,34 +157,63 @@ chrome.commands.onCommand.addListener((command, tab) => {
 })
 
 // ---------------------------------------------------------------------------
-// Clicking the toast a finished background chat fired (see notifyChatLanded in
-// src/ui/App.tsx). The chat's tab is encoded in the notification id, so putting
-// the user back on it needs no state here — which is the point: the panel that
-// raised the toast may be closed by the time it is clicked, and this worker is
-// the only thing guaranteed to still be around. Activating the tab is enough to
-// swap the panel to that chat, since the binding follows the tab.
+// Clicking a notification. Two kinds reach here:
+//  - "chat:<tabId>" — a finished background chat (see notifyChatLanded in
+//    src/ui/App.tsx). The chat's tab is encoded in the notification id, so
+//    putting the user back on it needs no state here — which is the point: the
+//    panel that raised the toast may be closed by the time it is clicked, and
+//    this worker is the only thing guaranteed to still be around. Activating
+//    the tab is enough to swap the panel to that chat, since the binding
+//    follows the tab.
+//  - "research-<taskId>" — a finished background research task (see
+//    notifyDone below). A research task isn't bound to any one tab/window the
+//    way a chat is, so there is no tab to activate — the best this can do is
+//    reopen the panel somewhere the user will see it.
+//
+// Either way, sidePanel.open() must run in the SAME microtask as the click's
+// own continuation, before any FURTHER await — the click is the user gesture
+// the API needs, and that gesture window does not survive extra round-trips
+// (see the header comment above: no await before open() elsewhere in this
+// file). Both branches below have exactly one UNAVOIDABLE await first (the
+// window/tab id isn't known until then), and open() fires the instant that
+// resolves, ahead of anything else.
 // ---------------------------------------------------------------------------
 
 chrome.notifications.onClicked.addListener((notificationId) => {
-  if (!notificationId.startsWith('chat:')) return
-  const tabId = Number(notificationId.slice('chat:'.length))
-  if (!Number.isInteger(tabId)) return
-  chrome.notifications.clear(notificationId)
-  void (async () => {
-    try {
-      const tab = await chrome.tabs.get(tabId)
-      await chrome.tabs.update(tabId, { active: true })
-      if (tab.windowId !== undefined) {
-        await chrome.windows.update(tab.windowId, { focused: true })
-        // The panel may have been closed since the turn started; this click is a
-        // user gesture, so it is allowed to reopen it.
-        chrome.sidePanel.open({ windowId: tab.windowId }).catch(() => {})
+  if (notificationId.startsWith('chat:')) {
+    const tabId = Number(notificationId.slice('chat:'.length))
+    if (!Number.isInteger(tabId)) return
+    chrome.notifications.clear(notificationId)
+    void (async () => {
+      try {
+        const tab = await chrome.tabs.get(tabId)
+        if (tab.windowId !== undefined) {
+          chrome.sidePanel.open({ windowId: tab.windowId }).catch((err) => console.error('sidePanel.open failed', err))
+        }
+        await chrome.tabs.update(tabId, { active: true })
+        if (tab.windowId !== undefined) await chrome.windows.update(tab.windowId, { focused: true })
+      } catch {
+        // The tab was closed while the toast sat there. Nothing to focus, and the
+        // conversation is safe in history — silently drop it.
       }
-    } catch {
-      // The tab was closed while the toast sat there. Nothing to focus, and the
-      // conversation is safe in history — silently drop it.
-    }
-  })()
+    })()
+    return
+  }
+  if (notificationId.startsWith('research-')) {
+    chrome.notifications.clear(notificationId)
+    void (async () => {
+      try {
+        // No tab/window is bound to a research task — the last-focused normal
+        // window is the most reasonable place to surface the panel.
+        const win = await chrome.windows.getLastFocused({ windowTypes: ['normal'] })
+        if (win.id !== undefined) {
+          chrome.sidePanel.open({ windowId: win.id }).catch((err) => console.error('sidePanel.open failed', err))
+        }
+      } catch (err) {
+        console.error('[research] notification click failed', err)
+      }
+    })()
+  }
 })
 
 // ---------------------------------------------------------------------------
@@ -258,9 +288,17 @@ function ensureOffscreen(): Promise<void> {
   return creatingOffscreen
 }
 
-/** Fire a system notification announcing a research task finished. */
-async function notifyDone(taskId: string, question: string): Promise<void> {
-  chrome.notifications.create(`research-${taskId}`, {
+/**
+ * Fire a system notification announcing a research task finished. Exported for
+ * direct testing, and `await`s the create call rather than firing it and
+ * forgetting it — this used to be a bare, un-awaited statement, so a rejection
+ * (bad icon URL, quota, etc.) floated free as an unhandled rejection instead of
+ * reaching the try/catch every caller wraps this in (see the `research.done`
+ * branch below), which relies on this function's own promise actually
+ * reflecting whether the notification succeeded.
+ */
+export async function notifyDone(taskId: string, question: string): Promise<void> {
+  await chrome.notifications.create(`research-${taskId}`, {
     type: 'basic',
     iconUrl: chrome.runtime.getURL('icons/icon-128.png'),
     title: 'Research complete',
@@ -415,6 +453,13 @@ chrome.runtime.onMessage.addListener((msg: ResearchMsg, _sender, sendResponse) =
         // THIS task only — tasks run concurrently, and a global close would tear
         // down another task's open page-walk mid-flight (see FIX H1).
         closeSessionsForTask(msg.taskId)
+      } else if (msg?.type === 'research.clearTasks') {
+        // Panel-issued "Clear"/"Erase all data" (Settings → Data). Only the SW
+        // ever writes researchTasks state — see researchTasks.ts's clearTasks()
+        // doc comment — so this relays the removal onto the SAME writeChain
+        // saveTask/applyUpdate/heartbeat use, instead of the panel racing them by
+        // touching storage itself.
+        await clearTasksNow()
       } else if (msg?.type === 'research.browse') {
         // Interactive browse: the offscreen sub-agent drives the isolated tab one
         // policy-checked step at a time (see platform/researchBrowse.ts).

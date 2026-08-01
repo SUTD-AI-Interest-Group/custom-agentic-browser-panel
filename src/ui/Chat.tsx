@@ -2453,14 +2453,10 @@ export default function Chat({
         // cleared here — they outlive the turn so the user can read what was
         // marked; the next fresh turn sweeps them (see startFreshTurn).
         //
-        // unmountAllPresence is a module-global sweep (src/platform/presence.ts)
-        // that clears EVERY tab any chat has ever mounted, not just this chain's
-        // — a different, still-actively-controlled conversation's overlay can
-        // flicker off when this one finishes. Self-healing (ControlPage
-        // re-mounts + re-tints unconditionally at the top of its own execute),
-        // so left as a known, documented trade-off rather than scoped per-chain
-        // here (that would mean threading which tabs THIS session touched
-        // through presence.ts/pageControl.ts, both owned outside this file).
+        // unmountAllPresence sweeps every tab any chat mounted, but it skips any
+        // tab still under active page control — presence.ts tracks tinted state
+        // per tab for exactly this reason. So finishing here cannot strip a
+        // different, still-running conversation's cursor or spotlight.
         void unmountAllPresence()
       }
       abortRef.current = null

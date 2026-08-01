@@ -1,6 +1,10 @@
-import { test, expect, vi } from 'vitest'
-import { pruneTasks, resumableTasks, taskDeadline, capSteps, MAX_RESEARCH_DURATION_MS } from './researchTasks'
+import { test, expect, vi, afterEach } from 'vitest'
+import { pruneTasks, resumableTasks, taskDeadline, capSteps, MAX_RESEARCH_DURATION_MS, clearTasks } from './researchTasks'
 import type { ResearchTask, ResearchStep } from './researchTasks'
+
+afterEach(() => {
+  vi.unstubAllGlobals()
+})
 
 function task(
   id: string,
@@ -126,75 +130,117 @@ test('capSteps is idempotent — capping an already-capped array is a no-op', ()
 })
 
 // ---------------------------------------------------------------------------
-// clearTasks() cross-context race (F2, reassigned from the data-domain audit).
+// clearTasks() cross-context race (F2, reassigned from the data-domain audit;
+// carried over from Wave 1's mitigation to the real fix here).
 //
-// The SW and the side panel each import this module as their OWN JS execution
-// context, so the module-scoped `writeChain` below only serializes writes
-// WITHIN one context — it cannot stop a panel-issued clearTasks() from racing
-// an in-flight SW saveTask/applyUpdate/heartbeat (or vice versa). Simulated here
-// via vi.resetModules() + two dynamic imports, each getting its own writeChain,
-// sharing only the (mocked) chrome.storage.local — exactly like SW vs panel.
+// clearTasks() used to write chrome.storage.local directly no matter which
+// context called it. The SW (background.ts) and the side panel (via
+// storage.ts's clearStore/eraseAllData) each import this module as their OWN JS
+// execution context, so the module-scoped `writeChain` above only serializes
+// writes WITHIN one context — a panel-issued clear could race an in-flight SW
+// saveTask/applyUpdate/heartbeat with no way to serialize the two against each
+// other. An earlier fix mitigated this with a storage-backed "clearedAt" marker
+// every writer rechecked immediately before its own write (narrowing the race,
+// not closing it — see git history / the W1-F report for that version).
+//
+// The actual fix, tested below: clearTasks() only ever writes directly when IT
+// IS the service worker (no `window` global there); everywhere else — the side
+// panel today — it asks the SW to do it via a chrome.runtime message instead.
+// That leaves exactly one writer of this key, ever, so the marker is gone: it
+// could never fire its "skip" branch again now that there is no second writer
+// left to race against.
 // ---------------------------------------------------------------------------
 
-/** A chrome.storage.local stub whose get() SNAPSHOTS the value at call time but
- *  can delay DELIVERY of that snapshot — the only way to faithfully simulate "I
- *  already read a value; tell me about it later, whatever else happens to the
- *  store in the meantime" (a plain object store that reads lazily at resolution
- *  time would not reproduce the race at all). */
-function stubChromeStorageWithGate() {
-  const store: Record<string, unknown> = {}
-  let gate: Promise<void> | null = null
-  let release: (() => void) | undefined
-  const get = vi.fn((key: string) => {
-    const snapshot = key in store ? { [key]: store[key] } : {}
-    if (key === 'researchTasks' && gate) return gate.then(() => snapshot)
-    return Promise.resolve(snapshot)
+test('clearTasks() in the service worker (no window global) clears directly — no runtime message, no clearedAt marker', async () => {
+  vi.stubGlobal('window', undefined) // simulates the SW: no window global exists there
+  const store: Record<string, unknown> = { researchTasks: { t1: task('t1', 1) } }
+  const sendMessage = vi.fn()
+  const remove = vi.fn((key: string) => {
+    delete store[key]
+    return Promise.resolve()
+  })
+  vi.stubGlobal('chrome', {
+    runtime: { sendMessage },
+    storage: {
+      local: {
+        get: vi.fn((key: string) => Promise.resolve(key in store ? { [key]: store[key] } : {})),
+        set: vi.fn((items: Record<string, unknown>) => {
+          Object.assign(store, items)
+          return Promise.resolve()
+        }),
+        remove,
+      },
+    },
+  })
+
+  await clearTasks()
+
+  expect(remove).toHaveBeenCalledWith('researchTasks')
+  expect(store.researchTasks).toBeUndefined()
+  expect(sendMessage).not.toHaveBeenCalled()
+  // The old clearedAt-marker mitigation must be gone: once the SW is the only
+  // writer, ever, a recheck-before-write marker guards nothing (see clearTasks()'s
+  // doc comment) — so it must not still be written on every clear.
+  expect(store.researchTasksClearedAt).toBeUndefined()
+})
+
+test('clearTasks() outside the service worker (a window global present, e.g. the side panel) routes through a message instead of touching storage', async () => {
+  // jsdom's default `window` is already present here — nothing to stub — which is
+  // exactly what makes this simulate the panel rather than the SW.
+  const store: Record<string, unknown> = { researchTasks: { t1: task('t1', 1) } }
+  const remove = vi.fn((key: string) => {
+    delete store[key]
+    return Promise.resolve()
   })
   const set = vi.fn((items: Record<string, unknown>) => {
     Object.assign(store, items)
     return Promise.resolve()
   })
-  const remove = vi.fn((key: string) => {
-    delete store[key]
-    return Promise.resolve()
+  const sendMessage = vi.fn(() => Promise.resolve(undefined))
+  vi.stubGlobal('chrome', {
+    runtime: { sendMessage },
+    storage: { local: { get: vi.fn(() => Promise.resolve({})), set, remove } },
   })
-  vi.stubGlobal('chrome', { storage: { local: { get, set, remove } } })
-  return {
-    store,
-    /** The NEXT read of the task map will block until release() is called. */
-    armGate: () => {
-      gate = new Promise<void>((resolve) => {
-        release = resolve
-      })
+
+  await clearTasks()
+
+  expect(sendMessage).toHaveBeenCalledWith({ type: 'research.clearTasks' })
+  // The panel must never touch storage directly for this — that is the whole
+  // point of the fix (it is what used to race the SW's writeChain).
+  expect(remove).not.toHaveBeenCalled()
+  expect(set).not.toHaveBeenCalled()
+  expect(store.researchTasks).toEqual({ t1: task('t1', 1) }) // untouched by this call
+})
+
+test('clearTasksNow() shares the SAME writeChain as applyUpdate() — queued after an in-flight update, the clear always wins', async () => {
+  // A fresh module instance keeps this test's writeChain isolated from the
+  // others above, though by this point in the file it would already be settled
+  // regardless (every earlier test awaits its own operations to completion).
+  vi.resetModules()
+  const store: Record<string, unknown> = { researchTasks: { t1: task('t1', 1, 'running') } }
+  vi.stubGlobal('chrome', {
+    storage: {
+      local: {
+        get: vi.fn((key: string) => Promise.resolve(key in store ? { [key]: store[key] } : {})),
+        set: vi.fn((items: Record<string, unknown>) => {
+          Object.assign(store, items)
+          return Promise.resolve()
+        }),
+        remove: vi.fn((key: string) => {
+          delete store[key]
+          return Promise.resolve()
+        }),
+      },
     },
-    release: () => release?.(),
-  }
-}
+  })
+  const mod = await import('./researchTasks')
 
-test('a clear from one context is not resurrected by a slower write already in flight from another', async () => {
-  const { store, armGate, release } = stubChromeStorageWithGate()
+  const applyDone = mod.applyUpdate('t1', { status: 'paused' }) // queued first
+  const clearDone = mod.clearTasksNow() // queued second, same writeChain
+  await Promise.all([applyDone, clearDone])
 
-  vi.resetModules()
-  const modB = await import('./researchTasks') // simulates the service worker
-  vi.resetModules()
-  const modA = await import('./researchTasks') // simulates the side panel
-
-  store.researchTasks = { t1: task('t1', 1, 'running') }
-
-  armGate() // the next read of the task map blocks until release() is called
-
-  // B starts a read-modify-write — it snapshots the (about-to-be-stale) map...
-  const applyDone = modB.applyUpdate('t1', { status: 'paused' })
-
-  // ...while B's read is blocked, A (a different context) clears everything.
-  await modA.clearTasks()
-  expect(store.researchTasks).toBeUndefined()
-
-  // Only now does B's delayed read resolve, and B proceeds to compute + write.
-  release()
-  await applyDone
-
-  // The clear must win: B's write must not resurrect the map it read before the
-  // clear landed.
+  // FIFO ordering via the shared writeChain means the update's read-modify-write
+  // runs to completion BEFORE the clear starts — so the clear (strictly later)
+  // always wins, with no marker/recheck needed to make that true.
   expect(store.researchTasks).toBeUndefined()
 })

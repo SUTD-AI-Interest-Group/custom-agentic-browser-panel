@@ -96,6 +96,32 @@ describe('settingsVault', () => {
   })
 })
 
+describe('mcp stdio env values are not yet sealed', () => {
+  // F7 (d07): stdio MCP servers commonly carry credentials in `env` (e.g.
+  // GITHUB_PERSONAL_ACCESS_TOKEN), the standard pattern across Claude Desktop/
+  // Cursor/VS Code MCP configs — but secretValues/mapSecrets only ever walk
+  // `entry.headers`. This is a documented, deliberately-deferred v1 scope
+  // exclusion (docs/superpowers/specs/2026-08-01-envelope-encryption-design.md
+  // "Notes"), not a hidden defect — this test pins down *today's* (gap)
+  // behavior explicitly so a future partial v2 fix can't silently miss it: it
+  // is expected to start FAILING the moment env values are added to the seal
+  // sweep, which is the intended signal to come update this test alongside
+  // that fix.
+  it('does not seal an stdio server\'s env secrets, unlike headers', async () => {
+    const settings: Settings = {
+      ...defaultSettings(),
+      mcp: {
+        servers: {
+          gh: { command: 'npx', args: ['gh-mcp'], env: { GITHUB_PERSONAL_ACCESS_TOKEN: 'ghp_secret123' } },
+        },
+      },
+    }
+    expect(secretValues(settings)).not.toContain('ghp_secret123')
+    const sealed = await sealSettings(settings)
+    expect(sealed.mcp!.servers.gh.env).toEqual({ GITHUB_PERSONAL_ACCESS_TOKEN: 'ghp_secret123' })
+  })
+})
+
 describe('classifySealed', () => {
   it('classifies all-sealed, mixed, and empty value sets', async () => {
     const sealed = await sealSecret('sk-x')

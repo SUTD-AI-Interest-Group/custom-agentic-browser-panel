@@ -1,16 +1,18 @@
 import { useEffect, useState } from 'react'
-import DOMPurify from 'dompurify'
 import { getMcpArtifact, type McpArtifact } from '../data/mcpArtifacts'
+import { sanitizeMcpHtml } from './mcpHtmlSanitize'
 
 /**
  * One rich payload an MCP tool returned, rendered for the user from IndexedDB.
  * The transcript (and the model's tool result) carries only the artifact id —
  * media data never rides model history (see src/mcp/content.ts).
  *
- * HTML artifacts here are STATIC: sanitized with DOMPurify and inlined, no
- * scripts. Interactive MCP Apps are a different, deliberately separate path
- * (McpAppCard → the manifest-sandboxed page) because running scripts takes a
- * unique-origin sandbox, not a sanitizer.
+ * HTML artifacts here are STATIC: sanitized and inlined, no scripts, and no
+ * tag/attribute that would auto-fetch a remote host on render (see
+ * mcpHtmlSanitize.ts — this content has no sandbox or CSP of its own, unlike
+ * CreateArtifact's HTML). Interactive MCP Apps are a different, deliberately
+ * separate path (McpAppCard → the manifest-sandboxed page) because running
+ * scripts takes a unique-origin sandbox, not a sanitizer.
  */
 export default function McpContentCard({ artifactId }: { artifactId: string }) {
   const [artifact, setArtifact] = useState<McpArtifact | null>(null)
@@ -68,10 +70,9 @@ function Body({ artifact }: { artifact: McpArtifact }) {
       return (
         <div
           className="mcp-content-html"
-          // Static render only: scripts, event handlers and frames are stripped.
-          dangerouslySetInnerHTML={{
-            __html: DOMPurify.sanitize(artifact.text ?? '', { FORBID_TAGS: ['iframe', 'form'] }),
-          }}
+          // Static render only: scripts, event handlers, frames, and any
+          // tag/attribute that would auto-fetch a remote host are stripped.
+          dangerouslySetInnerHTML={{ __html: sanitizeMcpHtml(artifact.text ?? '') }}
         />
       )
     case 'text':

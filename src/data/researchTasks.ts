@@ -190,6 +190,11 @@ export type ResearchMsg =
     }
   | { type: 'research.error'; taskId: string; error: string }
   | { type: 'research.cancel'; taskId: string }
+  // Panel → SW: perform the actual removal of all saved tasks. The panel never
+  // writes the `researchTasks` key directly (see clearTasks()'s doc comment
+  // below) — only the SW does, so this, like every other write, funnels through
+  // the ONE writeChain below instead of racing it from a second context.
+  | { type: 'research.clearTasks' }
   // Hybrid-escalation broker (offscreen → SW → offscreen): render a hard page in
   // an isolated controlled tab and return its text/screenshot. See background.ts.
   | { type: 'research.renderPage'; taskId: string; requestId: string; url: string; want: 'text' | 'screenshot' | 'both' }
@@ -236,13 +241,6 @@ export function postResearchMsg(msg: ResearchMsg): void {
 
 const KEY = 'researchTasks'
 
-/**
- * Bumped by clearTasks() on every clear — the cross-context guard for the race
- * below. Deliberately a SEPARATE storage key from KEY: it must be readable
- * without paying the cost of (or racing on) the full task-map read/write.
- */
-const CLEARED_AT_KEY = 'researchTasksClearedAt'
-
 // researchTasks shares the ~10MB chrome.storage.local namespace with settings/memory/
 // conversations; nothing else removes old task records, so cap growth on every insert.
 const MAX_TASKS = 50
@@ -282,8 +280,10 @@ export function capSteps(steps: ResearchStep[], max: number = MAX_STEPS): Resear
   return [marker, ...steps.slice(-kept)]
 }
 
-// Serialize read-modify-write so concurrent saveTask/applyUpdate calls (e.g. rapid
-// research.update bursts) can't interleave a stale get() over a prior set().
+// Serialize read-modify-write so concurrent saveTask/applyUpdate/heartbeat/
+// clearTasksNow calls (e.g. rapid research.update bursts racing a clear) can't
+// interleave a stale get() over a prior set() — see clearTasks()'s doc comment
+// for why this only works because ALL of them run in this one context (the SW).
 let writeChain: Promise<unknown> = Promise.resolve()
 function serialize<T>(fn: () => Promise<T>): Promise<T> {
   const run = writeChain.then(fn, fn)
@@ -294,36 +294,6 @@ function serialize<T>(fn: () => Promise<T>): Promise<T> {
 async function all(): Promise<Record<string, ResearchTask>> {
   const got = await chrome.storage.local.get(KEY)
   return (got[KEY] as Record<string, ResearchTask>) ?? {}
-}
-
-async function clearedAt(): Promise<number> {
-  const got = await chrome.storage.local.get(CLEARED_AT_KEY)
-  return (got[CLEARED_AT_KEY] as number) ?? 0
-}
-
-/**
- * Write `map` to storage UNLESS a clearTasks() landed after `seenClearedAt` was
- * captured. This is the cross-context guard: the SW and the side panel each
- * import this module as their own JS execution context, so the module-scoped
- * `writeChain` above only serializes writes WITHIN one context — it cannot stop
- * a panel-issued clearTasks() from racing an in-flight SW saveTask/applyUpdate/
- * heartbeat (or vice versa), since neither side's writeChain knows the other
- * exists. Re-checking this shared, storage-backed marker immediately before the
- * write narrows that race to "one extra read right before the write" instead of
- * "the whole read-modify-write window": a write that started before a concurrent
- * clear now skips itself instead of resurrecting the just-cleared data with a
- * stale map.
- *
- * This is a mitigation, not a full fix — a pathological-enough interleaving
- * between this recheck and the write below could still land wrong. The
- * watertight fix is routing the panel's clear through a message the SW handles
- * (so every write funnels through ONE writeChain), which needs changes outside
- * this file's owned surface (background.ts's message handler, and the
- * clear-research-tasks call site in the settings/data UI).
- */
-async function writeMapUnlessCleared(map: Record<string, ResearchTask>, seenClearedAt: number): Promise<void> {
-  if ((await clearedAt()) !== seenClearedAt) return
-  await chrome.storage.local.set({ [KEY]: map })
 }
 
 /** Keep the newest `max` tasks by startedAt, but never drop an active (running or
@@ -341,11 +311,10 @@ export function pruneTasks(map: Record<string, ResearchTask>, max: number): Reco
 
 export async function saveTask(t: ResearchTask): Promise<void> {
   await serialize(async () => {
-    const seenClearedAt = await clearedAt()
     const map = await all()
     map[t.id] = { ...t, steps: capSteps(t.steps) }
     try {
-      await writeMapUnlessCleared(pruneTasks(map, MAX_TASKS), seenClearedAt)
+      await chrome.storage.local.set({ [KEY]: pruneTasks(map, MAX_TASKS) })
     } catch (err) {
       // A quota/storage failure here would otherwise be a silent unhandled rejection
       // in the fire-and-forget message listener that calls this.
@@ -367,7 +336,6 @@ export async function applyUpdate(
   patch: Partial<ResearchTask> | ((cur: ResearchTask) => Partial<ResearchTask>),
 ): Promise<ResearchTask | undefined> {
   return serialize(async () => {
-    const seenClearedAt = await clearedAt()
     const map = await all()
     const cur = map[id]
     if (!cur) return undefined
@@ -376,7 +344,7 @@ export async function applyUpdate(
     if (next.steps) next.steps = capSteps(next.steps)
     map[id] = next
     try {
-      await writeMapUnlessCleared(map, seenClearedAt)
+      await chrome.storage.local.set({ [KEY]: map })
     } catch (err) {
       console.error('[researchTasks] persist failed', err)
     }
@@ -391,13 +359,12 @@ export async function applyUpdate(
  */
 export async function heartbeat(id: string): Promise<void> {
   await serialize(async () => {
-    const seenClearedAt = await clearedAt()
     const map = await all()
     const cur = map[id]
     if (!cur || !isActiveStatus(cur.status)) return
     map[id] = { ...cur, updatedAt: Date.now() }
     try {
-      await writeMapUnlessCleared(map, seenClearedAt)
+      await chrome.storage.local.set({ [KEY]: map })
     } catch (err) {
       console.error('[researchTasks] persist failed', err)
     }
@@ -405,17 +372,59 @@ export async function heartbeat(id: string): Promise<void> {
 }
 
 /**
- * Drop every saved research task and report. Goes through the same `serialize`
- * chain as the writers, so an in-flight saveTask cannot resurrect the map we just
- * removed by racing its read-modify-write against ours.
+ * Drop every saved research task and report.
+ *
+ * The SW is the only context allowed to touch the `researchTasks` key directly —
+ * saveTask/applyUpdate/heartbeat above all run there (background.ts's message
+ * handler), each funneled through the shared `serialize()` writeChain, which
+ * fully orders every write within that ONE context. This function used to ALSO
+ * write directly from wherever it was called, including the side panel (via
+ * storage.ts's clearStore/eraseAllData) — a SEPARATE JS execution context with
+ * its own module-scope writeChain that knows nothing of the SW's, so a
+ * panel-issued clear could interleave with an in-flight SW write with no way to
+ * serialize the two against each other. An earlier fix mitigated that with a
+ * storage-backed "clearedAt" marker every writer rechecked immediately before its
+ * own write — narrowing the race window, not closing it (a pathological-enough
+ * interleaving between the recheck and the write could still land wrong).
+ *
+ * The actual fix is routing every write through the SW, no exceptions: called
+ * from within the SW itself (detected by the absence of a `window` global — a
+ * service worker has no DOM/window, unlike the panel or an offscreen document),
+ * this clears directly on the SAME writeChain saveTask/applyUpdate/heartbeat use,
+ * so it can never interleave with them. Called from anywhere else (the panel,
+ * today the only other caller), it asks the SW to do it via a message instead of
+ * touching storage itself — background.ts's `research.clearTasks` handler calls
+ * clearTasksNow() below, the very function this uses internally. Either way
+ * there is exactly one writer of this key, ever, which is why the clearedAt
+ * marker was removed rather than kept alongside this: once there is only one
+ * writer left, a recheck-before-write guard against a SECOND writer can never
+ * fire again, and inert defensive code is worse than no code — it reads as "there
+ * must still be a second writer, that's why this check exists" to the next
+ * person, which is no longer true.
  */
 export async function clearTasks(): Promise<void> {
+  if (typeof window === 'undefined') {
+    // No `window` global: this module instance IS the service worker.
+    await clearTasksNow()
+    return
+  }
+  // Any other context (the side panel, today the only other caller): route
+  // through the SW instead of writing chrome.storage.local from here.
+  // chrome.runtime.sendMessage wakes the SW if it is idle and keeps it alive
+  // until background.ts's handler calls sendResponse(), so this is not weaker
+  // than a direct write for reliability — only for the one property that
+  // actually matters here, that it can no longer race the SW's own writeChain.
+  await chrome.runtime.sendMessage({ type: 'research.clearTasks' } satisfies ResearchMsg)
+}
+
+/**
+ * The actual removal. Only ever reached from within the SW: directly, above,
+ * when this module instance IS the SW; or via background.ts's
+ * `research.clearTasks` message handler when relaying a panel-issued clear.
+ * Exported (rather than kept private) specifically so background.ts can call it.
+ */
+export async function clearTasksNow(): Promise<void> {
   await serialize(async () => {
-    // Stamp the marker BEFORE removing the map: a writer (in the OTHER context)
-    // that captured its own seenClearedAt earlier than this will see it change on
-    // its pre-write recheck (writeMapUnlessCleared) and skip, instead of
-    // resurrecting what we are about to clear.
-    await chrome.storage.local.set({ [CLEARED_AT_KEY]: Date.now() })
     await chrome.storage.local.remove(KEY)
   })
 }

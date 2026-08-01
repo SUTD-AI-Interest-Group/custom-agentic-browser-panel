@@ -3,6 +3,7 @@
 // Ollama, Anthropic's /v1 compat layer, LM Studio, vLLM, ...).
 
 import type { McpSettings } from '../mcp/config'
+import { clearAuth } from '../mcp/auth'
 import { openSettings, sealSettings, secretValues } from './settingsVault'
 import { isSealed } from './vaultFormat'
 
@@ -276,6 +277,18 @@ export function defaultSettings(): Settings {
  * their own endpoint. Erasing keys is what "Erase all data" is for.
  */
 export function resetSettingsKeepingProviders(settings: Settings): Settings {
+  // The MCP server list is dropped below, but each server's OAuth tokens live
+  // in a SEPARATE mcpAuth:<server> sidecar key (src/mcp/auth.ts) that this
+  // reset would otherwise never touch — they'd sit sealed in storage
+  // indefinitely, orphaned and unmanageable from the UI the moment their
+  // server disappears from Settings. Best-effort and fire-and-forget, like
+  // every other cleanup in this codebase (saveShot's pruneShots, etc.): a
+  // transient storage failure must never block the reset the user is waiting
+  // on, and this function stays synchronous so its one call site need not
+  // change to await it.
+  for (const name of Object.keys(settings.mcp?.servers ?? {})) {
+    void clearAuth(name).catch(() => {})
+  }
   return {
     ...structuredClone(EMPTY),
     providers: structuredClone(settings.providers),

@@ -5,7 +5,7 @@
 // it — and the conversations DB must not drag megabytes of media through every
 // chat open. Same one-DB-per-store shape as the other data modules.
 
-import { estimateBytes, type StoreUsage } from './usage'
+import { estimateBytes, planPrune, type StoreUsage } from './usage'
 import type { McpArtifactInput } from '../mcp/content'
 
 /** A stored MCP artifact. Exactly one of dataUrl/text is set (binary vs text). */
@@ -119,19 +119,20 @@ export async function deleteMcpArtifactsForConversation(conversationId: string):
   await Promise.all(doomed.map((a) => requestOf('readwrite', (s) => s.delete(a.id))))
 }
 
-/** Evict oldest-first until under both ceilings (age + total bytes). */
+/**
+ * Evict oldest-first until under both ceilings (age + total bytes). The
+ * byte-cap pass never evicts the single newest survivor — see planPrune — so
+ * an oversized artifact (e.g. an MCP tool's returned video/audio) outlives its
+ * own very next prune instead of vanishing right after being saved.
+ */
 export async function pruneMcpArtifacts(): Promise<{ deleted: number }> {
   const all = await requestOf<McpArtifact[]>('readonly', (s) => s.getAll())
-  const cutoff = Date.now() - MAX_AGE_MS
-  const doomed = new Set(all.filter((a) => a.createdAt < cutoff).map((a) => a.id))
-  const survivors = all.filter((a) => !doomed.has(a.id)).sort((x, y) => y.createdAt - x.createdAt)
-  let running = 0
-  for (const a of survivors) {
-    running += a.bytes
-    if (running > MAX_TOTAL_BYTES) doomed.add(a.id)
-  }
-  await Promise.all([...doomed].map((id) => requestOf('readwrite', (s) => s.delete(id))))
-  return { deleted: doomed.size }
+  const doomed = planPrune(
+    all.map((a) => ({ id: a.id, bytes: a.bytes, recency: a.createdAt })),
+    { maxTotalBytes: MAX_TOTAL_BYTES, maxAgeMs: MAX_AGE_MS },
+  )
+  await Promise.all(doomed.map((id) => requestOf('readwrite', (s) => s.delete(id))))
+  return { deleted: doomed.length }
 }
 
 export async function clearMcpArtifacts(): Promise<void> {
@@ -146,4 +147,28 @@ export async function mcpArtifactsUsage(): Promise<StoreUsage> {
     count: all.length,
     detail: all.length === 1 ? '1 item' : `${all.length} items`,
   }
+}
+
+/**
+ * Test-only: write an artifact record directly (e.g. with an explicit
+ * createdAt saveMcpArtifact can't express, for age-eviction tests).
+ */
+export async function _putArtifactForTests(artifact: McpArtifact): Promise<void> {
+  await requestOf('readwrite', (s) => s.put(artifact))
+}
+
+/** Test-only: close and delete the underlying database so the next call opens
+ *  a fresh, empty one. Mirrors vault.ts's resetVault. */
+export async function _resetDbForTests(): Promise<void> {
+  if (dbPromise) {
+    const db = await dbPromise.catch(() => null)
+    db?.close()
+  }
+  dbPromise = null
+  await new Promise<void>((resolve) => {
+    const req = indexedDB.deleteDatabase(DB_NAME)
+    req.onsuccess = () => resolve()
+    req.onerror = () => resolve()
+    req.onblocked = () => resolve()
+  })
 }

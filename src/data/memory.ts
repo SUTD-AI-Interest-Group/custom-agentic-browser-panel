@@ -89,6 +89,16 @@ function requestOf<T>(store: string, mode: IDBTransactionMode, fn: (s: IDBObject
 
 // ---------------------------------------------------------------------------
 // Memories
+//
+// updateMemory/appendToEpisode/markEpisodesConsolidated below are each a get
+// in one IndexedDB transaction followed by a separate put in another — not
+// atomic, so two callers racing on the SAME id can interleave a lost update.
+// That's fine: their one caller that ever runs on a schedule from two
+// contexts at once (dream.ts, consolidating episodes into memories) now
+// serializes itself with a chrome.storage.local-backed lock (see
+// acquireDreamLock in dream.ts) specifically so it never calls these
+// concurrently with itself. A future caller that DOES need to run these
+// concurrently for the same id would need its own serialization the same way.
 // ---------------------------------------------------------------------------
 
 export async function saveMemory(input: {
@@ -256,13 +266,27 @@ export interface DreamState {
   lastDreamAt: number | null
   /** Day summary produced by the last dream, for display in the Memory panel. */
   lastSummary: string | null
+  /**
+   * Consecutive dream cycles in a row whose model output failed to parse;
+   * reset to 0 by any successful consolidation. Lets dream.ts surface a
+   * louder signal once a dreaming model is persistently broken, instead of
+   * silently retrying forever with the same generic message. Optional so
+   * state saved before this field existed still loads cleanly (defaults to 0
+   * below).
+   */
+  consecutiveParseFailures?: number
 }
 
 const DREAM_STATE_KEY = 'dreamState'
 
 export async function getDreamState(): Promise<DreamState> {
   const data = await chrome.storage.local.get(DREAM_STATE_KEY)
-  return { lastDreamAt: null, lastSummary: null, ...(data[DREAM_STATE_KEY] as Partial<DreamState> | undefined) }
+  return {
+    lastDreamAt: null,
+    lastSummary: null,
+    consecutiveParseFailures: 0,
+    ...(data[DREAM_STATE_KEY] as Partial<DreamState> | undefined),
+  }
 }
 
 export async function setDreamState(state: DreamState): Promise<void> {
@@ -271,6 +295,38 @@ export async function setDreamState(state: DreamState): Promise<void> {
 
 export async function clearDreamState(): Promise<void> {
   await chrome.storage.local.remove(DREAM_STATE_KEY)
+}
+
+// ---------------------------------------------------------------------------
+// Dream lock — a cross-context mutex over chrome.storage.local. dream.ts runs
+// in two independent JS realms (the service worker's alarm and the side
+// panel's "Dream now") that share no module state, and the service worker can
+// be killed and restarted mid-dream (MV3's whole premise) — an in-memory flag
+// in dream.ts would guard neither case. This key is the one thing both realms
+// actually share; dream.ts owns the acquire/release POLICY (staleness,
+// re-read collision detection), this file just offers the dumb get/set/clear
+// primitives, matching the DreamState split above.
+// ---------------------------------------------------------------------------
+
+export interface DreamLock {
+  /** Random per-attempt id, so a holder can tell a stored lock is still its own. */
+  token: string
+  acquiredAt: number
+}
+
+const DREAM_LOCK_KEY = 'dreamLock'
+
+export async function getDreamLock(): Promise<DreamLock | null> {
+  const data = await chrome.storage.local.get(DREAM_LOCK_KEY)
+  return (data[DREAM_LOCK_KEY] as DreamLock | undefined) ?? null
+}
+
+export async function setDreamLock(lock: DreamLock): Promise<void> {
+  await chrome.storage.local.set({ [DREAM_LOCK_KEY]: lock })
+}
+
+export async function clearDreamLock(): Promise<void> {
+  await chrome.storage.local.remove(DREAM_LOCK_KEY)
 }
 
 /** Byte/row estimate for the Data tab, counting both object stores. */

@@ -74,14 +74,21 @@ async function loadHljs() {
   return hljsPromise
 }
 
+// Above this size, skip syntax highlighting entirely rather than risk a
+// multi-second main-thread block tokenizing a huge blob (e.g. a full
+// minified bundle quoted into a research report, or a large file dump). The
+// code still renders — just as plain, uncolored text. Ordinary assistant
+// code blocks are nowhere near this size, so this never affects normal use.
+const MAX_HIGHLIGHT_CHARS = 100_000
+
 /** Highlight one code element with the lazily-loaded engine. Idempotent. */
 export async function highlightCode(code: HTMLElement, lang: string): Promise<void> {
   if (code.dataset.highlighted) return
   code.dataset.highlighted = '1'
+  const text = code.textContent ?? ''
+  if (text.length > MAX_HIGHLIGHT_CHARS) return
   const hljs = await loadHljs()
-  const result = hljs.getLanguage(lang)
-    ? hljs.highlight(code.textContent ?? '', { language: lang })
-    : hljs.highlightAuto(code.textContent ?? '')
+  const result = hljs.getLanguage(lang) ? hljs.highlight(text, { language: lang }) : hljs.highlightAuto(text)
   code.innerHTML = result.value
   code.classList.add('hljs')
 }

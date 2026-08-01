@@ -4,17 +4,37 @@ import { createAnthropic } from '@ai-sdk/anthropic'
 import { defaultSettingsMiddleware, generateText, wrapLanguageModel, type LanguageModel } from 'ai'
 import { getObserver } from './observability'
 import { sanitizeTitle } from './title'
-import { providerKind, resolveReasoningEffort, type ProviderConfig, type ReasoningEffort } from '../data/settings'
+import {
+  providerKind,
+  resolveReasoningEffort,
+  loadSettings,
+  observabilityConfig,
+  type ObservabilityConfig,
+  type ProviderConfig,
+  type ReasoningEffort,
+} from '../data/settings'
 import { isReasoningModel, profileFor, type ProviderProfile } from '../data/providerProfiles'
 
 /**
  * The `transformRequestBody` a compatible provider uses to inject its reasoning
  * fields. Pure and exported so the gating and tool-awareness are unit-testable
  * without standing up an adapter:
- *  - a non-reasoning model with no effort set is left untouched (the original
- *    contract — nothing extra is sent), and
+ *  - a non-reasoning model is left untouched (the original contract — nothing
+ *    extra is sent), regardless of `effort`, and
  *  - a reasoning model's fields come from its profile, which is what lets Groq add
  *    `reasoning_format: 'parsed'` whenever tools ride along (raw + tools = 400).
+ *
+ * Gated purely on `reasoning`, matching the native-adapter path below (d01 F1):
+ * `effort` is not a safe signal on its own. It resolves from a *provider-wide*
+ * default (the Providers tab's "Reasoning effort" dropdown, `settings.ts`'s
+ * `provider.reasoningEffort`) independently of whether the model THIS call is
+ * for is a reasoning model at all. A user who sets that default while on a
+ * reasoning model, then switches to (or titleModel/dreamModel independently
+ * resolves to) a plain model on the same provider, leaves `effort` defined
+ * even though `reasoning` is correctly false for the new model — the old
+ * `!reasoning && effort === undefined` gate let that stale effort inject
+ * `reasoning_effort`/`reasoning_format` into a request for a model explicitly
+ * classified non-reasoning (Groq 400s outright on the unexpected field).
  */
 export function reasoningBodyTransform(
   profile: ProviderProfile,
@@ -22,7 +42,7 @@ export function reasoningBodyTransform(
   reasoning: boolean,
 ): (body: Record<string, unknown>) => Record<string, unknown> {
   return (body) => {
-    if (!reasoning && effort === undefined) return body
+    if (!reasoning) return body
     const tools = body.tools
     const hasTools = Array.isArray(tools) && tools.length > 0
     return { ...body, ...profile.reasoningBody!(effort, hasTools) }
@@ -108,6 +128,30 @@ export interface TestResult {
 }
 
 /**
+ * Read the observability config straight from storage instead of trusting
+ * `observer.ts`'s module-level cache, which starts at the disabled default and
+ * is only overwritten once its own fire-and-forget `refresh()` (a
+ * chrome.storage round trip kicked off at import time) resolves. A no-arg
+ * `getObserver()` call landing before that resolves — routine right after a
+ * fresh side-panel load or a service-worker wake, exactly when a brand-new
+ * chat's first title-gen or a cold model's first vision probe fires — would
+ * silently look disabled even when the user has it configured (d14 F12).
+ * `dream.ts`/`research.ts` avoid this by loading Settings for other reasons
+ * and passing the config through explicitly; title-gen and the vision probe
+ * (vision.ts, which shares this helper) don't otherwise need Settings, so this
+ * loads it just for this. Best-effort: any failure (storage hiccup) falls
+ * through to `getObserver()`'s own cached default rather than breaking the
+ * caller — this is observability, it must never be why a title or a probe fails.
+ */
+export async function currentObservabilityConfig(): Promise<ObservabilityConfig | undefined> {
+  try {
+    return observabilityConfig(await loadSettings())
+  } catch {
+    return undefined
+  }
+}
+
+/**
  * How long the namer may take. Generous on purpose: nobody waits on this call —
  * it runs in the background after the turn — while a *reasoning* model routinely
  * spends 12–25s and ~2k tokens of chain-of-thought to produce four words. The
@@ -130,7 +174,7 @@ export async function generateChatTitle(
   /** Conversation id, so the title generation joins the chat's Langfuse session. */
   sessionId?: string,
 ): Promise<string | null> {
-  const observer = getObserver()
+  const observer = getObserver(await currentObservabilityConfig())
   const trace = observer.enabled
     ? observer.startTrace({ name: 'chat-title', sessionId, tags: ['title'], input: firstMessage })
     : undefined
