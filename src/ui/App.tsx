@@ -15,9 +15,11 @@ import {
   boundTabFor,
   liveChatIds,
   loadTabChats,
+  needsAttention,
   resolveBinding,
   saveRunningChats,
   saveTabChats,
+  shouldAnnounceAttention,
   shouldToast,
   unbindTab,
   type ChatStatus,
@@ -77,6 +79,7 @@ async function notifyChatLanded(
   conversationId: string,
   status: ChatStatus,
   map: TabChatMap,
+  detail?: string,
 ): Promise<void> {
   const tabId = boundTabFor(map, conversationId)
   if (tabId === undefined) return
@@ -88,13 +91,27 @@ async function notifyChatLanded(
     // Tab closed between finishing and announcing — still worth telling the
     // user their answer is ready, just without naming where it came from.
   }
+  // Name the tool being requested. A permission prompt the user has to walk to
+  // another tab to find should at least say what it is about to do, or the only
+  // way to judge whether it is worth the trip is to take it.
+  const message =
+    status === 'needs-you'
+      ? detail
+        ? `Wants to use ${detail} on ${host}. Click to review.`
+        : `Your chat about ${host} is waiting for your approval.`
+      : status === 'parked'
+        ? `Your chat needs ${host} in front to carry on. Click to go back.`
+        : `Your answer about ${host} is ready.`
   try {
     chrome.notifications.create(`chat:${tabId}`, {
       type: 'basic',
       iconUrl: chrome.runtime.getURL('icons/icon-128.png'),
       title: LANDED_TITLE[status],
-      message: status === 'idle' ? `Your answer about ${host} is ready.` : `Your chat about ${host} is waiting on you.`,
-      priority: 1,
+      message,
+      priority: status === 'needs-you' ? 2 : 1,
+      // Approval blocks the turn until answered, so it stays on screen rather
+      // than timing out into a notification centre the user may never open.
+      requireInteraction: status === 'needs-you',
     })
   } catch {}
 }
@@ -134,6 +151,12 @@ export default function App() {
   useEffect(() => {
     conversationIdRef.current = conversationId
   }, [conversationId])
+
+  // What each chat is blocked on (the tool awaiting approval), for the toast.
+  const detailsRef = useRef<Record<string, string | undefined>>({})
+  // The attention state each chat was last announced in, so one blocked chat
+  // produces one notification rather than one per re-render or tab switch.
+  const announcedRef = useRef<Map<string, ChatStatus>>(new Map())
 
   /** Commit a new binding map: ref first (listeners read it synchronously, and
    *  two tab events can land before React re-renders), then state, then disk. */
@@ -255,9 +278,13 @@ export default function App() {
    * where a background chat's turn ending becomes visible to the user: the bar
    * below, and a system toast when they aren't looking at the panel at all.
    */
-  const handleStatusChange = useCallback((id: string, status: ChatStatus) => {
+  const handleStatusChange = useCallback((id: string, status: ChatStatus, detail?: string) => {
+    detailsRef.current[id] = detail
     const before = statusesRef.current[id] ?? 'idle'
     if (before === status) return
+    // Leaving an attention state ends that episode, so the next time this chat
+    // gets blocked it is announced again rather than suppressed as a repeat.
+    if (!needsAttention(status)) announcedRef.current.delete(id)
     const next = { ...statusesRef.current, [id]: status }
     statusesRef.current = next
     setStatuses(next)
@@ -271,6 +298,38 @@ export default function App() {
       void notifyChatLanded(id, status, tabChatsRef.current)
     }
   }, [])
+
+  /**
+   * Announce any chat that is blocked on the user and out of sight.
+   *
+   * Runs on state, not on a transition, and re-checks whenever the visible chat
+   * changes — which is what catches the case a transition cannot see: an
+   * approval card that appeared while the user was watching (rightly silent),
+   * and only became invisible because they switched tabs afterwards. Nothing
+   * changes about the chat's status at that moment, so there is no transition to
+   * hang a notification on; without this the chat would sit blocked in silence.
+   *
+   * The window `blur` listener covers the same thing one level up: the card is
+   * on screen but the user has clicked back into the page and is no longer
+   * looking at the panel at all.
+   */
+  useEffect(() => {
+    const announce = () => {
+      for (const [id, status] of Object.entries(statusesRef.current)) {
+        const view = {
+          visible: id === conversationIdRef.current,
+          panelFocused: document.hasFocus(),
+        }
+        if (!shouldAnnounceAttention(status, announcedRef.current.get(id), view)) continue
+        announcedRef.current.set(id, status)
+        if (!view.visible) setLanded({ conversationId: id, status })
+        void notifyChatLanded(id, status, tabChatsRef.current, detailsRef.current[id])
+      }
+    }
+    announce()
+    window.addEventListener('blur', announce)
+    return () => window.removeEventListener('blur', announce)
+  }, [statuses, conversationId])
 
   // Retire the bar once the user is looking at the chat it announces — however
   // they got there. Clicking "Go to it" is only one route; switching to the tab

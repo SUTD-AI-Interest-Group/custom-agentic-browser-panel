@@ -84,10 +84,28 @@ set and its page-control grant.
 
 ### Approvals
 
-No new mechanism. A background chat's `requestApproval` promise simply stays
-pending; the chat is flagged `needs-you` and surfaces through the same bar and
-toast as a finished one. Consent still happens in the chat that asked for it,
-with its own card and its own context.
+The gate itself is unchanged: a background chat's `requestApproval` promise
+simply stays pending, the chat is flagged `needs-you`, and consent still happens
+in the chat that asked for it, with its own card and its own context.
+
+Announcing it, however, cannot ride the same transition-based path as a finished
+turn. A turn finishes exactly once, but a chat can be left waiting two ways: the
+card appears while the user is elsewhere (a `running → needs-you` transition), or
+it appears while they are watching — rightly silent — and only becomes invisible
+when they switch tabs afterwards. That second case changes no status at all, so
+there is no transition to hang a notification on, and the chat would sit blocked
+in silence.
+
+So the blocked states (`needs-you`, `parked`) are announced on **state** rather
+than transition, by `shouldAnnounceAttention`: blocked, not visible, and not
+already announced for this episode. `App` re-runs the check whenever the visible
+chat changes and on window `blur` (the card is on screen but the user has clicked
+back into the page). One announcement per blocked episode — leaving the state
+clears the record, so the next block is announced again.
+
+The toast names the tool being requested ("Wants to use ReadPage on example.com")
+and sets `requireInteraction`, since an approval blocks the turn until answered
+and should not time out into a notification centre the user may never open.
 
 ### Page control
 

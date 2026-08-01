@@ -35,6 +35,19 @@ export function isLive(status: ChatStatus): boolean {
 }
 
 /**
+ * Is this chat blocked on the user rather than working?
+ *
+ * Announced on *state* rather than on the transition into it, unlike a finished
+ * turn. A turn can only finish once, but a chat can be left waiting two ways:
+ * the card appears while the user is elsewhere (a transition), or it appears
+ * while they are watching and they then switch away (no transition at all). Only
+ * the state test catches both, and the second is the easier one to walk into.
+ */
+export function needsAttention(status: ChatStatus): boolean {
+  return status === 'needs-you' || status === 'parked'
+}
+
+/**
  * The identity a chat is bound to: scheme + host.
  *
  * Not `URL.origin`, which collapses to the string "null" for the opaque-origin
@@ -141,6 +154,24 @@ export function shouldToast(
   view: { visible: boolean; panelFocused: boolean },
 ): boolean {
   if (prev !== 'running' || next === 'running') return false
+  // States the user must act on are announced by needsAttention instead, which
+  // also catches the case where they arise with no transition to observe.
+  if (needsAttention(next)) return false
+  return !(view.visible && view.panelFocused)
+}
+
+/**
+ * Whether a chat that wants the user should be announced right now: it is
+ * blocked, they cannot see it, and they have not already been told about this
+ * particular episode of being blocked.
+ */
+export function shouldAnnounceAttention(
+  status: ChatStatus,
+  announced: ChatStatus | undefined,
+  view: { visible: boolean; panelFocused: boolean },
+): boolean {
+  if (!needsAttention(status)) return false
+  if (announced === status) return false
   return !(view.visible && view.panelFocused)
 }
 

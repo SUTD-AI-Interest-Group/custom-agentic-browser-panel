@@ -6,10 +6,12 @@ import {
   liveChatIds,
   loadRunningChats,
   loadTabChats,
+  needsAttention,
   originKey,
   resolveBinding,
   saveRunningChats,
   saveTabChats,
+  shouldAnnounceAttention,
   shouldToast,
   unbindTab,
   type TabChatMap,
@@ -160,10 +162,16 @@ test('isLive treats only idle as done', () => {
 
 const AWAY = { visible: false, panelFocused: true }
 
-test('shouldToast fires when a background chat stops running', () => {
+test('shouldToast fires when a background chat finishes', () => {
   expect(shouldToast('running', 'idle', AWAY)).toBe(true)
-  expect(shouldToast('running', 'parked', AWAY)).toBe(true)
-  expect(shouldToast('running', 'needs-you', AWAY)).toBe(true)
+})
+
+// Blocked states are announced by shouldAnnounceAttention instead, which also
+// catches them arising with no transition at all. Announcing from both would
+// double-notify the one case they overlap on.
+test('shouldToast leaves the blocked states to the attention path', () => {
+  expect(shouldToast('running', 'parked', AWAY)).toBe(false)
+  expect(shouldToast('running', 'needs-you', AWAY)).toBe(false)
 })
 
 test('shouldToast stays quiet when the user is already watching that chat', () => {
@@ -179,6 +187,50 @@ test('shouldToast ignores transitions that are not a turn ending', () => {
   expect(shouldToast('idle', 'idle', AWAY)).toBe(false)
   expect(shouldToast('parked', 'running', AWAY)).toBe(false)
   expect(shouldToast('running', 'running', AWAY)).toBe(false)
+})
+
+// --- shouldAnnounceAttention ----------------------------------------------
+
+test('needsAttention marks only the states blocked on the user', () => {
+  expect(needsAttention('needs-you')).toBe(true)
+  expect(needsAttention('parked')).toBe(true)
+  expect(needsAttention('running')).toBe(false)
+  expect(needsAttention('idle')).toBe(false)
+})
+
+test('shouldAnnounceAttention announces a blocked, out-of-sight chat', () => {
+  expect(shouldAnnounceAttention('needs-you', undefined, AWAY)).toBe(true)
+  expect(shouldAnnounceAttention('parked', undefined, AWAY)).toBe(true)
+})
+
+// The regression this exists for: an approval card that appeared while the user
+// was watching the chat is silent (right), and switching away changes no status
+// — so a transition-based check never fires and the chat waits in silence. The
+// state-based check announces it the moment it stops being visible.
+test('shouldAnnounceAttention fires once the user switches away from a blocked chat', () => {
+  const watching = { visible: true, panelFocused: true }
+  expect(shouldAnnounceAttention('needs-you', undefined, watching)).toBe(false)
+  // Same status, same announced record — only visibility changed.
+  expect(shouldAnnounceAttention('needs-you', undefined, AWAY)).toBe(true)
+})
+
+test('shouldAnnounceAttention fires when the panel loses focus with the card up', () => {
+  expect(shouldAnnounceAttention('needs-you', undefined, { visible: true, panelFocused: false })).toBe(true)
+})
+
+test('shouldAnnounceAttention does not repeat within one blocked episode', () => {
+  expect(shouldAnnounceAttention('needs-you', 'needs-you', AWAY)).toBe(false)
+})
+
+// A chat that was parked and is now waiting on approval is a genuinely new thing
+// to tell the user about, so a different state re-announces.
+test('shouldAnnounceAttention re-announces when the blocked state changes', () => {
+  expect(shouldAnnounceAttention('needs-you', 'parked', AWAY)).toBe(true)
+})
+
+test('shouldAnnounceAttention ignores chats that are working or done', () => {
+  expect(shouldAnnounceAttention('running', undefined, AWAY)).toBe(false)
+  expect(shouldAnnounceAttention('idle', undefined, AWAY)).toBe(false)
 })
 
 // --- storage --------------------------------------------------------------

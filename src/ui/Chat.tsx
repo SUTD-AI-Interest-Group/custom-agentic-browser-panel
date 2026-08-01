@@ -507,8 +507,12 @@ export default function Chat({
    * user walked away from keeps answering the question they actually asked.
    */
   boundTabId?: number
-  /** Reports what this chat is doing, so App can keep it mounted and announce it. */
-  onStatusChange?: (conversationId: string, status: ChatStatus) => void
+  /**
+   * Reports what this chat is doing, so App can keep it mounted and announce it.
+   * `detail` names what it is blocked on — the tool awaiting approval — so a
+   * notification can say "wants to use ReadPage" rather than just "needs you".
+   */
+  onStatusChange?: (conversationId: string, status: ChatStatus, detail?: string) => void
 }) {
   const [messages, setMessages] = useState<UIMessage[]>([])
   const [input, setInput] = useState('')
@@ -2306,7 +2310,8 @@ export default function Chat({
         : streaming
           ? 'running'
           : 'idle'
-    onStatusChange?.(conversationId, status)
+    const detail = approval ? approval.toolName : parkedReason !== null ? parkedReason : undefined
+    onStatusChange?.(conversationId, status, detail)
   }, [approval, parkedReason, streaming, conversationId, onStatusChange])
 
   // A chat that unmounts must not leave App believing it is still working —
