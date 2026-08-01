@@ -410,6 +410,20 @@ function ToolsIcon() {
   )
 }
 
+function PaperclipIcon() {
+  return (
+    <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+      <path
+        d="M13.2 7.4 8.3 12.3a3.4 3.4 0 0 1-4.8-4.8l5.2-5.2a2.3 2.3 0 0 1 3.2 3.2L6.7 10.7a1.1 1.1 0 0 1-1.6-1.6l4.6-4.6"
+        stroke="currentColor"
+        strokeWidth="1.3"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  )
+}
+
 function CameraIcon() {
   return (
     <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true">
@@ -572,6 +586,10 @@ export default function Chat({
   const [attachments, setAttachments] = useState<ComposerAttachment[]>([])
   const [capturing, setCapturing] = useState(false)
   const [captureError, setCaptureError] = useState<string | null>(null)
+  // True while a file drag from outside the browser hovers the panel — drives
+  // the full-panel "Drop files to attach" overlay.
+  const [dropTarget, setDropTarget] = useState(false)
+  const fileInputRef = useRef<HTMLInputElement>(null)
   const [mentions, setMentions] = useState<TabMention[]>([])
   const [mentionQuery, setMentionQuery] = useState<{ start: number; query: string } | null>(null)
   const [mentionCandidates, setMentionCandidates] = useState<MentionCandidate[]>([])
@@ -1320,6 +1338,73 @@ export default function Chat({
       setCapturing(false)
     }
   }
+
+  /**
+   * Attach incoming files (drop, paste, or the paperclip picker). Errors are
+   * per-file — the rest of the batch still attaches — and surface on the same
+   * line as capture failures. Rides the `capturing` busy flag so a slow PDF
+   * parse shows on the buttons.
+   */
+  async function addFiles(files: File[]) {
+    if (files.length === 0) return
+    setCaptureError(null)
+    setCapturing(true)
+    try {
+      const { attachments: added, errors } = await ingestFiles(files, attachments.length)
+      if (added.length > 0) setAttachments((a) => [...a, ...added])
+      if (errors.length > 0) setCaptureError(errors.join(' '))
+    } finally {
+      setCapturing(false)
+    }
+  }
+
+  // The mount-once drag listeners below would close over a stale addFiles
+  // (it reads `attachments.length`) — same pattern as composerActionRef.
+  const addFilesRef = useRef(addFiles)
+  useEffect(() => {
+    addFilesRef.current = addFiles
+  })
+
+  // Drag-and-drop, page-wide. preventDefault on BOTH dragover and drop whenever
+  // the drag carries files: without it, a drop that misses the target navigates
+  // the side panel to the file, and the panel has no back-button recovery. Text
+  // and URL drags are left alone so dragging text into the textarea still works.
+  useEffect(() => {
+    let depth = 0
+    const hasFiles = (e: DragEvent) => Array.from(e.dataTransfer?.types ?? []).includes('Files')
+    const enter = (e: DragEvent) => {
+      if (!hasFiles(e)) return
+      depth++
+      setDropTarget(true)
+    }
+    const leave = (e: DragEvent) => {
+      if (!hasFiles(e)) return
+      if (--depth <= 0) {
+        depth = 0
+        setDropTarget(false)
+      }
+    }
+    const over = (e: DragEvent) => {
+      if (hasFiles(e)) e.preventDefault()
+    }
+    const drop = (e: DragEvent) => {
+      if (!hasFiles(e)) return
+      e.preventDefault()
+      depth = 0
+      setDropTarget(false)
+      void addFilesRef.current(Array.from(e.dataTransfer?.files ?? []))
+    }
+    window.addEventListener('dragenter', enter)
+    window.addEventListener('dragleave', leave)
+    window.addEventListener('dragover', over)
+    window.addEventListener('drop', drop)
+    return () => {
+      window.removeEventListener('dragenter', enter)
+      window.removeEventListener('dragleave', leave)
+      window.removeEventListener('dragover', over)
+      window.removeEventListener('drop', drop)
+    }
+  }, [])
 
   // Quick-menu tool switch. Off → 'never' (hidden from the agent). On → delete the
   // override so the tool reverts to its catalog default (ask, or always for the
@@ -2505,6 +2590,11 @@ export default function Chat({
 
   return (
     <div className="chat">
+      {dropTarget && (
+        <div className="drop-overlay" aria-hidden="true">
+          <div className="drop-overlay-label">Drop files to attach</div>
+        </div>
+      )}
       <div className="messages" ref={scrollRef}>
         {messages.length === 0 && (
           <div className="empty-state">
@@ -2826,6 +2916,14 @@ export default function Chat({
             // "Steer now" injects it mid-turn.
             disabled={!selected}
             rows={1}
+            onPaste={(e) => {
+              // A pasted screenshot or Finder file attaches; text pastes untouched.
+              const files = Array.from(e.clipboardData?.files ?? [])
+              if (files.length > 0) {
+                e.preventDefault()
+                void addFiles(files)
+              }
+            }}
             onChange={(e) => {
               handleInputChange(e.target.value, e.target.selectionStart ?? e.target.value.length)
               e.target.style.height = 'auto'
@@ -2968,6 +3066,27 @@ export default function Chat({
                   </div>
                 )}
               </div>
+              <button
+                className="attach-btn"
+                title="Attach files (images, PDFs, text)"
+                disabled={!selected || capturing}
+                onClick={() => fileInputRef.current?.click()}
+              >
+                <PaperclipIcon />
+              </button>
+              <input
+                ref={fileInputRef}
+                type="file"
+                multiple
+                accept="image/png,image/jpeg,image/webp,image/gif,application/pdf,text/*,.md,.markdown,.csv,.tsv,.json,.jsonl,.yaml,.yml,.xml,.html,.css,.js,.jsx,.ts,.tsx,.py,.rb,.go,.rs,.java,.kt,.c,.h,.cpp,.hpp,.sh,.toml,.ini,.log,.sql"
+                style={{ display: 'none' }}
+                onChange={(e) => {
+                  const files = Array.from(e.target.files ?? [])
+                  // Reset so re-picking the same file re-fires onChange.
+                  e.target.value = ''
+                  void addFiles(files)
+                }}
+              />
               <button
                 className="cam-btn"
                 title="Screenshot part of the page"
