@@ -2979,7 +2979,7 @@ const THINKING_WORDS = [
   'Sharpening pencils', 'Pacing about', 'Staring into the middle distance',
   'Counting on fingers', 'Doing sums', 'Rubber-ducking it', 'Yak-shaving',
   'Arguing with myself', 'Second-guessing', 'Third-guessing',
-  'Going down a rabbit hole', 'Rolling for insight',
+  'Going down a rabbit hole', 'Rolling for insight', '67676767676767',
   // Self-aware
   'Overthinking (as a treat)', 'Buffering… emotionally', 'Having a moment',
   'Thinking thoughts', 'Consulting my one brain cell', 'Making it make sense',
