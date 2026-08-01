@@ -3,6 +3,8 @@
 // Ollama, Anthropic's /v1 compat layer, LM Studio, vLLM, ...).
 
 import type { McpSettings } from '../mcp/config'
+import { openSettings, sealSettings, secretValues } from './settingsVault'
+import { isSealed } from './vaultFormat'
 
 /**
  * Which provider a config talks to. Selects its *capability profile* — reasoning
@@ -346,11 +348,35 @@ export async function loadSettings(): Promise<Settings> {
   // base URL, so the capability-profile layer and model picker have a key to work
   // from. Use sites also fall back via `providerKind`, so this only persists it.
   settings.providers = settings.providers.map((p) => (p.kind ? p : { ...p, kind: inferKind(p.baseURL) }))
-  return settings
+  // Secrets are sealed at rest (see src/data/vault.ts). Open them here so every
+  // consumer of Settings sees plaintext; a pre-vault install is migrated in
+  // place on first load.
+  const { settings: opened, hadPlaintext } = await openSettings(settings)
+  if (hadPlaintext) await migrateSecretsToSealed(opened)
+  return opened
 }
 
 export async function saveSettings(settings: Settings): Promise<void> {
-  await chrome.storage.local.set({ [STORAGE_KEY]: settings })
+  await chrome.storage.local.set({ [STORAGE_KEY]: await sealSettings(settings) })
+}
+
+/**
+ * One-way plaintext→sealed migration: seal, verify the round-trip in memory,
+ * and only then overwrite the stored blob — a failed vault never destroys the
+ * user's only copy of their keys. Skipped when nothing sealed (vault down);
+ * the next load retries. Concurrent runs from the panel and the SW both write
+ * valid ciphertext of the same plaintext, so last-writer-wins is safe.
+ */
+async function migrateSecretsToSealed(opened: Settings): Promise<void> {
+  try {
+    const sealed = await sealSettings(opened)
+    if (!secretValues(sealed).some(isSealed)) return
+    const roundTrip = await openSettings(sealed)
+    if (JSON.stringify(secretValues(roundTrip.settings)) !== JSON.stringify(secretValues(opened))) return
+    await chrome.storage.local.set({ [STORAGE_KEY]: sealed })
+  } catch {
+    // Migration must never break loading.
+  }
 }
 
 /**
