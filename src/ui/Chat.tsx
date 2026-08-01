@@ -3401,6 +3401,28 @@ function MessageView({
               ))}
             </div>
           )}
+          {message.attachments && message.attachments.length > 0 && (
+            <div className="msg-attachments">
+              {message.attachments
+                .filter((a) => a.kind === 'image' && a.thumbDataUrl)
+                .map((a) => (
+                  <img key={a.id} src={a.thumbDataUrl} alt={a.name} title={a.name} />
+                ))}
+              {message.attachments
+                .filter((a) => a.kind !== 'image')
+                .map((a) => (
+                  <span className="msg-attachment-chip" key={a.id} title={a.name}>
+                    <FileKindIcon kind={a.kind === 'pdf' ? 'pdf' : 'text'} />
+                    <span className="attachment-file-name">{a.name}</span>
+                    <span className="attachment-file-sub">
+                      {a.kind === 'pdf' && a.pageCount !== undefined
+                        ? `${a.pageCount} page${a.pageCount === 1 ? '' : 's'}`
+                        : formatBytes(a.byteSize)}
+                    </span>
+                  </span>
+                ))}
+            </div>
+          )}
           {text}
         </div>
         {text && <CopyTextButton text={text} label="Copy message" />}
