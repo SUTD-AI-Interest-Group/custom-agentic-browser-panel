@@ -35,6 +35,32 @@ const deny = (reason: string): PolicyVerdict => ({ ok: false, reason })
 const COMMITTING_NAME =
   /\b(buy|purchase|checkout|pay|payment|order now|add to (cart|bag)|subscribe|unsubscribe|donate|sign\s*up|signup|register|log\s*in|login|sign\s*in|signin|delete|remove|cancel|confirm|apply now|submit application)\b/i
 
+/**
+ * Same vocabulary as COMMITTING_NAME, translated into languages likely to
+ * appear on a non-English page (S2): German, French, Spanish, Portuguese,
+ * Italian, Russian, Japanese, Chinese, Arabic. English-only coverage was the
+ * finding's core bypass — on THIS policy, the only gate on the unattended,
+ * headless research browser — see the identical constant + comment in
+ * src/tools/pageControl.ts for the full rationale (including why non-Latin
+ * scripts are deliberately not \b-wrapped). Representative, not exhaustive.
+ */
+const COMMITTING_NAME_INTL =
+  /\b(löschen|entfernen|kaufen|bezahlen|bestätigen|abonnieren|abbestellen|registrieren|anmelden|einloggen|kündigen|senden|bestellen|supprimer|retirer|acheter|payer|confirmer|abonner|désabonner|inscrire|connecter|envoyer|commander|annuler|eliminar|borrar|comprar|pagar|confirmar|suscribir|cancelar|enviar|registrarse|iniciar sesión|apagar|assinar|inscrever|eliminare|acquistare|pagare|confermare|annullare|inviare|iscriversi)\b|удалить|купить|оплатить|подтвердить|отправить|войти|зарегистрироваться|отменить|削除|購入|支払い|確認|送信|登録|ログイン|注文|退会|キャンセル|删除|购买|支付|确认|发送|注册|登录|下单|取消|订阅|حذف|شراء|دفع|تأكيد|إرسال|تسجيل|إلغاء|طلب/i
+
+/**
+ * A representative, not exhaustive, set of icons commonly used ALONE (no
+ * text label at all) for a committing action (S2's other half — an
+ * emoji-only name is non-empty, so it also clears isBlindClick below).
+ * Deliberately excludes ❌/"X" — see pageControl.ts's identical constant for
+ * why (it reads at least as often as "dismiss" as "delete").
+ */
+const COMMITTING_EMOJI = /🗑️|🗑|🛒|💳|💰|💸|📤|✅|✔️|✔/
+
+/** True when `name` reads as committing in English, a major non-English
+ *  language, or a common committing icon. */
+const isCommittingName = (name: string): boolean =>
+  COMMITTING_NAME.test(name) || COMMITTING_NAME_INTL.test(name) || COMMITTING_EMOJI.test(name)
+
 /** Field types that are never a site-search box, whatever they are labelled. */
 const CREDENTIAL_TYPE = /^(password|email|tel|number|date|file|checkbox|radio)$/i
 
@@ -50,6 +76,17 @@ const SEARCH_NAME = /\b(search|query|filter|find|lookup)\b/i
  * browser, so "cannot classify" must resolve to deny, not allow.
  */
 const isBlindClick = (el: IndexedElement): boolean => !el.href && !el.name.trim()
+
+/**
+ * Known, accepted limitation (S4): isCommittingName and the ancestorName
+ * check below both trust the page's own self-description — a hostile page
+ * can label a "Delete account" control "Cancel" and there is no DOM signal
+ * that tells them apart. Not fixable from the DOM alone; see pageControl.ts's
+ * identical comment for the full rationale, which applies here unchanged —
+ * including why every check that does NOT depend on `name` (sensitive, the
+ * href/SSRF guard, formMethod==='post') stays unconditional so a benign name
+ * can never suppress one of those.
+ */
 
 /**
  * Is this element a site-search / filter box — the one input the research browser
@@ -94,8 +131,21 @@ export function isSafeResearchAction(action: BrowseAction, el?: IndexedElement):
     case 'click': {
       if (!el) return deny(`element ${action.index} is not on the page`)
       if (el.sensitive) return deny('refused to click a password/payment field')
-      if (COMMITTING_NAME.test(el.name)) {
+      if (isCommittingName(el.name)) {
         return deny(`refused to click "${el.name}" — it looks like it commits an action (purchase/auth/destructive)`)
+      }
+      // Event delegation (S3): a container attaches one handler and
+      // dispatches by target, so the clicked descendant can carry an
+      // innocuous name while its delegated container's own name (a <form>'s
+      // aria-label, a dialog's title, or the nearest independently-clickable
+      // ancestor's aria-label — domIndex.ts's ancestorNameOf) says otherwise.
+      // Scoped to containers that self-describe as committing, not "inside
+      // any form/dialog" — that's what keeps an ordinary search/filter form
+      // from denying every click inside it.
+      if (el.ancestorName && isCommittingName(el.ancestorName)) {
+        return deny(
+          `refused to click inside "${el.ancestorName}" — its container looks like it commits an action (purchase/auth/destructive)`,
+        )
       }
       // A <button> with no explicit type reports type="submit" from the DOM, so
       // this catches the default-submit case too. GET submits are search-shaped

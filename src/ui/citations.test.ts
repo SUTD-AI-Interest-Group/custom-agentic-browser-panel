@@ -20,6 +20,34 @@ test('encodeCitations swaps [[n]] for private-use sentinels, leaving literal [n]
   expect(out).toBe(`A fact ${CITE_OPEN}1${CITE_CLOSE} and a quote "[2]" and cluster ${CITE_OPEN}1${CITE_CLOSE}${CITE_OPEN}2${CITE_CLOSE}.`)
 })
 
+// T1 (test-quality audit): the two "(F1)" tests further down this file, and
+// mathRender.test.ts's prefix fuzz, all exercise encodeCitations only through
+// the FULL render pipeline (encodeCitations -> marked -> DOMPurify ->
+// replaceCitationSentinels). replaceCitationSentinels has its OWN,
+// independent "don't linkify inside code" guard (it decodes a sentinel back
+// to literal `[[n]]` whenever `node.parentElement?.closest('code, pre')` is
+// true — see this file's own comment on that function). That second guard
+// fully absorbs a regression in encodeCitations' CODE_OR_CITATION regex:
+// reverting encodeCitations to a bare `text.replace(BRACKET_RE, ...)` (no
+// code-awareness at all) leaves every existing pipeline-level "(F1)" test
+// passing, because replaceCitationSentinels quietly cleans up the mess one
+// step later. These two tests call encodeCitations DIRECTLY and inspect its
+// own output, so a regression here fails immediately instead of being
+// silently caught by the other function's redundant safety net.
+test('encodeCitations (direct, not through the pipeline) leaves [[n]] un-encoded inside an inline code span', () => {
+  const out = encodeCitations('Use the syntax `[[1]]` to cite a source.')
+  expect(out).not.toContain(CITE_OPEN)
+  expect(out).not.toContain(CITE_CLOSE)
+  expect(out).toContain('`[[1]]`') // untouched, still literal markdown source
+})
+
+test('encodeCitations (direct, not through the pipeline) leaves [[n]] un-encoded inside a fenced code block', () => {
+  const out = encodeCitations('Cite like this:\n```\n[[1]]\n```\n')
+  expect(out).not.toContain(CITE_OPEN)
+  expect(out).not.toContain(CITE_CLOSE)
+  expect(out).toContain('[[1]]') // untouched, still literal markdown source
+})
+
 test('replaceCitationSentinels renders each n and handles adjacent clusters', () => {
   const encoded = encodeCitations('x [[1]][[2]] y')
   const out = replaceCitationSentinels(encoded, (n) => `<c>${n}</c>`)

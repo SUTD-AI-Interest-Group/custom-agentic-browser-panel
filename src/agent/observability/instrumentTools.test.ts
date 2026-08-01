@@ -167,6 +167,89 @@ test('never breaks a turn: a throwing trace.span() still rethrows the tool\'s RE
   await expect(tools.Boom.execute({}, {})).rejects.toThrow('real tool failure')
 })
 
+// --- S6 (final security review): input redaction must not depend on the
+// model's own `sensitive` claim -----------------------------------------
+//
+// AutofillForm/ControlPage's `sensitive` schema field is set by the MODEL,
+// not cross-checked here against the DOM ground truth that actually gates
+// their approval card (domIndex.ts's SENSITIVE_RE / pageControl.ts's
+// isPointOfNoReturn). An omitted or falsely-`false` flag on a real
+// password/card field must still redact — see redact.ts's
+// redactKnownRiskyToolInput, which instrumentToolset now opts into by name.
+
+test('S6: AutofillForm span input never carries the real value when the model OMITS the sensitive flag on a real password field', async () => {
+  const { trace, spans } = fakeTrace()
+  const tools: any = {
+    AutofillForm: {
+      execute: async ({ fields }: any) => ({
+        filled: fields.map((f: any) => f.index),
+        note: 'Filled 1 field(s) from profile.',
+      }),
+    },
+  }
+  instrumentToolset(tools, trace)
+
+  // No `sensitive` key at all — an ordinary model omission.
+  await tools.AutofillForm.execute({ fields: [{ index: 0, value: 'hunter2hunter2' }] }, {})
+
+  expect(spans).toHaveLength(1)
+  expect(JSON.stringify(spans[0].opts.input)).not.toContain('hunter2hunter2')
+})
+
+test('S6: AutofillForm span input never carries the real value when the model FALSELY marks a real password field non-sensitive', async () => {
+  const { trace, spans } = fakeTrace()
+  const tools: any = {
+    AutofillForm: {
+      execute: async ({ fields }: any) => ({
+        filled: fields.map((f: any) => f.index),
+        note: 'Filled 1 field(s) from profile.',
+      }),
+    },
+  }
+  instrumentToolset(tools, trace)
+
+  await tools.AutofillForm.execute(
+    { fields: [{ index: 2, value: 'hunter2hunter2', sensitive: false }] },
+    {},
+  )
+
+  expect(spans).toHaveLength(1)
+  expect(JSON.stringify(spans[0].opts.input)).not.toContain('hunter2hunter2')
+})
+
+test('S6: ControlPage span input never carries typed text when the model omits/falsifies sensitive', async () => {
+  const { trace, spans } = fakeTrace()
+  const tools: any = {
+    ControlPage: {
+      execute: async () => ({ ok: true, message: 'Typed.', urlChanged: false, elements: '(registry)' }),
+    },
+  }
+  instrumentToolset(tools, trace)
+
+  await tools.ControlPage.execute(
+    { action: 'type', index: 3, text: 'hunter2hunter2', clear: true, sensitive: false },
+    {},
+  )
+
+  expect(spans).toHaveLength(1)
+  expect(JSON.stringify(spans[0].opts.input)).not.toContain('hunter2hunter2')
+})
+
+test('S6: a tool NOT named AutofillForm/ControlPage is unaffected — generic nets only, no behavior change', async () => {
+  const { trace, spans } = fakeTrace()
+  const tools: any = {
+    SomeOtherTool: { execute: async () => ({ ok: true }) },
+  }
+  instrumentToolset(tools, trace)
+
+  await tools.SomeOtherTool.execute({ fields: [{ index: 0, value: 'John Smith', sensitive: false }] }, {})
+
+  expect(spans).toHaveLength(1)
+  // Not card-shaped, not high-entropy, no sensitive-key name, flag is false —
+  // nothing about this shape is special to a tool the S6 fix doesn't name.
+  expect(JSON.stringify(spans[0].opts.input)).toContain('John Smith')
+})
+
 // --- passthrough / structural -----------------------------------------------
 
 test('leaves a tool with no execute function untouched', () => {

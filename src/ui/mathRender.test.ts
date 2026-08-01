@@ -111,6 +111,19 @@ const FUZZ_DOC = [
   'A [linked source[[1]]](https://example.com/a) and inline `[[2]]` code.',
 ].join('\n')
 
+// Each of these two tests renders ~700 progressively-longer prefixes through
+// BOTH the streaming and final full pipelines (marked + katex + DOMPurify +
+// citations) — ~1.8-2.5s on its own (measured in isolation). That's well
+// under vitest's 5s default `testTimeout`, but under full-suite parallel
+// contention (every other test file's worker competing for the same CPU)
+// wall-clock time inflates and this file is the slowest in the suite by a
+// wide margin, so it's the one most likely to cross that 5s line — it has
+// been observed to time out this way at least once. A generous explicit
+// timeout removes that risk without touching the fuzz's coverage (still all
+// ~700 prefixes, both pipelines) — shrinking FUZZ_DOC instead would trade
+// away real coverage just to chase a contention artifact, not a slow test.
+const FUZZ_TEST_TIMEOUT_MS = 30_000
+
 describe('streaming render pipeline: prefix fuzz (F6 gap — no prior coverage)', () => {
   it('never throws on any prefix, streaming or final', () => {
     for (let i = 0; i <= FUZZ_DOC.length; i++) {
@@ -118,7 +131,7 @@ describe('streaming render pipeline: prefix fuzz (F6 gap — no prior coverage)'
       expect(() => renderStreaming(prefix, FUZZ_SOURCES), `streaming @${i}`).not.toThrow()
       expect(() => renderFinal(prefix, FUZZ_SOURCES), `final @${i}`).not.toThrow()
     }
-  })
+  }, FUZZ_TEST_TIMEOUT_MS)
 
   it('never produces a <script> tag on any prefix, streaming or final', () => {
     for (let i = 0; i <= FUZZ_DOC.length; i++) {
@@ -126,7 +139,7 @@ describe('streaming render pipeline: prefix fuzz (F6 gap — no prior coverage)'
       expect(renderStreaming(prefix, FUZZ_SOURCES), `streaming @${i}`).not.toMatch(/<script/i)
       expect(renderFinal(prefix, FUZZ_SOURCES), `final @${i}`).not.toMatch(/<script/i)
     }
-  })
+  }, FUZZ_TEST_TIMEOUT_MS)
 
   it('renders the full document with all categories intact (sanity check on the last prefix)', () => {
     const html = renderFinal(FUZZ_DOC, FUZZ_SOURCES)

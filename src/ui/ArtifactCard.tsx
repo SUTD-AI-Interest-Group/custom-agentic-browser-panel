@@ -8,20 +8,20 @@
 // allowance list). This is NOT the same isolation as RunCode's QuickJS
 // sandbox, which has no DOM/network surface at all regardless of CSP.
 
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { getArtifact, type CodeArtifact } from '../data/artifacts'
-import { artifactFrameReducer } from './artifactVisibility'
+import { artifactFrameReducer, artifactLiveSet } from './artifactVisibility'
 
 // These sizes are quoted in the CreateArtifact/UpdateArtifact descriptions
 // (src/tools/tools.ts) so the model designs for the real viewport — keep in sync.
 const COLLAPSED_H = 360
 const EXPANDED_H = 720
 
-// How far outside the viewport a card is still kept mounted-and-running
-// before its sandboxed iframe is torn down. Wide enough that ordinary
-// scrolling doesn't thrash iframe creation/teardown; still bounds how many
-// artifacts run concurrently in a long, artifact-heavy conversation (see
-// artifactVisibility.ts for the suspend/restore semantics this implements).
+// How proactively a card announces itself to the shared LRU (artifactLiveSet)
+// as it approaches the viewport — generous so ordinary scrolling touches it
+// well before it's actually on-screen, rather than firing right at the edge.
+// This is NOT a suspend threshold: going off-screen never suspends a card by
+// itself. Only artifactLiveSet's capacity does that — see artifactVisibility.ts.
 const VISIBILITY_MARGIN = '600px'
 
 export function ArtifactCard({ artifactId, revision }: { artifactId: string; revision?: number }) {
@@ -29,14 +29,18 @@ export function ArtifactCard({ artifactId, revision }: { artifactId: string; rev
   const [missing, setMissing] = useState(false)
   const [expanded, setExpanded] = useState(false)
   const [frameReady, setFrameReady] = useState(false)
-  // Assume visible until observed otherwise, so a card just created (and
-  // presumably being watched as it streams in) renders immediately instead
-  // of flashing a placeholder for one frame. Off-screen cards from history
-  // (e.g. scrolled straight to the bottom of a long conversation) are
-  // corrected to suspended within the observer's first callback.
-  const [visible, setVisible] = useState(true)
   const frameRef = useRef<HTMLIFrameElement | null>(null)
   const rootRef = useRef<HTMLDivElement | null>(null)
+
+  // Whether this artifact is currently allowed to stay mounted, per the
+  // shared cross-card LRU. Unlike the distance-based suspension this
+  // replaced, going off-screen never flips this by itself — only enough
+  // OTHER artifacts becoming more recently visible than this one, past the
+  // shared capacity, does (see artifactVisibility.ts). An id that has never
+  // been touched defaults to live, so a card just created (and presumably
+  // being watched as it streams in) renders immediately instead of flashing
+  // a placeholder for one frame.
+  const live = useSyncExternalStore(artifactLiveSet.subscribe, () => artifactLiveSet.isLive(artifactId))
 
   useEffect(() => {
     let stale = false
@@ -50,26 +54,37 @@ export function ArtifactCard({ artifactId, revision }: { artifactId: string; rev
     }
   }, [artifactId, revision])
 
-  // Suspend the sandboxed iframe (unmount it, halting every timer/animation
-  // it was running) once the card is well outside the viewport; restore it
-  // on demand when scrolled back near the viewport. See artifactVisibility.ts
-  // for why this is the chosen tradeoff and what it does and doesn't preserve.
+  // Touch the shared LRU once eagerly on mount (a brand-new artifact counts
+  // as "just seen" immediately) and again whenever this card is actually
+  // visible or close to it. touch() may evict whichever OTHER artifact has
+  // gone longest without being seen once the live set is already at
+  // capacity — never this one, and never merely because IT scrolled
+  // off-screen. remove() on unmount forgets this id for good (the message
+  // was deleted/regenerated away) rather than leaving stale bookkeeping.
   useEffect(() => {
+    artifactLiveSet.touch(artifactId)
     const root = rootRef.current
-    if (!root || typeof IntersectionObserver === 'undefined') return
-    const obs = new IntersectionObserver(([entry]) => setVisible(entry.isIntersecting), {
-      rootMargin: VISIBILITY_MARGIN,
-    })
+    if (!root || typeof IntersectionObserver === 'undefined') return undefined
+    const obs = new IntersectionObserver(
+      ([entry]) => {
+        if (entry.isIntersecting) artifactLiveSet.touch(artifactId)
+      },
+      { rootMargin: VISIBILITY_MARGIN },
+    )
     obs.observe(root)
     return () => obs.disconnect()
-  }, [])
+  }, [artifactId])
+
+  useEffect(() => {
+    return () => artifactLiveSet.remove(artifactId)
+  }, [artifactId])
 
   // A suspended iframe is about to unmount (or just did) — drop frameReady so
   // a freshly restored iframe always waits for its OWN exec:ready before
   // anything is posted into it (see artifactFrameReducer's own comment).
   useEffect(() => {
-    setFrameReady((prev) => artifactFrameReducer(prev, { type: 'visibility', visible }))
-  }, [visible])
+    setFrameReady((prev) => artifactFrameReducer(prev, { type: 'visibility', visible: live }))
+  }, [live])
 
   useEffect(() => {
     const onMsg = (e: MessageEvent) => {
@@ -116,7 +131,7 @@ export function ArtifactCard({ artifactId, revision }: { artifactId: string; rev
           Download
         </button>
       </div>
-      {visible ? (
+      {live ? (
         <iframe
           ref={frameRef}
           title={artifact?.title ?? 'Artifact'}
@@ -124,8 +139,9 @@ export function ArtifactCard({ artifactId, revision }: { artifactId: string; rev
           style={{ height: frameHeight }}
         />
       ) : (
-        // Suspended: no iframe mounted, nothing running. Same footprint so
-        // scrolling doesn't jump when a card above/below suspends or restores.
+        // Suspended (LRU-evicted, not merely off-screen): no iframe mounted,
+        // nothing running. Same footprint so scrolling doesn't jump when a
+        // card above/below suspends or restores.
         <div className="artifact-suspended" style={{ height: frameHeight }} />
       )}
     </div>

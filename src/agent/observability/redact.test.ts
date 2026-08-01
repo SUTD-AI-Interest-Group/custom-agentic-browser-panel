@@ -181,6 +181,110 @@ test('redacts the shared IndexedElement registry shape (value+sensitive) the sam
   expect(out[1].value).toBe('nice product')
 })
 
+// --- S6 (final security review): tool-aware fail-closed redaction ----------
+// The sibling `sensitive` flag above is the MODEL's own claim on its tool
+// call — never cross-checked against the DOM ground truth
+// (domIndex.ts's IndexedElement.sensitive) that actually gates the approval
+// card. That DOM signal lives inside tools.ts's execute() closure and never
+// reaches this module (confirmed: instrumentToolset only ever sees the
+// tool's raw input/output — see instrumentTools.ts's module comment). So for
+// AutofillForm/ControlPage specifically, the optional `toolName` argument
+// makes their user-text field(s) redact UNCONDITIONALLY — flag true, false,
+// absent, or on the wrong sibling — rather than trust a claim this module
+// cannot verify. Omitting `toolName` (as every test above does, and as
+// observer.ts's generic content() does) keeps the old, untouched behavior.
+
+test('S6: AutofillForm redacts a real password even when the model OMITS the sensitive flag', () => {
+  const out = redactSecrets({ fields: [{ index: 0, value: 'hunter2hunter2' }] }, 'AutofillForm') as any
+  expect(out.fields[0].value).toBe(REDACTED)
+})
+
+test('S6: AutofillForm redacts a real password even when the model FALSELY marks it sensitive:false', () => {
+  const out = redactSecrets(
+    { fields: [{ index: 2, value: 'hunter2hunter2', sensitive: false }] },
+    'AutofillForm',
+  ) as any
+  expect(out.fields[0].value).toBe(REDACTED)
+})
+
+test('S6: AutofillForm redacts the real secret even when the sensitive flag sits on the wrong sibling field', () => {
+  const out = redactSecrets(
+    {
+      fields: [
+        { index: 0, value: 'hunter2hunter2', sensitive: false }, // the REAL secret, unflagged
+        { index: 1, value: 'ok', sensitive: true }, // model mistakenly flagged this one instead
+      ],
+    },
+    'AutofillForm',
+  ) as any
+  expect(out.fields[0].value).toBe(REDACTED)
+  expect(out.fields[1].value).toBe(REDACTED)
+})
+
+test('S6: AutofillForm redaction removes only the value — index and the (untrusted) flag survive so the trace still shows which field/step ran', () => {
+  const out = redactSecrets(
+    { fields: [{ index: 4, value: 'John Smith', sensitive: false }] },
+    'AutofillForm',
+  ) as any
+  expect(out.fields[0].value).toBe(REDACTED)
+  expect(out.fields[0].index).toBe(4)
+  expect(out.fields[0].sensitive).toBe(false)
+})
+
+test('S6: AutofillForm does not throw on a malformed (non-object) field entry', () => {
+  const out = redactSecrets(
+    { fields: ['not-an-object', { index: 0, value: 'hunter2hunter2' }] },
+    'AutofillForm',
+  ) as any
+  expect(out.fields[0]).toBe('not-an-object')
+  expect(out.fields[1].value).toBe(REDACTED)
+})
+
+test('S6: ControlPage redacts typed text regardless of the model-supplied sensitive flag (false or absent)', () => {
+  const flagFalse = redactSecrets(
+    { action: 'type', index: 3, text: 'hunter2hunter2', clear: true, sensitive: false },
+    'ControlPage',
+  ) as any
+  const flagAbsent = redactSecrets(
+    { action: 'type', index: 3, text: 'hunter2hunter2', clear: true },
+    'ControlPage',
+  ) as any
+  expect(flagFalse.text).toBe(REDACTED)
+  expect(flagAbsent.text).toBe(REDACTED)
+  // Structure survives — which step, which index.
+  expect(flagFalse.action).toBe('type')
+  expect(flagFalse.index).toBe(3)
+})
+
+test('S6: ControlPage still redacts when the model correctly flags sensitive:true (no regression)', () => {
+  const out = redactSecrets(
+    { action: 'type', index: 1, text: '4111111111111111', sensitive: true },
+    'ControlPage',
+  ) as any
+  expect(out.text).toBe(REDACTED)
+})
+
+test('S6: ControlPage does NOT force-redact a non-"type" action\'s text/value — a CSS selector or dropdown choice carries no user secret data', () => {
+  const wait = redactSecrets({ action: 'wait', text: '#submit-button', timeoutMs: 5000 }, 'ControlPage') as any
+  const select = redactSecrets({ action: 'select', index: 2, value: 'United States' }, 'ControlPage') as any
+  expect(wait.text).toBe('#submit-button')
+  expect(select.value).toBe('United States')
+})
+
+test('S6: the tool-aware fail-closed rule only applies when toolName names AutofillForm/ControlPage', () => {
+  const withoutToolName = redactSecrets({
+    fields: [{ index: 0, value: 'hunter2hunter2', sensitive: false }],
+  }) as any
+  const otherTool = redactSecrets(
+    { fields: [{ index: 0, value: 'hunter2hunter2', sensitive: false }] },
+    'SomeOtherTool',
+  ) as any
+  // Unchanged legacy behavior: no toolName context means only the
+  // pre-existing name/shape/sibling-flag nets apply, same as before this fix.
+  expect(withoutToolName.fields[0].value).toBe('hunter2hunter2')
+  expect(otherTool.fields[0].value).toBe('hunter2hunter2')
+})
+
 // --- value-shape redaction: payment cards -----------------------------------
 
 test('redacts a Luhn-valid card number by shape alone, key name gives no hint', () => {

@@ -15,10 +15,13 @@ function errorMessage(err: unknown): string {
 
 /** redactSecrets never throws by contract (redact.test.ts), but this call
  * site is the one place a broken redaction rule could otherwise leak an
- * unredacted secret into a span — fail closed instead. */
-function safeRedact(v: unknown): unknown {
+ * unredacted secret into a span — fail closed instead. `toolName` opts
+ * AutofillForm/ControlPage into the unconditional fail-closed redaction the
+ * final security review (S6) requires — see redact.ts's module comment and
+ * redactKnownRiskyToolInput. */
+function safeRedact(v: unknown, toolName?: string): unknown {
   try {
-    return redactSecrets(v)
+    return redactSecrets(v, toolName)
   } catch {
     return '[redaction failed]'
   }
@@ -41,6 +44,19 @@ function safeRedact(v: unknown): unknown {
  *     `redactSecrets` first — name-pattern AND value-shape redaction, so a
  *     card number or password is caught even when the argument's key name is
  *     as generic as "value" (see redact.ts's own module comment for why).
+ *
+ *     `redactSecrets` is also given the tool's own `name` here (final
+ *     security review, S6): AutofillForm/ControlPage's `sensitive` flag is
+ *     set by the MODEL on its tool call, never cross-checked in this module
+ *     against the DOM ground truth that actually gates their approval card
+ *     (pageControl.ts's isPointOfNoReturn, fed by domIndex.ts's
+ *     IndexedElement.sensitive) — an omitted or falsely-`false` flag on a
+ *     real password/card field must still redact. `name` lets redact.ts
+ *     apply an unconditional, tool-specific fail-closed rule to exactly
+ *     these two tools' user-text field(s) instead of trusting that flag —
+ *     see redact.ts's redactKnownRiskyToolInput for the mechanism, and for
+ *     the one-line change in tools.ts (owned elsewhere) that would let this
+ *     module trust the flag again.
  *
  *  2. The span is only created AFTER `orig()` resolves — never before.
  *     `Trace.span()` synchronously enqueues its `input` for transmission the
@@ -76,8 +92,8 @@ export function instrumentToolset(tools: ToolSet, trace: Trace): ToolSet {
         output = await orig(input, opts)
       } catch (err) {
         try {
-          const span = trace.span({ name: `tool:${name}`, input: safeRedact(input), startTime })
-          span.end({ level: 'ERROR', statusMessage: safeRedact(errorMessage(err)) as string })
+          const span = trace.span({ name: `tool:${name}`, input: safeRedact(input, name), startTime })
+          span.end({ level: 'ERROR', statusMessage: safeRedact(errorMessage(err), name) as string })
         } catch {
           /* instrumentation must never mask the tool's real error */
         }
@@ -87,10 +103,10 @@ export function instrumentToolset(tools: ToolSet, trace: Trace): ToolSet {
         const denied = isDenied(output)
         const span = trace.span({
           name: `tool:${name}`,
-          input: denied ? DENIED_INPUT_PLACEHOLDER : safeRedact(input),
+          input: denied ? DENIED_INPUT_PLACEHOLDER : safeRedact(input, name),
           startTime,
         })
-        span.end({ output: safeRedact(output), metadata: { approved: !denied } })
+        span.end({ output: safeRedact(output, name), metadata: { approved: !denied } })
       } catch {
         /* instrumentation must never mask the tool's real result */
       }

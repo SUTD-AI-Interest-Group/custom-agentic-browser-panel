@@ -47,50 +47,63 @@ describe('normalizeMathDelimiters', () => {
   // own characters, so a long run of unmatched `\(` forced O(remaining-length)
   // backtracking at each of O(n) starting positions — O(n^2) overall. This is
   // a ratio-based (machine-independent) regression test: a linear
-  // implementation's time roughly doubles when input doubles; the original
-  // implementation's time roughly quadrupled per doubling (measured ~4x by the
-  // audit). Asserting comfortably under that (2.5x) fails on the old code and
-  // passes on a linear one.
+  // implementation's time roughly quadruples when input quadruples; the
+  // original O(n^2) implementation's time roughly grew ~16x for the same 4x
+  // input growth (quadratic; measured ~4x per DOUBLING by the audit, so ~16x
+  // per quadrupling — reconfirmed directly while writing this version: 16.7x
+  // on this machine). 8 is the geometric midpoint of 4 and 16, so it passes a
+  // linear implementation and fails a quadratic one with equal (2x, in
+  // log-space) margin on both sides.
+  //
+  // Each sample is the MINIMUM over several repetitions, not one reading — a
+  // single `performance.now()` sample can be inflated by a GC pause or a
+  // scheduler preemption stealing the CPU mid-measurement (exactly what
+  // happened under full-suite parallel contention: this test occasionally
+  // timed out even though the algorithm itself hadn't regressed). Contention
+  // can only ever ADD delay to a given run, never subtract it, so the
+  // minimum across repeats is a stable estimate of the algorithm's true cost
+  // that a single unlucky tick can't distort — this is what actually removes
+  // the flakiness, not just a wider ratio threshold on its own.
+  const MIN_OF_REPS = 7
+
+  function timeMinMs(fn: (text: string) => unknown, text: string): number {
+    let best = Infinity
+    for (let i = 0; i < MIN_OF_REPS; i++) {
+      const start = performance.now()
+      fn(text)
+      const dt = performance.now() - start
+      if (dt < best) best = dt
+    }
+    return best
+  }
+
   it('stays roughly linear on adversarial unmatched \\( runs (F5, no quadratic blowup)', () => {
     const adversarial = (n: number) => '\\(a'.repeat(n)
+    const time = (n: number) => timeMinMs(normalizeMathDelimiters, adversarial(n))
 
-    const time = (n: number): number => {
-      const text = adversarial(n)
-      const start = performance.now()
-      normalizeMathDelimiters(text)
-      return performance.now() - start
-    }
-
-    // Warm up (JIT) before measuring.
-    time(2000)
+    time(2000) // warm up (JIT) before measuring
 
     const n = 8000
     const tN = time(n)
-    const t2N = time(n * 2)
+    const t4N = time(n * 4)
 
     // Guard against a near-zero baseline making the ratio noisy.
     expect(tN).toBeGreaterThan(0)
-    expect(t2N).toBeLessThan(Math.max(tN * 2.5, 20))
+    expect(t4N).toBeLessThan(Math.max(tN * 8, 20))
   })
 
   it('stays roughly linear on adversarial unmatched \\[ runs (F5, no quadratic blowup)', () => {
     const adversarial = (n: number) => '\\[a'.repeat(n)
-
-    const time = (n: number): number => {
-      const text = adversarial(n)
-      const start = performance.now()
-      normalizeMathDelimiters(text)
-      return performance.now() - start
-    }
+    const time = (n: number) => timeMinMs(normalizeMathDelimiters, adversarial(n))
 
     time(2000)
 
     const n = 8000
     const tN = time(n)
-    const t2N = time(n * 2)
+    const t4N = time(n * 4)
 
     expect(tN).toBeGreaterThan(0)
-    expect(t2N).toBeLessThan(Math.max(tN * 2.5, 20))
+    expect(t4N).toBeLessThan(Math.max(tN * 8, 20))
   })
 
   it('does not throw on every prefix of an adversarial unmatched-delimiter run', () => {

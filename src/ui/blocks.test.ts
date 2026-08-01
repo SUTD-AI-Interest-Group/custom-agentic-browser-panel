@@ -58,6 +58,57 @@ describe('splitBlocks — image runs (the >= 2 threshold)', () => {
   })
 })
 
+describe('splitBlocks — SSRF screening of image URLs (model-authored image blocks are auto-rendered with no approval gate)', () => {
+  it('drops a single standalone image line pointing at a loopback target entirely — it is not shown as markdown text either', () => {
+    // Unlike the safe case above, this must not fall back to raw markdown:
+    // a `![alt](url)` line surviving there would still render as a real
+    // <img> via the markdown pipeline, defeating the point of dropping it.
+    const out = splitBlocks('http://127.0.0.1/evil.png')
+    expect(out).toEqual([])
+  })
+
+  it('a run of two image lines where one targets a private IP keeps only the safe one (falls below the carousel threshold, so it renders as plain markdown)', () => {
+    const out = splitBlocks('https://example.com/a.png\nhttp://192.168.0.1/evil.png')
+    expect(out).toEqual([{ type: 'markdown', text: 'https://example.com/a.png' }])
+  })
+
+  it('a run of three image lines where the middle one is unsafe still forms a carousel from the two safe survivors, in order', () => {
+    const out = splitBlocks(
+      'https://example.com/a.png\nhttp://169.254.169.254/evil.png\nhttps://example.com/b.png',
+    )
+    expect(out).toEqual([
+      { type: 'images', urls: ['https://example.com/a.png', 'https://example.com/b.png'] },
+    ])
+  })
+
+  it('a run of two image lines that are both unsafe produces nothing at all', () => {
+    const out = splitBlocks('http://127.0.0.1/a.png\nhttp://169.254.169.254/b.png')
+    expect(out).toEqual([])
+  })
+
+  it('an unsafe image line surrounded by prose is dropped, merging the surrounding prose into one markdown block (consistent with how a single non-run image line already falls back to markdown)', () => {
+    const out = splitBlocks('Before.\nhttp://127.0.0.1/evil.png\nAfter.')
+    expect(out).toEqual([{ type: 'markdown', text: 'Before.\nAfter.' }])
+  })
+
+  it('markdown-image syntax pointing at a metadata host is dropped, not degraded to a literal ![]() markdown line', () => {
+    const out = splitBlocks('![alt](https://example.com/a.png)\n![evil](http://metadata.google.internal/x.png)')
+    expect(out).toEqual([{ type: 'markdown', text: '![alt](https://example.com/a.png)' }])
+  })
+
+  it('rejects a non-standard IPv4-encoded image URL (decimal integer host) the same as a dotted-quad one', () => {
+    const out = splitBlocks('https://example.com/a.png\nhttp://2130706433/evil.png')
+    expect(out).toEqual([{ type: 'markdown', text: 'https://example.com/a.png' }])
+  })
+
+  it('never leaks the blocked URL into any surviving block', () => {
+    const out = splitBlocks(
+      'Intro.\nhttps://example.com/a.png\nhttp://169.254.169.254/evil.png\nhttps://example.com/b.png\nOutro.',
+    )
+    expect(JSON.stringify(out)).not.toContain('169.254.169.254')
+  })
+})
+
 describe('splitBlocks — link runs', () => {
   it('a single standalone link becomes a links block (threshold is >= 1, unlike images)', () => {
     const out = splitBlocks('https://example.com/page')

@@ -80,10 +80,27 @@ function toSummaryRow(c: StoredConversation): SummaryRow {
     title: c.title,
     createdAt: c.createdAt,
     updatedAt: c.updatedAt,
-    messageCount: c.messages.length,
+    // Defensive: a pre-existing row from an earlier release, a manual
+    // devtools edit, or a partial write could have a missing/non-array
+    // `messages` — never trust it blindly during backfill (belt-and-
+    // suspenders alongside the try/catch around this function's call site
+    // in openDb()'s cursor handler below).
+    messageCount: Array.isArray(c.messages) ? c.messages.length : 0,
     pinned: c.pinned ?? false,
     bytes: estimateBytes(c),
   }
+}
+
+/**
+ * Stand-in summary for a pre-existing row that failed to project during
+ * backfill (see the cursor handler in openDb() below). Keyed by the row's own
+ * primary key so it stays LISTED — never silently dropped — while every other
+ * field is an honest, unmistakable placeholder rather than fabricated data.
+ * The real record in `conversations` is untouched, so the conversation can
+ * still be opened normally; only its list projection is degraded.
+ */
+function degradedSummaryRow(id: string): SummaryRow {
+  return { id, title: '(unreadable conversation)', createdAt: 0, updatedAt: 0, messageCount: 0, pinned: false, bytes: 0 }
 }
 
 const DB_NAME = 'lychee-conversations'
@@ -113,7 +130,29 @@ function openDb(): Promise<IDBDatabase> {
               cursorReq.onsuccess = () => {
                 const cursor = cursorReq.result
                 if (!cursor) return
-                summaryStore.put(toSummaryRow(cursor.value as StoredConversation))
+                // A single bad row must never take down this whole upgrade.
+                // Per the IndexedDB spec, an uncaught exception thrown from a
+                // request's onsuccess handler aborts the ENTIRE versionchange
+                // transaction — rolling back both the summaries-store
+                // creation and the version bump together. Left uncaught,
+                // every subsequent openDb() would retry the identical
+                // upgrade, hit the identical bad row, and abort again: the
+                // database stuck at v1 forever, and every operation that
+                // assumes `summaries` exists (list/save/rename/pin/delete/
+                // clear) broken permanently with no in-app recovery. Skip
+                // the failing projection and degrade instead — reading
+                // `cursor.value`/`toSummaryRow` never mutates or deletes the
+                // original `conversations` row, only this store's put does.
+                try {
+                  summaryStore.put(toSummaryRow(cursor.value as StoredConversation))
+                } catch (err) {
+                  console.error(
+                    '[conversations] malformed row during summaries backfill — degrading it instead of aborting the upgrade',
+                    cursor.primaryKey,
+                    err,
+                  )
+                  summaryStore.put(degradedSummaryRow(String(cursor.primaryKey)))
+                }
                 cursor.continue()
               }
             }

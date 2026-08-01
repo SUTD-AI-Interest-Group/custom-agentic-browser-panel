@@ -17,6 +17,7 @@
 import { generateText } from 'ai'
 import { createModel } from './provider'
 import { getObserver } from './observability'
+import { PER_ATTEMPT_TIMEOUT_MS } from './resilience'
 import {
   getDreamProvider,
   loadSettings,
@@ -62,12 +63,31 @@ const MIN_IDLE_MS = 30 * 60 * 1000
 // naturally catches up to a bogus value that could be arbitrarily far ahead.
 const CLOCK_SKEW_TOLERANCE_MS = 5 * 60 * 1000
 
-// Comfortably longer than one real dream cycle (a single non-streaming
-// generateText call plus an observability flush that is itself bounded — see
-// DEFAULT_FLUSH_TIMEOUT_MS in langfuseClient.ts) but short enough that a
-// holder which crashed mid-dream (the service worker was killed, per MV3's
-// own rules) doesn't block dreaming for long.
-const DREAM_LOCK_TTL_MS = 5 * 60 * 1000
+// Bounds the generateText call below (see runDream) so a hung provider
+// socket can't wedge a dream cycle — and, with it, the lock that guards it —
+// forever. Reuses the research pipeline's own per-attempt timeout
+// (resilience.ts) rather than inventing a new number: an attempt here is a
+// single non-streaming generation that can legitimately be slow against a
+// local model, so the bound must comfortably exceed normal latency and
+// exist only to break a genuinely stuck connection — exactly
+// PER_ATTEMPT_TIMEOUT_MS's own reasoning.
+export const DREAM_MODEL_TIMEOUT_MS = PER_ATTEMPT_TIMEOUT_MS
+
+/**
+ * Comfortably longer than one real dream cycle can now legitimately take:
+ * the generateText call is capped at DREAM_MODEL_TIMEOUT_MS and the
+ * observability flush is separately bounded (~10s — DEFAULT_FLUSH_TIMEOUT_MS
+ * in langfuseClient.ts), plus a fixed buffer for the fast, local (IndexedDB)
+ * bookkeeping around them. This used to be a flat 5 minutes, unrelated to how
+ * long the guarded call could actually take — a slow local model legitimately
+ * exceeding 5 minutes would expire the lock while the first dreamer was still
+ * working, letting a SECOND one start concurrently (the exact interleaving
+ * this lock exists to prevent). Tying the TTL to the same ceiling as the
+ * call it guards means expiry now really does mean the holder crashed (the
+ * service worker was killed, per MV3's own rules) mid-dream, not merely that
+ * it's still working.
+ */
+export const DREAM_LOCK_TTL_MS = DREAM_MODEL_TIMEOUT_MS + 60_000
 
 const VALID_KINDS: MemoryKind[] = ['fact', 'preference', 'project', 'summary']
 const MAX_ADDS_PER_DREAM = 12
@@ -188,6 +208,10 @@ export async function runDream(preloaded?: Settings): Promise<DreamOutcome> {
         // v7 renamed `system` to `instructions` (`system` still works, deprecated).
         instructions: DREAM_SYSTEM_PROMPT,
         prompt,
+        // See DREAM_MODEL_TIMEOUT_MS: without this, a hung socket keeps the
+        // lock held indefinitely (no error ever reaches the finally below to
+        // release it), and nothing but the TTL fallback could ever reclaim it.
+        abortSignal: AbortSignal.timeout(DREAM_MODEL_TIMEOUT_MS),
       })
       text = res.text
       gen?.end({ output: text, usage: res.usage })

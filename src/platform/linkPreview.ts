@@ -4,41 +4,15 @@
 // + chrome.storage.local cache and a timeout, and is gated by a privacy setting.
 
 import { loadSettings } from '../data/settings'
-import { isFetchableUrl } from './webFetch'
+import { isSafeRenderUrl } from './safeRenderUrl'
 
-/** Reject preview fetches to private/loopback/link-local/metadata hosts so an
- *  assistant-authored link can't drive an automatic request at an internal
- *  target (SSRF/info-disclosure). Does not defeat DNS-rebinding but blocks the
- *  obvious literal-host cases.
- *
- *  Delegates the private/loopback/encoding decision to the shared, hardened
- *  `isFetchableUrl` guard (also used by the research browser's fetch/
- *  navigate/click paths) so this automatic, no-approval-card path never
- *  trails behind it — it used to miss IPv4-mapped IPv6 literals and the
- *  non-standard IP encodings (decimal/hex/octal host forms) that
- *  `isFetchableUrl` now blocks. On top of that shared decision this keeps its
- *  own stricter, preview-specific extras that `isFetchableUrl` doesn't cover:
- *  the reserved `*.localhost`/`.internal` conventions and the CGNAT range
- *  (100.64.0.0/10, RFC 6598) — an automatic preview fetch should stay more
- *  conservative than the general-purpose guard. */
-function isSafePreviewTarget(url: string): boolean {
-  if (!isFetchableUrl(url).ok) return false
-  let u: URL
-  try {
-    u = new URL(url)
-  } catch {
-    return false
-  }
-  const host = u.hostname.toLowerCase().replace(/^\[|\]$/g, '')
-  if (host === 'localhost' || host.endsWith('.localhost') || host.endsWith('.internal')) return false
-  const m = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/)
-  if (m) {
-    const a = Number(m[1])
-    const b = Number(m[2])
-    if (a === 100 && b >= 64 && b <= 127) return false
-  }
-  return true
-}
+// Both the outer page URL (fetched below) and the og:image URL extracted
+// from that page's own HTML (in parseOpenGraph) are automatic, no-click,
+// no-approval-card fetches — so both are screened by the same shared,
+// hardened guard (isSafeRenderUrl, ./safeRenderUrl) before being used. The
+// image is a page-supplied value: a hostile page can declare an og:image
+// pointing at an internal target, and rendering it unchecked would be an
+// automatic GET to wherever the page's HTML pointed it.
 
 /** OpenGraph-derived preview data; every field optional. */
 export interface LinkPreview {
@@ -49,7 +23,13 @@ export interface LinkPreview {
 }
 
 /** Extract OG/meta preview data from raw HTML. Returns null when nothing useful
- *  is present. `baseUrl` resolves a relative og:image. Pure — no network. */
+ *  is present. `baseUrl` resolves a relative og:image. Pure — no network.
+ *  The resolved image URL is screened by `isSafeRenderUrl` before being
+ *  returned — a hostile page can declare `og:image` pointing at an internal
+ *  target, and this preview renders straight into `<img src>` with no click
+ *  and no approval card, so a rejected image is dropped (set to undefined)
+ *  rather than failing the whole preview: the title/description/siteName
+ *  are unaffected. */
 export function parseOpenGraph(html: string, baseUrl: string): LinkPreview | null {
   const doc = new DOMParser().parseFromString(html, 'text/html')
   const meta = (sel: string): string | undefined => {
@@ -69,6 +49,7 @@ export function parseOpenGraph(html: string, baseUrl: string): LinkPreview | nul
       image = undefined
     }
   }
+  if (image && !isSafeRenderUrl(image)) image = undefined
   if (!title && !description && !image && !siteName) return null
   return { title, description, image, siteName }
 }
@@ -113,7 +94,7 @@ export async function getLinkPreview(url: string): Promise<LinkPreview | null> {
   if (settings && settings.fetchLinkPreviews === false) return null
   if (mem.has(url)) return mem.get(url)!
 
-  if (!isSafePreviewTarget(url)) {
+  if (!isSafeRenderUrl(url)) {
     mem.set(url, null)
     return null
   }

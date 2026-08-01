@@ -37,6 +37,7 @@ vi.mock('../data/settings', async (importOriginal) => {
 import {
   acquireDreamLock,
   buildDreamPrompt,
+  DREAM_LOCK_TTL_MS,
   dreamIfDue,
   evaluateDreamDue,
   MAX_MEMORY_CHARS,
@@ -243,6 +244,68 @@ describe('runDream reentrancy', () => {
     const r2 = await runDream(withProvider())
     expect(r2.status).toBe('dreamed')
   })
+
+  // R2 regression: the lock's TTL used to be a flat 5 minutes, unrelated to
+  // how long the generateText call it guards could actually take. A slow
+  // local model legitimately exceeding 5 minutes would expire the lock while
+  // the first dreamer was still genuinely working, letting a second one
+  // start concurrently — the exact double-consolidation this lock exists to
+  // prevent. The TTL must now track the (bounded) call it guards instead.
+  it('a dream that legitimately runs past the OLD fixed 5-minute TTL is NOT reclaimed while still genuinely in progress', async () => {
+    await appendToEpisode('ep1', [msg('hi')])
+
+    vi.useFakeTimers({ toFake: ['Date'] })
+    try {
+      vi.setSystemTime(0)
+
+      let releaseFirst!: (value: { text: string; usage: Record<string, never> }) => void
+      const firstCallEntered = new Promise<void>((resolveEntered) => {
+        mockedGenerateText.mockImplementationOnce(() => {
+          resolveEntered()
+          return new Promise((resolve) => {
+            releaseFirst = resolve as never
+          })
+        })
+      })
+      // Queued so that IF the TTL wrongly expires and a second call reaches
+      // generateText, it gets a distinguishable (wrong) payload instead of
+      // hanging on the first call's still-unresolved promise.
+      mockedGenerateText.mockResolvedValueOnce({
+        text: opsJson({ add: [{ kind: 'fact', content: 'second call must not run', tags: [] }] }),
+        usage: {},
+      } as never)
+
+      const settings = withProvider()
+      const p1 = runDream(settings)
+      await firstCallEntered // p1 holds the lock and is blocked "generating"
+
+      // Past the OLD flat 5-minute TTL, but comfortably within what a real
+      // dream cycle can now legitimately take (the model call is bounded at
+      // DREAM_MODEL_TIMEOUT_MS, and the TTL tracks that same ceiling) — a
+      // slow local model, not a crashed holder.
+      vi.setSystemTime(6 * 60 * 1000)
+
+      const r2 = await runDream(settings)
+      expect(r2).toEqual({ status: 'skipped', reason: 'Another dream cycle is already in progress.' })
+
+      releaseFirst({ text: opsJson({}), usage: {} })
+      const r1 = await p1
+      expect(r1.status).toBe('dreamed')
+      expect(mockedGenerateText).toHaveBeenCalledTimes(1)
+      expect((await listMemories()).map((m) => m.content)).not.toContain('second call must not run')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+})
+
+describe('dream model call is bounded (does not hang forever on a stuck connection)', () => {
+  it('passes a bounded abortSignal to generateText, same reasoning as the research pipeline per-attempt timeout', async () => {
+    await appendToEpisode('ep1', [msg('hi')])
+    mockedGenerateText.mockResolvedValueOnce({ text: opsJson({}), usage: {} } as never)
+    await runDream(withProvider())
+    expect(mockedGenerateText).toHaveBeenCalledWith(expect.objectContaining({ abortSignal: expect.any(AbortSignal) }))
+  })
 })
 
 describe('dream lock (acquireDreamLock/releaseDreamLock)', () => {
@@ -265,7 +328,7 @@ describe('dream lock (acquireDreamLock/releaseDreamLock)', () => {
       // Advance past the TTL without ever releasing — simulates the service
       // worker being killed mid-dream (MV3's whole premise) before its
       // `finally` runs.
-      vi.setSystemTime(6 * 60 * 1000)
+      vi.setSystemTime(DREAM_LOCK_TTL_MS + 1)
       const t2 = await acquireDreamLock()
       expect(t2).not.toBeNull()
       expect(t2).not.toBe(t1)
@@ -285,14 +348,14 @@ describe('dream lock (acquireDreamLock/releaseDreamLock)', () => {
     try {
       vi.setSystemTime(0)
       const t1 = await acquireDreamLock()
-      vi.setSystemTime(6 * 60 * 1000)
+      vi.setSystemTime(DREAM_LOCK_TTL_MS + 1)
       const t2 = await acquireDreamLock() // reclaims the abandoned lock
       expect(t2).not.toBeNull()
       // t1's holder finally wakes up and releases its (now-stolen) token —
       // must not tear out t2's live lock.
       await releaseDreamLock(t1!)
       const { getDreamLock } = await import('../data/memory')
-      expect(await getDreamLock()).toEqual({ token: t2, acquiredAt: 6 * 60 * 1000 })
+      expect(await getDreamLock()).toEqual({ token: t2, acquiredAt: DREAM_LOCK_TTL_MS + 1 })
     } finally {
       vi.useRealTimers()
     }

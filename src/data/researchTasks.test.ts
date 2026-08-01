@@ -212,35 +212,49 @@ test('clearTasks() outside the service worker (a window global present, e.g. the
   expect(store.researchTasks).toEqual({ t1: task('t1', 1) }) // untouched by this call
 })
 
-test('clearTasksNow() shares the SAME writeChain as applyUpdate() — queued after an in-flight update, the clear always wins', async () => {
+test('clearTasksNow() shares the SAME writeChain as applyUpdate() — the update runs to completion, THEN the clear removes it', async () => {
   // A fresh module instance keeps this test's writeChain isolated from the
   // others above, though by this point in the file it would already be settled
   // regardless (every earlier test awaits its own operations to completion).
   vi.resetModules()
   const store: Record<string, unknown> = { researchTasks: { t1: task('t1', 1, 'running') } }
-  vi.stubGlobal('chrome', {
-    storage: {
-      local: {
-        get: vi.fn((key: string) => Promise.resolve(key in store ? { [key]: store[key] } : {})),
-        set: vi.fn((items: Record<string, unknown>) => {
-          Object.assign(store, items)
-          return Promise.resolve()
-        }),
-        remove: vi.fn((key: string) => {
-          delete store[key]
-          return Promise.resolve()
-        }),
-      },
-    },
+  // Records WHICH storage call fired first, not just what `store` ends up
+  // holding — see the comment below the assertions for why the end state
+  // alone is not evidence of correct serialization here.
+  const callOrder: string[] = []
+  const get = vi.fn((key: string) => Promise.resolve(key in store ? { [key]: store[key] } : {}))
+  const set = vi.fn((items: Record<string, unknown>) => {
+    callOrder.push('set')
+    Object.assign(store, items)
+    return Promise.resolve()
   })
+  const remove = vi.fn((key: string) => {
+    callOrder.push('remove')
+    delete store[key]
+    return Promise.resolve()
+  })
+  vi.stubGlobal('chrome', { storage: { local: { get, set, remove } } })
   const mod = await import('./researchTasks')
 
   const applyDone = mod.applyUpdate('t1', { status: 'paused' }) // queued first
   const clearDone = mod.clearTasksNow() // queued second, same writeChain
-  await Promise.all([applyDone, clearDone])
+  const [applyResult] = await Promise.all([applyDone, clearDone])
 
   // FIFO ordering via the shared writeChain means the update's read-modify-write
   // runs to completion BEFORE the clear starts — so the clear (strictly later)
-  // always wins, with no marker/recheck needed to make that true.
+  // always wins. Checking only the end state (`researchTasks` undefined) is NOT
+  // proof of that: if the writeChain were broken and the clear jumped ahead
+  // instead, it would delete the row first, applyUpdate's own re-read would
+  // then find nothing, and its `if (!cur) return undefined` guard (line ~341)
+  // would silently no-op WITHOUT ever calling set() — leaving `researchTasks`
+  // undefined for a completely different, accidental reason. Asserting the
+  // update actually produced a result, that set() ran with the update's own
+  // payload, and that set() precedes remove() in call order is what only real
+  // serialization — not that accidental no-op — can satisfy.
+  expect(applyResult).toMatchObject({ id: 't1', status: 'paused' })
+  expect(set).toHaveBeenCalledWith(
+    expect.objectContaining({ researchTasks: expect.objectContaining({ t1: expect.objectContaining({ status: 'paused' }) }) }),
+  )
+  expect(callOrder).toEqual(['set', 'remove'])
   expect(store.researchTasks).toBeUndefined()
 })

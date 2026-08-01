@@ -176,6 +176,66 @@ describe('isPointOfNoReturn — click, blind controls (no href, no accessible na
   })
 })
 
+// (S2) COMMITTING_NAME was English-word-only: an emoji-only or non-English
+// label is non-empty (clears isBlindClick) and matches no English word
+// (clears COMMITTING_NAME) — both nets miss at once. These are the exact
+// repro shapes from the adversarial review.
+describe('isPointOfNoReturn — click, emoji-only committing names (S2)', () => {
+  it('flags common committing icons with no text label at all', () => {
+    for (const name of ['🗑️', '🗑', '🛒', '💳', '✅']) {
+      const target = el({ tag: 'div', role: 'button', name })
+      expect(isPointOfNoReturn(spec({ action: 'click', index: 0 }), target, ORIGIN), `expected "${name}" to be flagged`).toBe(true)
+    }
+  })
+})
+
+describe('isPointOfNoReturn — click, non-English committing names (S2)', () => {
+  it('flags committing verbs in major non-English languages', () => {
+    const names = [
+      'Löschen', // German: delete
+      'Kaufen', // German: buy
+      'Supprimer', // French: delete
+      'Confirmer', // French: confirm
+      'Eliminar', // Spanish: delete
+      'Comprar', // Spanish: buy
+      'Confermare', // Italian: confirm
+      'Удалить', // Russian: delete
+      '削除', // Japanese: delete
+      '购买', // Chinese: buy
+      'حذف', // Arabic: delete
+    ]
+    for (const name of names) {
+      const target = el({ tag: 'button', type: 'button', name })
+      expect(isPointOfNoReturn(spec({ action: 'click', index: 0 }), target, ORIGIN), `expected "${name}" to be flagged`).toBe(true)
+    }
+  })
+})
+
+// (S3) Event delegation: a container attaches one handler and dispatches by
+// target, so the clicked descendant (an icon, a row's plain text) can carry
+// an innocuous name of its own while the ancestor that actually defines what
+// happens — a <form>'s own aria-label, a dialog's title, or the nearest
+// independently-clickable ancestor's own aria-label — says otherwise.
+// domIndex.ts's ancestorNameOf computes this as a raw DOM fact; the
+// classifier's job (tested here) is to treat a committing ancestor name the
+// same way it treats the element's own name.
+describe('isPointOfNoReturn — click, delegated ancestor committing context (S3)', () => {
+  it('flags a click on an innocuously-named descendant whose delegated container self-describes as committing', () => {
+    const target = el({ tag: 'span', name: 'Row 42', ancestorName: 'Delete row' })
+    expect(isPointOfNoReturn(spec({ action: 'click', index: 0 }), target, ORIGIN)).toBe(true)
+  })
+
+  it('does not flag when the ancestor name is benign — being inside SOME container is not itself committing', () => {
+    const target = el({ tag: 'span', name: 'Row 42', ancestorName: 'Recent activity' })
+    expect(isPointOfNoReturn(spec({ action: 'click', index: 0 }), target, ORIGIN)).toBe(false)
+  })
+
+  it('does not flag merely sitting inside an unlabelled or benignly-labelled form (card-fatigue guard)', () => {
+    const target = el({ tag: 'button', type: 'button', name: 'Show details', ancestorName: 'Contact form' })
+    expect(isPointOfNoReturn(spec({ action: 'click', index: 0 }), target, ORIGIN)).toBe(false)
+  })
+})
+
 describe('hasElementChanged (F4 — approval card re-validation)', () => {
   const base = el({ tag: 'button', type: 'button', name: 'Delete my account' })
 

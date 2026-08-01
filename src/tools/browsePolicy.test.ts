@@ -176,6 +176,67 @@ describe('isSafeResearchAction — click, blind controls (no href, no accessible
   })
 })
 
+// (S2) Mirrors pageControl.test.ts: COMMITTING_NAME was English-word-only, so
+// an emoji-only or non-English label cleared both nets (non-empty name means
+// not blind; no English word means no vocabulary match) on this policy too —
+// the ONLY gate on the unattended, headless research browser.
+describe('isSafeResearchAction — click, emoji-only committing names (S2)', () => {
+  it('denies common committing icons with no text label at all', () => {
+    for (const name of ['🗑️', '🗑', '🛒', '💳', '✅']) {
+      const v = isSafeResearchAction({ kind: 'click', index: 1 }, el({ tag: 'div', role: 'button', name }))
+      expect(v.ok, `expected "${name}" to be denied`).toBe(false)
+    }
+  })
+})
+
+describe('isSafeResearchAction — click, non-English committing names (S2)', () => {
+  it('denies committing verbs in major non-English languages', () => {
+    const names = [
+      'Löschen', // German: delete
+      'Kaufen', // German: buy
+      'Supprimer', // French: delete
+      'Confirmer', // French: confirm
+      'Eliminar', // Spanish: delete
+      'Comprar', // Spanish: buy
+      'Confermare', // Italian: confirm
+      'Удалить', // Russian: delete
+      '削除', // Japanese: delete
+      '购买', // Chinese: buy
+      'حذف', // Arabic: delete
+    ]
+    for (const name of names) {
+      const v = isSafeResearchAction({ kind: 'click', index: 1 }, el({ tag: 'button', name }))
+      expect(v.ok, `expected "${name}" to be denied`).toBe(false)
+    }
+  })
+})
+
+// (S3) Same event-delegation gap as pageControl.test.ts: the clicked
+// descendant's own name can be innocuous while its delegated container's own
+// name (a <form>'s aria-label, a dialog's title, or the nearest
+// independently-clickable ancestor's aria-label — domIndex.ts's
+// ancestorNameOf) says otherwise. No human is watching this browser, so this
+// matters even more here than in pageControl.
+describe('isSafeResearchAction — click, delegated ancestor committing context (S3)', () => {
+  it('denies a click on an innocuously-named descendant whose delegated container self-describes as committing', () => {
+    const v = isSafeResearchAction({ kind: 'click', index: 1 }, el({ tag: 'span', name: 'Row 42', ancestorName: 'Delete row' }))
+    expect(v.ok).toBe(false)
+  })
+
+  it('allows when the ancestor name is benign — being inside SOME container is not itself committing', () => {
+    const v = isSafeResearchAction({ kind: 'click', index: 1 }, el({ tag: 'span', name: 'Row 42', ancestorName: 'Recent activity' }))
+    expect(v.ok).toBe(true)
+  })
+
+  it('does not deny merely sitting inside an unlabelled or benignly-labelled form (card-fatigue guard)', () => {
+    const v = isSafeResearchAction(
+      { kind: 'click', index: 1 },
+      el({ tag: 'button', name: 'Show more', ancestorName: 'Contact form' }),
+    )
+    expect(v.ok).toBe(true)
+  })
+})
+
 describe('isSafeResearchAction — type', () => {
   it('allows typing into a search input', () => {
     const v = isSafeResearchAction({ kind: 'type', index: 2, text: 'pricing' }, el({ tag: 'input', type: 'search', name: 'Search' }))

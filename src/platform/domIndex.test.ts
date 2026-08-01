@@ -142,31 +142,32 @@ function extractInjected(name: string): (...args: any[]) => any {
   return new Function(`"use strict"; return (${code})`)()
 }
 
-describe('domIndex — shadow DOM piercing (F5)', () => {
-  const savedRect = Element.prototype.getBoundingClientRect
-  const savedEFP = document.elementFromPoint
+// Shared by every describe block below that needs a specific element to read
+// as "visible": isVisible() needs a real-looking rect (jsdom's real
+// getBoundingClientRect always reports 0x0 — there is no layout engine) and a
+// hit-test via elementFromPoint (jsdom does not implement this at all). Both
+// are Chrome runtime facts these fixtures have to fake; the behavior under
+// test in each case is otherwise untouched. Hoisted out of the F5 describe
+// block (which originally owned it alone) so the S5/ancestorName describes
+// below can reuse the same stub instead of re-deriving it.
+const savedRect = Element.prototype.getBoundingClientRect
+const savedEFP = document.elementFromPoint
 
-  afterEach(() => {
-    document.body.innerHTML = ''
-    Element.prototype.getBoundingClientRect = savedRect
-    document.elementFromPoint = savedEFP
-  })
+afterEach(() => {
+  document.body.innerHTML = ''
+  Element.prototype.getBoundingClientRect = savedRect
+  document.elementFromPoint = savedEFP
+})
 
-  /**
-   * isVisible() needs a real-looking rect (jsdom's real getBoundingClientRect
-   * always reports 0x0 — there is no layout engine) and a hit-test via
-   * elementFromPoint (jsdom does not implement this at all). Both are Chrome
-   * runtime facts this fixture has to fake; the shadow-piercing behavior
-   * under test is otherwise untouched.
-   */
-  function stubLayoutFor(el: Element) {
-    Element.prototype.getBoundingClientRect = function (this: Element) {
-      const base = { x: 0, y: 0, top: 0, left: 0, right: 100, bottom: 40, width: 100, height: 40, toJSON() {} }
-      return this === el ? (base as DOMRect) : ({ ...base, width: 0, height: 0 } as DOMRect)
-    }
-    document.elementFromPoint = () => el
+function stubLayoutFor(el: Element) {
+  Element.prototype.getBoundingClientRect = function (this: Element) {
+    const base = { x: 0, y: 0, top: 0, left: 0, right: 100, bottom: 40, width: 100, height: 40, toJSON() {} }
+    return this === el ? (base as DOMRect) : ({ ...base, width: 0, height: 0 } as DOMRect)
   }
+  document.elementFromPoint = () => el
+}
 
+describe('domIndex — shadow DOM piercing (F5)', () => {
   it('indexes an interactive element inside an open shadow root', () => {
     document.body.innerHTML = '<my-widget></my-widget>'
     const host = document.querySelector('my-widget')!
@@ -183,5 +184,83 @@ describe('domIndex — shadow DOM piercing (F5)', () => {
     const result = buildInteractiveIndex('data-agent-idx', 200)
     const names = (result.elements as Array<{ name: string }>).map((e) => e.name)
     expect(names).toContain('Do the thing')
+  })
+})
+
+// (S5) Element.closest('form') does not pierce a shadow boundary: a
+// form-associated custom element whose internal submit control lives in an
+// open shadow root, with the real <form> in the light DOM outside it, used
+// to read formMethod:undefined — silently exempting it from browsePolicy's
+// "no POST submits" deny. Runs the real buildInteractiveIndex against a
+// fixture that reproduces exactly that light-DOM-form / shadow-DOM-button
+// split, reusing the same shadow-piercing technique F5 already proved works
+// (just walking the opposite direction: up via getRootNode().host instead of
+// down via el.shadowRoot).
+describe('domIndex — formMethod resolves across a shadow boundary (S5)', () => {
+  it('finds the light-DOM ancestor <form> from a button inside an open shadow root', () => {
+    document.body.innerHTML = '<form method="post"><my-widget></my-widget></form>'
+    const host = document.querySelector('my-widget')!
+    const shadow = (host as any).attachShadow ? host.attachShadow({ mode: 'open' }) : null
+    if (!shadow) return // jsdom build without Shadow DOM support — skip rather than false-fail
+    shadow.innerHTML = '<button aria-label="Submit"></button>'
+    const button = shadow.querySelector('button') as HTMLElement
+    stubLayoutFor(button)
+
+    const buildInteractiveIndex = extractInjected('buildInteractiveIndex')
+    const result = buildInteractiveIndex('data-agent-idx', 200)
+    const entry = (result.elements as Array<{ name: string; formMethod?: string }>).find((e) => e.name === 'Submit')
+    expect(entry?.formMethod).toBe('post')
+  })
+})
+
+// (S2/S3) ancestorName is the raw DOM fact the classifiers (pageControl.ts,
+// browsePolicy.ts) read to close the event-delegation gap: a container
+// attaches one handler (or is itself a <form>/dialog) and dispatches by
+// target, so the actually-clicked descendant can carry an innocuous name of
+// its own while its container's own name says otherwise. domIndex.ts only
+// collects the fact here — see pageControl.test.ts / browsePolicy.test.ts for
+// the classifiers actually treating a committing ancestorName as committing.
+describe('domIndex — ancestorName (delegated committing context, S2/S3)', () => {
+  it("reads a <form>'s own aria-label for a descendant with no name of its own", () => {
+    document.body.innerHTML = '<form aria-label="Delete account"><button></button></form>'
+    const button = document.querySelector('button') as HTMLElement
+    stubLayoutFor(button)
+    const buildInteractiveIndex = extractInjected('buildInteractiveIndex')
+    const result = buildInteractiveIndex('data-agent-idx', 200)
+    const entry = (result.elements as Array<{ ancestorName?: string }>)[0]
+    expect(entry?.ancestorName).toBe('Delete account')
+  })
+
+  it("reads a dialog/alertdialog ancestor's title from its first heading when there is no aria-label", () => {
+    document.body.innerHTML = '<div role="alertdialog"><h2>Delete this file?</h2><button aria-label="OK"></button></div>'
+    const button = document.querySelector('button') as HTMLElement
+    stubLayoutFor(button)
+    const buildInteractiveIndex = extractInjected('buildInteractiveIndex')
+    const result = buildInteractiveIndex('data-agent-idx', 200)
+    const entry = (result.elements as Array<{ ancestorName?: string }>)[0]
+    expect(entry?.ancestorName).toBe('Delete this file?')
+  })
+
+  it("reads the nearest independently-clickable ancestor's own aria-label (event-delegation pattern)", () => {
+    // aria-label rather than visible text on the span too — see the F5
+    // comment above: jsdom computes no innerText at all (no layout engine),
+    // so an un-labelled span would read as name:'' regardless of this fix.
+    document.body.innerHTML = '<div aria-label="Delete row" onclick="void 0"><span role="button" aria-label="Row 42"></span></div>'
+    const span = document.querySelector('span') as HTMLElement
+    stubLayoutFor(span)
+    const buildInteractiveIndex = extractInjected('buildInteractiveIndex')
+    const result = buildInteractiveIndex('data-agent-idx', 200)
+    const entry = (result.elements as Array<{ name: string; ancestorName?: string }>).find((e) => e.name === 'Row 42')
+    expect(entry?.ancestorName).toBe('Delete row')
+  })
+
+  it('is empty when no ancestor names itself — card-fatigue guard against flagging every form/dialog membership', () => {
+    document.body.innerHTML = '<form><button aria-label="Save"></button></form>'
+    const button = document.querySelector('button') as HTMLElement
+    stubLayoutFor(button)
+    const buildInteractiveIndex = extractInjected('buildInteractiveIndex')
+    const result = buildInteractiveIndex('data-agent-idx', 200)
+    const entry = (result.elements as Array<{ ancestorName?: string }>)[0]
+    expect(entry?.ancestorName ?? '').toBe('')
   })
 })

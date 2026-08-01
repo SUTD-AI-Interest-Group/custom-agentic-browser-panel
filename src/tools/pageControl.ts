@@ -78,6 +78,46 @@ const COMMITTING_NAME =
   /\b(buy|purchase|checkout|pay|payment|order now|add to (cart|bag)|subscribe|unsubscribe|donate|sign\s*up|signup|register|log\s*in|login|sign\s*in|signin|delete|remove|cancel|confirm|apply now|submit application|place order|continue)\b/i
 
 /**
+ * Same vocabulary as COMMITTING_NAME, translated into languages likely to
+ * appear on a non-English page (S2): German, French, Spanish, Portuguese,
+ * Italian, Russian, Japanese, Chinese, Arabic. English-only coverage was the
+ * finding's core bypass — "Löschen"/"Supprimer"/"Eliminar"/"Удалить"/"削除"/
+ * "حذف" matched nothing here and is non-empty (so it also clears
+ * isBlindClick below), slipping past both nets at once. This is a
+ * representative set, not an exhaustive one — see the residual-limits note
+ * near isPointOfNoReturn.
+ *
+ * Deliberately NOT wrapped in \b for Cyrillic/CJK/Arabic: JS's \b is defined
+ * against `\w` (`[A-Za-z0-9_]` only, without a Unicode-aware flag), so
+ * neither side of e.g. "削除" is ever a `\w` character — \b would never
+ * match there at all, silently turning `\b削除\b` into a pattern that can
+ * never match anything. Plain substring alternation is correct instead;
+ * these scripts share no codepoints with the Latin words, so there is no
+ * cross-alphabet false-positive risk from dropping \b.
+ */
+const COMMITTING_NAME_INTL =
+  /\b(löschen|entfernen|kaufen|bezahlen|bestätigen|abonnieren|abbestellen|registrieren|anmelden|einloggen|kündigen|senden|bestellen|supprimer|retirer|acheter|payer|confirmer|abonner|désabonner|inscrire|connecter|envoyer|commander|annuler|eliminar|borrar|comprar|pagar|confirmar|suscribir|cancelar|enviar|registrarse|iniciar sesión|apagar|assinar|inscrever|eliminare|acquistare|pagare|confermare|annullare|inviare|iscriversi)\b|удалить|купить|оплатить|подтвердить|отправить|войти|зарегистрироваться|отменить|削除|購入|支払い|確認|送信|登録|ログイン|注文|退会|キャンセル|删除|购买|支付|确认|发送|注册|登录|下单|取消|订阅|حذف|شراء|دفع|تأكيد|إرسال|تسجيل|إلغاء|طلب/i
+
+/**
+ * A representative, not exhaustive, set of icons commonly used ALONE (no
+ * text label at all) for a committing action — the other half of S2's
+ * bypass (an emoji-only name is non-empty, so it clears isBlindClick too).
+ * Deliberately excludes the ambiguous "X"/❌ glyph: it is at least as often
+ * "close/dismiss this dialog" (the SAFE escape hatch) as it is "delete", and
+ * this file already treats bare "cancel" as committing — flagging the
+ * ubiquitous corner-of-every-modal dismiss button too would be a real
+ * card-fatigue regression for little added safety (a genuine delete-via-X is
+ * rare next to dismiss-via-X).
+ */
+const COMMITTING_EMOJI = /🗑️|🗑|🛒|💳|💰|💸|📤|✅|✔️|✔/
+
+/** True when `name` reads as committing in English, a major non-English
+ *  language, or a common committing icon. See the three checks above for
+ *  what each closes and what each deliberately leaves out. */
+const isCommittingName = (name: string): boolean =>
+  COMMITTING_NAME.test(name) || COMMITTING_NAME_INTL.test(name) || COMMITTING_EMOJI.test(name)
+
+/**
  * A click target the approval card could not describe at all: no href (so it
  * is not a link going somewhere nameable) and no accessible name (aria-label,
  * visible text, placeholder, value, title, and name attribute all empty).
@@ -89,6 +129,25 @@ const COMMITTING_NAME =
  * assume the worst rather than assume it is safe.
  */
 const isBlindClick = (el: IndexedElement): boolean => !el.href && !el.name.trim()
+
+/**
+ * Known, accepted limitation (S4): every check above that reads a `name` —
+ * isCommittingName, and the ancestorName check in isPointOfNoReturn below —
+ * trusts the page's own self-description. A hostile page can label a
+ * "Delete account" button "Cancel" and there is no DOM signal that tells them
+ * apart; this is the same trust a screen-reader user extends to a page's own
+ * aria-label. Not something this file can fully fix — the available
+ * mitigation is structural, not textual: every check below that does NOT
+ * depend on `name` (cross-origin href, `type==='submit'|'image'`, the
+ * `sensitive` flag) runs UNCONDITIONALLY, so a benign-sounding name can never
+ * suppress one of those. Keep it that way — do not add an "unless the name
+ * looks safe" escape hatch to any structural check, or a lying label stops
+ * being merely unhelped and starts being actively trusted. (The ancestorName
+ * check is an incidental partial mitigation when the conflict spans two
+ * levels — e.g. the clicked element says "Cancel" but its delegated
+ * container's OWN aria-label says "Delete row" — but a single element lying
+ * about itself, with no structural tell at all, remains undetectable.)
+ */
 
 /**
  * True when an action must show an individual approval card even inside a
@@ -109,7 +168,18 @@ export function isPointOfNoReturn(
   if (spec.action === 'click' && el) {
     if (el.href && hostOf(el.href) !== sessionOrigin) return true
     if (el.type === 'submit' || el.type === 'image') return true
-    if (COMMITTING_NAME.test(el.name)) return true
+    if (isCommittingName(el.name)) return true
+    // Event delegation (S3): a container attaches one handler and dispatches
+    // by target, so the clicked descendant (an icon, a row's plain text) can
+    // carry an innocuous name while the ancestor that actually defines what
+    // happens — a <form>'s own aria-label, a dialog's title, or the nearest
+    // independently-clickable ancestor's own aria-label (domIndex.ts's
+    // ancestorNameOf) — says otherwise. This deliberately does NOT fire for
+    // merely sitting inside SOME form/dialog: only when that container's own
+    // name reads as committing, the same bar as the element's own name gets
+    // held to. That scoping is what keeps this from flagging every button in
+    // every ordinary search/contact/login form (card fatigue).
+    if (el.ancestorName && isCommittingName(el.ancestorName)) return true
     if (isBlindClick(el)) return true
   }
   return false

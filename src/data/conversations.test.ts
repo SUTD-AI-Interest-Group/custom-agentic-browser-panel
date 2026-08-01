@@ -145,6 +145,131 @@ describe('listConversations / conversationsUsage (summaries store)', () => {
     ])
   })
 
+  // R1: a pre-existing row that fails to project into a summary (missing/
+  // non-array `messages` — a bug in an earlier release, a manual devtools
+  // edit, a partial write) must never abort the v1->v2 upgrade. Per the
+  // IndexedDB spec, an uncaught exception thrown from a cursor's onsuccess
+  // handler aborts the WHOLE versionchange transaction — rolling back both
+  // the summaries-store creation AND the version bump — so every subsequent
+  // openDb() would retry the identical upgrade, hit the identical bad row,
+  // and abort again: the database stuck at v1 forever, with list/save/
+  // rename/pin/delete/clear all broken permanently and no in-app recovery.
+  it('does not brick the database when one pre-existing row is malformed: it is degraded, not dropped, and the upgrade still completes', async () => {
+    await _resetDbForTests()
+    const malformed = {
+      id: 'bad-1',
+      title: 'Poisoned row',
+      createdAt: 500,
+      updatedAt: 600,
+      // No `messages` array at all — the exact shape that makes
+      // `toSummaryRow`'s `c.messages.length` throw a TypeError. Caught by the
+      // `Array.isArray` guard, this one still projects a real (if
+      // messageCount-less) summary — title/dates are genuine, nothing here
+      // was actually unreadable.
+      history: [],
+    }
+    // A circular reference is exactly the "more realistic going forward" case
+    // the review named: `messages` IS an array (the guard above doesn't fire),
+    // but the unrelated `estimateBytes` walk in the same function recurses
+    // forever over the cycle and stack-overflows — a genuinely unrecoverable
+    // per-row failure that only the try/catch (not the Array.isArray guard)
+    // can contain. Structured-clone (what IndexedDB actually uses) supports
+    // cycles, so this round-trips through a real put/get, unlike JSON.
+    const circular: Record<string, unknown> = { id: 'm1' }
+    circular.self = circular
+    const malformedCircular = {
+      id: 'bad-2',
+      title: 'Circular row',
+      createdAt: 700,
+      updatedAt: 800,
+      messages: [circular],
+      history: [],
+    }
+    const healthy = {
+      id: 'good-1',
+      title: 'Fine',
+      createdAt: 1000,
+      updatedAt: 2000,
+      messages: [{ id: 'm1' }, { id: 'm2' }],
+      history: [],
+      pinned: true,
+    }
+    await new Promise<void>((resolve, reject) => {
+      const req = indexedDB.open('lychee-conversations', 1)
+      req.onupgradeneeded = () => {
+        req.result.createObjectStore('conversations', { keyPath: 'id' })
+      }
+      req.onsuccess = () => {
+        const db = req.result
+        const tx = db.transaction('conversations', 'readwrite')
+        const store = tx.objectStore('conversations')
+        store.put(malformed)
+        store.put(malformedCircular)
+        store.put(healthy)
+        tx.oncomplete = () => {
+          db.close()
+          resolve()
+        }
+        tx.onerror = () => reject(tx.error)
+      }
+      req.onerror = () => reject(req.error)
+    })
+
+    // The module's own openDb() upgrade path, exercised exactly as a
+    // side-panel reopen would trigger it. Must not throw/reject.
+    const list = await listConversations()
+
+    expect(list.find((c) => c.id === 'good-1')).toEqual({
+      id: 'good-1', title: 'Fine', createdAt: 1000, updatedAt: 2000, messageCount: 2, pinned: true,
+    })
+
+    // The non-array-`messages` row is caught by the defensive field-level
+    // guard, not the generic catch — its real title/dates survive; only the
+    // unknowable message count is defaulted.
+    expect(list.find((c) => c.id === 'bad-1')).toEqual({
+      id: 'bad-1', title: 'Poisoned row', createdAt: 500, updatedAt: 600, messageCount: 0, pinned: false,
+    })
+
+    // The circular-reference row defeats the field-level guard (`messages`
+    // IS an array) and can only be caught by the generic try/catch around
+    // the whole projection. It must still be LISTED — never silently
+    // dropped — but honestly marked as unreadable rather than showing
+    // fabricated data.
+    const bad2 = list.find((c) => c.id === 'bad-2')
+    expect(bad2).toBeDefined()
+    expect(bad2?.title).toBe('(unreadable conversation)')
+
+    // The upgrade must have actually completed: version bumped to 2, and a
+    // second raw open confirms it rather than being stuck retrying forever.
+    const db = await new Promise<IDBDatabase>((resolve, reject) => {
+      const req = indexedDB.open('lychee-conversations')
+      req.onsuccess = () => resolve(req.result)
+      req.onerror = () => reject(req.error)
+    })
+    expect(db.version).toBe(2)
+    expect(db.objectStoreNames.contains('summaries')).toBe(true)
+
+    // The original malformed records themselves must be untouched: the
+    // migration may read the conversations store but must never mutate or
+    // delete it.
+    const getRaw = (id: string) =>
+      new Promise<unknown>((resolve, reject) => {
+        const tx = db.transaction('conversations', 'readonly')
+        const get = tx.objectStore('conversations').get(id)
+        get.onsuccess = () => resolve(get.result)
+        get.onerror = () => reject(get.error)
+      })
+    expect(await getRaw('bad-1')).toEqual(malformed)
+    expect(await getRaw('bad-2')).toEqual(malformedCircular)
+    db.close()
+
+    // Every write path that assumes `summaries` exists must keep working —
+    // proof the db isn't stuck retrying a broken upgrade on every open.
+    await expect(listConversations()).resolves.toBeDefined()
+    await expect(saveConversation({ id: 'new-1', messages: [], history: [] })).resolves.toBeUndefined()
+    await expect(clearConversations()).resolves.toBeUndefined()
+  })
+
   it('deleteConversation and clearConversations also remove the summary row, not just the full record', async () => {
     await saveConversation({ id: 'c1', messages: [], history: [] })
     await saveConversation({ id: 'c2', messages: [], history: [] })

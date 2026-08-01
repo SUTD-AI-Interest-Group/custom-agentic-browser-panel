@@ -28,6 +28,25 @@
 // Deliberately does NOT trust an unrelated model-supplied flag: it reads the
 // same object the DOM-computed `sensitive` boolean already lives on.
 //
+// A fourth, narrower-still rule closes a gap the final security review (S6)
+// found in rule 3 above: for AutofillForm/ControlPage specifically, the
+// `sensitive`/`isSensitive` flag that reaches THIS module is the MODEL's own
+// claim on its tool call — never cross-checked here against the
+// independently DOM-computed ground truth (domIndex.ts's SENSITIVE_RE/
+// type/autocomplete check, IndexedElement.sensitive) that already gates
+// their approval card (pageControl.ts's isPointOfNoReturn ORs both in). That
+// DOM signal lives inside tools.ts's execute() closure and is never threaded
+// through to the object this module receives (confirmed structurally:
+// instrumentToolset, instrumentTools.ts, only ever sees the tool's raw
+// input/output — no access to tools.ts's internal `el`/`snap` variables), so
+// an omitted or falsely-`false` flag on a real password/card field cannot be
+// told apart from a genuinely non-sensitive one. `redactSecrets`'s optional
+// `toolName` parameter (supplied only by instrumentTools.ts, the one caller
+// that knows which tool is being redacted) makes these two tools' generic
+// user-text field(s) redact UNCONDITIONALLY instead — see
+// redactKnownRiskyToolInput near the bottom of this file for exactly which
+// fields, and why those two and no others.
+//
 // Fails closed: an internal error redacts (returns a fixed marker) rather
 // than risking the raw value passing through unredacted. Circular
 // references are tracked and replaced with a marker instead of recursing
@@ -180,15 +199,80 @@ function walk(v: unknown, seen: WeakSet<object>, forceRedact: boolean): unknown 
   return v
 }
 
+// --- S6: fail-closed for the two tool calls whose `sensitive` flag is the
+// model's own claim, never cross-checked against DOM ground truth here ------
+
+/**
+ * AutofillForm's `fields[].value` and ControlPage's `type`-action `text` are
+ * the two shapes the final security review (S6) named: their schemas let
+ * the MODEL set `sensitive`, but this module never sees the DOM-computed
+ * truth that actually gates their approval card (see this file's module
+ * comment). So for exactly these two shapes, redact the user-entered field
+ * UNCONDITIONALLY — regardless of whether `sensitive` is `true`, `false`, or
+ * never set, and regardless of which sibling in an array the flag landed on
+ * — rather than ship a real secret because no trustworthy flag arrived.
+ *
+ * Deliberately narrow, not a blanket rule for these tools' whole payload:
+ * only the one field per tool that structurally always carries typed/
+ * profile-sourced content is force-redacted. Everything else — which field/
+ * step ran, at what index, the model's own (now-untrusted) `sensitive`
+ * claim, a `select`'s chosen option, a `wait` action's CSS selector — passes
+ * through untouched (still subject to the name/shape nets above), so the
+ * trace still shows call shape and step sequence.
+ *
+ * Cross-file note for whoever can edit tools.ts: if AutofillForm/
+ * ControlPage's execute() overwrote its own `sensitive` field with
+ * `(modelClaim || el?.sensitive)` — the DOM lookup it already does to
+ * decide the approval card — before returning, this rule could shrink back
+ * to trusting `sensitive` again, because instrumentToolset captures `input`
+ * by reference AFTER execute() resolves and would see that OR'd value for
+ * free (no new plumbing needed). Not done here: tools.ts is owned by
+ * another workstream.
+ */
+function redactKnownRiskyToolInput(toolName: string | undefined, redacted: unknown): unknown {
+  if (!redacted || typeof redacted !== 'object') return redacted
+  const obj = redacted as Record<string, unknown>
+  if (toolName === 'AutofillForm') {
+    if (!Array.isArray(obj.fields)) return redacted
+    return {
+      ...obj,
+      fields: obj.fields.map((f) => {
+        if (!f || typeof f !== 'object' || !('value' in (f as Record<string, unknown>))) return f
+        const field = f as Record<string, unknown>
+        return { ...field, value: field.value === undefined ? undefined : REDACTED }
+      }),
+    }
+  }
+  if (toolName === 'ControlPage') {
+    // Only the `type` action's `text` is freeform typed/profile content. A
+    // `wait` action's `text` is a CSS selector the MODEL authored itself
+    // (never user data); `select`'s `value` is one of the page's own fixed
+    // dropdown options, not typed input. Force-redacting either would black
+    // out debug-useful, non-risky data for no security benefit.
+    if (obj.action === 'type' && 'text' in obj) {
+      return { ...obj, text: obj.text === undefined ? undefined : REDACTED }
+    }
+    return redacted
+  }
+  return redacted
+}
+
 /**
  * Redact secrets from an arbitrary tool-call argument/result/error value
  * before it reaches observability. Pure, synchronous, and never throws — on
  * any internal failure it fails closed (drops to a fixed marker) rather than
  * risking the raw value passing through.
+ *
+ * `toolName`, when supplied, additionally opts a small, fixed set of
+ * known-risky tool shapes (AutofillForm, ControlPage — see
+ * redactKnownRiskyToolInput above) into unconditional redaction of their
+ * user-text field(s). Omit it — as observer.ts's generic `content()` does,
+ * since it redacts trace/generation/event content that was never a tool
+ * call — to get only the name/shape/sibling-flag nets, unchanged.
  */
-export function redactSecrets(value: unknown): unknown {
+export function redactSecrets(value: unknown, toolName?: string): unknown {
   try {
-    return walk(value, new WeakSet(), false)
+    return redactKnownRiskyToolInput(toolName, walk(value, new WeakSet(), false))
   } catch {
     return '[redaction failed]'
   }

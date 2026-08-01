@@ -133,7 +133,20 @@ interface PendingApproval extends ApprovalRequest {
    *  card to the "Let the agent control host?" variant instead of an
    *  ordinary tool-approval summary (see pageControl.requestSession below). */
   session?: { plan: string; host: string }
+  /** This request's identity in approvalQueueRef (ApprovalQueue.frontId),
+   *  merged in at read time — never stored on the queue's own copy of the
+   *  request. The button handlers close over it and carry it through to
+   *  settleApproval, so an answer can only ever apply to the exact card
+   *  it was captured from (see approvalQueue.ts's settle()). */
+  id: number
 }
+
+/**
+ * What actually goes into approvalQueueRef — everything about PendingApproval
+ * except its `id`, which the queue itself assigns per request (ApprovalQueue
+ * .request/.frontId) and frontApproval() merges back in only for display.
+ */
+type ApprovalReq = Omit<PendingApproval, 'id'>
 
 interface CurrentTabInfo {
   tabId: number
@@ -699,7 +712,7 @@ export default function Chat({
   // every tool call from one model step concurrently, so a second gated tool
   // call while one is still awaiting its card is the default case, not an
   // edge case — it must queue behind the first, never silently replace it.
-  const approvalQueueRef = useRef(new ApprovalQueue<PendingApproval>())
+  const approvalQueueRef = useRef(new ApprovalQueue<ApprovalReq>())
   // Guards settleApproval's own claim-then-await-permission window (see
   // below) against a double-click resolving the wrong queued entry.
   const settlingApprovalRef = useRef(false)
@@ -1255,7 +1268,7 @@ export default function Chat({
       })
       // Reuse the approval card machinery, but branch the UI to a session
       // card whenever this request is the one actually shown.
-      setApproval(approvalQueueRef.current.front)
+      setApproval(frontApproval())
       return promise.then((approved) => {
         if (approved) pageSessionRef.current = { tabId, origin, plan, active: true }
         return approved
@@ -1300,6 +1313,19 @@ export default function Chat({
     })
   })
 
+  /**
+   * The queue's current front, merged with its own identity (ApprovalQueue
+   * .frontId) into the shape the card and settleApproval both need. Never
+   * cached — always re-read from the queue at the point something changes
+   * it, so `approval` state and the queue's own notion of "the front" cannot
+   * drift apart.
+   */
+  function frontApproval(): PendingApproval | null {
+    const front = approvalQueueRef.current.front
+    const id = approvalQueueRef.current.frontId
+    return front && id !== null ? { ...front, id } : null
+  }
+
   function requestApproval(request: ApprovalRequest): Promise<boolean> {
     // Point-of-no-return steps (form submits, cross-origin nav, passwords) are
     // the safety backstop: they always show a card, ignoring every auto-approve
@@ -1316,18 +1342,29 @@ export default function Chat({
     // not an edge case. Overwriting would drop the first call's resolve
     // forever, hanging that tool's execute() (and the whole chat) permanently.
     const promise = approvalQueueRef.current.request(request)
-    setApproval(approvalQueueRef.current.front)
+    setApproval(frontApproval())
     return promise
   }
 
-  async function settleApproval(approved: boolean, forSession = false) {
-    // Guards the claim-then-await-permission window below: a double-click (or
-    // Stop firing mid permission-prompt, which instead drains the queue
-    // directly — see stop()) must not settle the same front entry twice or
-    // reach into whatever's now queued behind it.
+  /**
+   * `id` is the identity of the card the click actually came from (captured
+   * by the button's closure at the render that showed it — see the
+   * ApprovalCard call site) — never "whatever's currently at the front".
+   * approvalQueueRef.current.settle() rejects the call outright if the queue
+   * has moved past that id, or if it's still the front but arrived less than
+   * MIN_VISIBLE_MS after becoming so (the double-click guard) — see its own
+   * doc comment. Either way this function must then do NOTHING else: no
+   * session grant, no state update, no side effect of any kind applied to
+   * whatever now happens to be showing.
+   */
+  async function settleApproval(id: number, approved: boolean, forSession = false) {
+    // Guards the claim-then-await-permission window below: Stop firing mid
+    // permission-prompt (which instead drains the queue directly — see
+    // stop()) must not have this call, once the await resolves, reach into
+    // whatever's now queued behind the card it actually meant to answer.
     if (settlingApprovalRef.current) return
     const pending = approvalQueueRef.current.front
-    if (!pending) return
+    if (!pending || approvalQueueRef.current.frontId !== id) return
     settlingApprovalRef.current = true
     try {
       // An optional Chrome permission is requested HERE, from inside the Allow
@@ -1343,9 +1380,15 @@ export default function Chat({
           .catch(() => false)
       }
 
-      if (granted && forSession) sessionAllowed.current.add(pending.toolName)
-      // Resolve the front and reveal whatever's queued behind it, if anything.
-      setApproval(approvalQueueRef.current.settleFront(granted))
+      // Re-validated against the CURRENT queue state, not the `pending`
+      // captured above — Stop (or another settle) could have run during the
+      // permission await. Only apply anything if this id is genuinely what
+      // settle() just resolved.
+      const result = approvalQueueRef.current.settle(id, granted)
+      if (result.settled) {
+        if (granted && forSession) sessionAllowed.current.add(pending.toolName)
+        setApproval(frontApproval())
+      }
     } finally {
       settlingApprovalRef.current = false
     }
@@ -2777,12 +2820,17 @@ export default function Chat({
           </Fragment>
         ))}
         {approval && (
+          // Keyed by the card's own identity: a settle can only ever land on
+          // the card it was captured from (see settleApproval/ApprovalQueue
+          // .settle), and keying the remount too means a fresh card never
+          // inherits any local DOM/React state from whatever it replaced.
           <ApprovalCard
+            key={approval.id}
             approval={approval}
             sessionPlan={approval.session ?? null}
-            onDeny={() => void settleApproval(false)}
-            onAllow={() => void settleApproval(true)}
-            onAllowSession={() => void settleApproval(true, true)}
+            onDeny={() => void settleApproval(approval.id, false)}
+            onAllow={() => void settleApproval(approval.id, true)}
+            onAllowSession={() => void settleApproval(approval.id, true, true)}
           />
         )}
         {continuation && !streaming && (

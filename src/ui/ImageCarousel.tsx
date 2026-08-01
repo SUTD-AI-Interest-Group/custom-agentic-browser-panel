@@ -1,14 +1,25 @@
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { downloadImage } from '../platform/download'
+import { isSafeRenderUrl } from '../platform/safeRenderUrl'
 
 // Renders a run of image URLs (grouped by splitBlocks) as a full-width,
 // horizontally side-scrollable carousel. Hovering a thumbnail tints it and
 // reveals a download icon; clicking downloads that image via the system Save As
-// dialog. Thumbnails that fail to load are dropped.
+// dialog. Thumbnails that fail to load are dropped — so is any URL that fails
+// the shared auto-render guard (isSafeRenderUrl). blocks.ts already screens
+// the urls it hands this component, but this check is cheap defense-in-depth
+// against a future caller that forgets to: it must run BEFORE `src` is ever
+// set, not rely on onError, since the browser has already reached out to the
+// target by the time an onError could fire.
 
 export default function ImageCarousel({ urls }: { urls: string[] }) {
   const [failed, setFailed] = useState<Set<number>>(() => new Set())
   const [busy, setBusy] = useState<number | null>(null)
+  const blocked = useMemo(() => {
+    const s = new Set<number>()
+    urls.forEach((u, i) => { if (!isSafeRenderUrl(u)) s.add(i) })
+    return s
+  }, [urls])
 
   async function download(url: string, i: number) {
     setBusy(i)
@@ -19,13 +30,15 @@ export default function ImageCarousel({ urls }: { urls: string[] }) {
     }
   }
 
-  // If every image 404s there's nothing to show — collapse the whole carousel.
-  if (urls.every((_, i) => failed.has(i))) return null
+  const hidden = (i: number) => failed.has(i) || blocked.has(i)
+
+  // If every image 404s or is blocked there's nothing to show — collapse the whole carousel.
+  if (urls.every((_, i) => hidden(i))) return null
 
   return (
     <div className="img-carousel">
       {urls.map((url, i) =>
-        failed.has(i) ? null : (
+        hidden(i) ? null : (
           <button
             key={i}
             type="button"
