@@ -46,6 +46,16 @@ export interface ProviderProfile {
   reasoningOptions?: (effort: ReasoningEffort | undefined) => Record<string, unknown>
   /** Model-list endpoint for Refresh, or null when the provider can't be enumerated. */
   modelsEndpoint: ModelsEndpoint | null
+  /**
+   * Whether this kind's adapter converts an application/pdf `file` part into a
+   * native document block (Anthropic `document`, OpenAI Responses `input_file`).
+   * The compatible adapter does NOT — it throws on non-image file parts, 400ing
+   * the whole request — so the attachment planner must never route a raw PDF at
+   * a compatible provider.
+   */
+  supportsNativeDocuments: boolean
+  /** Raw-byte ceiling for a native PDF part (base64 inflates ~4/3 toward the provider's request cap). 0 when unsupported. */
+  nativeDocMaxBytes: number
 }
 
 const trimSlash = (s: string): string => s.replace(/\/+$/, '')
@@ -81,6 +91,9 @@ const PROFILES: Record<ProviderKind, ProviderProfile> = {
     },
     reasoningOptions: (effort) => (effort ? { reasoningEffort: effort } : {}),
     modelsEndpoint: modelsPath(),
+    supportsNativeDocuments: true,
+    // 50MB per-request cap on input_file → 35MB raw is ~47MB as base64.
+    nativeDocMaxBytes: 35 * 1024 * 1024,
   },
 
   // Anthropic — native Messages API. This SDK models thinking as `adaptive`
@@ -98,6 +111,9 @@ const PROFILES: Record<ProviderKind, ProviderProfile> = {
         : { thinking: { type: 'adaptive', display: 'summarized' } }
     },
     modelsEndpoint: modelsPath('anthropic'),
+    supportsNativeDocuments: true,
+    // 32MB request cap on document blocks → 20MB raw is ~27MB as base64, with prompt headroom.
+    nativeDocMaxBytes: 20 * 1024 * 1024,
   },
 
   // OpenRouter — compatible, but reasoning is one unified `reasoning` object;
@@ -113,6 +129,10 @@ const PROFILES: Record<ProviderKind, ProviderProfile> = {
       return effort === 'none' ? { reasoning: { enabled: false } } : { reasoning: { effort } }
     },
     modelsEndpoint: { url: () => 'https://openrouter.ai/api/v1/models', auth: 'none' },
+    // OpenRouter's PDF support is a proprietary `plugins`/`file` extension the
+    // generic compat adapter can't construct — deliberately not used (see spec).
+    supportsNativeDocuments: false,
+    nativeDocMaxBytes: 0,
   },
 
   // Groq — compatible. reasoning_effort controls depth; reasoning_format MUST be
@@ -127,6 +147,8 @@ const PROFILES: Record<ProviderKind, ProviderProfile> = {
       ...(hasTools ? { reasoning_format: 'parsed' } : {}),
     }),
     modelsEndpoint: modelsPath(),
+    supportsNativeDocuments: false,
+    nativeDocMaxBytes: 0,
   },
 
   // Ollama — compatible. Its /v1 endpoint ignores the native `think` field but
@@ -138,6 +160,8 @@ const PROFILES: Record<ProviderKind, ProviderProfile> = {
     reasoningLevels: () => FOUR,
     reasoningBody: (effort) => (effort ? { reasoning_effort: effort } : {}),
     modelsEndpoint: modelsPath(),
+    supportsNativeDocuments: false,
+    nativeDocMaxBytes: 0,
   },
 
   // LM Studio — compatible chat over /v1; reasoning_effort passthrough is
@@ -149,6 +173,8 @@ const PROFILES: Record<ProviderKind, ProviderProfile> = {
     reasoningLevels: () => FOUR,
     reasoningBody: (effort) => (effort ? { reasoning_effort: effort } : {}),
     modelsEndpoint: { url: (b) => `${originOf(b)}/api/v0/models`, auth: 'bearer' },
+    supportsNativeDocuments: false,
+    nativeDocMaxBytes: 0,
   },
 
   // Custom / unknown OpenAI-compatible endpoint: the generic behaviour that
@@ -161,6 +187,9 @@ const PROFILES: Record<ProviderKind, ProviderProfile> = {
     reasoningLevels: () => FOUR,
     reasoningBody: (effort) => (effort ? { reasoning_effort: effort } : {}),
     modelsEndpoint: modelsPath(),
+    // Unknowable in general — assume the compat lowest common denominator.
+    supportsNativeDocuments: false,
+    nativeDocMaxBytes: 0,
   },
 }
 
