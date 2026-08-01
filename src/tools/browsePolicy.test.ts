@@ -105,6 +105,31 @@ describe('isSafeResearchAction — click', () => {
     )
     expect(v.ok).toBe(true)
   })
+
+  // (S4) — mirrors webFetch.test.ts's hardening-pass cases through the CLICK
+  // path too: an <a> click navigates the leased research tab exactly like the
+  // explicit `navigate` action does (browsePolicy.ts's own comment), so a page
+  // could otherwise smuggle a click at a blocked target around a guard that
+  // only covered `navigate`. isFetchableUrl itself is exhaustively tested in
+  // webFetch.test.ts; this end-to-end layer only needs to confirm the click
+  // path actually reaches that guard, not re-derive every bypass shape.
+  it('denies a click on an anchor whose href is in the 0.0.0.0/8 block or the RFC 6598 CGN range, or names a cloud-metadata host (S4)', () => {
+    for (const href of [
+      'http://0.0.0.1/',
+      'http://100.100.100.200/', // Alibaba Cloud's metadata service
+      'http://metadata.google.internal/computeMetadata/v1/',
+    ]) {
+      const v = isSafeResearchAction({ kind: 'click', index: 1 }, el({ tag: 'a', name: 'more info', href }))
+      expect(v.ok, `expected href ${href} to be denied`).toBe(false)
+    }
+  })
+
+  it('allows a click on an anchor just outside those same ranges (S4 boundary)', () => {
+    for (const href of ['http://1.1.1.1/', 'http://100.63.255.255/', 'http://100.128.0.1/']) {
+      const v = isSafeResearchAction({ kind: 'click', index: 1 }, el({ tag: 'a', name: 'Docs', href }))
+      expect(v.ok, `expected href ${href} to be allowed`).toBe(true)
+    }
+  })
 })
 
 describe('isSafeResearchAction — click, blind controls (no href, no accessible name)', () => {
@@ -202,8 +227,22 @@ describe('isSafeResearchAction — navigate / scroll / back', () => {
       'http://10.0.0.5/',
       'http://192.168.1.1/',
       'http://169.254.169.254/latest/meta-data/',
+      // (S4) — the rest of 0.0.0.0/8 beyond the exact literal, the RFC 6598
+      // carrier-grade-NAT range (Alibaba Cloud's metadata service lives at
+      // 100.100.100.200), and the canonical cloud-metadata hostnames — see
+      // webFetch.test.ts for the exhaustive isFetchableUrl coverage; this
+      // confirms the policy layer's own navigate path reaches the same guard.
+      'http://0.0.0.1/',
+      'http://100.100.100.200/',
+      'http://metadata.google.internal/',
     ]) {
       expect(isSafeResearchAction({ kind: 'navigate', url }).ok, `expected ${url} to be denied`).toBe(false)
+    }
+  })
+
+  it('allows navigation just outside the 0.0.0.0/8 and RFC 6598 ranges (S4 boundary)', () => {
+    for (const url of ['http://1.1.1.1/', 'http://100.63.255.255/', 'http://100.128.0.1/']) {
+      expect(isSafeResearchAction({ kind: 'navigate', url }).ok, `expected ${url} to be allowed`).toBe(true)
     }
   })
 
