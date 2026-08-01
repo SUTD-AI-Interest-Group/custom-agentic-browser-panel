@@ -285,6 +285,8 @@ src/background/offscreen.ts   Offscreen host: runs background research
 
 src/ui/App.tsx                Shell: top bar, routing between panels
 src/ui/Chat.tsx               Turn chain, approval cards, page-control gate, composer
+src/ui/approvalQueue.ts       Pure FIFO queue behind requestApproval (concurrent gated calls)
+src/ui/mcpAppHostRegistry.ts  Per-conversation host actions for MCP App cards
 src/ui/Markdown.tsx           Rich rendering: code, KaTeX, citations, link cards
 src/ui/regenerate.ts          Pure: what a regenerated turn is told about the one it replaced
 src/ui/library/               Tabbed library: Chats / Skills / Research
@@ -296,6 +298,11 @@ src/tools/toolDiscovery.ts    Pure catalog / search / active-set (progressive di
 src/tools/pageControl.ts      Control session, point-of-no-return rules, dispatch
 src/tools/research.ts         Research toolset (ungated, all-active)
 src/tools/browsePolicy.ts     Pure policy: what a research browse session may do
+
+src/exec/host.ts              Panel-resident sandbox singleton (sandbox-exec.html iframe)
+src/exec/engine.ts            QuickJS execution under a timeout/memory budget
+src/exec/protocol.ts          Pure message-shape validation + output budgeting (tested)
+src/exec/runtime.ts           Sandbox-side entry: runs RunCode, mounts artifact HTML
 
 src/agent/agent.ts            One turn: streamText → UI part stream; Checkpoint; repair
 src/agent/provider.ts         Config → AI SDK model (createOpenAICompatible)
