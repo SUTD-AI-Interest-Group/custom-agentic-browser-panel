@@ -3410,6 +3410,19 @@ body {
   margin: 0 0 12px;
 }
 
+.sealed-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+.sealed-chip--warn {
+  color: var(--danger);
+  white-space: normal;
+}
+
 /* ---- shared settings primitives (Section / Disclosure) ---- */
 
 .settings-section-block + .settings-section-block {

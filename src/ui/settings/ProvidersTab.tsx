@@ -3,6 +3,7 @@ import { providerKind, type ModelConfig, type ProviderConfig, type ReasoningEffo
 import { profileFor } from '../../data/providerProfiles'
 import { fetchModelList } from '../../platform/modelList'
 import { Section, Select } from './primitives'
+import { SealedChip } from './SealedChip'
 
 // Common endpoints, offered as one-click starting points, each tagged with the
 // `kind` that selects its capability profile. Anything not listed still works via
@@ -131,7 +132,8 @@ export default function ProvidersTab({
     <div className="settings-tabpane">
       <Section
         title="Providers"
-        hint="Any OpenAI-compatible endpoint. Keys stay in your browser and are sent only to that endpoint."
+        hint="Any OpenAI-compatible endpoint. Keys stay in your browser, encrypted at rest, and are sent only to that endpoint."
+        action={<SealedChip scope="providers" />}
       >
         {draft.providers.length === 0 && (
           <p className="hint">No providers yet — add one below to get started.</p>

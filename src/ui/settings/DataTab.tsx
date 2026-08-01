@@ -3,6 +3,7 @@ import { resetSettingsKeepingProviders, type Settings } from '../../data/setting
 import { clearStore, eraseAllData, storageReport } from '../../data/storage'
 import { formatBytes, type StorageReport, type StoreKey } from '../../data/usage'
 import { Section } from './primitives'
+import { SealedChip } from './SealedChip'
 
 const ROWS: Array<{ key: StoreKey; label: string }> = [
   { key: 'conversations', label: 'Conversations' },
@@ -83,6 +84,7 @@ export default function DataTab({
   return (
     <div className="settings-tabpane">
       <Section title="Data & storage">
+        <SealedChip scope="all" />
         {!report ? (
           <p className="hint">Measuring…</p>
         ) : (

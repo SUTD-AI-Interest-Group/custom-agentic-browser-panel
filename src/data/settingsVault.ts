@@ -51,6 +51,19 @@ export async function openSettings(
   return { settings: opened, hadPlaintext, hadUnavailable }
 }
 
+/** At-rest posture of a set of secret values (for the Settings status chip). */
+export type SealedState = 'sealed' | 'unsealed' | 'empty'
+
+/**
+ * Classify at-rest secret values: every non-empty value sealed → 'sealed';
+ * any non-empty plaintext → 'unsealed'; nothing stored → 'empty'.
+ */
+export function classifySealed(values: string[]): SealedState {
+  const present = values.filter((v) => v !== '')
+  if (present.length === 0) return 'empty'
+  return present.every(isSealed) ? 'sealed' : 'unsealed'
+}
+
 async function mapSecrets(settings: Settings, fn: (value: string) => Promise<string>): Promise<Settings> {
   const providers = await Promise.all(
     settings.providers.map(async (p) => ({ ...p, apiKey: await fn(p.apiKey) })),

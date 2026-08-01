@@ -1,8 +1,8 @@
 import 'fake-indexeddb/auto'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { resetVault } from './vault'
+import { resetVault, sealSecret } from './vault'
 import { isSealed } from './vaultFormat'
-import { openSettings, sealSettings, secretValues } from './settingsVault'
+import { classifySealed, openSettings, sealSettings, secretValues } from './settingsVault'
 import { defaultSettings, type Settings } from './settings'
 
 beforeEach(async () => {
@@ -93,5 +93,17 @@ describe('settingsVault', () => {
       vi.stubGlobal('indexedDB', original)
       _resetDekCacheForTests()
     }
+  })
+})
+
+describe('classifySealed', () => {
+  it('classifies all-sealed, mixed, and empty value sets', async () => {
+    const sealed = await sealSecret('sk-x')
+    expect(classifySealed([sealed, sealed])).toBe('sealed')
+    expect(classifySealed([sealed, 'sk-plain'])).toBe('unsealed')
+    expect(classifySealed(['sk-plain'])).toBe('unsealed')
+    expect(classifySealed(['', ''])).toBe('empty')
+    expect(classifySealed([])).toBe('empty')
+    expect(classifySealed([sealed, ''])).toBe('sealed')
   })
 })
