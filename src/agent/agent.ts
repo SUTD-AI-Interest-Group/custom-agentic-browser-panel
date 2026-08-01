@@ -13,6 +13,7 @@ import { z } from 'zod'
 import { resolveActiveTools } from '../tools/toolDiscovery'
 import type { ModelUsage, Trace } from './observability'
 import type { ResearchVerification } from '../data/researchTasks'
+import type { AttachmentMeta } from '../data/attachments'
 
 // UI-facing representation of one assistant turn. A turn is an ordered list
 // of parts: streamed text interleaved with tool invocations.
@@ -47,8 +48,13 @@ export interface UIMessage {
   id: string
   role: 'user' | 'assistant'
   parts: UIPart[]
-  /** Screenshot data URLs attached to a user message. */
+  /** Screenshot data URLs attached to a user message. Legacy render-only: kept
+   *  so conversations saved before the attachments store still show their
+   *  images; new messages carry `attachments` metas instead. */
   images?: string[]
+  /** Attachment chips on a user message: thumbnail metas for images, icon+name
+   *  for files. The bytes live in the capped lychee-attachments DB. */
+  attachments?: AttachmentMeta[]
   /**
    * Pages attached to the preceding user turn (auto current tab, @mentions,
    * @all) that this reply drew on. Merged with tool-read pages for the source

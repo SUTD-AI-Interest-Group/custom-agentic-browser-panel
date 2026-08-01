@@ -14,6 +14,18 @@ import { cancelRegionCapture, captureRegion, type CapturedImage } from '../platf
 import { ensureVisionCapability } from '../agent/vision'
 import { copyElementAsPng } from '../platform/domImage'
 import { getConversation, renameConversation, saveConversation, type RegenTarget } from '../data/conversations'
+import { dehydrateHistory, hydrateHistory, type AttachmentRef } from '../data/attachmentRefs'
+import { formatBytes } from '../data/usage'
+import { getAttachment } from '../data/attachments'
+import { renderPdfPageFromBytes } from '../platform/pdf'
+import {
+  assembleAttachments,
+  attachmentUiMetas,
+  dataUrlToBytes,
+  fromCapturedImage,
+  ingestFiles,
+  type ComposerAttachment,
+} from './attachments'
 import { buildRetryNote } from './regenerate'
 import { COMPOSER_ACTION_MSG, drainComposerAction, type ComposerAction } from '../platform/composerActions'
 import { clearDraft, loadDraft, saveDraft } from './drafts'
@@ -143,7 +155,7 @@ interface QueuedSteer {
  */
 interface MessageSpec {
   text: string
-  images: CapturedImage[]
+  attachments: ComposerAttachment[]
   activeMentions: TabMention[]
   useMemory: boolean
   useAll: boolean
@@ -412,6 +424,31 @@ function CameraIcon() {
   )
 }
 
+/** Glyph for a non-image attachment chip: a page outline (pdf) or code brackets (text). */
+function FileKindIcon({ kind }: { kind: 'pdf' | 'text' }) {
+  return kind === 'pdf' ? (
+    <svg className="attachment-file-icon" width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+      <path
+        d="M4 1.8h5.2L12.8 5v9.2a.9.9 0 0 1-.9.9H4a.9.9 0 0 1-.9-.9V2.7a.9.9 0 0 1 .9-.9Z"
+        stroke="currentColor"
+        strokeWidth="1.3"
+        strokeLinejoin="round"
+      />
+      <path d="M9 1.8V5h3.6" stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round" />
+    </svg>
+  ) : (
+    <svg className="attachment-file-icon" width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+      <path
+        d="M6 4.5 3 8l3 3.5M10 4.5 13 8l-3 3.5"
+        stroke="currentColor"
+        strokeWidth="1.3"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  )
+}
+
 /**
  * The tool checkboxes + "Open full permissions" footer. Shared by the wide
  * layout's tools popover and the narrow layout's "…" menu, so the two can never
@@ -532,7 +569,7 @@ export default function Chat({
   const [parkedReason, setParkedReason] = useState<string | null>(null)
   const [approval, setApproval] = useState<PendingApproval | null>(null)
   const [currentTab, setCurrentTab] = useState<CurrentTabInfo | null>(null)
-  const [attachments, setAttachments] = useState<CapturedImage[]>([])
+  const [attachments, setAttachments] = useState<ComposerAttachment[]>([])
   const [capturing, setCapturing] = useState(false)
   const [captureError, setCaptureError] = useState<string | null>(null)
   const [mentions, setMentions] = useState<TabMention[]>([])
@@ -710,17 +747,38 @@ export default function Chat({
   }, [capturing])
 
   // Restore a persisted conversation on mount. Chat is keyed by conversationId
-  // in App, so this runs once per chat and never mid-conversation.
+  // in App, so this runs once per chat and never mid-conversation. Attachment
+  // sentinels in the stored history are rehydrated here (see attachmentRefs.ts);
+  // a pruned attachment becomes an explanatory note, never a broken file part.
   useEffect(() => {
     let cancelled = false
     setRestored(false)
-    void getConversation(conversationId).then((c) => {
+    const resolveRef = async (ref: AttachmentRef): Promise<string | null> => {
+      const rec = await getAttachment(ref.id).catch(() => null)
+      if (!rec) return null
+      if (ref.page === undefined) return rec.dataUrl
+      // Rendered PDF pages are derived, not stored — re-render from the original
+      // bytes (the parse is cached across all pages of one document).
+      try {
+        return (await renderPdfPageFromBytes(dataUrlToBytes(rec.dataUrl), ref.id, ref.page)).dataUrl
+      } catch {
+        return null
+      }
+    }
+    void getConversation(conversationId).then(async (c) => {
       if (cancelled) return
       if (c) {
+        const [history, regenOpener] = await Promise.all([
+          hydrateHistory(c.history, resolveRef),
+          c.regen?.opener
+            ? hydrateHistory([c.regen.opener], resolveRef).then((m) => m[0])
+            : Promise.resolve(null),
+        ])
+        if (cancelled) return
         setMessages(c.messages)
-        historyRef.current = c.history
+        historyRef.current = history
         titledRef.current = c.title !== null
-        setRegenTarget(c.regen ?? null)
+        setRegenTarget(c.regen ? { ...c.regen, opener: regenOpener } : null)
       }
       setRestored(true)
     })
@@ -845,11 +903,18 @@ export default function Chat({
     void saveConversation({
       id: conversationId,
       messages: messages.map((m) => (m.fixingMath ? { ...m, fixingMath: false } : m)),
-      history: historyRef.current,
+      // Attachment file parts are dehydrated to `lychee-attachment:<id>` refs on
+      // the way to disk — the bytes live once in the capped attachments store.
+      history: dehydrateHistory(historyRef.current),
       // Persisted alongside the transcript so Regenerate survives a panel
       // reopen — the undo point can't be recovered from `history` alone,
       // since a failed turn pops its own user message back off it.
-      regen: regenTarget ?? undefined,
+      regen: regenTarget
+        ? {
+            ...regenTarget,
+            opener: regenTarget.opener ? dehydrateHistory([regenTarget.opener])[0] : regenTarget.opener,
+          }
+        : undefined,
     }).then(onConversationsChanged)
     // Persist is driven solely by turnSeq; messages is read fresh from the
     // render that bumped it.
@@ -1243,7 +1308,10 @@ export default function Chat({
     setCapturing(true)
     try {
       const img = await captureRegion()
-      if (img) setAttachments((a) => [...a, img])
+      if (img) {
+        const att = await fromCapturedImage(img)
+        setAttachments((a) => [...a, att])
+      }
     } catch (err) {
       setCaptureError(
         `Couldn't capture this page: ${err instanceof Error ? err.message : String(err)}`,
@@ -1498,7 +1566,7 @@ export default function Chat({
    */
   async function buildUserTurn(o: {
     text: string
-    images: CapturedImage[]
+    attachments: ComposerAttachment[]
     activeMentions: TabMention[]
     useMemory: boolean
     useAll: boolean
@@ -1511,7 +1579,7 @@ export default function Chat({
     notes: string[]
     syncedTabs: TabContent[]
   }> {
-    const { text, images, activeMentions, useMemory, useAll, includeCurrentTab, includeDeicticTab, activeSelection } = o
+    const { text, attachments: turnAttachments, activeMentions, useMemory, useAll, includeCurrentTab, includeDeicticTab, activeSelection } = o
     // Sync shared tab contents into the model-facing message: any @mentioned
     // tabs, plus the current tab when auto-attached (first message) or pulled in
     // by a deictic reference, de-duplicated by id.
@@ -1559,14 +1627,24 @@ export default function Chat({
       modelText = `${modelText}\n\n[The user invoked @memory — before answering, use the SearchMemory tool to recall relevant long-term memories (pick query terms from their message, or recall broadly if it is general) and ground your reply in what you find.]`
     }
 
+    // Attachments are routed per provider/model by the pure planner (native PDF
+    // part vs page images vs extracted text — see attachmentPlan.ts); the file
+    // parts land ahead of the text part, same as the old image path.
+    const assembled = selected
+      ? await assembleAttachments(turnAttachments, {
+          provider: selected.provider,
+          modelId: selected.modelId,
+          conversationId,
+        })
+      : { parts: [], appendText: '', notes: [], errors: [] }
+    if (assembled.appendText) modelText = `${modelText}\n\n${assembled.appendText}`
+    if (assembled.errors.length > 0) setCaptureError(assembled.errors.join(' '))
     const message: ModelMessage =
-      images.length > 0
+      assembled.parts.length > 0
         ? {
             role: 'user',
             content: [
-              // v7: `file` part with an image mediaType replaces the deprecated
-              // `{ type: 'image', image }` part (the data URL carries its own type).
-              ...images.map((i) => ({ type: 'file' as const, mediaType: 'image', data: i.dataUrl })),
+              ...assembled.parts,
               ...(modelText ? [{ type: 'text' as const, text: modelText }] : []),
             ],
           }
@@ -1580,8 +1658,7 @@ export default function Chat({
     // Journal notes for this user turn; the assistant side is appended when the
     // whole continuation chain finishes.
     const notes: string[] = []
-    if (images.length > 0)
-      notes.push(`[attached ${images.length} screenshot${images.length > 1 ? 's' : ''}]`)
+    notes.push(...assembled.notes)
     if (syncedTabs.length > 0)
       notes.push(`[synced tabs: ${syncedTabs.map((t) => t.title).join(', ')}]`)
     if (useMemory) notes.push('[asked to recall from memory]')
@@ -1597,8 +1674,7 @@ export default function Chat({
    */
   function composeSpec(): MessageSpec | null {
     const text = input.trim()
-    const images = attachments
-    if ((!text && images.length === 0) || !selected) return null
+    if ((!text && attachments.length === 0) || !selected) return null
     // Mentions only count if their token survived editing.
     const activeMentions = mentions.filter((m) => text.includes(m.token))
     // A surviving @memory token directs the agent to consult long-term memory.
@@ -1619,7 +1695,7 @@ export default function Chat({
       !sharedTabsRef.current.has(currentTabKey)
     const activeSelection =
       selection && selection.text !== dismissedSelection ? selection.text : null
-    return { text, images, activeMentions, useMemory, useAll, includeCurrentTab, includeDeicticTab, activeSelection }
+    return { text, attachments, activeMentions, useMemory, useAll, includeCurrentTab, includeDeicticTab, activeSelection }
   }
 
   /** Clear the composer and its transient popovers once a spec has been captured. */
@@ -1644,7 +1720,7 @@ export default function Chat({
    * history, and runs the chain.
    */
   async function startFreshTurn(spec: MessageSpec) {
-    const { text, images } = spec
+    const { text } = spec
     const slashMatch = text.match(/^\/([a-z0-9-]+)(?:\s|$)/)
     const invokedSkill = slashMatch ? await getSkill(slashMatch[1]) : null
     const activeSkill =
@@ -1652,7 +1728,7 @@ export default function Chat({
 
     setMessages((m) => [
       ...m,
-      { id: uid(), role: 'user', parts: [{ type: 'text', text }], images: images.map((i) => i.dataUrl) },
+      { id: uid(), role: 'user', parts: [{ type: 'text', text }], attachments: attachmentUiMetas(spec.attachments) },
     ])
     // Drop any orphaned steer that raced a just-ended chain (see the finally in
     // runTurnChain) so it can't leak into this new turn.
@@ -1694,10 +1770,10 @@ export default function Chat({
    * runTurnChain's drain splices it into history.
    */
   function injectSteer(spec: MessageSpec) {
-    const { text, images } = spec
+    const { text } = spec
     setMessages((m) => [
       ...m,
-      { id: uid(), role: 'user', parts: [{ type: 'text', text }], images: images.map((i) => i.dataUrl) },
+      { id: uid(), role: 'user', parts: [{ type: 'text', text }], attachments: attachmentUiMetas(spec.attachments) },
     ])
     const ready = buildUserTurn({ ...spec, includeCurrentTab: false }).then(
       ({ message, attachedSources, notes }): QueuedSteer => ({
@@ -1723,7 +1799,7 @@ export default function Chat({
   function mergeQueuedSpec(a: MessageSpec, b: MessageSpec): MessageSpec {
     return {
       text: [a.text, b.text].filter(Boolean).join('\n\n'),
-      images: [...a.images, ...b.images],
+      attachments: [...a.attachments, ...b.attachments],
       activeMentions: [...a.activeMentions, ...b.activeMentions],
       useMemory: a.useMemory || b.useMemory,
       useAll: a.useAll || b.useAll,
@@ -1760,7 +1836,7 @@ export default function Chat({
    * just fail.
    */
   async function handleComposerAction(action: ComposerAction) {
-    let images: CapturedImage[] = []
+    let actionAttachments: ComposerAttachment[] = []
     let text: string
     let includeCurrentTab = false
     if (action.kind === 'selection') {
@@ -1771,7 +1847,9 @@ export default function Chat({
     } else if (action.kind === 'image') {
       text = "What's in this image?"
       try {
-        images = [await fetchImageAsCapturedImage(action.srcUrl)]
+        actionAttachments = [
+          await fromCapturedImage(await fetchImageAsCapturedImage(action.srcUrl), 'Image from page'),
+        ]
       } catch {
         // Hotlink-protected or otherwise unfetchable — fall back to text only.
       }
@@ -1781,12 +1859,12 @@ export default function Chat({
     }
     if (!selected) {
       setInput((prev) => (prev ? `${prev}\n\n${text}` : text))
-      if (images.length > 0) setAttachments((a) => [...a, ...images])
+      if (actionAttachments.length > 0) setAttachments((a) => [...a, ...actionAttachments])
       return
     }
     const spec: MessageSpec = {
       text,
-      images,
+      attachments: actionAttachments,
       activeMentions: [],
       useMemory: false,
       useAll: false,
@@ -1816,7 +1894,7 @@ export default function Chat({
   function retractQueued() {
     if (!queued) return
     setInput(queued.text)
-    setAttachments(queued.images)
+    setAttachments(queued.attachments)
     setQueued(null)
   }
 
@@ -2675,7 +2753,7 @@ export default function Chat({
                 </svg>
               </span>
               <span className="steer-strip__queued" title={queued.text || 'Queued follow-up'}>
-                {queued.text || `${queued.images.length} screenshot${queued.images.length > 1 ? 's' : ''}`}
+                {queued.text || `${queued.attachments.length} attachment${queued.attachments.length > 1 ? 's' : ''}`}
               </span>
               <button
                 className="steer-strip__retract"
@@ -2699,13 +2777,31 @@ export default function Chat({
           <ResearchDock tasks={dockTasks} onOpen={openDockTask} />
           {attachments.length > 0 && (
             <div className="attachment-row">
-              {attachments.map((img) => (
-                <div className="attachment-thumb" key={img.id}>
-                  <img src={img.dataUrl} alt="Screenshot attachment" />
+              {attachments.map((att) => (
+                <div
+                  className={att.kind === 'image' ? 'attachment-thumb' : 'attachment-thumb attachment-file'}
+                  key={att.id}
+                  title={att.name}
+                >
+                  {att.kind === 'image' ? (
+                    <img src={att.thumbDataUrl} alt={att.name} />
+                  ) : (
+                    <>
+                      <FileKindIcon kind={att.kind} />
+                      <span className="attachment-file-info">
+                        <span className="attachment-file-name">{att.name}</span>
+                        <span className="attachment-file-sub">
+                          {att.kind === 'pdf'
+                            ? `${att.pageCount} page${att.pageCount === 1 ? '' : 's'}`
+                            : formatBytes(att.byteSize)}
+                        </span>
+                      </span>
+                    </>
+                  )}
                   <button
                     className="attachment-remove"
-                    title="Remove screenshot"
-                    onClick={() => setAttachments((a) => a.filter((x) => x.id !== img.id))}
+                    title="Remove attachment"
+                    onClick={() => setAttachments((a) => a.filter((x) => x.id !== att.id))}
                   >
                     <svg width="8" height="8" viewBox="0 0 8 8" fill="none">
                       <path d="M1.5 1.5l5 5M6.5 1.5l-5 5" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
