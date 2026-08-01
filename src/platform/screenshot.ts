@@ -191,6 +191,60 @@ export function planShotDelivery(
   return { kind: 'send', maxTiles: budget }
 }
 
+/** A fresh re-measurement of the live document, taken after `plan` already ran. */
+export interface LiveMeasurement {
+  /** The document's CURRENT scrollHeight (or element height for an element capture). */
+  contentHeight: number
+  /** The matching live max-scrollY for that same measurement. */
+  maxScrollY: number
+  clientHeight: number
+  maxHeight?: number
+  maxSlices?: number
+}
+
+/**
+ * Extend a stitch plan when the LIVE document has grown since `plan` was
+ * computed — an infinite-scroll/lazily-loaded page can be taller by the time
+ * a fullpage stitch finishes than the single pre-scroll scrollHeight
+ * measurement it was planned from. Adds slices for the newly-revealed
+ * region, continuing in CANVAS space from where `plan` left off (`destY`
+ * offset by `plan.height`), within the SAME maxHeight/maxSlices budget the
+ * original plan respected — so this can never make a capture run
+ * unboundedly long. When that budget is already spent, nothing more CAN be
+ * added, but the result is honestly flagged `truncated` rather than
+ * silently reporting "the full page" for one that kept growing underneath
+ * the capture.
+ */
+export function extendPlan(plan: StitchPlan, live: LiveMeasurement): StitchPlan {
+  if (live.contentHeight <= plan.height) return plan // nothing grew (or shrank — never go backwards)
+
+  const maxHeight = live.maxHeight ?? MAX_FULLPAGE_HEIGHT
+  const maxSlices = live.maxSlices ?? MAX_SLICES
+  const budgetHeight = maxHeight - plan.height
+  const budgetSlices = maxSlices - plan.slices.length
+  if (budgetHeight <= 0 || budgetSlices <= 0) return { ...plan, truncated: true }
+
+  const extra = planStitch({
+    contentTop: plan.height,
+    contentHeight: live.contentHeight - plan.height,
+    clientHeight: live.clientHeight,
+    maxScrollY: live.maxScrollY,
+    maxHeight: budgetHeight,
+    maxSlices: budgetSlices,
+  })
+  // We already know (above) live content exceeds what `plan` covered — if the
+  // extra pass could not add anything for it (a degenerate geometry, e.g.
+  // clientHeight <= 0), that known-uncaptured content makes this genuinely
+  // truncated, not silently "complete."
+  if (extra.slices.length === 0) return { ...plan, truncated: true }
+
+  return {
+    slices: [...plan.slices, ...extra.slices.map((s) => ({ ...s, destY: s.destY + plan.height }))],
+    height: plan.height + extra.height,
+    truncated: plan.truncated || extra.truncated,
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Capture (side-panel side: has DOM + canvas)
 // ---------------------------------------------------------------------------
@@ -217,6 +271,27 @@ async function throttle(): Promise<void> {
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 
+/**
+ * The ONE way anything in this extension should call chrome.tabs.captureVisibleTab.
+ *
+ * Chrome allows only ~2/sec and silently rejects past that; `lastCaptureAt`
+ * above is this module's private clock for that quota. It used to be private
+ * to this file's own `shoot()`, but `capture.ts` (the human region picker)
+ * and `marks.ts` (the set-of-marks screenshot behind `ReadPage(mode:"elements")`)
+ * each called `chrome.tabs.captureVisibleTab` directly, with no awareness of
+ * this clock or of each other — so an ordinary chain like
+ * `ReadPage(mode:"elements")` immediately followed by `GetScreenshot` could
+ * issue two calls inside Chrome's window and trip the quota. Every call site
+ * across the extension must funnel through here instead.
+ */
+export async function throttledCaptureVisibleTab(
+  windowId: number,
+  options: chrome.tabs.CaptureVisibleTabOptions = { format: 'png' },
+): Promise<string> {
+  await throttle()
+  return chrome.tabs.captureVisibleTab(windowId, options)
+}
+
 function exec<A extends unknown[], R>(tabId: number, func: (...args: A) => R, args: A) {
   return chrome.scripting
     .executeScript({ target: { tabId }, func: func as (...a: unknown[]) => unknown, args })
@@ -224,8 +299,7 @@ function exec<A extends unknown[], R>(tabId: number, func: (...args: A) => R, ar
 }
 
 async function shoot(windowId: number): Promise<HTMLImageElement> {
-  await throttle()
-  const dataUrl = await chrome.tabs.captureVisibleTab(windowId, { format: 'png' })
+  const dataUrl = await throttledCaptureVisibleTab(windowId)
   return await loadImage(dataUrl)
 }
 
@@ -251,6 +325,41 @@ function fit(canvas: HTMLCanvasElement): HTMLCanvasElement {
   return out
 }
 
+/**
+ * Per-axis clamp for a single TILE, used instead of `fit()`'s uniform scale.
+ *
+ * A tile's height is already <= maxSide BY CONSTRUCTION (`tileShot` plans
+ * tiles with `planTiles(shot.height, MAX_SIDE, …)`, so every tile height is
+ * `min(MAX_SIDE, remainder)`) — so this only ever downscales width, and only
+ * when a tile is still wider than maxSide (a HiDPI capture, or a wide
+ * viewport at any DPR). `fit()`'s uniform scale would let an oversized width
+ * drag height down with it, silently squashing the one axis tiling exists to
+ * keep full-resolution. The defensive `min(height, maxSide)` guards the case
+ * a future caller ever violates that by-construction guarantee — it must
+ * never scale proportionally with width even then.
+ */
+export function fitTileDimensions(
+  width: number,
+  height: number,
+  maxSide: number,
+): { width: number; height: number } {
+  return { width: Math.min(width, maxSide), height: Math.min(height, maxSide) }
+}
+
+/** Downscale a TILE canvas per `fitTileDimensions` — width only; height never
+ *  moves. No-op when the tile already fits both axes. */
+function fitTile(canvas: HTMLCanvasElement): HTMLCanvasElement {
+  const { width, height } = fitTileDimensions(canvas.width, canvas.height, MAX_SIDE)
+  if (width === canvas.width && height === canvas.height) return canvas
+  const out = document.createElement('canvas')
+  out.width = Math.max(1, Math.round(width))
+  out.height = Math.max(1, Math.round(height))
+  const ctx = out.getContext('2d')
+  if (!ctx) throw new ShotError('Canvas is unavailable.')
+  ctx.drawImage(canvas, 0, 0, out.width, out.height)
+  return out
+}
+
 const toShot = (canvas: HTMLCanvasElement): Shot => ({
   dataUrl: canvas.toDataURL('image/png'),
   width: canvas.width,
@@ -266,8 +375,9 @@ const toShot = (canvas: HTMLCanvasElement): Shot => ({
  * A short shot that already fits both dimensions short-circuits to the whole
  * image, so a plain viewport shot never pays for a needless canvas copy. Once a
  * crop is unavoidable (multiple bands, or a single band still too wide), each
- * resulting tile is `fit()` down only if IT is still oversized — height stays
- * full-res (that's the point), width gets capped for very wide pages.
+ * resulting tile is downscaled via `fitTile`/`fitTileDimensions` — NOT the
+ * uniform `fit()` — so height stays full-res (that's the point) even when
+ * width is still oversized and gets capped for very wide pages.
  */
 export async function tileShot(shot: Shot, maxTiles: number): Promise<{ tiles: Shot[]; dropped: number }> {
   const plan = planTiles(shot.height, MAX_SIDE, maxTiles)
@@ -283,7 +393,7 @@ export async function tileShot(shot: Shot, maxTiles: number): Promise<{ tiles: S
     const ctx = c.getContext('2d')
     if (!ctx) throw new ShotError('Canvas is unavailable.')
     ctx.drawImage(img, 0, y, shot.width, h, 0, 0, shot.width, h)
-    return toShot(fit(c))
+    return toShot(fitTile(c))
   }
 
   if (plan.tiles.length <= 1) return { tiles: [cropTile(0, shot.height)], dropped: plan.dropped }
@@ -329,7 +439,13 @@ export async function capture(
     const prep = await exec(tabId, injPrepare, [])
     if (!prep) throw new ShotError('Cannot script this page (it may be a chrome:// or Web Store page).')
     restore = async () => {
-      await exec(tabId, injRestore, [prep.scrollX, prep.scrollY, PRESENCE_ID, HIDDEN_ATTR]).catch(() => {})
+      await exec(tabId, injRestore, [
+        prep.scrollX,
+        prep.scrollY,
+        PRESENCE_ID,
+        HIDDEN_ATTR,
+        prep.scrollBehavior,
+      ]).catch(() => {})
     }
 
     if (target.kind === 'element') return await captureElement(tabId, windowId, tab, target, prep)
@@ -352,6 +468,7 @@ interface Prep {
   dpr: number
   url: string
   title: string
+  scrollBehavior: string
 }
 
 async function captureViewport(
@@ -381,7 +498,7 @@ async function captureFullPage(
   tab: chrome.tabs.Tab,
   prep: Prep,
 ): Promise<{ shot: Shot; artifact: Shot; meta: ShotMeta }> {
-  const plan = planStitch({
+  let plan = planStitch({
     contentTop: 0,
     contentHeight: prep.scrollHeight,
     clientHeight: prep.clientHeight,
@@ -389,7 +506,55 @@ async function captureFullPage(
   })
   if (plan.slices.length === 0) throw new ShotError('The page has no visible content to capture.')
 
-  const canvas = await stitch(tabId, windowId, plan, prep, null)
+  let canvas = await stitch(tabId, windowId, plan, prep, null)
+
+  // `prep.scrollHeight` is ONE measurement, taken before the first scroll. A
+  // page whose content grows AS it's scrolled (infinite-scroll feeds, lazily
+  // appended lists) can be taller by the time the stitch above finishes than
+  // it was when planned. We're already scrolled near the bottom, so
+  // re-measure now and keep extending for as long as the document keeps
+  // growing — bounded by the same maxHeight/maxSlices budget every plan
+  // already respects (extendPlan flags `truncated` once that budget runs
+  // out) — rather than silently reporting "the full page" for one that kept
+  // growing underneath the capture. A page that has stopped growing (the
+  // common case) exits this loop on its first iteration, at the cost of one
+  // extra cheap measurement.
+  const dpr = prep.dpr || 1
+  const widthCss = prep.clientWidth
+  for (let round = 0; round < MAX_SLICES; round++) {
+    const live = await exec(tabId, injMeasureScrollHeight, []).catch(() => null)
+    if (live === null) break
+
+    const extended = extendPlan(plan, {
+      contentHeight: live,
+      maxScrollY: Math.max(0, live - prep.clientHeight),
+      clientHeight: prep.clientHeight,
+    })
+    const added = extended.slices.slice(plan.slices.length)
+    plan = extended
+    if (added.length === 0) break
+
+    const neededPx = Math.max(1, Math.round(plan.height * dpr))
+    let ctx = canvas.getContext('2d')
+    if (neededPx > canvas.height) {
+      // Growing a canvas element's height clears its content, so copy the
+      // already-stitched pixels onto a taller one before drawing more.
+      const grown = document.createElement('canvas')
+      grown.width = canvas.width
+      grown.height = neededPx
+      const gctx = grown.getContext('2d')
+      if (!gctx) throw new ShotError('Canvas is unavailable.')
+      gctx.drawImage(canvas, 0, 0)
+      canvas = grown
+      ctx = gctx
+    }
+    if (!ctx) throw new ShotError('Canvas is unavailable.')
+    // Fixed elements are already hidden from the pass above and the page is
+    // already scrolled well past the top — never re-trigger that hide (which
+    // would be a no-op) and never let the header reappear.
+    await drawSlices(ctx, tabId, windowId, added, dpr, null, widthCss, -1)
+  }
+
   const meta: ShotMeta = {
     url: prep.url || tab.url || '',
     title: prep.title || tab.title || '',
@@ -461,10 +626,6 @@ async function captureElement(
 /**
  * Execute a stitch plan onto one canvas. `crop` narrows each slice horizontally
  * to an element's box; null takes the full viewport width.
- *
- * Sticky/fixed elements are hidden from the SECOND slice onward: slice 0 should
- * show the real header once, but leaving it visible thereafter stamps it into
- * every slice and the stitched page reads as a hall of mirrors.
  */
 async function stitch(
   tabId: number,
@@ -480,10 +641,35 @@ async function stitch(
   canvas.height = Math.max(1, Math.round(plan.height * dpr))
   const ctx = canvas.getContext('2d')
   if (!ctx) throw new ShotError('Canvas is unavailable.')
+  await drawSlices(ctx, tabId, windowId, plan.slices, dpr, crop, widthCss, 1)
+  return canvas
+}
 
-  for (let i = 0; i < plan.slices.length; i++) {
-    const s = plan.slices[i]
-    if (i === 1) await exec(tabId, injSetFixedHidden, [true, PRESENCE_ID, HIDDEN_ATTR]).catch(() => {})
+/**
+ * Draw each slice of a stitch plan onto an already-sized canvas context.
+ *
+ * `hideFixedAt` is the slice index at which to fire the one-time "hide
+ * position:fixed/sticky elements" pass: slice 0 should show the real header
+ * once, but leaving it visible thereafter stamps it into every slice and the
+ * stitched page reads as a hall of mirrors — so a fresh stitch passes `1`.
+ * `captureFullPage`'s infinite-scroll extension rounds already hid fixed
+ * elements in an earlier `drawSlices` call and are scrolled well past the
+ * top by now, so they pass a negative index: re-triggering the hide would be
+ * a harmless no-op, but re-showing the header partway through is not.
+ */
+async function drawSlices(
+  ctx: CanvasRenderingContext2D,
+  tabId: number,
+  windowId: number,
+  slices: StitchSlice[],
+  dpr: number,
+  crop: { left: number; width: number } | null,
+  widthCss: number,
+  hideFixedAt: number,
+): Promise<void> {
+  for (let i = 0; i < slices.length; i++) {
+    const s = slices[i]
+    if (i === hideFixedAt) await exec(tabId, injSetFixedHidden, [true, PRESENCE_ID, HIDDEN_ATTR]).catch(() => {})
     await exec(tabId, injScrollTo, [s.scrollTo])
     await sleep(SETTLE_MS)
     const img = await shoot(windowId)
@@ -499,7 +685,6 @@ async function stitch(
       Math.round(s.srcH * dpr),
     )
   }
-  return canvas
 }
 
 // ---------------------------------------------------------------------------
@@ -528,10 +713,16 @@ function injPrepare(): {
   dpr: number
   url: string
   title: string
+  scrollBehavior: string
 } {
   const doc = document.documentElement
   // Smooth scrolling races the capture: we would shoot mid-glide and stitch
-  // blurred, misaligned slices. Force instant jumps for the duration.
+  // blurred, misaligned slices. Force instant jumps for the duration, but
+  // remember whatever inline value was already there — usually none (most
+  // sites set this via a stylesheet rule, which injRestore's cleared inline
+  // style correctly falls back to), but a page that sets it INLINE on <html>
+  // must get that exact value back, not a hardcoded ''.
+  const scrollBehavior = doc.style.scrollBehavior
   doc.style.scrollBehavior = 'auto'
   return {
     scrollX: window.scrollX,
@@ -542,11 +733,23 @@ function injPrepare(): {
     dpr: window.devicePixelRatio || 1,
     url: location.href,
     title: document.title,
+    scrollBehavior,
   }
 }
 
 function injScrollTo(y: number): void {
   window.scrollTo(0, y)
+}
+
+/**
+ * Read the document's CURRENT scrollHeight — same formula as injPrepare's own
+ * measurement. Used after a fullpage stitch to detect whether the page grew
+ * WHILE being captured (an infinite-scroll/lazy-loaded feed), since the
+ * original plan was sized from a single pre-scroll reading. See extendPlan.
+ */
+function injMeasureScrollHeight(): number {
+  const doc = document.documentElement
+  return Math.max(doc.scrollHeight, document.body ? document.body.scrollHeight : 0)
 }
 
 /** Hide (or restore) every position:fixed/sticky element, skipping our overlay. */
@@ -571,13 +774,19 @@ function injSetFixedHidden(hide: boolean, presenceId: string, attr: string): voi
 }
 
 /** Undo everything the capture did to the page. */
-function injRestore(scrollX: number, scrollY: number, presenceId: string, attr: string): void {
+function injRestore(
+  scrollX: number,
+  scrollY: number,
+  presenceId: string,
+  attr: string,
+  scrollBehavior: string,
+): void {
   document.querySelectorAll<HTMLElement>('[' + attr + ']').forEach((el) => {
     el.style.visibility = el.getAttribute(attr) || ''
     el.removeAttribute(attr)
   })
   window.scrollTo(scrollX, scrollY)
-  document.documentElement.style.scrollBehavior = ''
+  document.documentElement.style.scrollBehavior = scrollBehavior
   void presenceId
 }
 

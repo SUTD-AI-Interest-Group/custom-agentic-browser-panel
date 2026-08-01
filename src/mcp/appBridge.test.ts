@@ -58,6 +58,20 @@ describe('handleAppMessage', () => {
     expect(out[0]).toEqual({ jsonrpc: '2.0', id: 2, result: { content: [{ type: 'text', text: 'ok' }] } })
   })
 
+  it('ignores the notification form (no id) of tools/call without ever calling the host', async () => {
+    const h = host()
+    const out = await handleAppMessage({ jsonrpc: '2.0', method: 'tools/call', params: { name: 'job_status' } }, h)
+    expect(out).toEqual([])
+    expect(h.callTool).not.toHaveBeenCalled()
+  })
+
+  it('rejects tools/call with a missing tool name', async () => {
+    const h = host()
+    const out = await handleAppMessage(req(2, 'tools/call', {}), h)
+    expect(h.callTool).not.toHaveBeenCalled()
+    expect(out[0]).toMatchObject({ id: 2, error: { code: -32602 } })
+  })
+
   it('envelopes a thrown/denied tool call as a JSON-RPC error', async () => {
     const h = host({ callTool: vi.fn().mockRejectedValue(new Error('The user denied this call.')) })
     const out = await handleAppMessage(req(3, 'tools/call', { name: 't' }), h)
@@ -71,6 +85,20 @@ describe('handleAppMessage', () => {
     expect(out[0]).toMatchObject({ id: 4, result: { contents: [{ uri: 'ui://x', text: '<p/>' }] } })
   })
 
+  it('ignores the notification form (no id) of resources/read without ever calling the host', async () => {
+    const h = host()
+    const out = await handleAppMessage({ jsonrpc: '2.0', method: 'resources/read', params: { uri: 'ui://x' } }, h)
+    expect(out).toEqual([])
+    expect(h.readResource).not.toHaveBeenCalled()
+  })
+
+  it('rejects resources/read with a missing uri', async () => {
+    const h = host()
+    const out = await handleAppMessage(req(4, 'resources/read', {}), h)
+    expect(h.readResource).not.toHaveBeenCalled()
+    expect(out[0]).toMatchObject({ id: 4, error: { code: -32602 } })
+  })
+
   it('handles ui/notifications/size-changed with width+height', async () => {
     const h = host()
     const out = await handleAppMessage(
@@ -79,6 +107,15 @@ describe('handleAppMessage', () => {
     )
     expect(h.onSizeChange).toHaveBeenCalledWith(400, 620)
     expect(out).toEqual([])
+  })
+
+  it('ignores ui/notifications/size-changed with a non-positive or missing height', async () => {
+    const h = host()
+    for (const params of [{ height: 0 }, { height: -5 }, { height: NaN }, { width: 400 }, {}]) {
+      const out = await handleAppMessage({ jsonrpc: '2.0', method: 'ui/notifications/size-changed', params }, h)
+      expect(out).toEqual([])
+    }
+    expect(h.onSizeChange).not.toHaveBeenCalled()
   })
 
   it('routes ui/open-link and answers', async () => {
@@ -103,6 +140,15 @@ describe('handleAppMessage', () => {
     )
     expect(h.onUserMessage).toHaveBeenCalledWith('from the app')
     expect(out[0]).toEqual({ jsonrpc: '2.0', id: 7, result: {} })
+  })
+
+  it('acknowledges ui/message without calling the host when content is missing or non-text', async () => {
+    const h = host()
+    const noContent = await handleAppMessage(req(7, 'ui/message', {}), h)
+    const nonText = await handleAppMessage(req(7, 'ui/message', { content: { type: 'image', data: 'x' } }), h)
+    expect(h.onUserMessage).not.toHaveBeenCalled()
+    expect(noContent[0]).toEqual({ jsonrpc: '2.0', id: 7, result: {} })
+    expect(nonText[0]).toEqual({ jsonrpc: '2.0', id: 7, result: {} })
   })
 
   it('grants only inline display mode', async () => {

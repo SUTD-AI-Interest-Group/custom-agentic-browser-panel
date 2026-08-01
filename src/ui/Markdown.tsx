@@ -32,6 +32,21 @@ marked.use(markedKatex({ throwOnError: false, output: 'htmlAndMathml' }))
 /** Minimum gap between re-parses while a message is streaming (see `displayText`). */
 const STREAM_PARSE_INTERVAL_MS = 100
 
+// A single reparse's own cost grows with the current message length (measured:
+// ~57ms at 7.6K chars, ~117ms at 22.8K, ~187ms at 45.6K, ~363ms at 91.2K — a
+// realistic detailed answer or research-style report can comfortably exceed
+// 20K chars). Once one reparse alone takes longer than the fixed 100ms window
+// below, the throttle can no longer keep up with its own schedule — every
+// subsequent reparse for the rest of the stream both re-triggers immediately
+// AND blocks the main thread for close to its own duration. Scaling the
+// interval by length keeps short/typical messages exactly as responsive as
+// before (the 100ms floor is unchanged) while giving a long one enough room to
+// actually finish a reparse before the next is due. ~150 chars/ms is a
+// conservative reading of the measurements above (they range 130-250).
+function streamParseIntervalMs(length: number): number {
+  return Math.max(STREAM_PARSE_INTERVAL_MS, length / 150)
+}
+
 export default function Markdown({
   text,
   streaming,
@@ -49,10 +64,10 @@ export default function Markdown({
   // DOMPurify.sanitize over the WHOLE accumulated string on every one of those
   // is O(n^2) over a long reply (codeEnhance.ts's highlight pass is guarded off
   // streaming for the same reason). `displayText` throttles what actually gets
-  // (re-)parsed to at most once per STREAM_PARSE_INTERVAL_MS while streaming;
-  // the instant streaming flips false we snap straight to the exact final
-  // `text` (bypassing the throttle) so the last render is always the full,
-  // correct parse — never a stale throttled snapshot.
+  // (re-)parsed to at most once per streamParseIntervalMs(text.length) while
+  // streaming; the instant streaming flips false we snap straight to the exact
+  // final `text` (bypassing the throttle) so the last render is always the
+  // full, correct parse — never a stale throttled snapshot.
   const [displayText, setDisplayText] = useState(text)
   const lastAppliedAtRef = useRef(0)
   const pendingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -66,8 +81,9 @@ export default function Markdown({
       setDisplayText(text)
       return
     }
+    const interval = streamParseIntervalMs(text.length)
     const elapsed = Date.now() - lastAppliedAtRef.current
-    if (elapsed >= STREAM_PARSE_INTERVAL_MS) {
+    if (elapsed >= interval) {
       lastAppliedAtRef.current = Date.now()
       setDisplayText(text)
       return
@@ -81,7 +97,7 @@ export default function Markdown({
       pendingTimerRef.current = null
       lastAppliedAtRef.current = Date.now()
       setDisplayText(text)
-    }, STREAM_PARSE_INTERVAL_MS - elapsed)
+    }, interval - elapsed)
   }, [text, streaming])
   // Belt-and-braces: clear a pending trailing update if the component unmounts
   // mid-stream (e.g. the chat is cleared) so it can't fire into a dead render.

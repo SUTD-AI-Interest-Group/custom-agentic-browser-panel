@@ -14,6 +14,7 @@
 // the next user message as an image part.
 
 import { SEMANTIC_TAG_SOURCE } from './regionIndex'
+import { throttledCaptureVisibleTab } from './screenshot'
 
 export interface CapturedImage {
   id: string
@@ -50,7 +51,9 @@ export async function captureRegion(): Promise<CapturedImage | null> {
   const region = (injection?.result ?? null) as SelectedRegion | null
   if (!region) return null
 
-  const shot = await chrome.tabs.captureVisibleTab(tab.windowId, { format: 'png' })
+  // Routed through screenshot.ts's shared throttle — this and the agent's own
+  // captures (screenshot.ts, marks.ts) all draw from Chrome's one ~2/sec quota.
+  const shot = await throttledCaptureVisibleTab(tab.windowId)
   return cropShot(shot, region)
 }
 

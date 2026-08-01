@@ -6,6 +6,8 @@ import { loadSettings, saveSettings, type Settings } from '../data/settings'
 import { getMcpManager } from '../mcp/manager'
 import type { ResearchTask } from '../data/researchTasks'
 import { relativeTime } from '../platform/time'
+import { conversationTitle } from './conversationTitle'
+import { shouldAdoptExternalSettings } from './settingsSync'
 import Chat from './Chat'
 import Library, { type LibraryTab } from './library/Library'
 import Onboarding from './Onboarding'
@@ -142,6 +144,9 @@ export default function App() {
   const tabChatsRef = useRef<TabChatMap>({})
   const statusesRef = useRef<Record<string, ChatStatus>>({})
   const conversationIdRef = useRef(conversationId)
+  // Mirrors `settings` for the cross-window sync listener below, registered
+  // once and never re-bound.
+  const settingsRef = useRef<Settings | null>(null)
   useEffect(() => {
     tabChatsRef.current = tabChats
   }, [tabChats])
@@ -151,6 +156,9 @@ export default function App() {
   useEffect(() => {
     conversationIdRef.current = conversationId
   }, [conversationId])
+  useEffect(() => {
+    settingsRef.current = settings
+  }, [settings])
 
   // What each chat is blocked on (the tool awaiting approval), for the toast.
   const detailsRef = useRef<Record<string, string | undefined>>({})
@@ -189,6 +197,38 @@ export default function App() {
     void dreamIfDue().catch(() => {})
     refreshConversations()
   }, [refreshConversations])
+
+  // Cross-window Settings sync. Chrome side panels are per-window, and each
+  // window's App loads Settings once into its own state — without this, a
+  // second open window saving a new provider (or any other field) is
+  // silently overwritten the next time this window persists any unrelated
+  // change (updateSettings is a read-modify-write of whatever this window
+  // last saw). chrome.storage.onChanged fires in the writer's own context
+  // too, so shouldAdoptExternalSettings compares serialized snapshots rather
+  // than trying to tag "did I just write this" — this window's own save
+  // reflected back through the same event resolves to identical JSON and is
+  // correctly skipped, while a genuinely different value (another window's
+  // save) is adopted.
+  //
+  // This never discards an in-progress edit: SettingsView seeds its `draft`
+  // from the `settings` prop only once, in a useState initializer, so a
+  // parent-level refresh while that dialog is open leaves whatever the user
+  // is mid-typing untouched — only the dialog's own next commit reads fresh
+  // data, and only because it goes through this same `settings` prop.
+  useEffect(() => {
+    const onChanged = (changes: { [key: string]: chrome.storage.StorageChange }, area: string) => {
+      if (area !== 'local' || !('settings' in changes)) return
+      // No local state to compare against yet — the initial load above will
+      // pick up whatever is newest once it resolves.
+      if (!settingsRef.current) return
+      const before = JSON.stringify(settingsRef.current)
+      void loadSettings().then((loaded) => {
+        if (shouldAdoptExternalSettings(before, JSON.stringify(loaded))) setSettings(loaded)
+      })
+    }
+    chrome.storage.onChanged.addListener(onChanged)
+    return () => chrome.storage.onChanged.removeListener(onChanged)
+  }, [])
 
   /**
    * Show whichever chat belongs to `tab`, minting a fresh one when the tab has
@@ -466,7 +506,7 @@ export default function App() {
   }
 
   const current = conversations.find((c) => c.id === conversationId)
-  const title = current?.title ?? 'New chat'
+  const title = conversationTitle(current?.title ?? null)
 
   return (
     <div className="app">
@@ -499,7 +539,7 @@ export default function App() {
                     className={`chat-menu-item ${c.id === conversationId ? 'active' : ''}`}
                     onClick={() => openConversation(c.id)}
                   >
-                    <span className="chat-menu-title">{c.title ?? 'New chat'}</span>
+                    <span className="chat-menu-title">{conversationTitle(c.title)}</span>
                     <span className="chat-menu-time">{relativeTime(c.updatedAt)}</span>
                   </button>
                 ))

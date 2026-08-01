@@ -135,7 +135,10 @@ export default function DataTab({
         <div className="danger-row">
           <div className="data-row-main">
             <span className="data-label">Reset settings to defaults</span>
-            <span className="data-detail">Keeps your chats, memory, skills and API keys.</span>
+            <span className="data-detail">
+              Keeps your chats, memory, skills and provider API keys. Removes MCP servers, Langfuse
+              keys, and every other preference.
+            </span>
           </div>
           <button
             className={`btn small ${armed === 'settings' ? 'danger-solid' : 'ghost'}`}

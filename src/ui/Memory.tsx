@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { runDream, type DreamOutcome } from '../agent/dream'
+import { runDream } from '../agent/dream'
 import {
   clearMemory,
   deleteMemory,
@@ -13,6 +13,8 @@ import {
   resolveDreamIntervalMs,
   type Settings,
 } from '../data/settings'
+import { relativeTime } from '../platform/time'
+import { describeOutcome } from './memoryDisplay'
 import { Select } from './settings/primitives'
 
 // Memory panel: a window into what the assistant remembers and when it last
@@ -135,7 +137,7 @@ export default function MemoryView({
 
       <div className="dream-card">
         <div className="dream-meta">
-          <span>{lastDreamAt ? `Last dreamed ${formatAgo(lastDreamAt)}` : 'Has not dreamed yet'}</span>
+          <span>{lastDreamAt ? `Last dreamed ${relativeTime(lastDreamAt)}` : 'Has not dreamed yet'}</span>
           <span>
             {pendingEpisodes > 0
               ? `${pendingEpisodes} conversation${pendingEpisodes === 1 ? '' : 's'} waiting for the next dream`
@@ -191,25 +193,4 @@ export default function MemoryView({
       ))}
     </div>
   )
-}
-
-/** One-line summary of a manual dream for the status line. */
-function describeOutcome(res: DreamOutcome): string {
-  if (res.status === 'skipped') return res.reason
-  const parts: string[] = []
-  if (res.added) parts.push(`${res.added} added`)
-  if (res.updated) parts.push(`${res.updated} updated`)
-  if (res.deleted) parts.push(`${res.deleted} forgotten`)
-  const changes = parts.length > 0 ? parts.join(', ') : 'no changes'
-  return `Dreamed over ${res.episodes} conversation${res.episodes === 1 ? '' : 's'} — ${changes}.`
-}
-
-function formatAgo(ts: number): string {
-  const mins = Math.round((Date.now() - ts) / 60_000)
-  if (mins < 1) return 'just now'
-  if (mins < 60) return `${mins} min ago`
-  const hours = Math.round(mins / 60)
-  if (hours < 24) return `${hours} hour${hours === 1 ? '' : 's'} ago`
-  const days = Math.round(hours / 24)
-  return `${days} day${days === 1 ? '' : 's'} ago`
 }

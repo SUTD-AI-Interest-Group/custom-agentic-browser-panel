@@ -28,6 +28,27 @@ export interface MappedResult {
 /** Default text budget for one result — mirrors the page-reading caps. */
 const DEFAULT_MAX_CHARS = 16_000
 
+/** Cap on how many `resource_link` entries reach the model in one result. */
+const MAX_RESOURCE_LINKS = 200
+
+/**
+ * Slice text down to at most `end` UTF-16 code units, backing the cut off by
+ * one more unit when that would split a surrogate pair (leaving a lone high
+ * surrogate right before the appended "[truncated: …]" note). Same class of
+ * bug — and same fix shape — as src/platform/pdfText.ts's safeSlice/
+ * safeSliceEnd; reimplemented locally rather than imported, since that
+ * helper is module-private there and this module is deliberately kept
+ * Chrome/pdf.js-free.
+ */
+function safeSliceEnd(text: string, end: number): string {
+  let e = end
+  if (e > 0 && e < text.length) {
+    const code = text.charCodeAt(e - 1)
+    if (code >= 0xd800 && code <= 0xdbff) e -= 1 // lone high surrogate at the cut -> drop it
+  }
+  return text.slice(0, e)
+}
+
 interface Ctx {
   server: string
   tool: string
@@ -104,6 +125,7 @@ export function mapCallResult(
   const out = { images, artifacts, notes }
   const label = `${ctx.server}.${ctx.tool}`
   const imageCaption = `Image returned by the MCP tool ${label}. This is a plain image: there are no numbered boxes on it.`
+  let unrecognizedParts = 0
 
   for (const part of result.content ?? []) {
     const p = part as Record<string, unknown>
@@ -140,6 +162,13 @@ export function mapCallResult(
         })
         break
       }
+      default: {
+        // A content-part type this SDK version doesn't model (a vendor
+        // extension, or a future MCP content kind). The tool DID return
+        // something — count it so the "no content" note below doesn't lie.
+        unrecognizedParts += 1
+        break
+      }
     }
   }
 
@@ -147,7 +176,7 @@ export function mapCallResult(
   let text = texts.join('\n\n')
   if (text.length > maxChars) {
     const note = ` [truncated: ${text.length - maxChars} more characters]`
-    text = text.slice(0, maxChars - note.length) + note
+    text = safeSliceEnd(text, maxChars - note.length) + note
     notes.push(`The text was longer than the budget and was truncated.`)
   }
 
@@ -161,13 +190,41 @@ export function mapCallResult(
   }
 
   if (result.structuredContent !== undefined && !result.isError) {
-    modelValue.structured = result.structuredContent
+    // Unbounded structuredContent (an unpaginated "list everything" tool, say)
+    // would otherwise blow straight past the text budget entirely — it rode
+    // through as a raw object with no size check at all. Budget its serialized
+    // size the same way the text above is budgeted; only degrade to a
+    // truncated string when it's actually oversized, so the common small-JSON
+    // case is untouched.
+    const serialized = JSON.stringify(result.structuredContent) ?? ''
+    if (serialized.length > maxChars) {
+      const note = ` [truncated: ${serialized.length - maxChars} more characters]`
+      modelValue.structured = safeSliceEnd(serialized, maxChars - note.length) + note
+      notes.push('The structured result was larger than the budget and was truncated to text.')
+    } else {
+      modelValue.structured = result.structuredContent
+    }
   }
   if (resourceLinks.length > 0) {
-    modelValue.resourceLinks = resourceLinks
-    notes.push('It linked resources you can read with ReadMcpResource.')
+    const overflow = resourceLinks.length - MAX_RESOURCE_LINKS
+    modelValue.resourceLinks = overflow > 0 ? resourceLinks.slice(0, MAX_RESOURCE_LINKS) : resourceLinks
+    notes.push(
+      overflow > 0
+        ? `It linked resources you can read with ReadMcpResource (showing the first ${MAX_RESOURCE_LINKS} of ${resourceLinks.length}).`
+        : 'It linked resources you can read with ReadMcpResource.',
+    )
   }
-  if (!result.isError && !text && result.structuredContent === undefined && artifacts.length === 0 && resourceLinks.length === 0) {
+  if (unrecognizedParts > 0) {
+    notes.push(`It also returned ${unrecognizedParts} part(s) of an unrecognized content type, not shown.`)
+  }
+  if (
+    !result.isError &&
+    !text &&
+    result.structuredContent === undefined &&
+    artifacts.length === 0 &&
+    resourceLinks.length === 0 &&
+    unrecognizedParts === 0
+  ) {
     notes.push('The tool returned no content.')
   }
   if (notes.length > 0) modelValue.note = notes.join(' ')
@@ -211,7 +268,7 @@ export function mapResourceResult(
   let text = texts.join('\n\n')
   if (text.length > maxChars) {
     const note = ` [truncated: ${text.length - maxChars} more characters]`
-    text = text.slice(0, maxChars - note.length) + note
+    text = safeSliceEnd(text, maxChars - note.length) + note
     notes.push('The text was longer than the budget and was truncated.')
   }
   if (text) modelValue.text = text

@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
+import { Fragment, memo, useEffect, useMemo, useRef, useState } from 'react'
 import type { ModelMessage } from 'ai'
 import { generateText } from 'ai'
 import Markdown from './Markdown'
@@ -8,7 +8,7 @@ import JsonTree from './JsonTree'
 import { splitBlocks } from './blocks'
 import { citationsToPlain } from './citations'
 import { runAgentTurn, type Checkpoint, type MessageSource, type QueuedImage, type UIMessage, type UIPart } from '../agent/agent'
-import { validateMath } from './mathValidate'
+import { hasUncompilableMath } from './mathRepairFilter'
 import { repairMessageText, type Complete } from '../agent/mathRepair'
 import { cancelRegionCapture, captureRegion, type CapturedImage } from '../platform/capture'
 import { ensureVisionCapability } from '../agent/vision'
@@ -29,6 +29,10 @@ import {
 import { buildRetryNote } from './regenerate'
 import { COMPOSER_ACTION_MSG, drainComposerAction, type ComposerAction } from '../platform/composerActions'
 import { clearDraft, loadDraft, saveDraft } from './drafts'
+import { createAttachReservation } from './attachReservation'
+import { recallableUserTexts, shouldIgnoreComposerKeydown } from './composerKeys'
+import { shouldAttemptNaming } from './chatNaming'
+import { buildSteerFallback, freshTurnGatherErrorText } from './steerFallback'
 import { getShot, getShotThumb, type ShotThumb, type StoredShot } from '../data/screenshots'
 import { downloadImage } from '../platform/download'
 import { appendToEpisode, getMemoryContext } from '../data/memory'
@@ -60,6 +64,7 @@ import McpContentCard from './McpContentCard'
 import McpAppCard, { registerMcpAppHostActions, type McpAppRef } from './McpAppCard'
 import { ArtifactCard } from './ArtifactCard'
 import { ApprovalQueue } from './approvalQueue'
+import { shouldTearDownPageControl, type ChainExitReason } from './chainLifecycle'
 import { type ControlSession } from '../tools/pageControl'
 import { clearIndex } from '../platform/domIndex'
 import { unmountPresence, unmountAllPresence } from '../platform/presence'
@@ -659,6 +664,28 @@ export default function Chat({
 
   const historyRef = useRef<ModelMessage[]>([])
   const messagesRef = useRef<UIMessage[]>([])
+  // Mirrors the current render's `settings` prop, synced by the effect below.
+  // requestApproval and runTurnChain's per-cycle tool-policy/MCP-toolset
+  // construction read THIS instead of the plain `settings` closure: a
+  // continuation chain is one long-lived async call (possibly many cycles
+  // over many minutes — see runTurnChain's own doc comment), and its own
+  // closure over `settings` freezes at whatever it was when the chain
+  // started, even though Chat itself re-renders with a fresh `settings` prop
+  // on every settings change (App keeps a working chat's Chat mounted while
+  // Settings is open on top). Without this, a user tightening an MCP tool's
+  // policy to stop a misbehaving tool mid-chain had zero effect until the
+  // whole chain finished — contradicting the Permissions/MCP tabs' own
+  // "commits instantly" promise.
+  const settingsRef = useRef(settings)
+  useEffect(() => {
+    settingsRef.current = settings
+  }, [settings])
+  // Attachments from batches still being ingested (accepted, not yet
+  // committed via setAttachments) — see addFiles/attachReservation.ts.
+  const attachReservationRef = useRef(createAttachReservation())
+  // A generateChatTitle call fired by the naming effect below hasn't resolved
+  // yet — see chatNaming.ts's shouldAttemptNaming.
+  const namingInFlightRef = useRef(false)
   // One episode per conversation: the raw journal that nightly "dreaming"
   // later distills into long-term memories. Sharing the conversation id keeps
   // the journal aligned with the chat it came from.
@@ -711,19 +738,14 @@ export default function Chat({
 
   const selected = getSelectedProvider(settings)
 
-  // This conversation's previous user messages, newest first — the source
-  // list for ArrowUp/ArrowDown composer history recall (3b, see the
-  // textarea's onKeyDown). Read straight from the transcript already in
-  // state; no separate storage.
-  const recallableUserTexts = useMemo(() => {
-    const texts: string[] = []
-    for (let i = messages.length - 1; i >= 0; i--) {
-      if (messages[i].role !== 'user') continue
-      const t = messages[i].parts.map((p) => (p.type === 'text' ? p.text : '')).join('')
-      if (t) texts.push(t)
-    }
-    return texts
-  }, [messages])
+  // This conversation's previous user messages, newest first — the source list
+  // for ArrowUp/ArrowDown composer history recall (3b, see the textarea's
+  // onKeyDown), which calls the imported recallableUserTexts(messages) lazily
+  // — only when the user actually presses an arrow key — rather than as a
+  // reactive useMemo keyed on `messages`. `messages` gets a new array identity
+  // on every streamed token (setMessages always returns a fresh array), so a
+  // useMemo here recomputed a full backward transcript scan on every token even
+  // though the result is read only on ArrowUp/ArrowDown.
 
   // Focus the composer as soon as the chat is ready — on panel open and on every
   // new/switched chat (Chat is keyed by conversationId, so it remounts each time),
@@ -969,7 +991,16 @@ export default function Chat({
   // left the chat reading "New chat" forever. Failure must be transient, not
   // terminal. Untouched if the turn produced no user text to name it from.
   useEffect(() => {
-    if (turnSeq === 0 || titledRef.current || titleTriesRef.current >= MAX_TITLE_TRIES) return
+    if (
+      !shouldAttemptNaming({
+        turnSeq,
+        titled: titledRef.current,
+        inFlight: namingInFlightRef.current,
+        tries: titleTriesRef.current,
+        maxTries: MAX_TITLE_TRIES,
+      })
+    )
+      return
     // The earliest user message we can actually name the chat from — not simply
     // the first one, which may be a bare screenshot with no text to name it by.
     const text = messages
@@ -984,6 +1015,13 @@ export default function Chat({
     const namer = getTitleProvider(settings)
     if (!text || !namer) return
     titleTriesRef.current += 1
+    // Guards against a slow namer (queued behind a busy local model) racing a
+    // fast follow-up turn's own naming attempt — without this, two
+    // generateChatTitle calls could be outstanding at once, both deriving the
+    // title from the same earliest message, with whichever resolved LAST
+    // winning non-deterministically and silently overwriting an
+    // already-set title.
+    namingInFlightRef.current = true
     void generateChatTitle(createModel(namer.provider, namer.modelId), text, conversationId)
       .then((title) => {
         if (!title) return
@@ -991,6 +1029,9 @@ export default function Chat({
         return renameConversation(conversationId, title).then(onConversationsChanged)
       })
       .catch(() => {})
+      .finally(() => {
+        namingInFlightRef.current = false
+      })
     // Driven solely by turnSeq, like the persist above.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [turnSeq])
@@ -1264,7 +1305,7 @@ export default function Chat({
     // the safety backstop: they always show a card, ignoring every auto-approve
     // path — including an "Always" policy — so they confirm every single time.
     if (!request.once) {
-      if (toolPolicy(settings, request.toolName) === 'always') return Promise.resolve(true)
+      if (toolPolicy(settingsRef.current, request.toolName) === 'always') return Promise.resolve(true)
       if (sessionAllowed.current.has(request.toolName)) return Promise.resolve(true)
       if (turnAllowed.current.has(request.toolName)) return Promise.resolve(true)
     }
@@ -1378,11 +1419,18 @@ export default function Chat({
     if (files.length === 0) return
     setCaptureError(null)
     setCapturing(true)
+    // Reserve this batch's files immediately (before the await below) so a
+    // second, overlapping addFiles call — a paste landing while an earlier
+    // drop's files are still being parsed — sees them as already spoken for,
+    // rather than reading the same pre-update `attachments.length` snapshot
+    // and jointly exceeding MAX_ATTACHMENTS (see attachReservation.ts).
+    const existingCount = attachReservationRef.current.reserve(attachments.length, files.length)
     try {
-      const { attachments: added, errors } = await ingestFiles(files, attachments.length)
+      const { attachments: added, errors } = await ingestFiles(files, existingCount)
       if (added.length > 0) setAttachments((a) => [...a, ...added])
       if (errors.length > 0) setCaptureError(errors.join(' '))
     } finally {
+      attachReservationRef.current.release(files.length)
       setCapturing(false)
     }
   }
@@ -1703,9 +1751,20 @@ export default function Chat({
       tabIds.push(currentTab.tabId)
     let allTabsOmitted = 0
     if (useAll) {
-      const open = await listOpenTabs()
-      allTabsOmitted = Math.max(0, open.length - MAX_ALL_TABS)
-      for (const t of open.slice(0, MAX_ALL_TABS)) if (!tabIds.includes(t.tabId)) tabIds.push(t.tabId)
+      // Unlike its neighbors below (readTabContent/assembleAttachments are
+      // both self-guarding), listOpenTabs has no internal try/catch —
+      // chrome.tabs.query can reject (extension context invalidated mid-
+      // reload, a transient Chrome error). Without this guard a rejection
+      // here propagated out of buildUserTurn: for a steer, out of
+      // injectSteer's pushed promise (see its own .catch() below); for a
+      // fresh turn, out of startFreshTurn's own await (see its try/catch) —
+      // either way, @all degrading to "no extra tabs" is far better than
+      // losing the whole steer/turn over a context-gathering failure.
+      try {
+        const open = await listOpenTabs()
+        allTabsOmitted = Math.max(0, open.length - MAX_ALL_TABS)
+        for (const t of open.slice(0, MAX_ALL_TABS)) if (!tabIds.includes(t.tabId)) tabIds.push(t.tabId)
+      } catch {}
     }
 
     let modelText = text
@@ -1852,7 +1911,21 @@ export default function Chat({
     // finally — unlike the presence overlay, highlights must OUTLIVE their turn
     // so the user can read what was marked (see src/platform/highlight.ts).
     void clearAllHighlights()
-    const { message, attachedSources, notes } = await buildUserTurn(spec)
+    let built: Awaited<ReturnType<typeof buildUserTurn>>
+    try {
+      built = await buildUserTurn(spec)
+    } catch (err) {
+      // The user's own bubble is already showing (pushed above, before this
+      // await) — without this catch, a rejection here strands it with no
+      // reply and no visible error, only a console-level unhandled rejection
+      // (startFreshTurn is always invoked fire-and-forget via `void`).
+      setMessages((m) => [
+        ...m,
+        { id: uid(), role: 'assistant', parts: [{ type: 'text', text: freshTurnGatherErrorText(err) }] },
+      ])
+      return
+    }
+    const { message, attachedSources, notes } = built
     // Captured before the push: regenerating rewinds to here and replays
     // `message` itself, which a failed chain will have popped back off.
     const historyLen = historyRef.current.length
@@ -1889,14 +1962,22 @@ export default function Chat({
       ...m,
       { id: uid(), role: 'user', parts: [{ type: 'text', text }], attachments: attachmentUiMetas(spec.attachments) },
     ])
-    const ready = buildUserTurn({ ...spec, includeCurrentTab: false }).then(
-      ({ message, attachedSources, notes }): QueuedSteer => ({
-        message,
-        sources: attachedSources,
-        journal: [text, ...notes, '[steered mid-task]'].filter(Boolean).join('\n'),
-        useMemory: spec.useMemory,
-      }),
-    )
+    const ready = buildUserTurn({ ...spec, includeCurrentTab: false })
+      .then(
+        ({ message, attachedSources, notes }): QueuedSteer => ({
+          message,
+          sources: attachedSources,
+          journal: [text, ...notes, '[steered mid-task]'].filter(Boolean).join('\n'),
+          useMemory: spec.useMemory,
+        }),
+      )
+      // buildUserTurn can reject outright (see its own hardening above); the
+      // drain below does `Promise.all(steerQueueRef.current.splice(0))`, which
+      // has no partial-success mode — one rejecting steer would otherwise
+      // abort the WHOLE chain as a generic error and lose any other, healthy
+      // steer batched in the same drain. Falling back to the plain text is far
+      // better than that.
+      .catch(() => buildSteerFallback(text, spec.useMemory))
     steerQueueRef.current.push(ready)
   }
 
@@ -2043,6 +2124,15 @@ export default function Chat({
     const controller = new AbortController()
     abortRef.current = controller
     setStreaming(true)
+    // A fresh chain always starts unparked, even if the LAST chain (regenerated
+    // over, or simply superseded by continueTask/resumeFromPark) ended parked.
+    // Centralized here — rather than left to each of the four chain-starting
+    // callers to remember — so a stale reason can never survive into a new
+    // chain: left set, it would show a stale "Paused" banner over a chain that
+    // is actually running, and would later re-arm the tab-focus effect into
+    // firing an unprompted resumeFromPark once the user refocused the
+    // long-forgotten bound tab.
+    setParkedReason(null)
     setTurnStartedAt(ctx.startedAt)
     // Observability: one Langfuse trace per continuation chain, grouped into the
     // conversation's session. Each cycle's model steps become generations and its
@@ -2152,6 +2242,10 @@ export default function Chat({
     // reply and must be popped — unlike `pushedAny`, this resets every successful
     // cycle so it always reflects only the current at-risk tail.
     let pendingSinceCycle = 0
+    // Why this chain is ending — read by the finally below to decide whether the
+    // page-control session/overlay survive (see shouldTearDownPageControl).
+    // Defaults to 'completed'; overwritten on every other exit path.
+    let exitReason: ChainExitReason = 'completed'
 
     try {
       while (true) {
@@ -2160,10 +2254,12 @@ export default function Chat({
         // MCP server tools join the ToolSet through createAgentTools's
         // extraTools (NOT spread in here) so the disclosure catalog sees them.
         // Rebuilt each cycle: a server that connected mid-chain contributes on
-        // the next cycle.
+        // the next cycle. Reads settingsRef.current (not the chain's own
+        // closed-over `settings`) so a mid-chain MCP policy edit takes effect
+        // on the very next cycle, not just the next chain.
         const mcpTools = buildMcpTools({
           manager: getMcpManager(),
-          settings,
+          settings: settingsRef.current,
           requestApproval,
           imageQueue,
           conversationId,
@@ -2181,7 +2277,7 @@ export default function Chat({
             model,
             visionCapable,
             imageQueue,
-            (name) => toolPolicy(settings, name),
+            (name) => toolPolicy(settingsRef.current, name),
             conversationId,
             activeNames,
             trace,
@@ -2271,9 +2367,12 @@ export default function Chat({
         // elsewhere. Checked BEFORE the auto-continue branch — continuing now
         // would walk straight back into the same impossible capture and burn the
         // quota doing it. The chain ends here; returning to the tab resumes it
-        // (see the resume effect), which is why nothing is torn down.
+        // (see the resume effect) — which is why the page-control session and its
+        // overlay, unlike everything else in the finally below, must NOT be torn
+        // down for this exit reason (see shouldTearDownPageControl).
         if (result.stop.reason === 'parked') {
           setParkedReason(parked)
+          exitReason = 'parked'
           break
         }
 
@@ -2282,6 +2381,7 @@ export default function Chat({
         // ceiling, then hand off to the user via the Continue card.
         if (autoContinuesRef.current >= MAX_AUTO_CONTINUES) {
           setContinuation({ checkpoint: result.stop.checkpoint ?? null })
+          exitReason = result.stop.reason
           break
         }
         autoContinuesRef.current += 1
@@ -2317,8 +2417,10 @@ export default function Chat({
       if (!pushedAny && ctx.droppableTail) historyRef.current.pop()
       for (let i = 0; i < pendingSinceCycle; i++) historyRef.current.pop()
       if (controller.signal.aborted) {
+        exitReason = 'aborted'
         trace?.end({ metadata: { aborted: true } })
       } else {
+        exitReason = 'error'
         const message = err instanceof Error ? err.message : String(err)
         setMessages((m) =>
           m.map((msg) =>
@@ -2339,13 +2441,28 @@ export default function Chat({
       // Discard any steers still queued at chain end (drained on success, dropped
       // on abort/error — the chain is over, so they have nothing to steer).
       steerQueueRef.current = []
-      pageControl.endSession()
-      // Tear down ambient presence on any tab the chain touched (navigate/inspect
-      // mount the frame outside a session, so endSession alone won't clear them).
-      // Passage highlights (highlight.ts) are deliberately NOT cleared here —
-      // they outlive the turn so the user can read what was marked; the next
-      // fresh turn sweeps them (see startFreshTurn).
-      void unmountAllPresence()
+      // Page-control session + on-page presence overlay: torn down for every
+      // exit EXCEPT 'parked' (see shouldTearDownPageControl) — a park must
+      // survive so returning to the tab resumes mid-plan instead of re-asking
+      // for control. Everything else in this finally runs unconditionally.
+      if (shouldTearDownPageControl(exitReason)) {
+        pageControl.endSession()
+        // Tear down ambient presence on any tab the chain touched (navigate/
+        // inspect mount the frame outside a session, so endSession alone won't
+        // clear them). Passage highlights (highlight.ts) are deliberately NOT
+        // cleared here — they outlive the turn so the user can read what was
+        // marked; the next fresh turn sweeps them (see startFreshTurn).
+        //
+        // unmountAllPresence is a module-global sweep (src/platform/presence.ts)
+        // that clears EVERY tab any chat has ever mounted, not just this chain's
+        // — a different, still-actively-controlled conversation's overlay can
+        // flicker off when this one finishes. Self-healing (ControlPage
+        // re-mounts + re-tints unconditionally at the top of its own execute),
+        // so left as a known, documented trade-off rather than scoped per-chain
+        // here (that would mean threading which tabs THIS session touched
+        // through presence.ts/pageControl.ts, both owned outside this file).
+        void unmountAllPresence()
+      }
       abortRef.current = null
       setStreaming(false)
       setTurnStartedAt(null)
@@ -2375,7 +2492,7 @@ export default function Chat({
       // prose splits the reply, and merged auto-continues append more — so repair
       // every text part with uncompilable math, not just the first.
       const targets = msg.parts.flatMap((p, i) =>
-        p.type === 'text' && validateMath(p.text).invalid.length > 0 ? [{ i, text: p.text }] : [],
+        p.type === 'text' && hasUncompilableMath(p.text) ? [{ i, text: p.text }] : [],
       )
       if (targets.length === 0) continue
       changed = true
@@ -2964,6 +3081,11 @@ export default function Chat({
               e.target.style.height = `${Math.min(e.target.scrollHeight, 160)}px`
             }}
             onKeyDown={(e) => {
+              // Confirming an IME composition (kanji/hanja/hangul candidate)
+              // with Enter, or navigating its candidate list with Arrow keys,
+              // must not fall through to submit/history-recall/popover-nav
+              // below — checked first so it uniformly guards all of them.
+              if (shouldIgnoreComposerKeydown(e.nativeEvent)) return
               if (slashQuery && slashCandidates.length > 0) {
                 if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
                   e.preventDefault()
@@ -3022,9 +3144,14 @@ export default function Chat({
                   el.setSelectionRange(len, len)
                 })
               }
+              // Computed lazily (only reached on an actual ArrowUp/ArrowDown
+              // press with no popover open) rather than reactively — see
+              // recallableUserTexts's own doc comment for why this must not
+              // be a useMemo keyed on `messages`.
+              const recallTexts = () => recallableUserTexts(messages)
               const recallAt = (index: number) => {
                 recallIndexRef.current = index
-                setInput(recallableUserTexts[index])
+                setInput(recallTexts()[index])
                 syncAfterRecall()
               }
               const restoreLiveDraft = () => {
@@ -3033,16 +3160,14 @@ export default function Chat({
                 syncAfterRecall()
               }
               const caret = e.currentTarget.selectionStart ?? 0
-              if (
-                e.key === 'ArrowUp' &&
-                noPopover &&
-                (input === '' || caret === 0) &&
-                recallableUserTexts.length > 0
-              ) {
-                e.preventDefault()
-                if (recallIndexRef.current === -1) preRecallDraftRef.current = input
-                recallAt(Math.min(recallIndexRef.current + 1, recallableUserTexts.length - 1))
-                return
+              if (e.key === 'ArrowUp' && noPopover && (input === '' || caret === 0)) {
+                const texts = recallTexts()
+                if (texts.length > 0) {
+                  e.preventDefault()
+                  if (recallIndexRef.current === -1) preRecallDraftRef.current = input
+                  recallAt(Math.min(recallIndexRef.current + 1, texts.length - 1))
+                  return
+                }
               }
               if (e.key === 'ArrowDown' && noPopover && recallIndexRef.current !== -1) {
                 e.preventDefault()
@@ -3406,7 +3531,20 @@ function shotIdOf(part: UIPart): string | undefined {
   return typeof out?.shotId === 'string' ? out.shotId : undefined
 }
 
-function MessageView({
+// Memoized: without this, every streamed token re-renders EVERY message in the
+// conversation (setMessages always produces a new `messages` array — required
+// by React — which re-invokes MessageView for all messages, not just the one
+// being patched). React.memo's default shallow-prop comparison is sufficient
+// here because every setMessages call site in this file preserves object
+// identity for any message it isn't touching (`m.map((msg) => msg.id === id ?
+// {...} : msg)` returns the SAME `msg` reference for every other message, and
+// the two call sites that append return `[...prev, ...add]` — verified across
+// every setMessages call site in this file). The other props: `streaming` is
+// stably `false` for every non-last message regardless of the chat's own
+// streaming state, `turnStartedAt` only changes twice per turn (start/end),
+// and `conversationId` is stable for a mounted Chat — none of them defeat
+// memoization for the (many) messages that aren't the one currently streaming.
+const MessageView = memo(function MessageView({
   message,
   streaming,
   turnStartedAt,
@@ -3555,7 +3693,7 @@ function MessageView({
       )}
     </div>
   )
-}
+})
 
 // Renders one assistant text part as ordered blocks: image runs → carousel,
 // standalone links → cards, standalone JSON → collapsible tree, else markdown.

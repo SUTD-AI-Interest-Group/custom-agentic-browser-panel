@@ -25,8 +25,22 @@ export interface MathValidation {
 // treated as math), then display `$$…$$` before inline `$…$`. The opening
 // delimiters use a (?<!\\) lookbehind so a literal `\$` is never opened as math.
 // Mirrors the code-awareness of mathDelimiters.ts.
+//
+// The closing `(?=[\s?!.,:？！。，：]|$)` lookahead mirrors marked-katex-
+// extension's own inline rule exactly (node_modules/marked-katex-extension/
+// src/index.js's inlineRule): it only ever tokenizes a $…$ pairing as math
+// when the character right after the closing $ is whitespace, sentence
+// punctuation, or end-of-string. Without this, ordinary prose containing two
+// `$` amounts/references — e.g. "It costs $50 ... with a $75 upgrade" — gets
+// its first two `$` paired off by SCAN even though marked-katex-extension
+// itself would never touch that pairing (a digit immediately follows the
+// closing $), so a plain sentence gets neutralized into broken-looking code
+// (and, via repairAssistantMath, can trigger a spurious LLM "fix" of text that
+// was never math at all). Matching the renderer's own lookahead means
+// validateMath only ever calls something "invalid" if marked-katex-extension
+// would actually have attempted to render it as math in the first place.
 const SCAN =
-  /```[\s\S]*?```|~~~[\s\S]*?~~~|```[\s\S]*$|~~~[\s\S]*$|(`+)[\s\S]*?\1|(?<!\\)\$\$([\s\S]+?)\$\$|(?<!\\)\$((?:\\\$|[^$])+?)\$/g
+  /```[\s\S]*?```|~~~[\s\S]*?~~~|```[\s\S]*$|~~~[\s\S]*$|(`+)[\s\S]*?\1|(?<!\\)\$\$([\s\S]+?)\$\$(?=[\s?!.,:？！。，：]|$)|(?<!\\)\$((?:\\\$|[^$])+?)\$(?=[\s?!.,:？！。，：]|$)/g
 
 function compiles(tex: string, display: boolean): boolean {
   try {

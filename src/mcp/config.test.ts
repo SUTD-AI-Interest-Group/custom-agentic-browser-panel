@@ -144,6 +144,34 @@ describe('mcpToolPolicy', () => {
     expect(mcpToolPolicy(mcp, 'unknown', 'x')).toBe('ask')
     expect(mcpToolPolicy(undefined, 'a', 'x')).toBe('ask')
   })
+
+  // Exhaustive matrix: per-tool override x server default x absent, in every
+  // direction (a permissive override over a strict default and vice versa),
+  // plus the "no policy entry at all" and "empty policy entry" edge cases.
+  it('a permissive tool override wins over a stricter server default', () => {
+    const p: McpSettings = { servers: { a: http }, policies: { a: { default: 'never', tools: { safe: 'always' } } } }
+    expect(mcpToolPolicy(p, 'a', 'safe')).toBe('always')
+  })
+
+  it('a "never" server default applies to every tool without its own override', () => {
+    const p: McpSettings = { servers: { a: http }, policies: { a: { default: 'never' } } }
+    expect(mcpToolPolicy(p, 'a', 'anything')).toBe('never')
+  })
+
+  it('an explicit "ask" tool override is honored over a more permissive default', () => {
+    const p: McpSettings = { servers: { a: http }, policies: { a: { default: 'always', tools: { x: 'ask' } } } }
+    expect(mcpToolPolicy(p, 'a', 'x')).toBe('ask')
+  })
+
+  it('falls back to ask when the server has no policy entry at all', () => {
+    const p: McpSettings = { servers: { a: http, b: http }, policies: { a: { default: 'always' } } }
+    expect(mcpToolPolicy(p, 'b', 'x')).toBe('ask')
+  })
+
+  it('falls back to ask when the server policy entry is present but empty', () => {
+    const p: McpSettings = { servers: { a: http }, policies: { a: {} } }
+    expect(mcpToolPolicy(p, 'a', 'x')).toBe('ask')
+  })
 })
 
 describe('mcpToolName', () => {
@@ -181,5 +209,22 @@ describe('mcpToolName', () => {
     const b = mcpToolName('s'.repeat(40), 't'.repeat(40), taken)
     expect(b).not.toBe(a)
     expect(b.length).toBeLessThanOrEqual(64)
+  })
+
+  it('dedupes two different server/tool pairs that sanitize to the same base string', () => {
+    // 'my_server' and 'my.server' both sanitize to 'my_server' — the existing
+    // dedupe tests above only ever reuse the identical pair twice, so this is
+    // the one real-world collision shape (two distinct servers/tools whose
+    // names differ only in provider-unsafe characters) that was untested.
+    const taken = new Set<string>()
+    const a = mcpToolName('my_server', 'x', taken)
+    taken.add(a)
+    const b = mcpToolName('my.server', 'x', taken)
+    expect(a).toBe('mcp_my_server_x')
+    expect(b).not.toBe(a)
+    taken.add(b)
+    const c = mcpToolName('my server', 'x', taken)
+    expect(c).not.toBe(a)
+    expect(c).not.toBe(b)
   })
 })

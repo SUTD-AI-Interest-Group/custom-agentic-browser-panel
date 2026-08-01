@@ -12,6 +12,7 @@ import {
 } from '../../mcp/config'
 import { hasStoredAuth } from '../../mcp/auth'
 import { getMcpManager } from '../../mcp/manager'
+import { pruneOrphanedSidecars } from './mcpSidecar'
 
 /**
  * General-tab section for MCP servers: the server list (status, enable,
@@ -52,8 +53,12 @@ export default function McpSection({
 
   const patch = (next: McpSettings) => commit({ ...draft, mcp: next })
 
+  // Used by the JSON editor's Save (outright replace) and its import/merge —
+  // a server name renamed or removed there must not leave its enabled flag /
+  // tool policies behind forever (mirrors removeServer's explicit cleanup
+  // below for the one-row remove button).
   function setServers(servers: Record<string, McpServerEntry>) {
-    patch({ ...mcp, servers })
+    patch(pruneOrphanedSidecars(mcp, servers))
   }
 
   function removeServer(name: string) {
@@ -258,7 +263,11 @@ function AddServerForm({
         Headers (optional JSON, e.g. an API key)
         <input
           value={headers}
-          placeholder='{ "Authorization": "Bearer sk-…" }'
+          // Deliberately not a realistic-looking secret prefix (e.g. "sk-…") —
+          // unlike every other secret field in Settings, this one is plain
+          // text (a JSON object can't usefully be masked), so the placeholder
+          // shouldn't invite pasting something that reads like a real token.
+          placeholder='{ "Authorization": "Bearer <token>" }'
           onChange={(e) => setHeaders(e.target.value)}
         />
       </label>
