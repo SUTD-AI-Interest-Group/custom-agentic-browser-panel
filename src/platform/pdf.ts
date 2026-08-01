@@ -187,6 +187,16 @@ function filenameOf(url: string): string {
 
 async function doLoad(url: string, credentials: RequestCredentials, signal?: AbortSignal): Promise<CacheEntry> {
   const { bytes, finalUrl } = await fetchPdfBytes(url, credentials, signal)
+  return parsePdfBytes(bytes, finalUrl, filenameOf(finalUrl))
+}
+
+// Parse + extract, source-agnostic: doLoad hands over fetched bytes, the
+// attachment path (getBytesEntry) hands over a dropped file's bytes.
+async function parsePdfBytes(
+  bytes: Uint8Array,
+  sourceUrl: string,
+  titleFallback: string,
+): Promise<CacheEntry> {
   const pdfjs = await getPdfjs()
   const task = pdfjs.getDocument({ data: bytes })
   let doc: PDFDocumentProxy
@@ -221,8 +231,8 @@ async function doLoad(url: string, credentials: RequestCredentials, signal?: Abo
     }
     const loaded: LoadedPdf = {
       info: {
-        url: finalUrl,
-        title: (typeof metaInfo.Title === 'string' && metaInfo.Title.trim()) || filenameOf(finalUrl),
+        url: sourceUrl,
+        title: (typeof metaInfo.Title === 'string' && metaInfo.Title.trim()) || titleFallback,
         author: typeof metaInfo.Author === 'string' ? metaInfo.Author : '',
         pageCount: doc.numPages,
         extractedPages: extractCount,
@@ -275,6 +285,42 @@ export async function loadPdf(
   return (await getEntry(url, opts)).loaded
 }
 
+/**
+ * Byte-source variant of getEntry, for PDFs that have no URL (a user-dropped
+ * file). Cached under `bytes:<key>` in the same LRU, so the 20 sequential page
+ * renders of one attached document parse it once. `key` is the attachment id.
+ */
+async function getBytesEntry(bytes: Uint8Array, key: string, titleFallback?: string): Promise<CacheEntry> {
+  const cacheKey = `bytes:${key}`
+  const hit = cache.get(cacheKey)
+  if (hit) {
+    // Refresh recency (Map order is the LRU order).
+    cache.delete(cacheKey)
+    cache.set(cacheKey, hit)
+    return hit
+  }
+  if (bytes.byteLength > MAX_PDF_BYTES) throw new PdfError('This PDF is larger than the 50 MB limit.')
+  if (!sniffPdf(bytes)) throw new PdfError('This file is not a PDF (no %PDF header found).')
+  const pending = parsePdfBytes(bytes, `attachment:${key}`, titleFallback ?? key)
+  cache.set(cacheKey, pending)
+  pending.catch(() => cache.delete(cacheKey))
+  for (const [k, v] of cache) {
+    if (cache.size <= CACHE_MAX) break
+    cache.delete(k)
+    v.then((e) => e.task.destroy().catch(() => {})).catch(() => {})
+  }
+  return pending
+}
+
+/** loadPdf for raw bytes (a dropped file). Same caching, errors, and shape. */
+export async function loadPdfFromBytes(
+  bytes: Uint8Array,
+  key: string,
+  titleFallback?: string,
+): Promise<LoadedPdf> {
+  return (await getBytesEntry(bytes, key, titleFallback)).loaded
+}
+
 // Long edge of a rendered page in device pixels — legible for the model without
 // burning tokens; matches the screenshot pipeline's ballpark.
 const RENDER_LONG_EDGE = 1400
@@ -306,6 +352,26 @@ export async function renderPdfPage(
   opts?: { credentials?: RequestCredentials; signal?: AbortSignal },
 ): Promise<{ dataUrl: string; width: number; height: number; pageCount: number; title: string }> {
   const { doc, loaded } = await getEntry(url, opts)
+  if (pageNumber < 1 || pageNumber > doc.numPages) {
+    throw new PdfError(`No page ${pageNumber} — this PDF has ${doc.numPages} pages.`)
+  }
+  const { canvas } = await renderPageToCanvas(doc, pageNumber)
+  return {
+    dataUrl: canvas.toDataURL('image/png'),
+    width: canvas.width,
+    height: canvas.height,
+    pageCount: doc.numPages,
+    title: loaded.info.title,
+  }
+}
+
+/** renderPdfPage for raw bytes (a dropped file). Shares the bytes: cache entry. */
+export async function renderPdfPageFromBytes(
+  bytes: Uint8Array,
+  key: string,
+  pageNumber: number,
+): Promise<{ dataUrl: string; width: number; height: number; pageCount: number; title: string }> {
+  const { doc, loaded } = await getBytesEntry(bytes, key)
   if (pageNumber < 1 || pageNumber > doc.numPages) {
     throw new PdfError(`No page ${pageNumber} — this PDF has ${doc.numPages} pages.`)
   }
