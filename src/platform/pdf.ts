@@ -301,7 +301,12 @@ async function getBytesEntry(bytes: Uint8Array, key: string, titleFallback?: str
   }
   if (bytes.byteLength > MAX_PDF_BYTES) throw new PdfError('This PDF is larger than the 50 MB limit.')
   if (!sniffPdf(bytes)) throw new PdfError('This file is not a PDF (no %PDF header found).')
-  const pending = parsePdfBytes(bytes, `attachment:${key}`, titleFallback ?? key)
+  // pdf.js TRANSFERS the buffer it is handed to its worker, detaching the
+  // caller's Uint8Array — without this copy the attachment's bytes silently
+  // become zero-length after the attach-time parse and persist as an empty
+  // record. The URL path (doLoad) needs no copy: its fetched bytes are
+  // single-use. Keep this slice.
+  const pending = parsePdfBytes(bytes.slice(), `attachment:${key}`, titleFallback ?? key)
   cache.set(cacheKey, pending)
   pending.catch(() => cache.delete(cacheKey))
   for (const [k, v] of cache) {
