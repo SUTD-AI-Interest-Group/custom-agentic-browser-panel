@@ -352,7 +352,7 @@ export async function loadSettings(): Promise<Settings> {
   // consumer of Settings sees plaintext; a pre-vault install is migrated in
   // place on first load.
   const { settings: opened, hadPlaintext } = await openSettings(settings)
-  if (hadPlaintext) await migrateSecretsToSealed(opened)
+  if (hadPlaintext) await migrateSecretsToSealed(stored, opened)
   return opened
 }
 
@@ -362,17 +362,23 @@ export async function saveSettings(settings: Settings): Promise<void> {
 
 /**
  * One-way plaintext→sealed migration: seal, verify the round-trip in memory,
- * and only then overwrite the stored blob — a failed vault never destroys the
- * user's only copy of their keys. Skipped when nothing sealed (vault down);
- * the next load retries. Concurrent runs from the panel and the SW both write
- * valid ciphertext of the same plaintext, so last-writer-wins is safe.
+ * re-read the stored blob to confirm nothing else wrote in the meantime, and
+ * only then overwrite it — a failed vault, or a genuine concurrent save (e.g.
+ * the user editing their key while this runs), never destroys or clobbers the
+ * user's keys. Skipped when nothing sealed (vault down) or when the re-read
+ * shows a newer write landed in the meantime; the next load re-migrates
+ * whatever is still plaintext. Concurrent migrations of the SAME plaintext
+ * both write valid ciphertext of it, so last-writer-wins between those two is
+ * safe — this guard exists only for a *different* concurrent write racing in.
  */
-async function migrateSecretsToSealed(opened: Settings): Promise<void> {
+async function migrateSecretsToSealed(before: Partial<Settings> | undefined, opened: Settings): Promise<void> {
   try {
     const sealed = await sealSettings(opened)
     if (!secretValues(sealed).some(isSealed)) return
     const roundTrip = await openSettings(sealed)
     if (JSON.stringify(secretValues(roundTrip.settings)) !== JSON.stringify(secretValues(opened))) return
+    const current = await chrome.storage.local.get(STORAGE_KEY)
+    if (JSON.stringify(current[STORAGE_KEY]) !== JSON.stringify(before)) return
     await chrome.storage.local.set({ [STORAGE_KEY]: sealed })
   } catch {
     // Migration must never break loading.

@@ -58,6 +58,32 @@ describe('settings storage sealing', () => {
     expect(isSealed(migrated.providers[0].apiKey)).toBe(true)
   })
 
+  it('does not clobber a concurrent save that lands mid-migration', async () => {
+    const store: Record<string, unknown> = { settings: withKey() } // simulates a pre-vault install
+    const concurrentlySaved: Settings = { ...withKey(), providers: [{ ...withKey().providers[0], apiKey: 'sk-live-2' }] }
+    let getCalls = 0
+    vi.stubGlobal('chrome', {
+      storage: {
+        local: {
+          get: vi.fn(async (key: string) => {
+            getCalls++
+            const result = key in store ? { [key]: store[key] } : {}
+            // After the load's own read (the first get), simulate a real
+            // saveSettings landing before the migration's re-read guard runs.
+            if (getCalls === 1) store.settings = concurrentlySaved
+            return result
+          }),
+          set: vi.fn(async (items: Record<string, unknown>) => {
+            Object.assign(store, items)
+          }),
+        },
+      },
+    })
+    const loaded = await loadSettings()
+    expect(loaded.providers[0].apiKey).toBe('sk-live-1') // reflects the pre-race snapshot
+    expect(store.settings).toBe(concurrentlySaved) // migration skipped its write — nothing clobbered
+  })
+
   it('falls back to plaintext storage when IndexedDB is unavailable', async () => {
     const store = stubChromeStorage()
     const { _resetDekCacheForTests } = await import('./vault')
