@@ -59,6 +59,15 @@ import {
 // and rendering all come for free.
 // ---------------------------------------------------------------------------
 
+/**
+ * What a page tool reports when `resolveTab` comes back empty. Worded to be true
+ * of both callers: an unbound turn that has no active tab, and a tab-bound chat
+ * (src/ui/tabChats.ts) whose tab the user closed while the turn was still going.
+ * "No active tab found" would be a lie in the second case — the model would
+ * retry against a tab that is never coming back.
+ */
+const NO_TAB_ERROR = 'This chat has no page to act on — its tab was closed, or there is no active tab.'
+
 /** One row of a batch approval card's itemized list. */
 export interface ApprovalItem {
   title: string
@@ -214,6 +223,16 @@ export function createAgentTools(
    * self-healed by the repair hook — an unloaded call would dead-end.
    */
   extraTools?: ToolSet,
+  /**
+   * Which tab this turn's tools act on. A chat is bound to the tab it was opened
+   * on (src/ui/tabChats.ts) and pins its tools to that tab, so a turn that is
+   * still running after the user switches away keeps reading the page it was
+   * asked about instead of silently following them to the new one.
+   *
+   * Defaults to the active tab, which is the right answer for any caller that
+   * hasn't bound itself to one.
+   */
+  resolveTab: () => Promise<chrome.tabs.Tab | undefined> = getActiveTab,
 ): ToolSet {
   const BROWSING_SOURCES = ['history', 'bookmarks', 'topSites', 'downloads'] as const
   const grantedSources = BROWSING_SOURCES.filter((s) => granted.has(s))
@@ -239,8 +258,8 @@ export function createAgentTools(
     summary: string,
     reason: string,
   ) => {
-    const tab = await getActiveTab()
-    if (tab?.id === undefined) return { error: 'No active tab found.' }
+    const tab = await resolveTab()
+    if (tab?.id === undefined) return { error: NO_TAB_ERROR }
 
     // Same exemption as ReadPage's perception modes: inside an open control session
     // the user has already granted sight of this tab, and a card between every click
@@ -362,8 +381,8 @@ export function createAgentTools(
           .describe('Short reason shown to the user, e.g. "To summarize this article"'),
       }),
       execute: async ({ mode, reason }) => {
-        const tab = await getActiveTab()
-        if (tab?.id === undefined) return { error: 'No active tab found.' }
+        const tab = await resolveTab()
+        if (tab?.id === undefined) return { error: NO_TAB_ERROR }
         // Chrome renders PDFs in a plugin with no scriptable DOM — every ReadPage
         // mode would come back empty or error. Redirect the model to ReadPdf
         // before asking the user anything (this touches nothing but the tab URL,
@@ -626,7 +645,7 @@ export function createAgentTools(
         if (mode === 'view' && !page) return { error: 'mode:"view" needs a `page` number.' }
         let target = url
         if (!target) {
-          const tab = await getActiveTab()
+          const tab = await resolveTab()
           target = tab?.url
           if (!target) return { error: 'No active tab and no `url` given.' }
         }
@@ -797,8 +816,8 @@ export function createAgentTools(
       execute: async ({ text, region, label, page, reason }) => {
         if (!text?.trim() && region === undefined)
           return { error: 'Pass either `text` (a quoted passage) or `region` (an [rN] number).' }
-        const tab = await getActiveTab()
-        if (tab?.id === undefined) return { error: 'No active tab found.' }
+        const tab = await resolveTab()
+        if (tab?.id === undefined) return { error: NO_TAB_ERROR }
         const isPdf = looksLikePdfUrl(tab.url ?? '')
         if (isPdf && region !== undefined)
           return { error: 'The active tab is a PDF — regions do not exist there. Pass `text` (optionally with a `page` from ReadPdf search).' }
@@ -1148,8 +1167,8 @@ export function createAgentTools(
           .describe('One or two sentences: what you will do on the page and where you will stop.'),
       }),
       execute: async ({ plan }) => {
-        const tab = await getActiveTab()
-        if (tab?.id === undefined) return { error: 'No active tab found.' }
+        const tab = await resolveTab()
+        if (tab?.id === undefined) return { error: NO_TAB_ERROR }
         const host = (() => {
           try {
             return new URL(tab.url ?? '').host
@@ -1209,7 +1228,7 @@ export function createAgentTools(
         const session = pageControl.session()
         if (!session || !session.active)
           return { error: 'No page-control session is open. Call RequestPageControl first.' }
-        const tab = await getActiveTab()
+        const tab = await resolveTab()
         if (tab?.id === undefined || tab.id !== session.tabId)
           return { error: 'The controlled tab is no longer active.' }
         // The presence overlay lives in the page's DOM, which any navigation
@@ -1339,7 +1358,7 @@ export function createAgentTools(
       execute: async ({ fields }) => {
         const session = pageControl.session()
         if (!session || !session.active) return { error: 'No page-control session is open. Call RequestPageControl first.' }
-        const tab = await getActiveTab()
+        const tab = await resolveTab()
         if (tab?.id === undefined || tab.id !== session.tabId) return { error: 'The controlled tab is no longer active.' }
         const profile = await getProfileMemories()
         const filled: number[] = []
@@ -1410,7 +1429,7 @@ export function createAgentTools(
         // so the cue plays out first, but best-effort — a restricted page just
         // skips it and navigation proceeds.
         if (action === 'goto' && url) {
-          const targetId = tabId ?? (await getActiveTab())?.id
+          const targetId = tabId ?? (await resolveTab())?.id
           if (targetId !== undefined) {
             let host: string
             try {
@@ -1452,8 +1471,8 @@ export function createAgentTools(
         })
         if (!approved) return DENIED
         if (!selected) return { error: 'No model is configured.' }
-        const tab = await getActiveTab()
-        if (tab?.id === undefined) return { error: 'No active tab found.' }
+        const tab = await resolveTab()
+        if (tab?.id === undefined) return { error: NO_TAB_ERROR }
         const page = await readTabContent(tab.id)
         if (page.error) return { error: page.error }
         const source = page.text
