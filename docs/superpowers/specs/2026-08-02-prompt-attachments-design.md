@@ -133,7 +133,8 @@ planning.
 
 - **`src/data/providerProfiles.ts`** — per-kind `supportsNativeDocuments: boolean` (true:
   `anthropic`, `openai`; false: everything else) and `nativeDocMaxBytes` (Anthropic 20MB raw —
-  clears the 32MB base64-inflated request ceiling with prompt headroom; OpenAI 45MB). Pure,
+  clears the 32MB base64-inflated request ceiling with prompt headroom; OpenAI 35MB — 45MB raw
+  would exceed the 50MB request cap once base64-inflated). Pure,
   tested alongside the existing profile fields.
 - **`src/platform/pdf.ts`** — `loadPdfFromBytes(bytes: Uint8Array, cacheKey: string)`: shares
   `doLoad`/`getEntry`, skips `fetchPdfBytes`, keeps the `%PDF-` sniff and `MAX_EXTRACT_PAGES`
