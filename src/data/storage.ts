@@ -10,6 +10,7 @@ import { clearMemory, memoryUsage } from './memory'
 import { clearMcpArtifacts, mcpArtifactsUsage } from './mcpArtifacts'
 import { clearArtifacts, artifactsUsage } from './artifacts'
 import { clearShots, shotsUsage } from './screenshots'
+import { clearAttachments, attachmentsUsage } from './attachments'
 import { clearSkills, skillsUsage } from './skills'
 import { clearTasks, tasksUsage } from './researchTasks'
 import { seedBuiltinSkills } from './builtinSkills'
@@ -18,18 +19,21 @@ import type { StorageReport, StoreKey, StoreUsage } from './usage'
 
 /** Read every store once and total it up. Counts are dozens, so one pass is cheap. */
 export async function storageReport(): Promise<StorageReport> {
-  const [conversations, screenshots, mcp, artifacts, memory, skills, research] = await Promise.all([
-    conversationsUsage(),
-    shotsUsage(),
-    mcpArtifactsUsage(),
-    artifactsUsage(),
-    memoryUsage(),
-    skillsUsage(),
-    tasksUsage(),
-  ])
+  const [conversations, screenshots, attachments, mcp, artifacts, memory, skills, research] =
+    await Promise.all([
+      conversationsUsage(),
+      shotsUsage(),
+      attachmentsUsage(),
+      mcpArtifactsUsage(),
+      artifactsUsage(),
+      memoryUsage(),
+      skillsUsage(),
+      tasksUsage(),
+    ])
   const stores: Record<StoreKey, StoreUsage> = {
     conversations,
     screenshots,
+    attachments,
     mcp,
     artifacts,
     memory,
@@ -58,11 +62,15 @@ export async function clearStore(key: StoreKey): Promise<void> {
     case 'conversations':
       await clearConversations()
       await clearShots()
+      await clearAttachments()
       await clearMcpArtifacts()
       await clearArtifacts()
       return
     case 'screenshots':
       await clearShots()
+      return
+    case 'attachments':
+      await clearAttachments()
       return
     case 'mcp':
       await clearMcpArtifacts()
@@ -93,6 +101,7 @@ export async function eraseAllData(): Promise<void> {
   await Promise.all([
     clearConversations(),
     clearShots(),
+    clearAttachments(),
     clearMcpArtifacts(),
     clearArtifacts(),
     clearMemory(),

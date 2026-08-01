@@ -7,6 +7,7 @@ import {
   type ConversationSummary,
 } from '../../data/conversations'
 import { deleteShotsForConversation } from '../../data/screenshots'
+import { deleteAttachmentsForConversation } from '../../data/attachments'
 import { deleteMcpArtifactsForConversation } from '../../data/mcpArtifacts'
 import { deleteArtifactsForConversation } from '../../data/artifacts'
 import { relativeTime } from '../../platform/time'
@@ -63,6 +64,7 @@ export default function ConversationsList({
       // artifacts, or they'd sit unreachable in the quota forever.
       await Promise.all([
         deleteShotsForConversation(id).catch(() => {}),
+        deleteAttachmentsForConversation(id).catch(() => {}),
         deleteMcpArtifactsForConversation(id).catch(() => {}),
         deleteArtifactsForConversation(id).catch(() => {}),
       ])
