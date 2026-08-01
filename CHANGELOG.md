@@ -17,6 +17,76 @@ for that history.
 
 ---
 
+## [2026-08-01] — Per-tab chats
+
+A chat now belongs to the tab it was opened on, and a turn survives you walking
+away from it. Switching tabs gives you a fresh chat; coming back gives you the old
+one. History stays unified — any finished chat can be reopened on any tab. Design
++ research trail in `docs/superpowers/specs/2026-08-01-per-tab-chats-design.md`.
+
+### Added
+
+- **Tab-bound chats** (`src/ui/tabChats.ts`) — a chat is keyed by **tab id + origin**:
+  navigating the bound tab to another site starts a new chat, navigating within the
+  same site keeps it. The map is mirrored to `chrome.storage.session` rather than
+  `.local` on purpose — that area is wiped on browser restart, which is exactly when
+  tab ids stop meaning anything, so the keys and the thing they key expire together
+  and a stale map can never point a reopened panel at an unrelated tab. `originKey`
+  deliberately avoids `URL.origin`, which returns the string `"null"` for the
+  opaque-origin schemes an extension actually meets (`file:`, `about:`) and would
+  collapse every local file onto one shared chat.
+- **Background turns** — `App` mounts a *set* of chats: the visible one plus any still
+  running or parked. Idle chats unmount as before, so the usual cost is one chat, not
+  one per tab. Chats are keyed by conversation id, so switching tabs never re-mounts —
+  and so never restarts — a turn already in flight.
+- **Tab parking** — captures and page-control steps need their tab frontmost
+  (`captureVisibleTab` only ever returns the *active* tab; a click on a background tab
+  shows the user nothing). Rather than fail, they stop the turn with a new `parked`
+  stop reason and resume automatically when the user returns. A model told merely that
+  something "failed" spends the rest of its budget retrying. The page-control session
+  survives a park, so returning resumes the flow mid-plan instead of asking for control
+  a second time.
+- **Landing notifications** — a bar in the panel plus a `chrome.notifications` toast when
+  a background chat finishes, parks, or needs approval. The tab id rides in the
+  notification id, so `background.ts` routes a click without any state — the panel that
+  raised it may be closed by then, and the worker is the only thing guaranteed to still
+  be there. Permission toasts name the tool being requested and set `requireInteraction`,
+  since an approval blocks the turn until answered.
+
+### Changed
+
+- **`createAgentTools` takes a `PageTarget`** — all nine page tools resolved their target
+  through `getActiveTab`, so a turn still running after a tab switch would silently start
+  acting on whatever page the user moved to. They now route through an injected
+  `resolveTab`, defaulting to `getActiveTab` for callers that aren't tab-bound. The
+  no-tab error became one constant worded to be true of both: "no active tab" is a lie
+  for a bound chat whose tab was closed, and the model would keep retrying against a tab
+  that is never coming back.
+- **Hidden chats suppress their ambient effects** — a mounted-but-invisible chat must not
+  keep resolving "the active tab": the context pill would show, and later attach, a page
+  the conversation was never about, and every hidden chat would inject a selection-reading
+  script into the user's page once a second on top of the visible chat's own poll. The
+  turn loop, persistence and research effects deliberately keep running — that is the
+  reason it stays mounted.
+- **Blocked chats are announced on state, not transition** — a turn finishes once, but a
+  chat can be left waiting two ways: the approval card appears while the user is elsewhere
+  (a transition), or it appears while they are watching and they switch away afterwards.
+  The second changes no status at all, so a transition-based check never fired and the
+  chat sat blocked in silence.
+- **More loader phrases** — the thinking/digesting lists were short enough that a long turn
+  repeated itself.
+
+### Fixed
+
+- **The landed bar no longer outlives its purpose** — it kept advertising a chat the user
+  had already reached by switching to its tab by hand, rather than by clicking through.
+- **Test suite resolves pdfjs from a worktree** — a git worktree symlinks `node_modules` at
+  the main checkout and Vite resolved the `pdf.worker.min.mjs?url` import to its real path,
+  outside the worktree root, tripping Vite's filesystem guard. The suite was green in the
+  main checkout and red in every worktree.
+
+---
+
 ## [2026-07-27] — Chrome Web Store readiness
 
 Preparation for the first store submission. No behavioural change to the extension itself —
