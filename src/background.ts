@@ -156,6 +156,37 @@ chrome.commands.onCommand.addListener((command, tab) => {
 })
 
 // ---------------------------------------------------------------------------
+// Clicking the toast a finished background chat fired (see notifyChatLanded in
+// src/ui/App.tsx). The chat's tab is encoded in the notification id, so putting
+// the user back on it needs no state here — which is the point: the panel that
+// raised the toast may be closed by the time it is clicked, and this worker is
+// the only thing guaranteed to still be around. Activating the tab is enough to
+// swap the panel to that chat, since the binding follows the tab.
+// ---------------------------------------------------------------------------
+
+chrome.notifications.onClicked.addListener((notificationId) => {
+  if (!notificationId.startsWith('chat:')) return
+  const tabId = Number(notificationId.slice('chat:'.length))
+  if (!Number.isInteger(tabId)) return
+  chrome.notifications.clear(notificationId)
+  void (async () => {
+    try {
+      const tab = await chrome.tabs.get(tabId)
+      await chrome.tabs.update(tabId, { active: true })
+      if (tab.windowId !== undefined) {
+        await chrome.windows.update(tab.windowId, { focused: true })
+        // The panel may have been closed since the turn started; this click is a
+        // user gesture, so it is allowed to reopen it.
+        chrome.sidePanel.open({ windowId: tab.windowId }).catch(() => {})
+      }
+    } catch {
+      // The tab was closed while the toast sat there. Nothing to focus, and the
+      // conversation is safe in history — silently drop it.
+    }
+  })()
+})
+
+// ---------------------------------------------------------------------------
 // "Ask Lychee about this" context menu: right-click a selection, link, image, or
 // the page itself to hand it straight to the panel. The menu items themselves are
 // registered in src/platform/contextMenus.ts; what lives here is the click half.

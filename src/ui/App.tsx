@@ -10,6 +10,94 @@ import Chat from './Chat'
 import Library, { type LibraryTab } from './library/Library'
 import Onboarding from './Onboarding'
 import SettingsView from './settings/Settings'
+import {
+  bindTab,
+  boundTabFor,
+  liveChatIds,
+  loadTabChats,
+  resolveBinding,
+  saveRunningChats,
+  saveTabChats,
+  shouldToast,
+  unbindTab,
+  type ChatStatus,
+  type TabChatMap,
+} from './tabChats'
+
+/**
+ * The in-panel half of announcing a background chat: a quiet bar the user can
+ * act on or dismiss. The 'running' case is the odd one out — it isn't an
+ * announcement but a refusal, shown when the user tries to open a chat that is
+ * still mid-turn on another tab.
+ */
+function LandedBar({
+  landed,
+  onOpen,
+  onDismiss,
+}: {
+  landed: { conversationId: string; status: ChatStatus }
+  onOpen: () => void
+  onDismiss: () => void
+}) {
+  const text =
+    landed.status === 'running'
+      ? 'That chat is still working on another tab.'
+      : landed.status === 'idle'
+        ? 'A chat on another tab finished.'
+        : 'A chat on another tab needs you.'
+  return (
+    <div className="landed-bar" role="status">
+      <span className="landed-bar-text">{text}</span>
+      <button className="landed-bar-open" onClick={onOpen}>
+        Go to it
+      </button>
+      <button className="landed-bar-close" title="Dismiss" onClick={onDismiss}>
+        <svg width="10" height="10" viewBox="0 0 8 8" fill="none">
+          <path d="M1.5 1.5l5 5M6.5 1.5l-5 5" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
+        </svg>
+      </button>
+    </div>
+  )
+}
+
+/** What the toast says a background chat is now waiting on. */
+const LANDED_TITLE: Record<ChatStatus, string> = {
+  idle: 'Lychee finished',
+  parked: 'Lychee needs that tab',
+  'needs-you': 'Lychee needs your go-ahead',
+  running: '',
+}
+
+/**
+ * Announce a background chat outside the panel. The notification id carries the
+ * chat's tab, so background.ts can put the user back on it in one click without
+ * the panel having to be open (or alive) to route it.
+ */
+async function notifyChatLanded(
+  conversationId: string,
+  status: ChatStatus,
+  map: TabChatMap,
+): Promise<void> {
+  const tabId = boundTabFor(map, conversationId)
+  if (tabId === undefined) return
+  let host = 'a page'
+  try {
+    const tab = await chrome.tabs.get(tabId)
+    host = new URL(tab.url ?? '').host || tab.title || 'a page'
+  } catch {
+    // Tab closed between finishing and announcing — still worth telling the
+    // user their answer is ready, just without naming where it came from.
+  }
+  try {
+    chrome.notifications.create(`chat:${tabId}`, {
+      type: 'basic',
+      iconUrl: chrome.runtime.getURL('icons/icon-128.png'),
+      title: LANDED_TITLE[status],
+      message: status === 'idle' ? `Your answer about ${host} is ready.` : `Your chat about ${host} is waiting on you.`,
+      priority: 1,
+    })
+  } catch {}
+}
 
 export default function App() {
   const [settings, setSettings] = useState<Settings | null>(null)
@@ -21,6 +109,39 @@ export default function App() {
   // A conversation id keys the Chat: changing it loads a different chat, while
   // toggling settings leaves it untouched so the transcript is never lost.
   const [conversationId, setConversationId] = useState<string>(() => crypto.randomUUID())
+  // Which chat belongs to which tab, and what each mounted chat is doing. The
+  // map is the panel's copy of the session-storage mirror in tabChats.ts; the
+  // statuses drive both what stays mounted and what gets announced.
+  const [tabChats, setTabChats] = useState<TabChatMap>({})
+  const [statuses, setStatuses] = useState<Record<string, ChatStatus>>({})
+  // A background chat that just stopped, offered as a bar until dismissed.
+  const [landed, setLanded] = useState<{ conversationId: string; status: ChatStatus } | null>(null)
+  // This panel's window. Tab events fire for every window, and a panel must only
+  // ever re-bind on its own — otherwise activity in a second window would swap
+  // this panel's chat out from under the user.
+  const windowIdRef = useRef<number | null>(null)
+  // Mirrored into refs so the tab listeners — registered once, never re-bound —
+  // read current values without being torn down on every state change.
+  const tabChatsRef = useRef<TabChatMap>({})
+  const statusesRef = useRef<Record<string, ChatStatus>>({})
+  const conversationIdRef = useRef(conversationId)
+  useEffect(() => {
+    tabChatsRef.current = tabChats
+  }, [tabChats])
+  useEffect(() => {
+    statusesRef.current = statuses
+  }, [statuses])
+  useEffect(() => {
+    conversationIdRef.current = conversationId
+  }, [conversationId])
+
+  /** Commit a new binding map: ref first (listeners read it synchronously, and
+   *  two tab events can land before React re-renders), then state, then disk. */
+  const commitTabChats = useCallback((next: TabChatMap) => {
+    tabChatsRef.current = next
+    setTabChats(next)
+    void saveTabChats(next)
+  }, [])
   // Set when a research row in the Library is clicked: after Chat (re)mounts on
   // the research's conversation, it reveals that task (live sheet or report
   // card) and clears this back to null. See openResearch / Chat's effect.
@@ -46,6 +167,111 @@ export default function App() {
     refreshConversations()
   }, [refreshConversations])
 
+  /**
+   * Show whichever chat belongs to `tab`, minting a fresh one when the tab has
+   * no binding or has navigated to another site since it was bound.
+   *
+   * A *running* chat is never re-pointed at the tab being activated: its tools
+   * are pinned to the tab it was started on, and moving the binding mid-turn
+   * would leave it reading a page nobody asked about. The new tab still gets its
+   * own chat — the running one simply keeps the tab it already had.
+   */
+  const showChatForTab = useCallback(
+    (tab: chrome.tabs.Tab) => {
+      if (tab.id === undefined) return
+      const tabId = tab.id
+      const url = tab.url ?? ''
+      const found = resolveBinding(tabChatsRef.current, tabId, url)
+      const id = found.kind === 'existing' ? found.conversationId : crypto.randomUUID()
+      setConversationId(id)
+      // Re-binding an existing match would only rewrite boundAt, which matters
+      // solely for the reverse lookup — and doing it while that chat is running
+      // is exactly the mid-turn move described above.
+      if (found.kind === 'existing' && statusesRef.current[id] === 'running') return
+      commitTabChats(bindTab(tabChatsRef.current, tabId, id, url, Date.now()))
+    },
+    [commitTabChats],
+  )
+
+  // Bind the panel to the tab it opened on, restoring the map first so a panel
+  // reopened mid-session lands back on the chat that tab was using rather than
+  // minting a duplicate.
+  useEffect(() => {
+    let cancelled = false
+    void (async () => {
+      const [win, map] = await Promise.all([
+        chrome.windows.getCurrent().catch(() => null),
+        loadTabChats(),
+      ])
+      if (cancelled) return
+      windowIdRef.current = win?.id ?? null
+      // Ref before state: showChatForTab reads the ref synchronously below, and
+      // the sync effect won't have run yet — leaving it empty would ignore the
+      // restored map and mint a duplicate chat for a tab that already has one.
+      tabChatsRef.current = map
+      setTabChats(map)
+      const [tab] = await chrome.tabs.query({ active: true, windowId: win?.id })
+      if (!cancelled && tab) showChatForTab(tab)
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [showChatForTab])
+
+  // The tab↔chat binding, driven by the browser rather than the UI: switching
+  // tabs swaps the chat, navigating a tab across origins starts a new one, and
+  // closing a tab forgets its binding (the conversation itself stays in history).
+  useEffect(() => {
+    const onActivated = (info: chrome.tabs.TabActiveInfo) => {
+      if (windowIdRef.current !== null && info.windowId !== windowIdRef.current) return
+      void chrome.tabs.get(info.tabId).then(showChatForTab).catch(() => {})
+    }
+    // Only a committed URL change matters, and only on the tab this panel is
+    // showing. Firing on every onUpdated (title, favicon, loading state) would
+    // re-resolve constantly, and firing for background tabs would swap the
+    // visible chat because some other tab navigated.
+    const onUpdated = (tabId: number, info: chrome.tabs.TabChangeInfo, tab: chrome.tabs.Tab) => {
+      if (!info.url) return
+      if (windowIdRef.current !== null && tab.windowId !== windowIdRef.current) return
+      if (!tab.active) return
+      showChatForTab(tab)
+    }
+    const onRemoved = (tabId: number) => {
+      const next = unbindTab(tabChatsRef.current, tabId)
+      if (next !== tabChatsRef.current) commitTabChats(next)
+    }
+    chrome.tabs.onActivated.addListener(onActivated)
+    chrome.tabs.onUpdated.addListener(onUpdated)
+    chrome.tabs.onRemoved.addListener(onRemoved)
+    return () => {
+      chrome.tabs.onActivated.removeListener(onActivated)
+      chrome.tabs.onUpdated.removeListener(onUpdated)
+      chrome.tabs.onRemoved.removeListener(onRemoved)
+    }
+  }, [showChatForTab])
+
+  /**
+   * A mounted chat reporting in. Besides driving what stays mounted, this is
+   * where a background chat's turn ending becomes visible to the user: the bar
+   * below, and a system toast when they aren't looking at the panel at all.
+   */
+  const handleStatusChange = useCallback((id: string, status: ChatStatus) => {
+    const before = statusesRef.current[id] ?? 'idle'
+    if (before === status) return
+    const next = { ...statusesRef.current, [id]: status }
+    statusesRef.current = next
+    setStatuses(next)
+    // Shared across windows so a second panel's Library can refuse to open a
+    // conversation this one is still running — two panels mounting the same chat
+    // would race on its transcript row.
+    void saveRunningChats(Object.keys(next).filter((k) => next[k] === 'running'))
+    const visible = id === conversationIdRef.current
+    if (shouldToast(before, status, { visible, panelFocused: document.hasFocus() })) {
+      if (!visible) setLanded({ conversationId: id, status })
+      void notifyChatLanded(id, status, tabChatsRef.current)
+    }
+  }, [])
+
   // MCP: reconcile server connections with settings — on load and every save.
   // The manager lives in this panel context and dies with it; refresh() is
   // cheap when nothing changed.
@@ -68,18 +294,78 @@ export default function App() {
     void saveSettings(next)
   }
 
+  /**
+   * Point the current tab at a conversation and show it. Used by "new chat" and
+   * by every "open this one" affordance, so a chat the user picked deliberately
+   * behaves exactly like one the tab already had: it belongs to the tab they are
+   * on now, and switching away will bring it back when they return.
+   *
+   * Other tabs still pointing at the same conversation are deliberately left
+   * alone — reopening an old chat here shouldn't blank out the tab it came from.
+   * boundTabFor resolves the ambiguity in favour of the most recent claim.
+   */
+  const adoptConversation = useCallback(
+    (id: string) => {
+      setConversationId(id)
+      void (async () => {
+        const [tab] = await chrome.tabs.query({
+          active: true,
+          windowId: windowIdRef.current ?? undefined,
+        })
+        if (!tab || tab.id === undefined) return
+        commitTabChats(bindTab(tabChatsRef.current, tab.id, id, tab.url ?? '', Date.now()))
+      })()
+    },
+    [commitTabChats],
+  )
+
   function newChat() {
-    setConversationId(crypto.randomUUID())
+    adoptConversation(crypto.randomUUID())
     setShowSettings(false)
     setLibraryTab(null)
     setMenuOpen(false)
   }
 
   function openConversation(id: string) {
-    if (id !== conversationId) setConversationId(id)
+    // A chat that is mid-turn stays where it is: it is pinned to its own tab
+    // until it finishes, and mounting it here as well would race two components
+    // on one transcript row.
+    if (statuses[id] === 'running') {
+      setLanded({ conversationId: id, status: 'running' })
+      setMenuOpen(false)
+      return
+    }
+    if (id !== conversationId) adoptConversation(id)
     setShowSettings(false)
     setLibraryTab(null)
     setMenuOpen(false)
+  }
+
+  /**
+   * Jump to the chat the bar is announcing by activating its tab, rather than by
+   * setting conversationId directly. The tab listener then swaps the panel over
+   * through the same path a manual tab switch takes — one route to "show me that
+   * chat", and the user ends up looking at the page it is about.
+   */
+  function openLanded() {
+    const target = landed
+    setLanded(null)
+    if (!target) return
+    const tabId = boundTabFor(tabChats, target.conversationId)
+    if (tabId === undefined) {
+      // Its tab is gone, so there is nothing to activate — adopt it here instead.
+      adoptConversation(target.conversationId)
+      return
+    }
+    void (async () => {
+      try {
+        const tab = await chrome.tabs.get(tabId)
+        await chrome.tabs.update(tabId, { active: true })
+        if (tab.windowId !== undefined) await chrome.windows.update(tab.windowId, { focused: true })
+      } catch {
+        adoptConversation(target.conversationId)
+      }
+    })()
   }
 
   function openSkills() {
@@ -92,7 +378,7 @@ export default function App() {
   // (finished). Library only surfaces this for tasks that have a conversationId.
   function openResearch(task: ResearchTask) {
     if (task.conversationId && task.conversationId !== conversationId) {
-      setConversationId(task.conversationId)
+      adoptConversation(task.conversationId)
     }
     setPendingResearchId(task.id)
     setShowSettings(false)
@@ -199,19 +485,37 @@ export default function App() {
         </div>
       </header>
 
-      <div className={`view-host ${showSettings || libraryTab ? 'is-hidden' : ''}`}>
-        <Chat
-          key={conversationId}
-          conversationId={conversationId}
-          settings={settings}
-          onUpdateSettings={updateSettings}
-          onOpenSettings={() => setShowSettings(true)}
-          onOpenSkills={openSkills}
-          onConversationsChanged={refreshConversations}
-          pendingResearchId={pendingResearchId}
-          onPendingResearchHandled={() => setPendingResearchId(null)}
-        />
-      </div>
+      {landed && <LandedBar landed={landed} onOpen={openLanded} onDismiss={() => setLanded(null)} />}
+
+      {/* Every chat that is still working stays mounted alongside the visible
+          one — that is what lets a turn survive the user switching tabs. Idle
+          chats unmount as before, so the usual cost is one chat, not one per
+          tab. Each is keyed by its conversation id, so switching chats never
+          re-mounts (and never restarts) a turn that is already running. */}
+      {liveChatIds(conversationId, statuses).map((id) => {
+        const isVisible = id === conversationId
+        return (
+          <div
+            key={id}
+            className={`view-host ${!isVisible || showSettings || libraryTab ? 'is-hidden' : ''}`}
+          >
+            <Chat
+              conversationId={id}
+              settings={settings}
+              onUpdateSettings={updateSettings}
+              onOpenSettings={() => setShowSettings(true)}
+              onOpenSkills={openSkills}
+              onConversationsChanged={refreshConversations}
+              // Only the chat on screen can act on a reveal request.
+              pendingResearchId={isVisible ? pendingResearchId : null}
+              onPendingResearchHandled={() => setPendingResearchId(null)}
+              hidden={!isVisible}
+              boundTabId={boundTabFor(tabChats, id)}
+              onStatusChange={handleStatusChange}
+            />
+          </div>
+        )
+      })}
       {showSettings && (
         <SettingsView
           settings={settings}
