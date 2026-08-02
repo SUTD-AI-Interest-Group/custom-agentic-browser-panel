@@ -1,9 +1,11 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, test, vi, afterEach } from 'vitest'
 import {
   clampGist,
   findDuplicates,
+  hostOf,
   isBlankUrl,
   isProbeableUrl,
+  listTabFacts,
   normalizeUrl,
   planTabProbe,
   GIST_CHARS,
@@ -140,6 +142,45 @@ describe('normalizeUrl', () => {
     expect(normalizeUrl('https://example.com/a')).not.toBe(normalizeUrl('https://example.com/b'))
     expect(normalizeUrl('https://example.com/p?id=1')).not.toBe(normalizeUrl('https://example.com/p?id=2'))
   })
+})
+
+describe('hostOf', () => {
+  it('returns the host for an ordinary URL, including a port', () => {
+    expect(hostOf('https://example.com:8080/path')).toBe('example.com:8080')
+  })
+
+  it('ignores userinfo when extracting the host', () => {
+    expect(hostOf('https://user:pass@example.com/path')).toBe('example.com')
+  })
+
+  it('falls back to a truncated string, not the whole raw URL, for a data: URL', () => {
+    // The whole point of tabIndex's gist budget is a bounded cost per tab —
+    // hostOf's odd-scheme fallback ("no .host, so return the raw url") used to
+    // undo that entirely for any data:/javascript: tab.
+    const huge = `data:text/html;base64,${'A'.repeat(500_000)}`
+    const host = hostOf(huge)
+    expect(host.length).toBeLessThan(600)
+    expect(host.endsWith('…')).toBe(true)
+  })
+})
+
+afterEach(() => {
+  vi.unstubAllGlobals()
+})
+
+test("listTabFacts caps a data: URL tab's url/host so one tab cannot blow up a ReadTabs call", async () => {
+  const huge = `data:text/html;base64,${'A'.repeat(500_000)}`
+  vi.stubGlobal('chrome', {
+    tabs: {
+      query: vi.fn(async () => [
+        { id: 1, windowId: 1, title: 'Report', url: huge, pinned: false, active: true, groupId: -1 },
+      ]),
+    },
+  })
+  const facts = await listTabFacts()
+  expect(facts).toHaveLength(1)
+  expect(facts[0].url.length).toBeLessThan(600)
+  expect(facts[0].host.length).toBeLessThan(600)
 })
 
 describe('findDuplicates', () => {

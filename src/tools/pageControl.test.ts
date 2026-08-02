@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { isPointOfNoReturn } from './pageControl'
+import { hasElementChanged, isPointOfNoReturn } from './pageControl'
 import type { ControlSpec } from './pageControl'
 import type { IndexedElement } from '../platform/domIndex'
 
@@ -125,6 +125,254 @@ describe('isPointOfNoReturn — navigate', () => {
 
   it('does not flag a navigate spec with no url', () => {
     expect(isPointOfNoReturn(spec({ action: 'navigate' }), undefined, ORIGIN)).toBe(false)
+  })
+})
+
+describe('isPointOfNoReturn — click, blind controls (no href, no accessible name)', () => {
+  // el.type is a native-IDL-only property: it silently reads as `undefined` on
+  // anything that isn't a real <button>/<input>/<select>, and accessibleName()
+  // returns '' for an icon-only control with no aria-label/text/title/name. A
+  // <div role="button">, a plain onclick-driven <span>, or a <button
+  // type="button"> wired to a destructive JS handler all report exactly this
+  // shape — type undefined, name '' — which sails past every other check in
+  // isPointOfNoReturn with no signal at all. These must all be flagged.
+  it('flags an ARIA-role div button with a destructive handler and no accessible name', () => {
+    const target = el({ tag: 'div', role: 'button', type: undefined, name: '' })
+    expect(isPointOfNoReturn(spec({ action: 'click', index: 0 }), target, ORIGIN)).toBe(true)
+  })
+
+  it('flags a plain onclick-driven span with no role and no name', () => {
+    const target = el({ tag: 'span', role: undefined, type: undefined, name: '' })
+    expect(isPointOfNoReturn(spec({ action: 'click', index: 0 }), target, ORIGIN)).toBe(true)
+  })
+
+  it('flags a native <button type="button"> icon button with no accessible name', () => {
+    const target = el({ tag: 'button', type: 'button', name: '' })
+    expect(isPointOfNoReturn(spec({ action: 'click', index: 0 }), target, ORIGIN)).toBe(true)
+  })
+
+  it('flags an <a> with no href and no name (JS-navigated, not a real link)', () => {
+    const target = el({ tag: 'a', href: '', name: '' })
+    expect(isPointOfNoReturn(spec({ action: 'click', index: 0 }), target, ORIGIN)).toBe(true)
+  })
+
+  it('flags a role=tab/switch/menuitem control with no accessible name, not just role=button', () => {
+    for (const role of ['tab', 'switch', 'menuitem', 'option']) {
+      const target = el({ tag: 'div', role, name: '' })
+      expect(isPointOfNoReturn(spec({ action: 'click', index: 0 }), target, ORIGIN), `role=${role}`).toBe(true)
+    }
+  })
+
+  // Boundary: the new check must not swallow the existing, more permissive
+  // behavior for controls that CAN be described.
+  it('does not flag an ARIA button that has an accessible name', () => {
+    const target = el({ tag: 'div', role: 'button', name: 'Toggle menu' })
+    expect(isPointOfNoReturn(spec({ action: 'click', index: 0 }), target, ORIGIN)).toBe(false)
+  })
+
+  it('does not flag a same-origin link with a real href even when it has no visible text', () => {
+    const target = el({ tag: 'a', name: '', href: `${ORIGIN}/x` })
+    expect(isPointOfNoReturn(spec({ action: 'click', index: 0 }), target, ORIGIN)).toBe(false)
+  })
+})
+
+// (S2) COMMITTING_NAME was English-word-only: an emoji-only or non-English
+// label is non-empty (clears isBlindClick) and matches no English word
+// (clears COMMITTING_NAME) — both nets miss at once. These are the exact
+// repro shapes from the adversarial review.
+describe('isPointOfNoReturn — click, emoji-only committing names (S2)', () => {
+  it('flags unambiguous committing icons with no text label at all, no ancestor needed', () => {
+    for (const name of ['🗑️', '🗑', '🛒', '💳', '💰', '💸', '📤']) {
+      const target = el({ tag: 'div', role: 'button', name })
+      expect(isPointOfNoReturn(spec({ action: 'click', index: 0 }), target, ORIGIN), `expected "${name}" to be flagged`).toBe(true)
+    }
+  })
+})
+
+// (N1) A bare checkmark is at least as often "mark complete" / "acknowledge"
+// — a to-do app's done-checkbox, a toast's dismiss-check — as it is a
+// destructive confirm. Unlike the unambiguous icons above, treating it as
+// committing by itself would be card fatigue for one of the most common
+// icons in ordinary UI. It only commits when the ancestor context (the same
+// S3 signal) also reads as committing.
+describe('isPointOfNoReturn — click, checkmark glyphs need committing context (N1)', () => {
+  it('does not flag a bare checkmark with no ancestor at all — e.g. marking a to-do item done', () => {
+    for (const name of ['✅', '✔️', '✔']) {
+      const target = el({ tag: 'div', role: 'button', name })
+      expect(isPointOfNoReturn(spec({ action: 'click', index: 0 }), target, ORIGIN), `expected "${name}" NOT to be flagged`).toBe(false)
+    }
+  })
+
+  it('does not flag a checkmark inside a benignly-named container — e.g. a checklist row', () => {
+    const target = el({ tag: 'button', name: '✅', ancestorName: 'Task list' })
+    expect(isPointOfNoReturn(spec({ action: 'click', index: 0 }), target, ORIGIN)).toBe(false)
+  })
+
+  it('flags a checkmark whose ancestor context reads as committing — a real confirm button', () => {
+    for (const ancestorName of ['Confirm delete', 'Complete purchase']) {
+      const target = el({ tag: 'button', name: '✅', ancestorName })
+      expect(isPointOfNoReturn(spec({ action: 'click', index: 0 }), target, ORIGIN), `expected ancestor "${ancestorName}" to flag`).toBe(true)
+    }
+  })
+})
+
+// (N2) An element's own name being an EXACT dismissal word (Cancel/Close/
+// Back/Dismiss/No/Not now, or a translated equivalent) is the universal
+// "back out of this flow without committing" control. "cancel" (and several
+// of its translations) is ALSO already in COMMITTING_NAME/_INTL, because
+// "Cancel subscription" / "Annuler l'abonnement" genuinely commits (it stops
+// a live thing) — but the bare word alone, with nothing else in the name, is
+// overwhelmingly the ordinary dismiss-button convention instead. Exact
+// match is what keeps the compound phrase still flagged.
+describe('isPointOfNoReturn — click, explicit dismissal name exemption (N2)', () => {
+  it('does not flag a bare "Cancel" with no ancestor context at all', () => {
+    const target = el({ tag: 'button', type: 'button', name: 'Cancel' })
+    expect(isPointOfNoReturn(spec({ action: 'click', index: 0 }), target, ORIGIN)).toBe(false)
+  })
+
+  it('does not flag a Cancel/Close/Back/Not-now button inside a dialog whose OWN name reads as committing', () => {
+    const cases = [
+      { name: 'Cancel', ancestorName: 'Confirm Purchase' },
+      { name: 'Close', ancestorName: 'Confirm Purchase' },
+      { name: 'Back', ancestorName: 'Checkout' },
+      { name: 'Not now', ancestorName: 'Complete your subscription' },
+    ]
+    for (const c of cases) {
+      const target = el({ tag: 'button', type: 'button', ...c })
+      expect(
+        isPointOfNoReturn(spec({ action: 'click', index: 0 }), target, ORIGIN),
+        `expected ${JSON.stringify(c)} NOT to be flagged`,
+      ).toBe(false)
+    }
+  })
+
+  it('does not flag translated dismissal equivalents inside a committing ancestor', () => {
+    const cases = [
+      { name: 'Annuler', ancestorName: "Confirmer l'achat" },
+      { name: 'Cancelar', ancestorName: 'Confirmar compra' },
+      { name: 'キャンセル', ancestorName: '購入を確認' },
+      { name: '取消', ancestorName: '确认购买' },
+    ]
+    for (const c of cases) {
+      const target = el({ tag: 'button', type: 'button', ...c })
+      expect(
+        isPointOfNoReturn(spec({ action: 'click', index: 0 }), target, ORIGIN),
+        `expected ${JSON.stringify(c)} NOT to be flagged`,
+      ).toBe(false)
+    }
+  })
+
+  it('still flags "Cancel subscription" — a compound phrase is not an exact dismissal match', () => {
+    const target = el({ tag: 'button', type: 'button', name: 'Cancel subscription' })
+    expect(isPointOfNoReturn(spec({ action: 'click', index: 0 }), target, ORIGIN)).toBe(true)
+  })
+
+  // Security boundary: the dismissal exemption must NEVER suppress a
+  // structural check — otherwise a hostile page could relabel a real commit
+  // control "Cancel" to dodge the card.
+  it('still flags a "Cancel"-labelled real submit button', () => {
+    const target = el({ tag: 'button', type: 'submit', name: 'Cancel' })
+    expect(isPointOfNoReturn(spec({ action: 'click', index: 0 }), target, ORIGIN)).toBe(true)
+  })
+
+  it('still flags a "Cancel"-labelled cross-origin link', () => {
+    const target = el({ tag: 'a', name: 'Cancel', href: 'https://other.test/x' })
+    expect(isPointOfNoReturn(spec({ action: 'click', index: 0 }), target, ORIGIN)).toBe(true)
+  })
+
+  it('still flags a "Cancel"-labelled sensitive field', () => {
+    const target = el({ tag: 'input', name: 'Cancel', sensitive: true })
+    expect(isPointOfNoReturn(spec({ action: 'type', index: 0 }), target, ORIGIN)).toBe(true)
+  })
+})
+
+describe('isPointOfNoReturn — click, non-English committing names (S2)', () => {
+  it('flags committing verbs in major non-English languages', () => {
+    const names = [
+      'Löschen', // German: delete
+      'Kaufen', // German: buy
+      'Supprimer', // French: delete
+      'Confirmer', // French: confirm
+      'Eliminar', // Spanish: delete
+      'Comprar', // Spanish: buy
+      'Confermare', // Italian: confirm
+      'Удалить', // Russian: delete
+      '削除', // Japanese: delete
+      '购买', // Chinese: buy
+      'حذف', // Arabic: delete
+    ]
+    for (const name of names) {
+      const target = el({ tag: 'button', type: 'button', name })
+      expect(isPointOfNoReturn(spec({ action: 'click', index: 0 }), target, ORIGIN), `expected "${name}" to be flagged`).toBe(true)
+    }
+  })
+})
+
+// (S3) Event delegation: a container attaches one handler and dispatches by
+// target, so the clicked descendant (an icon, a row's plain text) can carry
+// an innocuous name of its own while the ancestor that actually defines what
+// happens — a <form>'s own aria-label, a dialog's title, or the nearest
+// independently-clickable ancestor's own aria-label — says otherwise.
+// domIndex.ts's ancestorNameOf computes this as a raw DOM fact; the
+// classifier's job (tested here) is to treat a committing ancestor name the
+// same way it treats the element's own name.
+describe('isPointOfNoReturn — click, delegated ancestor committing context (S3)', () => {
+  it('flags a click on an innocuously-named descendant whose delegated container self-describes as committing', () => {
+    const target = el({ tag: 'span', name: 'Row 42', ancestorName: 'Delete row' })
+    expect(isPointOfNoReturn(spec({ action: 'click', index: 0 }), target, ORIGIN)).toBe(true)
+  })
+
+  it('does not flag when the ancestor name is benign — being inside SOME container is not itself committing', () => {
+    const target = el({ tag: 'span', name: 'Row 42', ancestorName: 'Recent activity' })
+    expect(isPointOfNoReturn(spec({ action: 'click', index: 0 }), target, ORIGIN)).toBe(false)
+  })
+
+  it('does not flag merely sitting inside an unlabelled or benignly-labelled form (card-fatigue guard)', () => {
+    const target = el({ tag: 'button', type: 'button', name: 'Show details', ancestorName: 'Contact form' })
+    expect(isPointOfNoReturn(spec({ action: 'click', index: 0 }), target, ORIGIN)).toBe(false)
+  })
+})
+
+describe('hasElementChanged (F4 — approval card re-validation)', () => {
+  const base = el({ tag: 'button', type: 'button', name: 'Delete my account' })
+
+  it('is false when nothing meaningful changed', () => {
+    expect(hasElementChanged(base, { ...base })).toBe(false)
+  })
+
+  it('ignores value/rect drift — these change on every ordinary reflow, not just a swapped element', () => {
+    const after = { ...base, value: 'something typed', rect: { x: 999, y: 999, width: 1, height: 1 } }
+    expect(hasElementChanged(base, after)).toBe(false)
+  })
+
+  it('is true when the name changed (e.g. an async price recalculation relabeled the button)', () => {
+    expect(hasElementChanged(base, { ...base, name: 'Apply discount' })).toBe(true)
+  })
+
+  it('is true when the type changed', () => {
+    expect(hasElementChanged(base, { ...base, type: 'submit' })).toBe(true)
+  })
+
+  it('is true when the href changed', () => {
+    const withHref = el({ tag: 'a', name: 'Docs', href: 'https://example.test/a' })
+    expect(hasElementChanged(withHref, { ...withHref, href: 'https://evil.test/x' })).toBe(true)
+  })
+
+  it('is true when sensitivity changed', () => {
+    expect(hasElementChanged(base, { ...base, sensitive: true })).toBe(true)
+  })
+
+  it('is true when the tag changed', () => {
+    expect(hasElementChanged(base, { ...base, tag: 'div' })).toBe(true)
+  })
+
+  it('is true when the element disappeared, or a different one now occupies the same index', () => {
+    expect(hasElementChanged(base, undefined)).toBe(true)
+    expect(hasElementChanged(undefined, base)).toBe(true)
+  })
+
+  it('is false when there was never a target element on either side (e.g. a navigate spec)', () => {
+    expect(hasElementChanged(undefined, undefined)).toBe(false)
   })
 })
 

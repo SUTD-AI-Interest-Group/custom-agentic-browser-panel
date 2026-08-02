@@ -3,6 +3,9 @@
 // Ollama, Anthropic's /v1 compat layer, LM Studio, vLLM, ...).
 
 import type { McpSettings } from '../mcp/config'
+import { clearAuth } from '../mcp/auth'
+import { openSettings, sealSettings, secretValues } from './settingsVault'
+import { isSealed } from './vaultFormat'
 
 /**
  * Which provider a config talks to. Selects its *capability profile* — reasoning
@@ -274,6 +277,18 @@ export function defaultSettings(): Settings {
  * their own endpoint. Erasing keys is what "Erase all data" is for.
  */
 export function resetSettingsKeepingProviders(settings: Settings): Settings {
+  // The MCP server list is dropped below, but each server's OAuth tokens live
+  // in a SEPARATE mcpAuth:<server> sidecar key (src/mcp/auth.ts) that this
+  // reset would otherwise never touch — they'd sit sealed in storage
+  // indefinitely, orphaned and unmanageable from the UI the moment their
+  // server disappears from Settings. Best-effort and fire-and-forget, like
+  // every other cleanup in this codebase (saveShot's pruneShots, etc.): a
+  // transient storage failure must never block the reset the user is waiting
+  // on, and this function stays synchronous so its one call site need not
+  // change to await it.
+  for (const name of Object.keys(settings.mcp?.servers ?? {})) {
+    void clearAuth(name).catch(() => {})
+  }
   return {
     ...structuredClone(EMPTY),
     providers: structuredClone(settings.providers),
@@ -346,11 +361,62 @@ export async function loadSettings(): Promise<Settings> {
   // base URL, so the capability-profile layer and model picker have a key to work
   // from. Use sites also fall back via `providerKind`, so this only persists it.
   settings.providers = settings.providers.map((p) => (p.kind ? p : { ...p, kind: inferKind(p.baseURL) }))
-  return settings
+  // Secrets are sealed at rest (see src/data/vault.ts). Open them here so every
+  // consumer of Settings sees plaintext; a pre-vault install is migrated in
+  // place on first load.
+  const { settings: opened, hadPlaintext, hadUnavailable } = await openSettings(settings)
+  if (hadUnavailable) warnVaultUnavailable()
+  if (hadPlaintext) await migrateSecretsToSealed(stored, opened)
+  return opened
+}
+
+let warnedVaultUnavailable = false
+
+/**
+ * One-time warning that some secrets came back from `loadSettings` still
+ * sealed because the vault was transiently unreachable (mirrors the
+ * once-flag pattern in `src/data/vault.ts`). The values themselves are left
+ * alone — see `openSettings`'s doc for why that passthrough is deliberate.
+ */
+function warnVaultUnavailable(): void {
+  if (warnedVaultUnavailable) return
+  warnedVaultUnavailable = true
+  console.warn(
+    '[vault] some secrets could not be decrypted this load — the vault is temporarily unavailable; sealed values are preserved and will decrypt on a later load',
+  )
 }
 
 export async function saveSettings(settings: Settings): Promise<void> {
-  await chrome.storage.local.set({ [STORAGE_KEY]: settings })
+  await chrome.storage.local.set({ [STORAGE_KEY]: await sealSettings(settings) })
+}
+
+/**
+ * One-way plaintext→sealed migration: seal, verify the round-trip in memory,
+ * re-read the stored blob to confirm nothing else wrote in the meantime, and
+ * only then overwrite it — a failed vault, or a genuine concurrent save (e.g.
+ * the user editing their key while this runs), never destroys or clobbers the
+ * user's keys. Skipped when nothing sealed (vault down) or when the re-read
+ * shows a newer write landed in the meantime; the next load re-migrates
+ * whatever is still plaintext. Concurrent migrations of the SAME plaintext
+ * both write valid ciphertext of it, so last-writer-wins between those two is
+ * safe — this guard exists only for a *different* concurrent write racing in.
+ * A residual TOCTOU window remains between the re-read and the `set` just
+ * below it: `chrome.storage` has no compare-and-swap, so a write landing in
+ * that single microtask gap is still clobbered. Accepted — the window is one
+ * microtask wide, and the next load's re-check self-heals whatever it missed.
+ */
+async function migrateSecretsToSealed(before: Partial<Settings> | undefined, opened: Settings): Promise<void> {
+  try {
+    const sealed = await sealSettings(opened)
+    if (!secretValues(sealed).some(isSealed)) return
+    const roundTrip = await openSettings(sealed)
+    if (JSON.stringify(secretValues(roundTrip.settings)) !== JSON.stringify(secretValues(opened))) return
+    const current = await chrome.storage.local.get(STORAGE_KEY)
+    if (JSON.stringify(current[STORAGE_KEY]) !== JSON.stringify(before)) return
+    await chrome.storage.local.set({ [STORAGE_KEY]: sealed })
+  } catch {
+    // Migration must never break loading.
+  }
 }
 
 /**

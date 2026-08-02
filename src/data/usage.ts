@@ -5,7 +5,15 @@
 // store would close a cycle, and neither module would compile alone.
 
 /** The clearable stores, in Data-tab display order. */
-export type StoreKey = 'conversations' | 'screenshots' | 'mcp' | 'artifacts' | 'memory' | 'skills' | 'research'
+export type StoreKey =
+  | 'conversations'
+  | 'screenshots'
+  | 'attachments'
+  | 'mcp'
+  | 'artifacts'
+  | 'memory'
+  | 'skills'
+  | 'research'
 
 export interface StoreUsage {
   /** Estimated bytes — see `estimateBytes`. */
@@ -65,6 +73,46 @@ export function estimateBytes(value: unknown): number {
     n += k.length + estimateBytes(v)
   }
   return n
+}
+
+/**
+ * Which rows to evict to satisfy an age ceiling and/or a byte-cap ceiling.
+ * Shared by every self-limiting store (screenshots, mcpArtifacts, artifacts) so
+ * the "never evict the last survivor" guard below is written — and tested —
+ * exactly once instead of drifting across near-identical copies.
+ *
+ * Two independent passes:
+ *  1. Age: anything older than `maxAgeMs` (if given) is doomed unconditionally,
+ *     even down to the last row — a store of nothing but ancient rows is
+ *     allowed to end up empty.
+ *  2. Byte cap: among the age-survivors, evict oldest-`recency`-first until
+ *     the remaining total is under `maxTotalBytes` — but NEVER the single
+ *     newest survivor, so a capture/artifact that alone busts the cap is not
+ *     deleted the moment after it was saved (the caller had just handed its id
+ *     back to the UI as "saved successfully").
+ *
+ * Pure so it is directly testable without any IndexedDB plumbing.
+ */
+export function planPrune(
+  rows: Array<{ id: string; bytes: number; recency: number }>,
+  opts: { maxTotalBytes: number; maxAgeMs?: number; now?: number },
+): string[] {
+  const now = opts.now ?? Date.now()
+  const agedOut = opts.maxAgeMs === undefined ? [] : rows.filter((r) => r.recency < now - opts.maxAgeMs!)
+  const agedOutIds = new Set(agedOut.map((r) => r.id))
+  const pool = rows.filter((r) => !agedOutIds.has(r.id))
+
+  // Oldest-recency-first, so the byte-cap pass below evicts the oldest
+  // survivors first and stops one short of emptying the pool.
+  const byAge = [...pool].sort((a, b) => a.recency - b.recency)
+  let total = byAge.reduce((n, r) => n + r.bytes, 0)
+  const byteEvicted: string[] = []
+  for (const r of byAge) {
+    if (total <= opts.maxTotalBytes || byteEvicted.length === pool.length - 1) break
+    byteEvicted.push(r.id)
+    total -= r.bytes
+  }
+  return [...agedOut.map((r) => r.id), ...byteEvicted]
 }
 
 /** Human-readable byte size for the Data tab. */

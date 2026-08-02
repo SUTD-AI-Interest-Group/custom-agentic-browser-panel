@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import type { LinkRef } from './blocks'
 import { getLinkPreview, type LinkPreview } from '../platform/linkPreview'
 import { faviconUrl } from './Chat'
+import { hostOfLink } from './linkHost'
 
 // A run of standalone links, each a card: favicon + domain + link text shown
 // immediately, then upgraded with OpenGraph title/description/image if a
@@ -17,18 +18,10 @@ export default function LinkCardStack({ links }: { links: LinkRef[] }) {
   )
 }
 
-function hostOf(url: string): string {
-  try {
-    return new URL(url).hostname.replace(/^www\./, '')
-  } catch {
-    return url
-  }
-}
-
 function LinkCard({ link }: { link: LinkRef }) {
   const [preview, setPreview] = useState<LinkPreview | null>(null)
   const [imgOk, setImgOk] = useState(true)
-  const host = hostOf(link.url)
+  const host = hostOfLink(link.url)
 
   useEffect(() => {
     let live = true

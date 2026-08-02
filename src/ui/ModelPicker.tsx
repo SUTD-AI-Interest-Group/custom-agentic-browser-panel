@@ -8,6 +8,7 @@ import {
   type Settings,
 } from '../data/settings'
 import { isReasoningModel, reasoningLevelsFor } from '../data/providerProfiles'
+import { resolveEffortSlider } from './effortSlider'
 import { useDismissOnOutside } from './hooks'
 
 /**
@@ -149,8 +150,7 @@ function EffortControl({
 
   const levels = reasoningLevelsFor(provider, modelId)
   const current = resolveReasoningEffort(provider, modelId)
-  const index = current ? Math.max(0, levels.indexOf(current)) : 0
-  const pct = levels.length > 1 ? (index / (levels.length - 1)) * 100 : 0
+  const { index, pct } = resolveEffortSlider(levels, current)
 
   return (
     <div className="model-menu-effort">

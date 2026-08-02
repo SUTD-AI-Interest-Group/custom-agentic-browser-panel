@@ -113,6 +113,24 @@ describe('models endpoints', () => {
   })
 })
 
+describe('native document support', () => {
+  it('only the two native adapters accept native PDF parts', () => {
+    expect(profileFor('anthropic').supportsNativeDocuments).toBe(true)
+    expect(profileFor('openai').supportsNativeDocuments).toBe(true)
+    for (const kind of ['openrouter', 'groq', 'ollama', 'lmstudio', 'custom'] as const) {
+      expect(profileFor(kind).supportsNativeDocuments).toBe(false)
+      expect(profileFor(kind).nativeDocMaxBytes).toBe(0)
+    }
+  })
+
+  it('caps native PDFs below each provider request ceiling after base64 inflation', () => {
+    // Anthropic: 32MB request cap → 20MB raw (~27MB as base64) leaves prompt headroom.
+    expect(profileFor('anthropic').nativeDocMaxBytes).toBe(20 * 1024 * 1024)
+    // OpenAI: 50MB per-request cap → 35MB raw (~47MB as base64).
+    expect(profileFor('openai').nativeDocMaxBytes).toBe(35 * 1024 * 1024)
+  })
+})
+
 describe('isReasoningModel / reasoningLevelsFor', () => {
   it('honors a manual override over auto-detection', () => {
     // gpt-4o is not auto-detected, but a forced-on override shows the slider

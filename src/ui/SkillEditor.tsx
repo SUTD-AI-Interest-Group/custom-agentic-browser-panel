@@ -47,11 +47,26 @@ export default function SkillEditor({ mode, onBack }: { mode: EditorMode; onBack
     }
     try {
       await saveSkill({ name, description, body, icon: icon || undefined, userInvocable, modelInvocable })
-      if (renaming && originalName) await deleteSkill(originalName)
-      onBack()
     } catch (e) {
       setNotice(e instanceof Error ? e.message : String(e))
+      return
     }
+    if (renaming && originalName) {
+      try {
+        await deleteSkill(originalName)
+      } catch (e) {
+        // The rename itself already succeeded — a skill named `name` exists
+        // and is fully usable — so this must not read as an outright failure.
+        // Stay on the editor with an accurate notice instead of onBack(),
+        // which would silently hide that a stale duplicate is still there.
+        setNotice(
+          `Renamed, but couldn't remove the old copy ("${originalName}") — delete it manually. ` +
+            (e instanceof Error ? e.message : String(e)),
+        )
+        return
+      }
+    }
+    onBack()
   }
 
   async function duplicate() {

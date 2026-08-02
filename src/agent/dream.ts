@@ -8,10 +8,16 @@
 // period tracks the user's chosen interval (dreamIfDue), and on demand from the
 // Memory panel ("Dream now" → runDream). It is a single non-streaming
 // generateText call, so it works fine in a service worker with no DOM.
+//
+// Both entry points ultimately call runDream — dreamIfDue delegates to it once
+// due, and "Dream now" calls it directly — so the reentrancy guard lives
+// there (see acquireDreamLock below), not in dreamIfDue. A guard placed only
+// in dreamIfDue would never see "Dream now"'s direct calls.
 
 import { generateText } from 'ai'
 import { createModel } from './provider'
 import { getObserver } from './observability'
+import { PER_ATTEMPT_TIMEOUT_MS } from './resilience'
 import {
   getDreamProvider,
   loadSettings,
@@ -20,13 +26,16 @@ import {
   type Settings,
 } from '../data/settings'
 import {
+  clearDreamLock,
   deleteMemory,
+  getDreamLock,
   getDreamState,
   listMemories,
   listUnconsolidatedEpisodes,
   markEpisodesConsolidated,
   pruneConsolidatedEpisodes,
   saveMemory,
+  setDreamLock,
   setDreamState,
   updateMemory,
   type EpisodeRecord,
@@ -46,108 +55,270 @@ export type DreamOutcome =
 // guard is not, so a short interval still won't interrupt active use.
 const MIN_IDLE_MS = 30 * 60 * 1000
 
+// A lastDreamAt (or lock timestamp, see isLockStale) more than this far in the
+// future indicates the system clock was briefly wrong when it was recorded
+// (NTP correction, manual clock change, VM snapshot restore) and has since
+// moved back — not a real future dream. Treated as invalid rather than
+// trusted, so one clock blip doesn't block dreaming until the real clock
+// naturally catches up to a bogus value that could be arbitrarily far ahead.
+const CLOCK_SKEW_TOLERANCE_MS = 5 * 60 * 1000
+
+// Bounds the generateText call below (see runDream) so a hung provider
+// socket can't wedge a dream cycle — and, with it, the lock that guards it —
+// forever. Reuses the research pipeline's own per-attempt timeout
+// (resilience.ts) rather than inventing a new number: an attempt here is a
+// single non-streaming generation that can legitimately be slow against a
+// local model, so the bound must comfortably exceed normal latency and
+// exist only to break a genuinely stuck connection — exactly
+// PER_ATTEMPT_TIMEOUT_MS's own reasoning.
+export const DREAM_MODEL_TIMEOUT_MS = PER_ATTEMPT_TIMEOUT_MS
+
+/**
+ * Comfortably longer than one real dream cycle can now legitimately take:
+ * the generateText call is capped at DREAM_MODEL_TIMEOUT_MS and the
+ * observability flush is separately bounded (~10s — DEFAULT_FLUSH_TIMEOUT_MS
+ * in langfuseClient.ts), plus a fixed buffer for the fast, local (IndexedDB)
+ * bookkeeping around them. This used to be a flat 5 minutes, unrelated to how
+ * long the guarded call could actually take — a slow local model legitimately
+ * exceeding 5 minutes would expire the lock while the first dreamer was still
+ * working, letting a SECOND one start concurrently (the exact interleaving
+ * this lock exists to prevent). Tying the TTL to the same ceiling as the
+ * call it guards means expiry now really does mean the holder crashed (the
+ * service worker was killed, per MV3's own rules) mid-dream, not merely that
+ * it's still working.
+ */
+export const DREAM_LOCK_TTL_MS = DREAM_MODEL_TIMEOUT_MS + 60_000
+
 const VALID_KINDS: MemoryKind[] = ['fact', 'preference', 'project', 'summary']
 const MAX_ADDS_PER_DREAM = 12
-const MAX_MEMORY_CHARS = 600
+export const MAX_MEMORY_CHARS = 600
 const MAX_MESSAGE_CHARS = 1_500
-const MAX_TRANSCRIPT_CHARS = 24_000
+export const MAX_TRANSCRIPT_CHARS = 24_000
+// A hard ceiling on how many unconsolidated episodes one cycle will even look
+// at (oldest first — listUnconsolidatedEpisodes sorts ascending by
+// startedAt). Without this, a backlog that grows because the dream model
+// keeps failing to produce parseable output (see PARSE_FAILURE_WARNING_THRESHOLD
+// below) would make every future attempt's bookkeeping scale with the whole
+// backlog forever.
+const MAX_EPISODES_PER_DREAM = 500
+// After this many consecutive unparseable-output cycles, the skipped reason
+// says so explicitly instead of the same generic "will retry next cycle" —
+// the backlog is still bounded (MAX_EPISODES_PER_DREAM) either way, but a
+// silently-stuck dreaming model deserves a louder signal in the Memory panel.
+const PARSE_FAILURE_WARNING_THRESHOLD = 3
 
 /** Alarm entry point: dream only when due and the user has gone quiet. */
 export async function dreamIfDue(): Promise<DreamOutcome> {
   const settings = await loadSettings()
   const state = await getDreamState()
-  if (state.lastDreamAt && Date.now() - state.lastDreamAt < resolveDreamIntervalMs(settings)) {
-    return { status: 'skipped', reason: 'Dreamed recently.' }
-  }
   const episodes = await listUnconsolidatedEpisodes()
-  if (episodes.length === 0) return { status: 'skipped', reason: 'Nothing new to consolidate.' }
-  const lastActivity = Math.max(...episodes.map((e) => e.updatedAt))
-  if (Date.now() - lastActivity < MIN_IDLE_MS) {
-    return { status: 'skipped', reason: 'User is still active.' }
-  }
+  const due = evaluateDreamDue({
+    lastDreamAt: state.lastDreamAt,
+    episodes,
+    intervalMs: resolveDreamIntervalMs(settings),
+    now: Date.now(),
+  })
+  if (!due.due) return { status: 'skipped', reason: due.reason }
   return runDream(settings)
+}
+
+export interface DreamDueInput {
+  lastDreamAt: number | null
+  episodes: Pick<EpisodeRecord, 'updatedAt'>[]
+  intervalMs: number
+  now: number
+}
+
+export type DreamDueResult = { due: true } | { due: false; reason: string }
+
+/**
+ * Pure "is it time to dream" predicate, extracted out of dreamIfDue so every
+ * timing edge case (first run, clock skew, a zero/huge interval, no episodes,
+ * the idle guard, a pathologically large backlog) is directly testable
+ * without touching storage. Order matters: the interval check runs before the
+ * episode/idle checks, matching the original behavior — a too-recent last
+ * dream skips before anything else is even considered.
+ */
+export function evaluateDreamDue(input: DreamDueInput): DreamDueResult {
+  const { lastDreamAt, episodes, intervalMs, now } = input
+  const skewedIntoFuture = lastDreamAt !== null && lastDreamAt - now > CLOCK_SKEW_TOLERANCE_MS
+  const effectiveLastDreamAt = skewedIntoFuture ? null : lastDreamAt
+  if (effectiveLastDreamAt !== null && now - effectiveLastDreamAt < intervalMs) {
+    return { due: false, reason: 'Dreamed recently.' }
+  }
+  if (episodes.length === 0) return { due: false, reason: 'Nothing new to consolidate.' }
+  // A reduce, not Math.max(...spread): an array of tens of thousands of
+  // episodes (an unbounded backlog left by a persistently-broken dream model)
+  // would otherwise risk "RangeError: Maximum call stack size exceeded" on the
+  // spread — thrown from an alarm handler, that would silently and
+  // permanently stop dreaming from ever running again.
+  const lastActivity = episodes.reduce((max, e) => Math.max(max, e.updatedAt), 0)
+  if (now - lastActivity < MIN_IDLE_MS) {
+    return { due: false, reason: 'User is still active.' }
+  }
+  return { due: true }
 }
 
 /**
  * Runs one full dream cycle immediately (used by the "Dream now" button and the
  * due-check above). Ignores the interval/idle gates — the caller decides when.
  * `preloaded` lets `dreamIfDue` avoid re-reading settings it just loaded.
+ *
+ * Reentrancy: dream.ts runs in two independent JS realms that share no
+ * in-memory state — the service worker's alarm and the side panel's "Dream
+ * now" — and the service worker can be killed and restarted by MV3 at any
+ * point, including mid-dream. An in-memory flag would only ever guard calls
+ * within the realm that set it, and would vanish on a service-worker restart
+ * anyway, so the mutex here is backed by chrome.storage.local (visible to
+ * both realms, and outlives a service-worker restart) instead — see
+ * acquireDreamLock/releaseDreamLock.
  */
 export async function runDream(preloaded?: Settings): Promise<DreamOutcome> {
   const settings = preloaded ?? (await loadSettings())
   const selected = getDreamProvider(settings)
   if (!selected) return { status: 'skipped', reason: 'No model configured.' }
 
-  const episodes = await listUnconsolidatedEpisodes()
-  if (episodes.length === 0) return { status: 'skipped', reason: 'Nothing new to consolidate.' }
-  const memories = await listMemories()
+  const token = await acquireDreamLock()
+  if (!token) return { status: 'skipped', reason: 'Another dream cycle is already in progress.' }
 
-  // Observability: the dream is a single generation, in its own trace (no chat
-  // session — it runs in the background service worker).
-  const observer = getObserver(observabilityConfig(settings))
-  const trace = observer.enabled
-    ? observer.startTrace({ name: 'dream', tags: ['dreaming'] })
-    : undefined
-  const prompt = buildDreamPrompt(memories, episodes)
-  const gen = trace?.generation({ name: 'dream', model: selected.modelId, input: prompt })
-
-  let text: string
   try {
-    const res = await generateText({
-      model: createModel(selected.provider, selected.modelId),
-      // v7 renamed `system` to `instructions` (`system` still works, deprecated).
-      instructions: DREAM_SYSTEM_PROMPT,
-      prompt,
-    })
-    text = res.text
-    gen?.end({ output: text, usage: res.usage })
-  } catch (err) {
-    gen?.end({ level: 'ERROR', statusMessage: err instanceof Error ? err.message : String(err) })
-    trace?.end()
-    await observer.flush()
-    throw err
-  }
+    // Listed only AFTER the lock is held, not before: a concurrent cycle that
+    // started first may have already consolidated everything by the time
+    // this one gets in, and re-checking here (rather than trusting a
+    // pre-lock read) is what makes the "no lost/duplicated memories"
+    // guarantee real instead of merely probable.
+    const pending = await listUnconsolidatedEpisodes()
+    if (pending.length === 0) return { status: 'skipped', reason: 'Nothing new to consolidate.' }
+    const episodes = pending.slice(0, MAX_EPISODES_PER_DREAM)
+    const memories = await listMemories()
 
-  const ops = parseDreamOps(text)
-  if (!ops) {
-    trace?.end({ metadata: { parseError: true } })
-    await observer.flush()
-    return { status: 'skipped', reason: 'Model returned unparseable output; will retry next cycle.' }
-  }
+    // Observability: the dream is a single generation, in its own trace (no chat
+    // session — it runs in the background service worker).
+    const observer = getObserver(observabilityConfig(settings))
+    const trace = observer.enabled
+      ? observer.startTrace({ name: 'dream', tags: ['dreaming'] })
+      : undefined
+    const prompt = buildDreamPrompt(memories, episodes)
+    const gen = trace?.generation({ name: 'dream', model: selected.modelId, input: prompt })
 
-  let added = 0
-  let updated = 0
-  let deleted = 0
-
-  for (const op of ops.add.slice(0, MAX_ADDS_PER_DREAM)) {
-    await saveMemory({ ...op, source: 'dream' })
-    added++
-  }
-  for (const op of ops.update) {
-    if (await updateMemory(op.id, op.patch)) updated++
-  }
-  for (const id of ops.delete) {
-    if (memories.some((m) => m.id === id)) {
-      await deleteMemory(id)
-      deleted++
+    let text: string
+    try {
+      const res = await generateText({
+        model: createModel(selected.provider, selected.modelId),
+        // v7 renamed `system` to `instructions` (`system` still works, deprecated).
+        instructions: DREAM_SYSTEM_PROMPT,
+        prompt,
+        // See DREAM_MODEL_TIMEOUT_MS: without this, a hung socket keeps the
+        // lock held indefinitely (no error ever reaches the finally below to
+        // release it), and nothing but the TTL fallback could ever reclaim it.
+        abortSignal: AbortSignal.timeout(DREAM_MODEL_TIMEOUT_MS),
+      })
+      text = res.text
+      gen?.end({ output: text, usage: res.usage })
+    } catch (err) {
+      gen?.end({ level: 'ERROR', statusMessage: err instanceof Error ? err.message : String(err) })
+      trace?.end()
+      await observer.flush()
+      throw err
     }
+
+    const ops = parseDreamOps(text)
+    if (!ops) {
+      trace?.end({ metadata: { parseError: true } })
+      await observer.flush()
+      const state = await getDreamState()
+      const failures = (state.consecutiveParseFailures ?? 0) + 1
+      await setDreamState({ ...state, consecutiveParseFailures: failures })
+      const reason =
+        failures >= PARSE_FAILURE_WARNING_THRESHOLD
+          ? `Model returned unparseable output ${failures} times in a row — check your dreaming model. Still retrying (oldest ${episodes.length} conversation${episodes.length === 1 ? '' : 's'} pending).`
+          : 'Model returned unparseable output; will retry next cycle.'
+      return { status: 'skipped', reason }
+    }
+
+    let added = 0
+    let updated = 0
+    let deleted = 0
+
+    for (const op of ops.add.slice(0, MAX_ADDS_PER_DREAM)) {
+      await saveMemory({ ...op, source: 'dream' })
+      added++
+    }
+    for (const op of ops.update) {
+      if (await updateMemory(op.id, op.patch)) updated++
+    }
+    for (const id of ops.delete) {
+      if (memories.some((m) => m.id === id)) {
+        await deleteMemory(id)
+        deleted++
+      }
+    }
+    if (ops.daySummary) {
+      await saveMemory({ kind: 'summary', content: ops.daySummary, tags: ['day-summary'], source: 'dream' })
+      added++
+    }
+
+    await markEpisodesConsolidated(episodes.map((e) => e.id))
+    await pruneConsolidatedEpisodes()
+    await setDreamState({ lastDreamAt: Date.now(), lastSummary: ops.daySummary, consecutiveParseFailures: 0 })
+
+    trace?.end({
+      output: ops.daySummary ?? undefined,
+      metadata: { added, updated, deleted, episodes: episodes.length },
+    })
+    await observer.flush()
+
+    return { status: 'dreamed', added, updated, deleted, episodes: episodes.length, summary: ops.daySummary }
+  } finally {
+    await releaseDreamLock(token)
   }
-  if (ops.daySummary) {
-    await saveMemory({ kind: 'summary', content: ops.daySummary, tags: ['day-summary'], source: 'dream' })
-    added++
-  }
+}
 
-  await markEpisodesConsolidated(episodes.map((e) => e.id))
-  await pruneConsolidatedEpisodes()
-  await setDreamState({ lastDreamAt: Date.now(), lastSummary: ops.daySummary })
+// ---------------------------------------------------------------------------
+// Reentrancy lock (chrome.storage.local-backed — see runDream's doc comment).
+// Exported for direct testing of the mutex mechanics (staleness, clock skew,
+// cross-instance durability) without needing to drive a full dream cycle for
+// every scenario — same reasoning as exporting buildDreamPrompt/parseDreamOps
+// below.
+// ---------------------------------------------------------------------------
 
-  trace?.end({
-    output: ops.daySummary ?? undefined,
-    metadata: { added, updated, deleted, episodes: episodes.length },
-  })
-  await observer.flush()
+/**
+ * Try to become the sole dreamer. Mirrors src/data/settings.ts's
+ * migrateSecretsToSealed: write a token, then re-read to catch another
+ * acquirer who wrote in the same tick — chrome.storage has no real
+ * compare-and-swap, so a one-microtask race window remains (same accepted
+ * tradeoff as that guard). Returns the token to hold (pass to
+ * releaseDreamLock), or null if someone else holds a live lock.
+ */
+export async function acquireDreamLock(): Promise<string | null> {
+  const existing = await getDreamLock()
+  if (existing && !isLockStale(existing, Date.now())) return null
+  const token = crypto.randomUUID()
+  await setDreamLock({ token, acquiredAt: Date.now() })
+  const after = await getDreamLock()
+  return after?.token === token ? token : null
+}
 
-  return { status: 'dreamed', added, updated, deleted, episodes: episodes.length, summary: ops.daySummary }
+/**
+ * A lock is stale — abandoned by a holder that crashed mid-dream, or written
+ * under a clock that has since jumped backward — once it's older than the
+ * TTL, or, symmetrically, if its own timestamp is implausibly far in the
+ * future (see CLOCK_SKEW_TOLERANCE_MS).
+ */
+function isLockStale(lock: { acquiredAt: number }, now: number): boolean {
+  const age = now - lock.acquiredAt
+  if (age < -CLOCK_SKEW_TOLERANCE_MS) return true
+  return age > DREAM_LOCK_TTL_MS
+}
+
+/**
+ * Release, but only if the lock is still the one this call acquired — a lock
+ * this call lost (it went stale and someone else reclaimed it) must not be
+ * torn out from under that new holder.
+ */
+export async function releaseDreamLock(token: string): Promise<void> {
+  const current = await getDreamLock()
+  if (current?.token === token) await clearDreamLock()
 }
 
 // ---------------------------------------------------------------------------
@@ -178,7 +349,16 @@ Respond with ONLY a JSON object, no markdown fences, no commentary:
   "daySummary": "..." or null
 }`
 
-function buildDreamPrompt(memories: MemoryRecord[], episodes: EpisodeRecord[]): string {
+/**
+ * Builds the dream prompt, keeping the whole transcript section within
+ * MAX_TRANSCRIPT_CHARS: each episode block is truncated to whatever budget
+ * remains before being appended, rather than appended whole-or-not-at-all — a
+ * single very long episode (a power-user's hour-long, many-turn session)
+ * would otherwise blow far past the nominal budget on its own, since checking
+ * the budget only BEFORE adding a block (the original code) never accounts
+ * for that block's own size.
+ */
+export function buildDreamPrompt(memories: MemoryRecord[], episodes: EpisodeRecord[]): string {
   const memoryBlock =
     memories.length === 0
       ? '(no memories yet)'
@@ -195,7 +375,8 @@ function buildDreamPrompt(memories: MemoryRecord[], episodes: EpisodeRecord[]): 
       const text = m.text.length > MAX_MESSAGE_CHARS ? `${m.text.slice(0, MAX_MESSAGE_CHARS)} […]` : m.text
       return `${m.role === 'user' ? 'User' : 'Assistant'}: ${text}`
     })
-    const block = `### Conversation (${new Date(e.startedAt).toISOString()})\n${lines.join('\n')}`
+    let block = `### Conversation (${new Date(e.startedAt).toISOString()})\n${lines.join('\n')}`
+    if (block.length > budget) block = `${block.slice(0, budget)} […]`
     budget -= block.length
     transcripts.unshift(block)
   }
@@ -218,14 +399,14 @@ function buildDreamPrompt(memories: MemoryRecord[], episodes: EpisodeRecord[]): 
 // Output parsing — defensive, the model's JSON discipline varies.
 // ---------------------------------------------------------------------------
 
-interface DreamOps {
+export interface DreamOps {
   add: Array<{ kind: MemoryKind; content: string; tags: string[] }>
   update: Array<{ id: string; patch: { content?: string; tags?: string[] } }>
   delete: string[]
   daySummary: string | null
 }
 
-function parseDreamOps(text: string): DreamOps | null {
+export function parseDreamOps(text: string): DreamOps | null {
   const start = text.indexOf('{')
   const end = text.lastIndexOf('}')
   if (start === -1 || end <= start) return null

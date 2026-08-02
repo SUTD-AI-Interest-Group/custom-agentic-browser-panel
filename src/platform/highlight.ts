@@ -335,6 +335,13 @@ function injClear(rootId: string, styleId: string, hlName: string, ringAttr: str
   document.querySelectorAll(`[${anchorAttr}]`).forEach((n) => n.removeAttribute(anchorAttr))
   const registry = (CSS as unknown as { highlights?: Map<string, unknown> }).highlights
   registry?.delete(hlName)
+  // injPillSync's self-disconnect only runs when its ResizeObserver/resize
+  // listener actually fires — on a page that highlights/clears repeatedly
+  // with no intervening reflow, each cycle's sync would otherwise stay alive
+  // (harmlessly idle) until some unrelated later layout event. A synthetic
+  // resize right after removing the root makes any stale sync notice
+  // immediately instead of waiting for one.
+  window.dispatchEvent(new Event('resize'))
 }
 
 /** Note a tab as highlighted, both in-panel and where the worker can see it. */

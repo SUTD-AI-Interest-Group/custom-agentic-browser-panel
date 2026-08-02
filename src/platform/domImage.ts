@@ -27,13 +27,27 @@ function inlineComputedStyles(source: Element, target: Element) {
   }
 }
 
+/**
+ * True for any `rgb()`/`rgba()` color string whose alpha channel is exactly
+ * zero — not just black. `getComputedStyle().backgroundColor` normalizes to
+ * `rgb(r, g, b)` (implicit alpha 1) or `rgba(r, g, b, a)`; a color with no
+ * alpha channel at all is never zero-alpha. Painting with a zero-alpha fill
+ * style paints nothing, so ANY such color defeats `opaqueBackground`'s whole
+ * point — pattern-matching pure black specifically missed every other one.
+ */
+export function isZeroAlphaColor(bg: string): boolean {
+  const m = bg.match(/^rgba?\(\s*\d+\s*,\s*\d+\s*,\s*\d+\s*(?:,\s*([\d.]+)\s*)?\)$/)
+  if (!m) return false
+  return m[1] !== undefined && Number(m[1]) === 0
+}
+
 // The nearest opaque background up the ancestor chain, so the PNG is not
 // transparent (which pastes as black/white in many apps).
 function opaqueBackground(el: HTMLElement): string {
   let node: HTMLElement | null = el
   while (node) {
     const bg = getComputedStyle(node).backgroundColor
-    if (bg && bg !== 'transparent' && !/rgba?\(0, 0, 0, 0\)/.test(bg)) return bg
+    if (bg && bg !== 'transparent' && !isZeroAlphaColor(bg)) return bg
     node = node.parentElement
   }
   return getComputedStyle(document.body).backgroundColor || '#ffffff'

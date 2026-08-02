@@ -18,11 +18,20 @@ interface Pending {
   timer: number
 }
 
-class ExecHost {
+/** Exported for host.test.ts (a fake-iframe harness); getExecHost() is the real singleton. */
+export class ExecHost {
   private frame: HTMLIFrameElement | null = null
   private ready: Promise<void> | null = null
   private pending = new Map<string, Pending>()
   private onReady: (() => void) | null = null
+  // Gates `run` calls into a strict FIFO (see `run`). The sandbox is one JS
+  // realm and `evalCode` is synchronous, so it can never truly service two
+  // `exec:run`s at once regardless — queuing here too means a call's timeout
+  // clock starts when it actually begins, not while merely waiting its turn,
+  // and it means `destroy` (below) never has more than one real request to
+  // collaterally reject: a queued-but-not-yet-serviced call hasn't posted
+  // anything yet.
+  private runQueue: Promise<void> = Promise.resolve()
 
   private listener = (e: MessageEvent) => {
     if (!this.frame || e.source !== this.frame.contentWindow) return
@@ -42,20 +51,41 @@ class ExecHost {
 
   /** Run one script; rejects if the sandbox is dead or the round-trip wedges. */
   async run(code: string, limits: { timeoutMs: number; memoryBytes: number }): Promise<RunOutcome> {
-    await this.ensure()
-    const reply = await this.roundTrip(
-      {
-        type: 'exec:run',
-        requestId: crypto.randomUUID(),
-        code,
-        timeoutMs: limits.timeoutMs,
-        memoryBytes: limits.memoryBytes,
-      },
-      // The engine interrupts itself at timeoutMs; the grace covers messaging.
-      limits.timeoutMs + RUN_GRACE_MS,
-    )
-    if (!reply.ok || !reply.outcome) throw new Error(reply.error ?? 'sandbox failed')
-    return reply.outcome
+    // Join the queue before doing anything else, then wait for our turn. The
+    // previous link always resolves (never rejects — see `finally` below) so
+    // one call's failure can never poison every call queued behind it.
+    const previous = this.runQueue
+    let releaseTurn!: () => void
+    this.runQueue = new Promise((resolve) => {
+      releaseTurn = resolve
+    })
+    await previous
+    try {
+      // Re-ensure() per call, not just once: an earlier call's timeout may
+      // have torn the sandbox down (see `roundTrip`) while this one was
+      // queued — this reboots it fresh so a queued call still gets a real,
+      // full-budget attempt instead of failing against a frame that no
+      // longer exists.
+      await this.ensure()
+      const reply = await this.roundTrip(
+        {
+          type: 'exec:run',
+          requestId: crypto.randomUUID(),
+          code,
+          timeoutMs: limits.timeoutMs,
+          memoryBytes: limits.memoryBytes,
+        },
+        // The engine interrupts itself at timeoutMs; the grace covers
+        // messaging. Started only now — once it's actually this call's turn
+        // — not at the moment `run` was first invoked, so queuing delay
+        // behind an earlier call never eats into this call's own budget.
+        limits.timeoutMs + RUN_GRACE_MS,
+      )
+      if (!reply.ok || !reply.outcome) throw new Error(reply.error ?? 'sandbox failed')
+      return reply.outcome
+    } finally {
+      releaseTurn()
+    }
   }
 
   private ensure(): Promise<void> {
@@ -117,6 +147,11 @@ class ExecHost {
     this.frame = null
     this.ready = null
     this.onReady = null
+    // `run`'s queue means at most one exec:run is ever posted (i.e. actually
+    // in `pending`) at a time — a call queued behind another hasn't posted
+    // its message yet, so it can't be sitting in here to collaterally reject.
+    // This loop's only remaining job is cleanly failing whichever single
+    // request (run or the init handshake) actually wedged.
     for (const p of this.pending.values()) {
       clearTimeout(p.timer)
       p.reject(new Error('sandbox torn down'))

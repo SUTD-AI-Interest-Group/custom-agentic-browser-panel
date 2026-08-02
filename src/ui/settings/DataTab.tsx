@@ -3,10 +3,12 @@ import { resetSettingsKeepingProviders, type Settings } from '../../data/setting
 import { clearStore, eraseAllData, storageReport } from '../../data/storage'
 import { formatBytes, type StorageReport, type StoreKey } from '../../data/usage'
 import { Section } from './primitives'
+import { SealedChip } from './SealedChip'
 
 const ROWS: Array<{ key: StoreKey; label: string }> = [
   { key: 'conversations', label: 'Conversations' },
   { key: 'screenshots', label: 'Screenshots' },
+  { key: 'attachments', label: 'Attachments' },
   { key: 'mcp', label: 'MCP content' },
   { key: 'artifacts', label: 'Artifacts' },
   { key: 'memory', label: 'Memory' },
@@ -16,8 +18,9 @@ const ROWS: Array<{ key: StoreKey; label: string }> = [
 
 /** What clearing each store actually destroys — revealed once the button is armed. */
 const CLEAR_EFFECT: Record<StoreKey, string> = {
-  conversations: 'Deletes every chat, its screenshots, its MCP content and its artifacts.',
+  conversations: 'Deletes every chat, its screenshots, its attachments, its MCP content and its artifacts.',
   screenshots: 'Deletes every captured image.',
+  attachments: 'Deletes every file attached to a message. Old chats show a note in their place.',
   mcp: 'Deletes media and documents returned by MCP tools.',
   artifacts: 'Deletes every web artifact the agent created.',
   memory: 'Deletes all memories and the episode log.',
@@ -83,6 +86,7 @@ export default function DataTab({
   return (
     <div className="settings-tabpane">
       <Section title="Data & storage">
+        <SealedChip scope="all" />
         {!report ? (
           <p className="hint">Measuring…</p>
         ) : (
@@ -131,7 +135,10 @@ export default function DataTab({
         <div className="danger-row">
           <div className="data-row-main">
             <span className="data-label">Reset settings to defaults</span>
-            <span className="data-detail">Keeps your chats, memory, skills and API keys.</span>
+            <span className="data-detail">
+              Keeps your chats, memory, skills and provider API keys. Removes MCP servers, Langfuse
+              keys, and every other preference.
+            </span>
           </div>
           <button
             className={`btn small ${armed === 'settings' ? 'danger-solid' : 'ghost'}`}

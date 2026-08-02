@@ -291,6 +291,20 @@ export class McpManager {
       // 'connecting', …) — don't stamp this dead attempt's failure over it or
       // schedule a retry it no longer wants.
       if (stale()) throw err
+      // A catalog-fetch failure (listCatalog, above) lands here too, AFTER
+      // slot.client/transport were already installed by a successful
+      // handshake — without this, the slot is left internally inconsistent
+      // (a live client, but status:'error'), and both ensureConnected's
+      // `if (slot.client) return` guard and scheduleReconnect's `!slot.client`
+      // guard below then permanently no-op: the server's tools vanish from
+      // the model's catalog forever, with no auto-recovery. Close and clear
+      // whatever this attempt installed so those guards can do their job.
+      if (slot.client) {
+        const client = slot.client
+        slot.client = undefined
+        slot.transport = undefined
+        void client.close().catch(() => {})
+      }
       if (err instanceof UnauthorizedError) {
         slot.status = 'needs-auth'
         slot.error = 'This server requires authorization.'

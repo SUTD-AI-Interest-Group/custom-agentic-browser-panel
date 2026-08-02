@@ -14,6 +14,18 @@ test('reconstructAbstract rebuilds plain text from the inverted index', () => {
   expect(reconstructAbstract(null)).toBe('')
 })
 
+test('reconstructAbstract is bounded against an adversarial/corrupted word position', () => {
+  // A single huge position used to size a real (sparse) array to that index —
+  // real OpenAlex abstracts are never remotely this long, so this can only be
+  // corrupted or adversarial metadata. It must be skipped, not allocated for,
+  // and the function must stay fast regardless of how large the position is.
+  const start = performance.now()
+  const text = reconstructAbstract({ real: [0, 1, 2], bogus: [100_000_000] })
+  const elapsed = performance.now() - start
+  expect(text).toBe('real real real')
+  expect(elapsed).toBeLessThan(300)
+})
+
 test('parseOpenAlexWork maps title/abstract/authors/url', () => {
   const r = parseOpenAlexWork({
     title: 'On Widgets',

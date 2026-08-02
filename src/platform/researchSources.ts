@@ -25,13 +25,22 @@ export interface AcademicResult {
   pdfUrl?: string
 }
 
+/** Real abstracts are at most a few thousand words — a position anywhere near
+ *  this cap can only be corrupted or adversarial metadata. Skipping it (rather
+ *  than sizing the reconstruction array to it) is what keeps reconstructAbstract
+ *  bounded instead of stalling on a single bad record. */
+const MAX_ABSTRACT_WORDS = 20_000
+
 /** OpenAlex stores abstracts as an inverted index {word: [positions]}. Rebuild
  *  the plain text by placing each word at its position(s). Pure/testable. */
 export function reconstructAbstract(inverted: Record<string, number[]> | null | undefined): string {
   if (!inverted) return ''
   const slots: string[] = []
   for (const [word, positions] of Object.entries(inverted)) {
-    for (const p of positions) slots[p] = word
+    for (const p of positions) {
+      if (p < 0 || p >= MAX_ABSTRACT_WORDS) continue
+      slots[p] = word
+    }
   }
   return slots.filter((w) => w !== undefined).join(' ').trim()
 }

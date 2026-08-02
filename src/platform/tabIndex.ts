@@ -174,12 +174,23 @@ export function findDuplicates(tabs: { tabId: number; url: string }[]): { url: s
   return [...byKey.values()].filter((c) => c.tabIds.length > 1)
 }
 
-/** Best-effort host for display; falls back to the raw URL for odd schemes. */
+/** Cap for a URL surviving into the model-facing index as-is, matching the
+ *  spirit of clampGist's budget: a single tab must not be able to blow up the
+ *  "~10k characters for 60 tabs" cost model this module exists to guarantee. */
+const URL_DISPLAY_CHARS = 500
+
+/** Truncate a long string for display — no attempt to preserve meaning past the cut. */
+function clampUrl(url: string, max = URL_DISPLAY_CHARS): string {
+  return url.length > max ? `${url.slice(0, max)}…` : url
+}
+
+/** Best-effort host for display; falls back to a truncated raw URL for odd
+ *  schemes (a data: URL has no real .host, and can otherwise be enormous). */
 export function hostOf(url: string): string {
   try {
-    return new URL(url).host || url
+    return new URL(url).host || clampUrl(url)
   } catch {
-    return url
+    return clampUrl(url)
   }
 }
 
@@ -232,8 +243,10 @@ export async function listTabFacts(): Promise<(TabFacts & { url: string })[]> {
       tabId: t.id!,
       windowId: t.windowId,
       title: t.title ?? '(untitled)',
+      // hostOf() gets the FULL url (correct parsing needs the whole string);
+      // only the value that lands in the record is capped for display.
       host: hostOf(t.url ?? ''),
-      url: t.url ?? '',
+      url: clampUrl(t.url ?? ''),
       pinned: t.pinned ?? false,
       active: t.active ?? false,
       groupId: t.groupId ?? TAB_GROUP_ID_NONE,
@@ -288,8 +301,10 @@ export async function buildTabIndex(): Promise<TabIndex> {
       tabId: t.id!,
       windowId: t.windowId,
       title: t.title ?? '(untitled)',
+      // hostOf() gets the FULL url (correct parsing needs the whole string);
+      // only the record's own `url` field is capped for display.
       host: hostOf(url),
-      url,
+      url: clampUrl(url),
       gist: gists.get(t.id!) ?? '',
       pinned: t.pinned ?? false,
       active: t.active ?? false,
@@ -305,7 +320,10 @@ export async function buildTabIndex(): Promise<TabIndex> {
 
   return {
     tabs: records,
-    duplicates: findDuplicates(records.map((r) => ({ tabId: r.tabId, url: r.url }))),
+    // Dedup on the FULL urls (tabs, not records) — clustering on the
+    // display-clamped url could make two distinct long URLs collide on a
+    // shared truncated prefix.
+    duplicates: findDuplicates(tabs.map((t) => ({ tabId: t.id!, url: t.url ?? '' }))),
     probeLimitHit: plan.limitHit,
   }
 }

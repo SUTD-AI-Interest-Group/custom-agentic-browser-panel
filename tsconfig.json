@@ -10,7 +10,12 @@
     "skipLibCheck": true,
     "isolatedModules": true,
     "resolveJsonModule": true,
-    "types": ["chrome"]
+    // "node" is here for the *tests* only: several suites read a real fixture off
+    // disk (or shell out to esbuild) to exercise code that cannot run under jsdom —
+    // the `inj*` functions injected via chrome.scripting, and the sandbox CSP. The
+    // extension bundle itself never imports node:*; vite builds from vite.config.ts
+    // and would fail loudly if it did.
+    "types": ["chrome", "node"]
   },
   "include": ["src"]
 }

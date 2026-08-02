@@ -6,6 +6,7 @@ import PermissionsTab from './PermissionsTab'
 import MemoryTab from './MemoryTab'
 import SkillsTab from './SkillsTab'
 import DataTab from './DataTab'
+import { normalizeSettings } from './normalizeSettings'
 
 type TabKey = 'general' | 'providers' | 'permissions' | 'memory' | 'skills' | 'data'
 
@@ -17,29 +18,6 @@ const TABS: Array<{ key: TabKey; label: string }> = [
   { key: 'skills', label: 'Skills' },
   { key: 'data', label: 'Data' },
 ]
-
-/**
- * Normalize providers on commit — the cleanup that used to run on the old Save
- * button: trim/drop empty model lines, and keep `selected` pointing at a real
- * provider+model (auto-selecting the first available when it goes stale).
- */
-function normalizeSettings(s: Settings): Settings {
-  const next = structuredClone(s)
-  next.providers = next.providers.map((p) => ({
-    ...p,
-    models: p.models.map((m) => m.trim()).filter(Boolean),
-  }))
-  const valid =
-    next.selected &&
-    next.providers.some(
-      (p) => p.id === next.selected!.providerId && p.models.includes(next.selected!.modelId),
-    )
-  if (!valid) {
-    const first = next.providers.find((p) => p.models.length > 0)
-    next.selected = first ? { providerId: first.id, modelId: first.models[0] } : null
-  }
-  return next
-}
 
 /**
  * Tabbed settings surface. Changes apply instantly (no Save button): a local

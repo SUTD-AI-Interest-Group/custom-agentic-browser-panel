@@ -7,7 +7,7 @@
 // kept work product, not transient media, so only a byte cap protects the
 // origin — and the newest artifact always survives, however large.
 
-import { estimateBytes, type StoreUsage } from './usage'
+import { estimateBytes, planPrune as sharedPlanPrune, type StoreUsage } from './usage'
 
 /** A stored artifact. `html` is always a complete standalone document. */
 export interface CodeArtifact {
@@ -72,22 +72,20 @@ function requestOf<T>(mode: IDBTransactionMode, fn: (s: IDBObjectStore) => IDBRe
 
 /**
  * Which rows to evict (oldest `updatedAt` first) to get under the byte cap.
- * Pure so it is testable; the newest remaining row is never evicted — the
- * user's latest work survives even if it alone busts the cap.
+ * Thin wrapper over the shared `planPrune` in usage.ts (also used by
+ * screenshots.ts/mcpArtifacts.ts, which additionally prune by age) — kept as
+ * its own export, with this file's own field names, since this store has no
+ * age-based eviction. The newest remaining row is never evicted — the user's
+ * latest work survives even if it alone busts the cap.
  */
 export function planPrune(
   rows: Array<{ id: string; bytes: number; updatedAt: number }>,
   maxTotalBytes: number,
 ): string[] {
-  const byAge = [...rows].sort((a, b) => a.updatedAt - b.updatedAt)
-  let total = byAge.reduce((n, r) => n + r.bytes, 0)
-  const evict: string[] = []
-  for (const r of byAge) {
-    if (total <= maxTotalBytes || evict.length === rows.length - 1) break
-    evict.push(r.id)
-    total -= r.bytes
-  }
-  return evict
+  return sharedPlanPrune(
+    rows.map((r) => ({ id: r.id, bytes: r.bytes, recency: r.updatedAt })),
+    { maxTotalBytes },
+  )
 }
 
 async function prune(): Promise<void> {

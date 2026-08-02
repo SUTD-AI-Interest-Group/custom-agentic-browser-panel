@@ -24,9 +24,20 @@ function injClick(attr: string, index: number) {
 function injType(attr: string, index: number, text: string, clear: boolean) {
   const el = document.querySelector(`[${attr}="${index}"]`) as HTMLElement | null
   if (!el) return { ok: false, message: `element ${index} is no longer on the page` }
+  const isContentEditable = (el as HTMLElement).isContentEditable
+  // WebIDL accessor branding: the native `value` setter obtained from
+  // HTMLInputElement.prototype/HTMLTextAreaElement.prototype throws when
+  // called with `this` bound to an element of an unrelated interface (e.g. a
+  // <select> — both are addressed the same way via [index], so the model
+  // aiming a `type` action at a select is a plausible self-correction misstep,
+  // not a contrived input). Check the real type up front and fail cleanly
+  // instead of letting that throw surface as an opaque error.
+  if (!isContentEditable && !(el instanceof HTMLInputElement) && !(el instanceof HTMLTextAreaElement)) {
+    return { ok: false, message: `element ${index} is a <${el.tagName.toLowerCase()}>, not a text field — use the select action if it is a <select>` }
+  }
   el.scrollIntoView({ block: 'center', behavior: 'instant' as ScrollBehavior })
   ;(el as HTMLElement).focus()
-  if ((el as HTMLElement).isContentEditable) {
+  if (isContentEditable) {
     el.textContent = clear ? text : (el.textContent ?? '') + text
     el.dispatchEvent(new InputEvent('input', { bubbles: true }))
     return { ok: true, message: `typed into element ${index}` }
@@ -48,6 +59,12 @@ function injType(attr: string, index: number, text: string, clear: boolean) {
 function injSelect(attr: string, index: number, value: string) {
   const el = document.querySelector(`[${attr}="${index}"]`) as HTMLSelectElement | null
   if (!el) return { ok: false, message: `element ${index} is no longer on the page` }
+  // el.options is undefined on anything that isn't a real <select> (both are
+  // addressed the same way via [index]); Array.from(undefined) throws, so
+  // check the real type up front rather than let that surface as an opaque error.
+  if (!(el instanceof HTMLSelectElement)) {
+    return { ok: false, message: `element ${index} is a <${(el as HTMLElement).tagName.toLowerCase()}>, not a <select> — use the type action instead` }
+  }
   const opt = Array.from(el.options).find(
     (o) => o.value === value || o.text.trim() === value.trim(),
   )

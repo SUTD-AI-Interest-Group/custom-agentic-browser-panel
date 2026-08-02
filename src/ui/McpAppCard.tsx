@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { getMcpArtifact } from '../data/mcpArtifacts'
 import { getMcpManager } from '../mcp/manager'
 import { handleAppMessage, type AppBridgeHost } from '../mcp/appBridge'
+import { getMcpAppHostActions } from './mcpAppHostRegistry'
 
 /**
  * An interactive MCP App rendered in the chat. The app's HTML runs inside the
@@ -27,22 +28,13 @@ export interface McpAppRef {
   externalUrl?: string
 }
 
-/**
- * Host actions the cards need from Chat, registered on mount. A module-level
- * registry rather than prop-drilling through the 4k-line transcript tree; the
- * panel has exactly one Chat. Calls made before registration (never in
- * practice) reject / no-op.
- */
-export interface McpAppHostActions {
-  /** Approval-gated tool call, scoped by the caller to one server. */
-  callTool(server: string, tool: string, args: unknown): Promise<unknown>
-  /** Put app-suggested text in the composer as a draft the user reviews. */
-  draftMessage(text: string): void
-}
-let appHostActions: McpAppHostActions | null = null
-export function registerMcpAppHostActions(actions: McpAppHostActions): void {
-  appHostActions = actions
-}
+// Host actions the cards need from Chat are looked up per-conversation from
+// mcpAppHostRegistry.ts — NOT a module-level singleton here. The panel keeps
+// a background conversation mounted alongside the visible one (tabChats.ts's
+// liveChatIds), so more than one Chat registers actions at once; a single
+// shared slot let one conversation's card be serviced by a different
+// conversation's approval/session state (see the CRITICAL finding this fixed).
+export { registerMcpAppHostActions } from './mcpAppHostRegistry'
 
 const MIN_H = 120
 const MAX_H = 800
@@ -52,10 +44,13 @@ export default function McpAppCard({
   app,
   toolInput,
   toolOutput,
+  conversationId,
 }: {
   app: McpAppRef
   toolInput: unknown
   toolOutput: unknown
+  /** Scopes this card's tool calls/drafts to its OWN conversation's host actions. */
+  conversationId: string
 }) {
   const frameRef = useRef<HTMLIFrameElement>(null)
   const [height, setHeight] = useState(DEFAULT_H)
@@ -93,16 +88,17 @@ export default function McpAppCard({
 
     const host: AppBridgeHost = {
       callTool: (name, args) => {
-        if (!appHostActions) return Promise.reject(new Error('Tool calls are unavailable.'))
+        const actions = getMcpAppHostActions(conversationId)
+        if (!actions) return Promise.reject(new Error('Tool calls are unavailable.'))
         // Scoped to the app's OWN server by construction — the app names only
         // a tool; the server is fixed to the one that produced this card.
-        return appHostActions.callTool(app.server, name, args)
+        return actions.callTool(app.server, name, args)
       },
       // Same server scoping for resource reads (ui:// assets, data files).
       readResource: (uri) => getMcpManager().readResource(app.server, uri),
       openLink: (url) => void chrome.tabs.create({ url }),
       onSizeChange: (_w, h) => setHeight(Math.max(MIN_H, Math.min(MAX_H, Math.round(h)))),
-      onUserMessage: (text) => appHostActions?.draftMessage(text),
+      onUserMessage: (text) => getMcpAppHostActions(conversationId)?.draftMessage(text),
       context: () => {
         const out = (toolOutput ?? {}) as { text?: unknown; structured?: unknown }
         return {
@@ -139,7 +135,7 @@ export default function McpAppCard({
       window.removeEventListener('message', onMessage)
       frame.removeEventListener('load', send)
     }
-  }, [html, app.server, app.externalUrl, toolInput, toolOutput])
+  }, [html, app.server, app.externalUrl, toolInput, toolOutput, conversationId])
 
   if (app.externalUrl) {
     return (

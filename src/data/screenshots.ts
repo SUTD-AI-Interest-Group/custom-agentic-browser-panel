@@ -16,7 +16,7 @@
 // Same one-DB-per-store shape as conversations.ts / memory.ts, so neither module
 // has to coordinate schema versions with the others.
 
-import { estimateBytes, type StoreUsage } from './usage'
+import { estimateBytes, planPrune, type StoreUsage } from './usage'
 
 /** A stored capture. `dataUrl` is the full-resolution PNG. */
 export interface StoredShot {
@@ -212,23 +212,18 @@ function remove(id: string): Promise<unknown> {
 /**
  * Evict oldest-first until the store is under both ceilings. Runs after every
  * save, so the store is bounded without a user ever having to think about it.
+ * The byte-cap pass never evicts the single newest survivor — see planPrune —
+ * so a capture that alone busts the cap outlives its own very next prune
+ * instead of vanishing out from under the card the UI just rendered for it.
  */
 export async function pruneShots(): Promise<{ deleted: number }> {
   const all = await requestOf<StoredShot[]>('readonly', (s) => s.getAll())
-  const cutoff = Date.now() - MAX_AGE_MS
-  const doomed = new Set(all.filter((s) => s.createdAt < cutoff).map((s) => s.id))
-
-  const survivors = all
-    .filter((s) => !doomed.has(s.id))
-    .sort((a, b) => b.createdAt - a.createdAt) // newest first
-  let running = 0
-  for (const s of survivors) {
-    running += s.bytes
-    if (running > MAX_TOTAL_BYTES) doomed.add(s.id)
-  }
-
-  await Promise.all([...doomed].map(remove))
-  return { deleted: doomed.size }
+  const doomed = planPrune(
+    all.map((s) => ({ id: s.id, bytes: s.bytes, recency: s.createdAt })),
+    { maxTotalBytes: MAX_TOTAL_BYTES, maxAgeMs: MAX_AGE_MS },
+  )
+  await Promise.all(doomed.map(remove))
+  return { deleted: doomed.length }
 }
 
 /** Wipe every screenshot and its thumbnail. */
@@ -253,4 +248,30 @@ export async function shotsUsage(): Promise<StoreUsage> {
     count: shots.length,
     detail: shots.length === 1 ? '1 image' : `${shots.length} images`,
   }
+}
+
+/**
+ * Test-only: write a full-resolution shot record directly, bypassing
+ * saveShot's makeThumb() — which decodes the image through a real <canvas>
+ * that jsdom has no native binding for (getContext always returns null here).
+ * Lets pruneShots' eviction math be exercised without a real thumbnail.
+ */
+export async function _putShotForTests(shot: StoredShot): Promise<void> {
+  await requestOf('readwrite', (s) => s.put(shot))
+}
+
+/** Test-only: close and delete the underlying database so the next call opens
+ *  a fresh, empty one. Mirrors vault.ts's resetVault. */
+export async function _resetDbForTests(): Promise<void> {
+  if (dbPromise) {
+    const db = await dbPromise.catch(() => null)
+    db?.close()
+  }
+  dbPromise = null
+  await new Promise<void>((resolve) => {
+    const req = indexedDB.deleteDatabase(DB_NAME)
+    req.onsuccess = () => resolve()
+    req.onerror = () => resolve()
+    req.onblocked = () => resolve()
+  })
 }

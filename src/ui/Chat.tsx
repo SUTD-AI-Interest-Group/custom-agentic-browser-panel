@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
+import { Fragment, memo, useEffect, useMemo, useRef, useState } from 'react'
 import type { ModelMessage } from 'ai'
 import { generateText } from 'ai'
 import Markdown from './Markdown'
@@ -8,15 +8,31 @@ import JsonTree from './JsonTree'
 import { splitBlocks } from './blocks'
 import { citationsToPlain } from './citations'
 import { runAgentTurn, type Checkpoint, type MessageSource, type QueuedImage, type UIMessage, type UIPart } from '../agent/agent'
-import { validateMath } from './mathValidate'
+import { hasUncompilableMath } from './mathRepairFilter'
 import { repairMessageText, type Complete } from '../agent/mathRepair'
 import { cancelRegionCapture, captureRegion, type CapturedImage } from '../platform/capture'
 import { ensureVisionCapability } from '../agent/vision'
 import { copyElementAsPng } from '../platform/domImage'
 import { getConversation, renameConversation, saveConversation, type RegenTarget } from '../data/conversations'
+import { dehydrateHistory, hydrateHistory, type AttachmentRef } from '../data/attachmentRefs'
+import { formatBytes } from '../data/usage'
+import { getAttachment } from '../data/attachments'
+import { renderPdfPageFromBytes } from '../platform/pdf'
+import {
+  assembleAttachments,
+  attachmentUiMetas,
+  dataUrlToBytes,
+  fromCapturedImage,
+  ingestFiles,
+  type ComposerAttachment,
+} from './attachments'
 import { buildRetryNote } from './regenerate'
 import { COMPOSER_ACTION_MSG, drainComposerAction, type ComposerAction } from '../platform/composerActions'
 import { clearDraft, loadDraft, saveDraft } from './drafts'
+import { createAttachReservation } from './attachReservation'
+import { recallableUserTexts, shouldIgnoreComposerKeydown } from './composerKeys'
+import { shouldAttemptNaming } from './chatNaming'
+import { buildSteerFallback, freshTurnGatherErrorText } from './steerFallback'
 import { getShot, getShotThumb, type ShotThumb, type StoredShot } from '../data/screenshots'
 import { downloadImage } from '../platform/download'
 import { appendToEpisode, getMemoryContext } from '../data/memory'
@@ -43,10 +59,12 @@ import { createAgentTools, type ApprovalRequest, type PageControlGate } from '..
 import type { ChatStatus } from './tabChats'
 import { buildMcpTools } from '../mcp/tools'
 import { getMcpManager, type McpPromptArgInfo } from '../mcp/manager'
-import { mcpSettings, mcpToolPolicy } from '../mcp/config'
+import { mcpSettings, mcpToolName, mcpToolPolicy } from '../mcp/config'
 import McpContentCard from './McpContentCard'
 import McpAppCard, { registerMcpAppHostActions, type McpAppRef } from './McpAppCard'
 import { ArtifactCard } from './ArtifactCard'
+import { ApprovalQueue } from './approvalQueue'
+import { shouldTearDownPageControl, type ChainExitReason } from './chainLifecycle'
 import { type ControlSession } from '../tools/pageControl'
 import { clearIndex } from '../platform/domIndex'
 import { unmountPresence, unmountAllPresence } from '../platform/presence'
@@ -104,9 +122,31 @@ Ground your answers on the page. When your answer comes from a specific passage,
 
 Capabilities to load when needed: HighlightContent (scroll to and mark the passage/figure your answer came from), ReadTabs (other open tabs — mode "gist" skims every tab with a one-line summary and flags duplicates, which is how you answer "what do I have open", "which tab had…", or start any tidy-up), GroupTabs (file tabs into named Chrome tab groups), CloseTabs (close tabs, or reopen the batch you last closed), RequestPageControl/ControlPage/AutofillForm (control a page — click, type, fill), NavigateTab (switch/open/load a tab), ExtractData (structured JSON from the page), RunCode (execute JavaScript in a sealed sandbox — compute, verify, transform data), CreateArtifact/UpdateArtifact (build a self-contained interactive HTML page, visualization, or mini-app rendered as a live card in the chat — the way to SHOW the user something you made), SaveMemory/SearchMemory (long-term memory), QueryBrowserData (history/bookmarks/top sites/downloads — only enabled sources), ListAllSkills/ReadSkill/SaveSkill (skills), StartResearch (background web research). Tools whose names start with mcp_ come from MCP servers the user connected (ListMcpResources/ReadMcpResource read those servers' resources) — list them with ToolSearch like any other capability. If the message is purely conversational and needs no browser action, just answer.`
 
+/**
+ * A pending approval as shown in the card. No longer carries its own
+ * `resolve` — settlement is owned by the ApprovalQueue (approvalQueue.ts) so
+ * a second concurrent request can queue behind an unanswered one instead of
+ * silently replacing it (see requestApproval below).
+ */
 interface PendingApproval extends ApprovalRequest {
-  resolve: (approved: boolean) => void
+  /** Set only for a RequestPageControl session card — branches the rendered
+   *  card to the "Let the agent control host?" variant instead of an
+   *  ordinary tool-approval summary (see pageControl.requestSession below). */
+  session?: { plan: string; host: string }
+  /** This request's identity in approvalQueueRef (ApprovalQueue.frontId),
+   *  merged in at read time — never stored on the queue's own copy of the
+   *  request. The button handlers close over it and carry it through to
+   *  settleApproval, so an answer can only ever apply to the exact card
+   *  it was captured from (see approvalQueue.ts's settle()). */
+  id: number
 }
+
+/**
+ * What actually goes into approvalQueueRef — everything about PendingApproval
+ * except its `id`, which the queue itself assigns per request (ApprovalQueue
+ * .request/.frontId) and frontApproval() merges back in only for display.
+ */
+type ApprovalReq = Omit<PendingApproval, 'id'>
 
 interface CurrentTabInfo {
   tabId: number
@@ -143,7 +183,7 @@ interface QueuedSteer {
  */
 interface MessageSpec {
   text: string
-  images: CapturedImage[]
+  attachments: ComposerAttachment[]
   activeMentions: TabMention[]
   useMemory: boolean
   useAll: boolean
@@ -398,6 +438,20 @@ function ToolsIcon() {
   )
 }
 
+function PaperclipIcon() {
+  return (
+    <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+      <path
+        d="M13.2 7.4 8.3 12.3a3.4 3.4 0 0 1-4.8-4.8l5.2-5.2a2.3 2.3 0 0 1 3.2 3.2L6.7 10.7a1.1 1.1 0 0 1-1.6-1.6l4.6-4.6"
+        stroke="currentColor"
+        strokeWidth="1.3"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  )
+}
+
 function CameraIcon() {
   return (
     <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true">
@@ -408,6 +462,31 @@ function CameraIcon() {
         strokeLinejoin="round"
       />
       <circle cx="8" cy="8.2" r="2.1" stroke="currentColor" strokeWidth="1.3" />
+    </svg>
+  )
+}
+
+/** Glyph for a non-image attachment chip: a page outline (pdf) or code brackets (text). */
+function FileKindIcon({ kind }: { kind: 'pdf' | 'text' }) {
+  return kind === 'pdf' ? (
+    <svg className="attachment-file-icon" width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+      <path
+        d="M4 1.8h5.2L12.8 5v9.2a.9.9 0 0 1-.9.9H4a.9.9 0 0 1-.9-.9V2.7a.9.9 0 0 1 .9-.9Z"
+        stroke="currentColor"
+        strokeWidth="1.3"
+        strokeLinejoin="round"
+      />
+      <path d="M9 1.8V5h3.6" stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round" />
+    </svg>
+  ) : (
+    <svg className="attachment-file-icon" width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+      <path
+        d="M6 4.5 3 8l3 3.5M10 4.5 13 8l-3 3.5"
+        stroke="currentColor"
+        strokeWidth="1.3"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
     </svg>
   )
 }
@@ -532,9 +611,13 @@ export default function Chat({
   const [parkedReason, setParkedReason] = useState<string | null>(null)
   const [approval, setApproval] = useState<PendingApproval | null>(null)
   const [currentTab, setCurrentTab] = useState<CurrentTabInfo | null>(null)
-  const [attachments, setAttachments] = useState<CapturedImage[]>([])
+  const [attachments, setAttachments] = useState<ComposerAttachment[]>([])
   const [capturing, setCapturing] = useState(false)
   const [captureError, setCaptureError] = useState<string | null>(null)
+  // True while a file drag from outside the browser hovers the panel — drives
+  // the full-panel "Drop files to attach" overlay.
+  const [dropTarget, setDropTarget] = useState(false)
+  const fileInputRef = useRef<HTMLInputElement>(null)
   const [mentions, setMentions] = useState<TabMention[]>([])
   const [mentionQuery, setMentionQuery] = useState<{ start: number; query: string } | null>(null)
   const [mentionCandidates, setMentionCandidates] = useState<MentionCandidate[]>([])
@@ -594,6 +677,28 @@ export default function Chat({
 
   const historyRef = useRef<ModelMessage[]>([])
   const messagesRef = useRef<UIMessage[]>([])
+  // Mirrors the current render's `settings` prop, synced by the effect below.
+  // requestApproval and runTurnChain's per-cycle tool-policy/MCP-toolset
+  // construction read THIS instead of the plain `settings` closure: a
+  // continuation chain is one long-lived async call (possibly many cycles
+  // over many minutes — see runTurnChain's own doc comment), and its own
+  // closure over `settings` freezes at whatever it was when the chain
+  // started, even though Chat itself re-renders with a fresh `settings` prop
+  // on every settings change (App keeps a working chat's Chat mounted while
+  // Settings is open on top). Without this, a user tightening an MCP tool's
+  // policy to stop a misbehaving tool mid-chain had zero effect until the
+  // whole chain finished — contradicting the Permissions/MCP tabs' own
+  // "commits instantly" promise.
+  const settingsRef = useRef(settings)
+  useEffect(() => {
+    settingsRef.current = settings
+  }, [settings])
+  // Attachments from batches still being ingested (accepted, not yet
+  // committed via setAttachments) — see addFiles/attachReservation.ts.
+  const attachReservationRef = useRef(createAttachReservation())
+  // A generateChatTitle call fired by the naming effect below hasn't resolved
+  // yet — see chatNaming.ts's shouldAttemptNaming.
+  const namingInFlightRef = useRef(false)
   // One episode per conversation: the raw journal that nightly "dreaming"
   // later distills into long-term memories. Sharing the conversation id keeps
   // the journal aligned with the chat it came from.
@@ -603,7 +708,14 @@ export default function Chat({
   // by id+url. Lets a deictic reference re-share the current tab only after the
   // user navigates to a different page. Resets when the chat remounts.
   const sharedTabsRef = useRef<Set<string>>(new Set())
-  const approvalRef = useRef<PendingApproval | null>(null)
+  // FIFO of pending approval cards (see approvalQueue.ts): the AI SDK runs
+  // every tool call from one model step concurrently, so a second gated tool
+  // call while one is still awaiting its card is the default case, not an
+  // edge case — it must queue behind the first, never silently replace it.
+  const approvalQueueRef = useRef(new ApprovalQueue<ApprovalReq>())
+  // Guards settleApproval's own claim-then-await-permission window (see
+  // below) against a double-click resolving the wrong queued entry.
+  const settlingApprovalRef = useRef(false)
   const sessionAllowed = useRef<Set<string>>(new Set())
   // Tools pre-authorized for the current turn only (e.g. SearchMemory when the
   // user typed @memory — the mention itself is their consent).
@@ -619,7 +731,6 @@ export default function Chat({
   const [regenTarget, setRegenTarget] = useState<RegenTarget | null>(null)
   // The open page-control session (RequestPageControl → ControlPage), if any.
   const pageSessionRef = useRef<ControlSession | null>(null)
-  const [sessionPlan, setSessionPlan] = useState<{ plan: string; host: string } | null>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
   // Steers queued during the running chain, drained at each cycle boundary in
@@ -640,19 +751,14 @@ export default function Chat({
 
   const selected = getSelectedProvider(settings)
 
-  // This conversation's previous user messages, newest first — the source
-  // list for ArrowUp/ArrowDown composer history recall (3b, see the
-  // textarea's onKeyDown). Read straight from the transcript already in
-  // state; no separate storage.
-  const recallableUserTexts = useMemo(() => {
-    const texts: string[] = []
-    for (let i = messages.length - 1; i >= 0; i--) {
-      if (messages[i].role !== 'user') continue
-      const t = messages[i].parts.map((p) => (p.type === 'text' ? p.text : '')).join('')
-      if (t) texts.push(t)
-    }
-    return texts
-  }, [messages])
+  // This conversation's previous user messages, newest first — the source list
+  // for ArrowUp/ArrowDown composer history recall (3b, see the textarea's
+  // onKeyDown), which calls the imported recallableUserTexts(messages) lazily
+  // — only when the user actually presses an arrow key — rather than as a
+  // reactive useMemo keyed on `messages`. `messages` gets a new array identity
+  // on every streamed token (setMessages always returns a fresh array), so a
+  // useMemo here recomputed a full backward transcript scan on every token even
+  // though the result is read only on ArrowUp/ArrowDown.
 
   // Focus the composer as soon as the chat is ready — on panel open and on every
   // new/switched chat (Chat is keyed by conversationId, so it remounts each time),
@@ -710,17 +816,38 @@ export default function Chat({
   }, [capturing])
 
   // Restore a persisted conversation on mount. Chat is keyed by conversationId
-  // in App, so this runs once per chat and never mid-conversation.
+  // in App, so this runs once per chat and never mid-conversation. Attachment
+  // sentinels in the stored history are rehydrated here (see attachmentRefs.ts);
+  // a pruned attachment becomes an explanatory note, never a broken file part.
   useEffect(() => {
     let cancelled = false
     setRestored(false)
-    void getConversation(conversationId).then((c) => {
+    const resolveRef = async (ref: AttachmentRef): Promise<string | null> => {
+      const rec = await getAttachment(ref.id).catch(() => null)
+      if (!rec) return null
+      if (ref.page === undefined) return rec.dataUrl
+      // Rendered PDF pages are derived, not stored — re-render from the original
+      // bytes (the parse is cached across all pages of one document).
+      try {
+        return (await renderPdfPageFromBytes(dataUrlToBytes(rec.dataUrl), ref.id, ref.page)).dataUrl
+      } catch {
+        return null
+      }
+    }
+    void getConversation(conversationId).then(async (c) => {
       if (cancelled) return
       if (c) {
+        const [history, regenOpener] = await Promise.all([
+          hydrateHistory(c.history, resolveRef),
+          c.regen?.opener
+            ? hydrateHistory([c.regen.opener], resolveRef).then((m) => m[0])
+            : Promise.resolve(null),
+        ])
+        if (cancelled) return
         setMessages(c.messages)
-        historyRef.current = c.history
+        historyRef.current = history
         titledRef.current = c.title !== null
-        setRegenTarget(c.regen ?? null)
+        setRegenTarget(c.regen ? { ...c.regen, opener: regenOpener } : null)
       }
       setRestored(true)
     })
@@ -845,11 +972,18 @@ export default function Chat({
     void saveConversation({
       id: conversationId,
       messages: messages.map((m) => (m.fixingMath ? { ...m, fixingMath: false } : m)),
-      history: historyRef.current,
+      // Attachment file parts are dehydrated to `lychee-attachment:<id>` refs on
+      // the way to disk — the bytes live once in the capped attachments store.
+      history: dehydrateHistory(historyRef.current),
       // Persisted alongside the transcript so Regenerate survives a panel
       // reopen — the undo point can't be recovered from `history` alone,
       // since a failed turn pops its own user message back off it.
-      regen: regenTarget ?? undefined,
+      regen: regenTarget
+        ? {
+            ...regenTarget,
+            opener: regenTarget.opener ? dehydrateHistory([regenTarget.opener])[0] : regenTarget.opener,
+          }
+        : undefined,
     }).then(onConversationsChanged)
     // Persist is driven solely by turnSeq; messages is read fresh from the
     // render that bumped it.
@@ -870,7 +1004,16 @@ export default function Chat({
   // left the chat reading "New chat" forever. Failure must be transient, not
   // terminal. Untouched if the turn produced no user text to name it from.
   useEffect(() => {
-    if (turnSeq === 0 || titledRef.current || titleTriesRef.current >= MAX_TITLE_TRIES) return
+    if (
+      !shouldAttemptNaming({
+        turnSeq,
+        titled: titledRef.current,
+        inFlight: namingInFlightRef.current,
+        tries: titleTriesRef.current,
+        maxTries: MAX_TITLE_TRIES,
+      })
+    )
+      return
     // The earliest user message we can actually name the chat from — not simply
     // the first one, which may be a bare screenshot with no text to name it by.
     const text = messages
@@ -885,6 +1028,13 @@ export default function Chat({
     const namer = getTitleProvider(settings)
     if (!text || !namer) return
     titleTriesRef.current += 1
+    // Guards against a slow namer (queued behind a busy local model) racing a
+    // fast follow-up turn's own naming attempt — without this, two
+    // generateChatTitle calls could be outstanding at once, both deriving the
+    // title from the same earliest message, with whichever resolved LAST
+    // winning non-deterministically and silently overwriting an
+    // already-set title.
+    namingInFlightRef.current = true
     void generateChatTitle(createModel(namer.provider, namer.modelId), text, conversationId)
       .then((title) => {
         if (!title) return
@@ -892,6 +1042,9 @@ export default function Chat({
         return renameConversation(conversationId, title).then(onConversationsChanged)
       })
       .catch(() => {})
+      .finally(() => {
+        namingInFlightRef.current = false
+      })
     // Driven solely by turnSeq, like the persist above.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [turnSeq])
@@ -1091,7 +1244,6 @@ export default function Chat({
   function teardownSession() {
     const s = pageSessionRef.current
     pageSessionRef.current = null
-    setSessionPlan(null)
     if (s) {
       void clearIndex(s.tabId)
       void unmountPresence(s.tabId)
@@ -1100,33 +1252,28 @@ export default function Chat({
 
   // Real page-control gate: RequestPageControl suspends on a session card
   // (reusing the approval-card machinery, branched to the session variant via
-  // sessionPlan); ControlPage reads/mutates the ref-backed session directly.
+  // PendingApproval.session); ControlPage reads/mutates the ref-backed session
+  // directly. Goes through the same approvalQueueRef as requestApproval below
+  // — a RequestPageControl call is just another gated request that must queue
+  // behind whatever's already pending rather than clobber it.
   const pageControl: PageControlGate = {
-    requestSession: ({ plan, host, origin, tabId }) =>
-      new Promise<boolean>((resolve) => {
-        // Close out any previously-open session before offering a new one.
-        if (pageSessionRef.current) teardownSession()
-        // Reuse the approval card machinery, but branch the UI to a session card.
-        setSessionPlan({ plan, host })
-        approvalRef.current = {
-          toolName: 'RequestPageControl',
-          summary: `Control ${host}`,
-          reason: plan,
-          resolve: (approved: boolean) => {
-            setSessionPlan(null)
-            if (approved) {
-              pageSessionRef.current = {
-                tabId,
-                origin,
-                plan,
-                active: true,
-              }
-            }
-            resolve(approved)
-          },
-        }
-        setApproval(approvalRef.current)
-      }),
+    requestSession: ({ plan, host, origin, tabId }) => {
+      // Close out any previously-open session before offering a new one.
+      if (pageSessionRef.current) teardownSession()
+      const promise = approvalQueueRef.current.request({
+        toolName: 'RequestPageControl',
+        summary: `Control ${host}`,
+        reason: plan,
+        session: { plan, host },
+      })
+      // Reuse the approval card machinery, but branch the UI to a session
+      // card whenever this request is the one actually shown.
+      setApproval(frontApproval())
+      return promise.then((approved) => {
+        if (approved) pageSessionRef.current = { tabId, origin, plan, active: true }
+        return approved
+      })
+    },
     session: () => pageSessionRef.current,
     endSession: teardownSession,
   }
@@ -1137,16 +1284,21 @@ export default function Chat({
   // "Allow this chat" on that card is what makes a polling widget usable (one
   // approval covers the poll loop). App-suggested chat text only ever becomes
   // a composer draft the user reviews. Registered per render so the closures
-  // always see current settings/state.
+  // always see current settings/state, and keyed by conversationId (not a bare
+  // global) so a background conversation's card is never serviced by whatever
+  // OTHER conversation's Chat last rendered — see mcpAppHostRegistry.ts.
   useEffect(() => {
-    registerMcpAppHostActions({
+    return registerMcpAppHostActions(conversationId, {
       callTool: async (server: string, tool: string, args: unknown) => {
         const mcp = mcpSettings(settings)
         const policy = mcpToolPolicy(mcp, server, tool)
         if (policy === 'never') throw new Error('This tool is disabled in your settings.')
         if (policy !== 'always') {
           const approved = await requestApproval({
-            toolName: `mcp_${server}_${tool}`,
+            // Same sanitized/capped name the agent's own MCP calls use
+            // (mcp/tools.ts), so an "Allow this chat" grant from either
+            // surface covers the other for the same (server, tool) pair.
+            toolName: mcpToolName(server, tool, new Set()),
             summary: `The ${server} app wants to call “${tool}”`,
             reason: 'Requested by the interactive app card in this chat.',
           })
@@ -1161,49 +1313,93 @@ export default function Chat({
     })
   })
 
+  /**
+   * The queue's current front, merged with its own identity (ApprovalQueue
+   * .frontId) into the shape the card and settleApproval both need. Never
+   * cached — always re-read from the queue at the point something changes
+   * it, so `approval` state and the queue's own notion of "the front" cannot
+   * drift apart.
+   */
+  function frontApproval(): PendingApproval | null {
+    const front = approvalQueueRef.current.front
+    const id = approvalQueueRef.current.frontId
+    return front && id !== null ? { ...front, id } : null
+  }
+
   function requestApproval(request: ApprovalRequest): Promise<boolean> {
     // Point-of-no-return steps (form submits, cross-origin nav, passwords) are
     // the safety backstop: they always show a card, ignoring every auto-approve
     // path — including an "Always" policy — so they confirm every single time.
     if (!request.once) {
-      if (toolPolicy(settings, request.toolName) === 'always') return Promise.resolve(true)
+      if (toolPolicy(settingsRef.current, request.toolName) === 'always') return Promise.resolve(true)
       if (sessionAllowed.current.has(request.toolName)) return Promise.resolve(true)
       if (turnAllowed.current.has(request.toolName)) return Promise.resolve(true)
     }
-    return new Promise<boolean>((resolve) => {
-      const pending = { ...request, resolve }
-      approvalRef.current = pending
-      setApproval(pending)
-    })
+    // Queues behind whatever's already pending instead of overwriting it — the
+    // AI SDK runs every tool call in a model step concurrently, so a second
+    // gated call (two RunCode calls, RunCode + CreateArtifact, ...) landing
+    // here while the first is still awaiting its card is the default case,
+    // not an edge case. Overwriting would drop the first call's resolve
+    // forever, hanging that tool's execute() (and the whole chat) permanently.
+    const promise = approvalQueueRef.current.request(request)
+    setApproval(frontApproval())
+    return promise
   }
 
-  async function settleApproval(approved: boolean, forSession = false) {
-    const pending = approvalRef.current
-    if (!pending) return
-    // Claim the pending approval up front so a double-click cannot request the
-    // same permission twice or resolve the same promise twice.
-    approvalRef.current = null
+  /**
+   * `id` is the identity of the card the click actually came from (captured
+   * by the button's closure at the render that showed it — see the
+   * ApprovalCard call site) — never "whatever's currently at the front".
+   * approvalQueueRef.current.settle() rejects the call outright if the queue
+   * has moved past that id, or if it's still the front but arrived less than
+   * MIN_VISIBLE_MS after becoming so (the double-click guard) — see its own
+   * doc comment. Either way this function must then do NOTHING else: no
+   * session grant, no state update, no side effect of any kind applied to
+   * whatever now happens to be showing.
+   */
+  async function settleApproval(id: number, approved: boolean, forSession = false) {
+    // Guards the claim-then-await-permission window below: Stop firing mid
+    // permission-prompt (which instead drains the queue directly — see
+    // stop()) must not have this call, once the await resolves, reach into
+    // whatever's now queued behind the card it actually meant to answer.
+    if (settlingApprovalRef.current) return
+    const pending = approvalQueueRef.current.front
+    if (!pending || approvalQueueRef.current.frontId !== id) return
+    settlingApprovalRef.current = true
+    try {
+      // An optional Chrome permission is requested HERE, from inside the Allow
+      // click, because chrome.permissions.request only works during a user
+      // gesture. This must stay ahead of every await in this function — one
+      // await first and the gesture is spent, and Chrome silently refuses the
+      // prompt. Declining the Chrome dialog declines the tool call: the tool
+      // asked for that permission because it cannot do the job without it.
+      let granted = approved
+      if (approved && pending.needsPermissions?.length) {
+        granted = await chrome.permissions
+          .request({ permissions: pending.needsPermissions })
+          .catch(() => false)
+      }
 
-    // An optional Chrome permission is requested HERE, from inside the Allow
-    // click, because chrome.permissions.request only works during a user
-    // gesture. This must stay ahead of every await in this function — one await
-    // first and the gesture is spent, and Chrome silently refuses the prompt.
-    // Declining the Chrome dialog declines the tool call: the tool asked for
-    // that permission because it cannot do the job without it.
-    let granted = approved
-    if (approved && pending.needsPermissions?.length) {
-      granted = await chrome.permissions
-        .request({ permissions: pending.needsPermissions })
-        .catch(() => false)
+      // Re-validated against the CURRENT queue state, not the `pending`
+      // captured above — Stop (or another settle) could have run during the
+      // permission await. Only apply anything if this id is genuinely what
+      // settle() just resolved.
+      const result = approvalQueueRef.current.settle(id, granted)
+      if (result.settled) {
+        if (granted && forSession) sessionAllowed.current.add(pending.toolName)
+        setApproval(frontApproval())
+      }
+    } finally {
+      settlingApprovalRef.current = false
     }
-
-    setApproval(null)
-    if (granted && forSession) sessionAllowed.current.add(pending.toolName)
-    pending.resolve(granted)
   }
 
   function stop() {
-    void settleApproval(false)
+    // Deny everything pending immediately — front and anything queued behind
+    // it — rather than routing through settleApproval, so Stop doesn't wait on
+    // a Chrome permission prompt and can't be blocked by settlingApprovalRef.
+    approvalQueueRef.current.drainAll(false)
+    setApproval(null)
     // Discard any queued steers, and the pending follow-up too — the user asked to
     // stop, so it must not auto-send when streaming ends (see the flush effect).
     steerQueueRef.current = []
@@ -1243,7 +1439,10 @@ export default function Chat({
     setCapturing(true)
     try {
       const img = await captureRegion()
-      if (img) setAttachments((a) => [...a, img])
+      if (img) {
+        const att = await fromCapturedImage(img)
+        setAttachments((a) => [...a, att])
+      }
     } catch (err) {
       setCaptureError(
         `Couldn't capture this page: ${err instanceof Error ? err.message : String(err)}`,
@@ -1252,6 +1451,80 @@ export default function Chat({
       setCapturing(false)
     }
   }
+
+  /**
+   * Attach incoming files (drop, paste, or the paperclip picker). Errors are
+   * per-file — the rest of the batch still attaches — and surface on the same
+   * line as capture failures. Rides the `capturing` busy flag so a slow PDF
+   * parse shows on the buttons.
+   */
+  async function addFiles(files: File[]) {
+    if (files.length === 0) return
+    setCaptureError(null)
+    setCapturing(true)
+    // Reserve this batch's files immediately (before the await below) so a
+    // second, overlapping addFiles call — a paste landing while an earlier
+    // drop's files are still being parsed — sees them as already spoken for,
+    // rather than reading the same pre-update `attachments.length` snapshot
+    // and jointly exceeding MAX_ATTACHMENTS (see attachReservation.ts).
+    const existingCount = attachReservationRef.current.reserve(attachments.length, files.length)
+    try {
+      const { attachments: added, errors } = await ingestFiles(files, existingCount)
+      if (added.length > 0) setAttachments((a) => [...a, ...added])
+      if (errors.length > 0) setCaptureError(errors.join(' '))
+    } finally {
+      attachReservationRef.current.release(files.length)
+      setCapturing(false)
+    }
+  }
+
+  // The mount-once drag listeners below would close over a stale addFiles
+  // (it reads `attachments.length`) — same pattern as composerActionRef.
+  const addFilesRef = useRef(addFiles)
+  useEffect(() => {
+    addFilesRef.current = addFiles
+  })
+
+  // Drag-and-drop, page-wide. preventDefault on BOTH dragover and drop whenever
+  // the drag carries files: without it, a drop that misses the target navigates
+  // the side panel to the file, and the panel has no back-button recovery. Text
+  // and URL drags are left alone so dragging text into the textarea still works.
+  useEffect(() => {
+    let depth = 0
+    const hasFiles = (e: DragEvent) => Array.from(e.dataTransfer?.types ?? []).includes('Files')
+    const enter = (e: DragEvent) => {
+      if (!hasFiles(e)) return
+      depth++
+      setDropTarget(true)
+    }
+    const leave = (e: DragEvent) => {
+      if (!hasFiles(e)) return
+      if (--depth <= 0) {
+        depth = 0
+        setDropTarget(false)
+      }
+    }
+    const over = (e: DragEvent) => {
+      if (hasFiles(e)) e.preventDefault()
+    }
+    const drop = (e: DragEvent) => {
+      if (!hasFiles(e)) return
+      e.preventDefault()
+      depth = 0
+      setDropTarget(false)
+      void addFilesRef.current(Array.from(e.dataTransfer?.files ?? []))
+    }
+    window.addEventListener('dragenter', enter)
+    window.addEventListener('dragleave', leave)
+    window.addEventListener('dragover', over)
+    window.addEventListener('drop', drop)
+    return () => {
+      window.removeEventListener('dragenter', enter)
+      window.removeEventListener('dragleave', leave)
+      window.removeEventListener('dragover', over)
+      window.removeEventListener('drop', drop)
+    }
+  }, [])
 
   // Quick-menu tool switch. Off → 'never' (hidden from the agent). On → delete the
   // override so the tool reverts to its catalog default (ask, or always for the
@@ -1498,7 +1771,7 @@ export default function Chat({
    */
   async function buildUserTurn(o: {
     text: string
-    images: CapturedImage[]
+    attachments: ComposerAttachment[]
     activeMentions: TabMention[]
     useMemory: boolean
     useAll: boolean
@@ -1511,7 +1784,7 @@ export default function Chat({
     notes: string[]
     syncedTabs: TabContent[]
   }> {
-    const { text, images, activeMentions, useMemory, useAll, includeCurrentTab, includeDeicticTab, activeSelection } = o
+    const { text, attachments: turnAttachments, activeMentions, useMemory, useAll, includeCurrentTab, includeDeicticTab, activeSelection } = o
     // Sync shared tab contents into the model-facing message: any @mentioned
     // tabs, plus the current tab when auto-attached (first message) or pulled in
     // by a deictic reference, de-duplicated by id.
@@ -1521,9 +1794,20 @@ export default function Chat({
       tabIds.push(currentTab.tabId)
     let allTabsOmitted = 0
     if (useAll) {
-      const open = await listOpenTabs()
-      allTabsOmitted = Math.max(0, open.length - MAX_ALL_TABS)
-      for (const t of open.slice(0, MAX_ALL_TABS)) if (!tabIds.includes(t.tabId)) tabIds.push(t.tabId)
+      // Unlike its neighbors below (readTabContent/assembleAttachments are
+      // both self-guarding), listOpenTabs has no internal try/catch —
+      // chrome.tabs.query can reject (extension context invalidated mid-
+      // reload, a transient Chrome error). Without this guard a rejection
+      // here propagated out of buildUserTurn: for a steer, out of
+      // injectSteer's pushed promise (see its own .catch() below); for a
+      // fresh turn, out of startFreshTurn's own await (see its try/catch) —
+      // either way, @all degrading to "no extra tabs" is far better than
+      // losing the whole steer/turn over a context-gathering failure.
+      try {
+        const open = await listOpenTabs()
+        allTabsOmitted = Math.max(0, open.length - MAX_ALL_TABS)
+        for (const t of open.slice(0, MAX_ALL_TABS)) if (!tabIds.includes(t.tabId)) tabIds.push(t.tabId)
+      } catch {}
     }
 
     let modelText = text
@@ -1559,14 +1843,24 @@ export default function Chat({
       modelText = `${modelText}\n\n[The user invoked @memory — before answering, use the SearchMemory tool to recall relevant long-term memories (pick query terms from their message, or recall broadly if it is general) and ground your reply in what you find.]`
     }
 
+    // Attachments are routed per provider/model by the pure planner (native PDF
+    // part vs page images vs extracted text — see attachmentPlan.ts); the file
+    // parts land ahead of the text part, same as the old image path.
+    const assembled = selected
+      ? await assembleAttachments(turnAttachments, {
+          provider: selected.provider,
+          modelId: selected.modelId,
+          conversationId,
+        })
+      : { parts: [], appendText: '', notes: [], errors: [] }
+    if (assembled.appendText) modelText = `${modelText}\n\n${assembled.appendText}`
+    if (assembled.errors.length > 0) setCaptureError(assembled.errors.join(' '))
     const message: ModelMessage =
-      images.length > 0
+      assembled.parts.length > 0
         ? {
             role: 'user',
             content: [
-              // v7: `file` part with an image mediaType replaces the deprecated
-              // `{ type: 'image', image }` part (the data URL carries its own type).
-              ...images.map((i) => ({ type: 'file' as const, mediaType: 'image', data: i.dataUrl })),
+              ...assembled.parts,
               ...(modelText ? [{ type: 'text' as const, text: modelText }] : []),
             ],
           }
@@ -1580,8 +1874,7 @@ export default function Chat({
     // Journal notes for this user turn; the assistant side is appended when the
     // whole continuation chain finishes.
     const notes: string[] = []
-    if (images.length > 0)
-      notes.push(`[attached ${images.length} screenshot${images.length > 1 ? 's' : ''}]`)
+    notes.push(...assembled.notes)
     if (syncedTabs.length > 0)
       notes.push(`[synced tabs: ${syncedTabs.map((t) => t.title).join(', ')}]`)
     if (useMemory) notes.push('[asked to recall from memory]')
@@ -1597,8 +1890,7 @@ export default function Chat({
    */
   function composeSpec(): MessageSpec | null {
     const text = input.trim()
-    const images = attachments
-    if ((!text && images.length === 0) || !selected) return null
+    if ((!text && attachments.length === 0) || !selected) return null
     // Mentions only count if their token survived editing.
     const activeMentions = mentions.filter((m) => text.includes(m.token))
     // A surviving @memory token directs the agent to consult long-term memory.
@@ -1619,7 +1911,7 @@ export default function Chat({
       !sharedTabsRef.current.has(currentTabKey)
     const activeSelection =
       selection && selection.text !== dismissedSelection ? selection.text : null
-    return { text, images, activeMentions, useMemory, useAll, includeCurrentTab, includeDeicticTab, activeSelection }
+    return { text, attachments, activeMentions, useMemory, useAll, includeCurrentTab, includeDeicticTab, activeSelection }
   }
 
   /** Clear the composer and its transient popovers once a spec has been captured. */
@@ -1644,7 +1936,7 @@ export default function Chat({
    * history, and runs the chain.
    */
   async function startFreshTurn(spec: MessageSpec) {
-    const { text, images } = spec
+    const { text } = spec
     const slashMatch = text.match(/^\/([a-z0-9-]+)(?:\s|$)/)
     const invokedSkill = slashMatch ? await getSkill(slashMatch[1]) : null
     const activeSkill =
@@ -1652,7 +1944,7 @@ export default function Chat({
 
     setMessages((m) => [
       ...m,
-      { id: uid(), role: 'user', parts: [{ type: 'text', text }], images: images.map((i) => i.dataUrl) },
+      { id: uid(), role: 'user', parts: [{ type: 'text', text }], attachments: attachmentUiMetas(spec.attachments) },
     ])
     // Drop any orphaned steer that raced a just-ended chain (see the finally in
     // runTurnChain) so it can't leak into this new turn.
@@ -1662,7 +1954,21 @@ export default function Chat({
     // finally — unlike the presence overlay, highlights must OUTLIVE their turn
     // so the user can read what was marked (see src/platform/highlight.ts).
     void clearAllHighlights()
-    const { message, attachedSources, notes } = await buildUserTurn(spec)
+    let built: Awaited<ReturnType<typeof buildUserTurn>>
+    try {
+      built = await buildUserTurn(spec)
+    } catch (err) {
+      // The user's own bubble is already showing (pushed above, before this
+      // await) — without this catch, a rejection here strands it with no
+      // reply and no visible error, only a console-level unhandled rejection
+      // (startFreshTurn is always invoked fire-and-forget via `void`).
+      setMessages((m) => [
+        ...m,
+        { id: uid(), role: 'assistant', parts: [{ type: 'text', text: freshTurnGatherErrorText(err) }] },
+      ])
+      return
+    }
+    const { message, attachedSources, notes } = built
     // Captured before the push: regenerating rewinds to here and replays
     // `message` itself, which a failed chain will have popped back off.
     const historyLen = historyRef.current.length
@@ -1694,19 +2000,27 @@ export default function Chat({
    * runTurnChain's drain splices it into history.
    */
   function injectSteer(spec: MessageSpec) {
-    const { text, images } = spec
+    const { text } = spec
     setMessages((m) => [
       ...m,
-      { id: uid(), role: 'user', parts: [{ type: 'text', text }], images: images.map((i) => i.dataUrl) },
+      { id: uid(), role: 'user', parts: [{ type: 'text', text }], attachments: attachmentUiMetas(spec.attachments) },
     ])
-    const ready = buildUserTurn({ ...spec, includeCurrentTab: false }).then(
-      ({ message, attachedSources, notes }): QueuedSteer => ({
-        message,
-        sources: attachedSources,
-        journal: [text, ...notes, '[steered mid-task]'].filter(Boolean).join('\n'),
-        useMemory: spec.useMemory,
-      }),
-    )
+    const ready = buildUserTurn({ ...spec, includeCurrentTab: false })
+      .then(
+        ({ message, attachedSources, notes }): QueuedSteer => ({
+          message,
+          sources: attachedSources,
+          journal: [text, ...notes, '[steered mid-task]'].filter(Boolean).join('\n'),
+          useMemory: spec.useMemory,
+        }),
+      )
+      // buildUserTurn can reject outright (see its own hardening above); the
+      // drain below does `Promise.all(steerQueueRef.current.splice(0))`, which
+      // has no partial-success mode — one rejecting steer would otherwise
+      // abort the WHOLE chain as a generic error and lose any other, healthy
+      // steer batched in the same drain. Falling back to the plain text is far
+      // better than that.
+      .catch(() => buildSteerFallback(text, spec.useMemory))
     steerQueueRef.current.push(ready)
   }
 
@@ -1723,7 +2037,7 @@ export default function Chat({
   function mergeQueuedSpec(a: MessageSpec, b: MessageSpec): MessageSpec {
     return {
       text: [a.text, b.text].filter(Boolean).join('\n\n'),
-      images: [...a.images, ...b.images],
+      attachments: [...a.attachments, ...b.attachments],
       activeMentions: [...a.activeMentions, ...b.activeMentions],
       useMemory: a.useMemory || b.useMemory,
       useAll: a.useAll || b.useAll,
@@ -1760,7 +2074,7 @@ export default function Chat({
    * just fail.
    */
   async function handleComposerAction(action: ComposerAction) {
-    let images: CapturedImage[] = []
+    let actionAttachments: ComposerAttachment[] = []
     let text: string
     let includeCurrentTab = false
     if (action.kind === 'selection') {
@@ -1771,7 +2085,9 @@ export default function Chat({
     } else if (action.kind === 'image') {
       text = "What's in this image?"
       try {
-        images = [await fetchImageAsCapturedImage(action.srcUrl)]
+        actionAttachments = [
+          await fromCapturedImage(await fetchImageAsCapturedImage(action.srcUrl), 'Image from page'),
+        ]
       } catch {
         // Hotlink-protected or otherwise unfetchable — fall back to text only.
       }
@@ -1781,12 +2097,12 @@ export default function Chat({
     }
     if (!selected) {
       setInput((prev) => (prev ? `${prev}\n\n${text}` : text))
-      if (images.length > 0) setAttachments((a) => [...a, ...images])
+      if (actionAttachments.length > 0) setAttachments((a) => [...a, ...actionAttachments])
       return
     }
     const spec: MessageSpec = {
       text,
-      images,
+      attachments: actionAttachments,
       activeMentions: [],
       useMemory: false,
       useAll: false,
@@ -1816,7 +2132,7 @@ export default function Chat({
   function retractQueued() {
     if (!queued) return
     setInput(queued.text)
-    setAttachments(queued.images)
+    setAttachments(queued.attachments)
     setQueued(null)
   }
 
@@ -1851,6 +2167,15 @@ export default function Chat({
     const controller = new AbortController()
     abortRef.current = controller
     setStreaming(true)
+    // A fresh chain always starts unparked, even if the LAST chain (regenerated
+    // over, or simply superseded by continueTask/resumeFromPark) ended parked.
+    // Centralized here — rather than left to each of the four chain-starting
+    // callers to remember — so a stale reason can never survive into a new
+    // chain: left set, it would show a stale "Paused" banner over a chain that
+    // is actually running, and would later re-arm the tab-focus effect into
+    // firing an unprompted resumeFromPark once the user refocused the
+    // long-forgotten bound tab.
+    setParkedReason(null)
     setTurnStartedAt(ctx.startedAt)
     // Observability: one Langfuse trace per continuation chain, grouped into the
     // conversation's session. Each cycle's model steps become generations and its
@@ -1960,6 +2285,10 @@ export default function Chat({
     // reply and must be popped — unlike `pushedAny`, this resets every successful
     // cycle so it always reflects only the current at-risk tail.
     let pendingSinceCycle = 0
+    // Why this chain is ending — read by the finally below to decide whether the
+    // page-control session/overlay survive (see shouldTearDownPageControl).
+    // Defaults to 'completed'; overwritten on every other exit path.
+    let exitReason: ChainExitReason = 'completed'
 
     try {
       while (true) {
@@ -1968,10 +2297,12 @@ export default function Chat({
         // MCP server tools join the ToolSet through createAgentTools's
         // extraTools (NOT spread in here) so the disclosure catalog sees them.
         // Rebuilt each cycle: a server that connected mid-chain contributes on
-        // the next cycle.
+        // the next cycle. Reads settingsRef.current (not the chain's own
+        // closed-over `settings`) so a mid-chain MCP policy edit takes effect
+        // on the very next cycle, not just the next chain.
         const mcpTools = buildMcpTools({
           manager: getMcpManager(),
-          settings,
+          settings: settingsRef.current,
           requestApproval,
           imageQueue,
           conversationId,
@@ -1989,7 +2320,7 @@ export default function Chat({
             model,
             visionCapable,
             imageQueue,
-            (name) => toolPolicy(settings, name),
+            (name) => toolPolicy(settingsRef.current, name),
             conversationId,
             activeNames,
             trace,
@@ -2079,9 +2410,12 @@ export default function Chat({
         // elsewhere. Checked BEFORE the auto-continue branch — continuing now
         // would walk straight back into the same impossible capture and burn the
         // quota doing it. The chain ends here; returning to the tab resumes it
-        // (see the resume effect), which is why nothing is torn down.
+        // (see the resume effect) — which is why the page-control session and its
+        // overlay, unlike everything else in the finally below, must NOT be torn
+        // down for this exit reason (see shouldTearDownPageControl).
         if (result.stop.reason === 'parked') {
           setParkedReason(parked)
+          exitReason = 'parked'
           break
         }
 
@@ -2090,6 +2424,7 @@ export default function Chat({
         // ceiling, then hand off to the user via the Continue card.
         if (autoContinuesRef.current >= MAX_AUTO_CONTINUES) {
           setContinuation({ checkpoint: result.stop.checkpoint ?? null })
+          exitReason = result.stop.reason
           break
         }
         autoContinuesRef.current += 1
@@ -2125,8 +2460,10 @@ export default function Chat({
       if (!pushedAny && ctx.droppableTail) historyRef.current.pop()
       for (let i = 0; i < pendingSinceCycle; i++) historyRef.current.pop()
       if (controller.signal.aborted) {
+        exitReason = 'aborted'
         trace?.end({ metadata: { aborted: true } })
       } else {
+        exitReason = 'error'
         const message = err instanceof Error ? err.message : String(err)
         setMessages((m) =>
           m.map((msg) =>
@@ -2138,18 +2475,33 @@ export default function Chat({
         trace?.end({ metadata: { error: message } })
       }
     } finally {
-      void settleApproval(false)
+      // Deny anything still pending — front AND everything queued behind it —
+      // so a chain that ends (any reason) never leaves an orphaned tool call
+      // awaiting a card nobody will ever answer.
+      approvalQueueRef.current.drainAll(false)
+      setApproval(null)
       turnAllowed.current = new Set()
       // Discard any steers still queued at chain end (drained on success, dropped
       // on abort/error — the chain is over, so they have nothing to steer).
       steerQueueRef.current = []
-      pageControl.endSession()
-      // Tear down ambient presence on any tab the chain touched (navigate/inspect
-      // mount the frame outside a session, so endSession alone won't clear them).
-      // Passage highlights (highlight.ts) are deliberately NOT cleared here —
-      // they outlive the turn so the user can read what was marked; the next
-      // fresh turn sweeps them (see startFreshTurn).
-      void unmountAllPresence()
+      // Page-control session + on-page presence overlay: torn down for every
+      // exit EXCEPT 'parked' (see shouldTearDownPageControl) — a park must
+      // survive so returning to the tab resumes mid-plan instead of re-asking
+      // for control. Everything else in this finally runs unconditionally.
+      if (shouldTearDownPageControl(exitReason)) {
+        pageControl.endSession()
+        // Tear down ambient presence on any tab the chain touched (navigate/
+        // inspect mount the frame outside a session, so endSession alone won't
+        // clear them). Passage highlights (highlight.ts) are deliberately NOT
+        // cleared here — they outlive the turn so the user can read what was
+        // marked; the next fresh turn sweeps them (see startFreshTurn).
+        //
+        // unmountAllPresence sweeps every tab any chat mounted, but it skips any
+        // tab still under active page control — presence.ts tracks tinted state
+        // per tab for exactly this reason. So finishing here cannot strip a
+        // different, still-running conversation's cursor or spotlight.
+        void unmountAllPresence()
+      }
       abortRef.current = null
       setStreaming(false)
       setTurnStartedAt(null)
@@ -2179,7 +2531,7 @@ export default function Chat({
       // prose splits the reply, and merged auto-continues append more — so repair
       // every text part with uncompilable math, not just the first.
       const targets = msg.parts.flatMap((p, i) =>
-        p.type === 'text' && validateMath(p.text).invalid.length > 0 ? [{ i, text: p.text }] : [],
+        p.type === 'text' && hasUncompilableMath(p.text) ? [{ i, text: p.text }] : [],
       )
       if (targets.length === 0) continue
       changed = true
@@ -2427,6 +2779,11 @@ export default function Chat({
 
   return (
     <div className="chat">
+      {dropTarget && (
+        <div className="drop-overlay" aria-hidden="true">
+          <div className="drop-overlay-label">Drop files to attach</div>
+        </div>
+      )}
       <div className="messages" ref={scrollRef}>
         {messages.length === 0 && (
           <div className="empty-state">
@@ -2449,6 +2806,7 @@ export default function Chat({
               message={msg}
               streaming={streaming && i === messages.length - 1}
               turnStartedAt={turnStartedAt}
+              conversationId={conversationId}
               // Regenerate is offered on the last reply only. Anything appended
               // after a turn — a background-research report landing in the
               // transcript — makes that reply non-last, so the button withdraws
@@ -2462,12 +2820,17 @@ export default function Chat({
           </Fragment>
         ))}
         {approval && (
+          // Keyed by the card's own identity: a settle can only ever land on
+          // the card it was captured from (see settleApproval/ApprovalQueue
+          // .settle), and keying the remount too means a fresh card never
+          // inherits any local DOM/React state from whatever it replaced.
           <ApprovalCard
+            key={approval.id}
             approval={approval}
-            sessionPlan={sessionPlan}
-            onDeny={() => void settleApproval(false)}
-            onAllow={() => void settleApproval(true)}
-            onAllowSession={() => void settleApproval(true, true)}
+            sessionPlan={approval.session ?? null}
+            onDeny={() => void settleApproval(approval.id, false)}
+            onAllow={() => void settleApproval(approval.id, true)}
+            onAllowSession={() => void settleApproval(approval.id, true, true)}
           />
         )}
         {continuation && !streaming && (
@@ -2675,7 +3038,7 @@ export default function Chat({
                 </svg>
               </span>
               <span className="steer-strip__queued" title={queued.text || 'Queued follow-up'}>
-                {queued.text || `${queued.images.length} screenshot${queued.images.length > 1 ? 's' : ''}`}
+                {queued.text || `${queued.attachments.length} attachment${queued.attachments.length > 1 ? 's' : ''}`}
               </span>
               <button
                 className="steer-strip__retract"
@@ -2699,13 +3062,31 @@ export default function Chat({
           <ResearchDock tasks={dockTasks} onOpen={openDockTask} />
           {attachments.length > 0 && (
             <div className="attachment-row">
-              {attachments.map((img) => (
-                <div className="attachment-thumb" key={img.id}>
-                  <img src={img.dataUrl} alt="Screenshot attachment" />
+              {attachments.map((att) => (
+                <div
+                  className={att.kind === 'image' ? 'attachment-thumb' : 'attachment-thumb attachment-file'}
+                  key={att.id}
+                  title={att.name}
+                >
+                  {att.kind === 'image' ? (
+                    <img src={att.thumbDataUrl} alt={att.name} />
+                  ) : (
+                    <>
+                      <FileKindIcon kind={att.kind} />
+                      <span className="attachment-file-info">
+                        <span className="attachment-file-name">{att.name}</span>
+                        <span className="attachment-file-sub">
+                          {att.kind === 'pdf'
+                            ? `${att.pageCount} page${att.pageCount === 1 ? '' : 's'}`
+                            : formatBytes(att.byteSize)}
+                        </span>
+                      </span>
+                    </>
+                  )}
                   <button
                     className="attachment-remove"
-                    title="Remove screenshot"
-                    onClick={() => setAttachments((a) => a.filter((x) => x.id !== img.id))}
+                    title="Remove attachment"
+                    onClick={() => setAttachments((a) => a.filter((x) => x.id !== att.id))}
                   >
                     <svg width="8" height="8" viewBox="0 0 8 8" fill="none">
                       <path d="M1.5 1.5l5 5M6.5 1.5l-5 5" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
@@ -2730,12 +3111,25 @@ export default function Chat({
             // "Steer now" injects it mid-turn.
             disabled={!selected}
             rows={1}
+            onPaste={(e) => {
+              // A pasted screenshot or Finder file attaches; text pastes untouched.
+              const files = Array.from(e.clipboardData?.files ?? [])
+              if (files.length > 0) {
+                e.preventDefault()
+                void addFiles(files)
+              }
+            }}
             onChange={(e) => {
               handleInputChange(e.target.value, e.target.selectionStart ?? e.target.value.length)
               e.target.style.height = 'auto'
               e.target.style.height = `${Math.min(e.target.scrollHeight, 160)}px`
             }}
             onKeyDown={(e) => {
+              // Confirming an IME composition (kanji/hanja/hangul candidate)
+              // with Enter, or navigating its candidate list with Arrow keys,
+              // must not fall through to submit/history-recall/popover-nav
+              // below — checked first so it uniformly guards all of them.
+              if (shouldIgnoreComposerKeydown(e.nativeEvent)) return
               if (slashQuery && slashCandidates.length > 0) {
                 if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
                   e.preventDefault()
@@ -2794,9 +3188,14 @@ export default function Chat({
                   el.setSelectionRange(len, len)
                 })
               }
+              // Computed lazily (only reached on an actual ArrowUp/ArrowDown
+              // press with no popover open) rather than reactively — see
+              // recallableUserTexts's own doc comment for why this must not
+              // be a useMemo keyed on `messages`.
+              const recallTexts = () => recallableUserTexts(messages)
               const recallAt = (index: number) => {
                 recallIndexRef.current = index
-                setInput(recallableUserTexts[index])
+                setInput(recallTexts()[index])
                 syncAfterRecall()
               }
               const restoreLiveDraft = () => {
@@ -2805,16 +3204,14 @@ export default function Chat({
                 syncAfterRecall()
               }
               const caret = e.currentTarget.selectionStart ?? 0
-              if (
-                e.key === 'ArrowUp' &&
-                noPopover &&
-                (input === '' || caret === 0) &&
-                recallableUserTexts.length > 0
-              ) {
-                e.preventDefault()
-                if (recallIndexRef.current === -1) preRecallDraftRef.current = input
-                recallAt(Math.min(recallIndexRef.current + 1, recallableUserTexts.length - 1))
-                return
+              if (e.key === 'ArrowUp' && noPopover && (input === '' || caret === 0)) {
+                const texts = recallTexts()
+                if (texts.length > 0) {
+                  e.preventDefault()
+                  if (recallIndexRef.current === -1) preRecallDraftRef.current = input
+                  recallAt(Math.min(recallIndexRef.current + 1, texts.length - 1))
+                  return
+                }
               }
               if (e.key === 'ArrowDown' && noPopover && recallIndexRef.current !== -1) {
                 e.preventDefault()
@@ -2872,6 +3269,27 @@ export default function Chat({
                   </div>
                 )}
               </div>
+              <button
+                className="attach-btn"
+                title="Attach files (images, PDFs, text)"
+                disabled={!selected || capturing}
+                onClick={() => fileInputRef.current?.click()}
+              >
+                <PaperclipIcon />
+              </button>
+              <input
+                ref={fileInputRef}
+                type="file"
+                multiple
+                accept="image/png,image/jpeg,image/webp,image/gif,application/pdf,text/*,.md,.markdown,.csv,.tsv,.json,.jsonl,.yaml,.yml,.xml,.html,.css,.js,.jsx,.ts,.tsx,.py,.rb,.go,.rs,.java,.kt,.c,.h,.cpp,.hpp,.sh,.toml,.ini,.log,.sql"
+                style={{ display: 'none' }}
+                onChange={(e) => {
+                  const files = Array.from(e.target.files ?? [])
+                  // Reset so re-picking the same file re-fires onChange.
+                  e.target.value = ''
+                  void addFiles(files)
+                }}
+              />
               <button
                 className="cam-btn"
                 title="Screenshot part of the page"
@@ -3157,17 +3575,34 @@ function shotIdOf(part: UIPart): string | undefined {
   return typeof out?.shotId === 'string' ? out.shotId : undefined
 }
 
-function MessageView({
+// Memoized: without this, every streamed token re-renders EVERY message in the
+// conversation (setMessages always produces a new `messages` array — required
+// by React — which re-invokes MessageView for all messages, not just the one
+// being patched). React.memo's default shallow-prop comparison is sufficient
+// here because every setMessages call site in this file preserves object
+// identity for any message it isn't touching (`m.map((msg) => msg.id === id ?
+// {...} : msg)` returns the SAME `msg` reference for every other message, and
+// the two call sites that append return `[...prev, ...add]` — verified across
+// every setMessages call site in this file). The other props: `streaming` is
+// stably `false` for every non-last message regardless of the chat's own
+// streaming state, `turnStartedAt` only changes twice per turn (start/end),
+// and `conversationId` is stable for a mounted Chat — none of them defeat
+// memoization for the (many) messages that aren't the one currently streaming.
+const MessageView = memo(function MessageView({
   message,
   streaming,
   turnStartedAt,
   onRegenerate,
+  conversationId,
 }: {
   message: UIMessage
   streaming: boolean
   turnStartedAt: number | null
   /** Set only on the transcript's last reply, and only when it can be re-run. */
   onRegenerate?: () => void
+  /** Threaded down to McpAppCard so an app card's tool calls are scoped to
+   *  THIS conversation's approval/session state (see mcpAppHostRegistry.ts). */
+  conversationId: string
 }) {
   const bodyRef = useRef<HTMLDivElement>(null)
 
@@ -3184,6 +3619,28 @@ function MessageView({
               {message.images.map((src, i) => (
                 <img key={i} src={src} alt="Attached screenshot" />
               ))}
+            </div>
+          )}
+          {message.attachments && message.attachments.length > 0 && (
+            <div className="msg-attachments">
+              {message.attachments
+                .filter((a) => a.kind === 'image' && a.thumbDataUrl)
+                .map((a) => (
+                  <img key={a.id} src={a.thumbDataUrl} alt={a.name} title={a.name} />
+                ))}
+              {message.attachments
+                .filter((a) => a.kind !== 'image')
+                .map((a) => (
+                  <span className="msg-attachment-chip" key={a.id} title={a.name}>
+                    <FileKindIcon kind={a.kind === 'pdf' ? 'pdf' : 'text'} />
+                    <span className="attachment-file-name">{a.name}</span>
+                    <span className="attachment-file-sub">
+                      {a.kind === 'pdf' && a.pageCount !== undefined
+                        ? `${a.pageCount} page${a.pageCount === 1 ? '' : 's'}`
+                        : formatBytes(a.byteSize)}
+                    </span>
+                  </span>
+                ))}
             </div>
           )}
           {text}
@@ -3257,7 +3714,7 @@ function MessageView({
           ) : part.type === 'reasoning' ? (
             <ReasoningBlock key={i} text={part.text} active={streaming && i === parts.length - 1} />
           ) : (
-            <ToolPill key={part.toolCallId} part={part} />
+            <ToolPill key={part.toolCallId} part={part} conversationId={conversationId} />
           )
         })}
         {streaming &&
@@ -3280,7 +3737,7 @@ function MessageView({
       )}
     </div>
   )
-}
+})
 
 // Renders one assistant text part as ordered blocks: image runs → carousel,
 // standalone links → cards, standalone JSON → collapsible tree, else markdown.
@@ -3691,7 +4148,14 @@ function controlActionLabel(input: any, output: any): string {
   return 'Page action'
 }
 
-function ToolPill({ part }: { part: Extract<UIPart, { type: 'tool' }> }) {
+function ToolPill({
+  part,
+  conversationId,
+}: {
+  part: Extract<UIPart, { type: 'tool' }>
+  /** Threaded down to McpAppCard — see mcpAppHostRegistry.ts. */
+  conversationId: string
+}) {
   const output = part.output as any
   // Stable identity for the app card's init context: a fresh object literal
   // here would be a changed effect dep in McpAppCard on every transcript
@@ -3830,7 +4294,12 @@ function ToolPill({ part }: { part: Extract<UIPart, { type: 'tool' }> }) {
         <McpContentCard key={id} artifactId={id} />
       ))}
       {output?.app && typeof output.app === 'object' && typeof output.app.server === 'string' && (
-        <McpAppCard app={output.app as McpAppRef} toolInput={part.input} toolOutput={appOutput} />
+        <McpAppCard
+          app={output.app as McpAppRef}
+          toolInput={part.input}
+          toolOutput={appOutput}
+          conversationId={conversationId}
+        />
       )}
       {typeof output?.artifactId === 'string' && (
         <ArtifactCard

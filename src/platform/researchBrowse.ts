@@ -35,6 +35,17 @@ interface Session {
 
 const sessions = new Map<string, Session>()
 
+/** Chrome's wording for "the tab/window this call targeted no longer exists" —
+ *  what a dead research tab (SW eviction, the user closing the minimized
+ *  window, a crash) surfaces as, from either chrome.tabs.* or a rejected
+ *  chrome.scripting.executeScript. Recognizing it here lets handleBrowseOp
+ *  release a dead session's lease immediately instead of leaving the one
+ *  shared research tab locked for every other consumer until the TTL fires. */
+function looksLikeMissingTab(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err)
+  return /no tab with id|no window with id|the tab was closed|invalid tab id/i.test(msg)
+}
+
 /** Handle one browse op from the offscreen sub-agent. Never throws. */
 export async function handleBrowseOp(sessionId: string, op: BrowseOp): Promise<BrowseResult> {
   try {
@@ -50,6 +61,12 @@ export async function handleBrowseOp(sessionId: string, op: BrowseOp): Promise<B
         return { ok: true, message: 'browse session closed' }
     }
   } catch (err) {
+    // The underlying tab/window died mid-session — release the lease NOW
+    // rather than leaving the shared research tab locked for every other
+    // consumer (another task's browse session, a FetchUrl render escalation,
+    // the WebSearch tab fallback) until SESSION_TTL_MS elapses. closeSession
+    // is idempotent, so a session that's already gone is a harmless no-op.
+    if (looksLikeMissingTab(err)) closeSession(sessionId)
     return { ok: false, message: 'the browse session failed', error: err instanceof Error ? err.message : String(err) }
   }
 }
@@ -75,7 +92,6 @@ async function openSession(sessionId: string, url: string): Promise<BrowseResult
 async function actInSession(sessionId: string, action: BrowseAction): Promise<BrowseResult> {
   const session = sessions.get(sessionId)
   if (!session) return { ok: false, message: 'no open browse session — call open first' }
-  bumpTtl(sessionId, session)
 
   // Resolve the target against the registry the model was last shown, so the
   // policy judges the element the model actually meant.
@@ -87,8 +103,14 @@ async function actInSession(sessionId: string, action: BrowseAction): Promise<Br
   const verdict = isSafeResearchAction(action, target)
   if (!verdict.ok) {
     // Refused BEFORE touching the page. Re-observe anyway so the model gets a
-    // fresh registry with its refusal, rather than a dead end.
-    return { ok: false, message: verdict.reason, observation: await observe(session) }
+    // fresh registry with its refusal, rather than a dead end. bumpTtl only
+    // AFTER observe() succeeds (see below) — not at entry — so a session
+    // retrying against an already-dead tab can't extend its hold on the one
+    // shared resource indefinitely instead of being caught by handleBrowseOp's
+    // dead-tab detection.
+    const observation = await observe(session)
+    bumpTtl(sessionId, session)
+    return { ok: false, message: verdict.reason, observation }
   }
 
   const { tabId } = session.lease
@@ -96,6 +118,7 @@ async function actInSession(sessionId: string, action: BrowseAction): Promise<Br
   // Let the page settle (SPA route change, filtered list, expanded section).
   await waitForStable(tabId, { quietMs: 400, timeoutMs: 6_000 })
   const observation = await observe(session)
+  bumpTtl(sessionId, session)
   return { ok: result.ok, message: result.message, observation }
 }
 
@@ -123,9 +146,10 @@ async function dispatch(tabId: number, action: BrowseAction) {
 async function readSession(sessionId: string): Promise<BrowseResult> {
   const session = sessions.get(sessionId)
   if (!session) return { ok: false, message: 'no open browse session — call open first' }
-  bumpTtl(sessionId, session)
   const { title, text } = await readReadableText(session.lease.tabId)
   const tab = await chrome.tabs.get(session.lease.tabId).catch(() => undefined)
+  // Only bump once the round trip actually reached the page — see actInSession.
+  bumpTtl(sessionId, session)
   return { ok: true, message: `read ${tab?.url ?? title}`, text, url: tab?.url, title }
 }
 

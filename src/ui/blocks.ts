@@ -4,6 +4,17 @@
 // former splitImageBlocks. Detection is line-based (with fenced-code awareness)
 // and conservative: only whole-line links/images and whole fenced blocks are
 // pulled out, so anything inline in prose stays in the markdown block.
+//
+// An image URL is model-authored text — exactly the surface prompt injection
+// targets — and an `images` block renders straight into `<img src>` with no
+// click and no approval card. A recognized image line whose URL fails the
+// shared auto-render guard (isSafeRenderUrl) is dropped outright: never
+// emitted in an `images` block, and never pushed back to the markdown
+// fallback either, since a `![alt](url)` line surviving there would still
+// render as a real `<img>` via the markdown pipeline (the same shared guard
+// is not re-applied there).
+
+import { isSafeRenderUrl } from '../platform/safeRenderUrl'
 
 /** A link/image reference on its own line. */
 export interface LinkRef {
@@ -23,8 +34,10 @@ const BULLET = /^\s*(?:[-*+]|\d+[.)])\s+/
 const MD_LINK = /^!?\[([^\]]*)\]\(\s*(\S+?)\s*(?:"[^"]*")?\)$/
 const ANGLE = /^<(\S+)>$/
 const FENCE = /^\s{0,3}(```|~~~)(.*)$/
-/** Cap on JSON body size rendered as a tree; larger falls back to a code block. */
-const JSON_MAX = 20000
+/** Cap on JSON body size rendered as a tree; larger falls back to a code block.
+ *  Exported so jsonTreeLimits.ts's own depth cap can be tested against what's
+ *  actually reachable through this size limit (see jsonTreeLimits.test.ts). */
+export const JSON_MAX = 20000
 
 function asUrl(token: string): URL | null {
   try {
@@ -102,11 +115,14 @@ export function splitBlocks(text: string): Block[] {
     }
   }
   const flushImg = () => {
-    if (imgRun.length >= 2) {
+    // Screen before applying the run-length threshold, so one bad URL in an
+    // otherwise-legitimate run only drops itself, not the rest of the run.
+    const safe = imgRun.filter((r) => isSafeRenderUrl(r.url))
+    if (safe.length >= 2) {
       flushMd()
-      out.push({ type: 'images', urls: imgRun.map((r) => r.url) })
+      out.push({ type: 'images', urls: safe.map((r) => r.url) })
     } else {
-      for (const r of imgRun) md.push(r.line)
+      for (const r of safe) md.push(r.line)
     }
     imgRun = []
   }

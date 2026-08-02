@@ -4,7 +4,7 @@ All notable changes to **Lychee AI** are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the
 project aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Lychee AI
-is still pre-release (`0.1.0`) and carries no git tags yet, so the sections below are grouped
+is still pre-release (`0.2.0`) and carries no git tags yet, so the sections below are grouped
 by **development milestone (date)** rather than by released version — each date is a distinct
 burst of work on `main`. Short commit hashes are given in parentheses so any entry can be
 traced back to its change.
@@ -14,6 +14,60 @@ initial side-panel, onboarding, model settings, memory/dreaming, `@mentions`, pa
 the approval gate, and the `AutofillForm`/`profile`-memory groundwork — predate this window and
 are not itemised here; see the [wiki Engineering Log](https://github.com/SUTD-AI-Interest-Group/custom-agentic-browser-panel/wiki)
 for that history.
+
+---
+
+## [2026-08-02] — Prompt attachments and security hardening
+
+The composer now accepts images, PDFs, and text files, while a whole-codebase adversarial review
+closed the highest-risk gaps found in the extension's cross-context and tool boundaries.
+
+### Added
+
+- **Prompt attachments** — drag-and-drop, paste, and paperclip picking feed a provider-aware
+  delivery planner. Attachments are classified, byte-capped, stored in the `lychee-attachments`
+  IndexedDB store, dehydrated in persisted history, and rehydrated when a chat is reopened.
+  Native-document providers receive native file parts; other providers receive the supported
+  fallback representation. PDFs are parsed from copied bytes so the PDF worker cannot detach the
+  stored buffer.
+- **Encrypted-at-rest status** — Settings now shows whether secret storage is sealed and when the
+  vault has temporarily fallen back to plaintext-safe behavior.
+
+### Fixed
+
+- **Security review waves** — closed defects across tool authorization, SSRF/browse policy,
+  cross-panel settings, render and MCP recovery, service-worker lifetime, dreaming re-entrancy,
+  and page-control classification. CloseTabs now reports the verified number of closed tabs, and
+  the regression cases are mirrored in the pure browse-policy tests.
+
+## [2026-08-01] — Envelope encryption for secrets at rest
+
+Every secret Lychee stores — provider API keys, Langfuse keys, MCP OAuth tokens, and MCP
+header values — is now envelope-encrypted at rest instead of sitting in `chrome.storage.local`
+as plaintext. Existing installs migrate automatically the first time they load; there is no
+user-facing change and no action required. Design + threat model in
+`docs/superpowers/specs/2026-08-01-envelope-encryption-design.md`.
+
+### Added
+
+- **A device-bound key vault** (`src/data/vault.ts`) — a non-extractable AES-KW
+  key-encryption key lives in IndexedDB (`lychee-vault`) and wraps an AES-256-GCM data key;
+  the DEK itself is never persisted extractable, so no JS in the origin can ever read its raw
+  bytes. Sealed values are self-describing `lysec1.<iv>.<ciphertext>` strings
+  (`src/data/vaultFormat.ts`), versioned for crypto-agility.
+- **Seal/open at the existing chokepoints, not the call sites** — `saveSettings()`/
+  `loadSettings()` seal and open `providers[].apiKey`, `observability.publicKey/secretKey`,
+  and every MCP server's `headers` value (`src/data/settingsVault.ts`); `src/mcp/auth.ts` seals
+  stored OAuth tokens as one unit. In-memory `Settings` stay fully plaintext, so the ~13
+  key-reading call sites, the offscreen research handoff, and MCP "Copy JSON" export are
+  untouched.
+- **Automatic migration** — a plaintext field found on load is sealed, round-trip-verified in
+  memory, and written back; the plaintext-read fallback stays permanently, since it is also the
+  format detector. A vault that's unavailable (IndexedDB broken/blocked) degrades to plaintext
+  writes with a one-time warning rather than bricking key storage, and an undecryptable sealed
+  value (lost KEK) resolves to `''` so the user just re-enters the key.
+- **`resetVault()` on erase-all** — wiping all data now also destroys the KEK/DEK, so a fresh
+  onboarding starts from a fresh vault rather than reusing old key material.
 
 ---
 
@@ -84,6 +138,23 @@ one. History stays unified — any finished chat can be reopened on any tab. Des
   the main checkout and Vite resolved the `pdf.worker.min.mjs?url` import to its real path,
   outside the worktree root, tripping Vite's filesystem guard. The suite was green in the
   main checkout and red in every worktree.
+
+---
+
+## [2026-07-28] — Tab management and reply self-correction
+
+### Added
+
+- **Semantic tab tools** — the agent can understand, group, and close tabs with verified results;
+  the Chrome Web Store listing and permission justification now describe the `tabGroups` use.
+- **Regenerate** — the last assistant reply can be regenerated, with failures fed back into the
+  next attempt so the model can self-correct.
+
+### Fixed
+
+- Duplicate context-menu registration, an invalid tool name, a hung message channel, stale
+  highlight rings, and accidental tracking of the `node_modules` symlink are now covered by the
+  corresponding fixes and tests.
 
 ---
 

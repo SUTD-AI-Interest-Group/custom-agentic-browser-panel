@@ -13,9 +13,9 @@ import {
   type ResearchPlan,
 } from './notebook'
 import { createResearchTools, type BrowseBroker, type RenderBroker, type SearchBroker } from '../tools/research'
-import { withResilience, ResearchDeadlineError } from './resilience'
+import { withResilience, classifyError, ResearchDeadlineError } from './resilience'
 import type { ObservabilityConfig, ProviderConfig } from '../data/settings'
-import { MAX_RESEARCH_DURATION_MS, type ResearchSource, type ResearchStep, type ResearchVerification } from '../data/researchTasks'
+import { MAX_RESEARCH_DURATION_MS, capSteps, type ResearchSource, type ResearchStep, type ResearchVerification } from '../data/researchTasks'
 
 /** Compact one-line stringify for a step summary. */
 function compact(value: unknown): string {
@@ -170,7 +170,12 @@ export async function runResearch(opts: {
       `#${nb.findings.length}/${nb.sources.length}/${nb.images.length}/${Object.keys(nb.coverage).length}`
     if (sig === lastSig) return
     lastSig = sig
-    opts.onUpdate([...allSteps], nb)
+    // allSteps itself keeps growing for the task's whole life (rebuildRound
+    // indexes into it by round-start offset, so it can't be trimmed in place) —
+    // but nothing downstream (chrome.runtime.sendMessage, then chrome.storage.
+    // local via applyUpdate) needs more than capSteps' own persisted cap. Cap the
+    // COPY handed out, the same way the storage boundary already does.
+    opts.onUpdate(capSteps([...allSteps]), nb)
   }
   const pushStep = (step: ResearchStep) => {
     allSteps.push(step)
@@ -321,7 +326,10 @@ export async function runResearch(opts: {
         })
       } catch (err) {
         rebuildRound = () => {}
-        if (err instanceof ResearchDeadlineError) break // out of time → finalize below
+        // A deadline exceeded mid-retry, or a permanent (unwinnable) failure —
+        // either way, stop gathering and finalize with whatever the notebook
+        // already holds rather than retrying forever or hard-failing the task.
+        if (err instanceof ResearchDeadlineError || classifyError(err).kind === 'permanent') break
         throw err
       }
       // Freeze this round's steps at their final state.
@@ -382,20 +390,27 @@ export async function runResearch(opts: {
         draft = verified.report
         verification = verified.verification
       } catch (err) {
-        if (!(err instanceof ResearchDeadlineError)) throw err
-        partial = true // ran out of time mid-synthesis → best-effort finalize below
+        // A deadline exceeded mid-synthesis, or a permanent (unwinnable) failure
+        // (e.g. the notebook grew too large for a smaller model's context) — both
+        // fall to the same best-effort finalize below rather than propagating and
+        // hard-failing a task that may hold plenty of gathered findings.
+        if (!(err instanceof ResearchDeadlineError) && classifyError(err).kind !== 'permanent') throw err
+        partial = true
       }
     }
     if (partial) {
       try {
         draft = await synthesize(opts.question, notebook.get(), model, withAttemptTimeout(opts.signal, FINALIZE_TIMEOUT_MS), trace)
       } catch {
-        draft = draft ?? fallbackReport(opts.question, notebook.get())
+        draft = draft?.trim() ? draft : fallbackReport(opts.question, notebook.get())
       }
       stepSink.replaceTail({ kind: 'phase', tool: 'Synthesize', summary: 'Partial report finalized', detail: '', status: 'done' })
     }
 
-    const report = draft ?? fallbackReport(opts.question, notebook.get())
+    // draft?.trim() — not draft ?? ... — because a resolved-but-EMPTY completion
+    // (a content-policy refusal, a provider quirk) is defined, so `??` would never
+    // substitute the fallback, silently finalizing a blank "done" report.
+    const report = draft?.trim() ? draft : fallbackReport(opts.question, notebook.get())
     const nb = notebook.get()
     const sources: ResearchSource[] = nb.sources.map((s) => ({ title: s.title, url: s.url }))
     trace?.end({ output: report, metadata: { sources: sources.length, findings: nb.findings.length, partial } })
@@ -492,8 +507,15 @@ async function planResearch(
       outline: (out.outline ?? []).filter(Boolean),
       effortBudget: { searches: out.searches ?? 6, fetches: out.fetches ?? 10 },
     }
-  } catch {
-    // No structured-output support / parse failure — fall back to a 1-question plan.
+  } catch (err) {
+    // A transient failure (network blip, 429, timeout) must reach resilient() so
+    // it actually retries + shows a paused card — swallowing it here silently
+    // degrades the WHOLE run to a single raw sub-question with no outline, even
+    // though the identical request would likely have succeeded moments later.
+    if (classifyError(err).kind !== 'permanent') throw err
+    // Genuinely non-retryable (no structured-output support, a malformed schema
+    // the endpoint always rejects) — fall back to a 1-question plan rather than
+    // burning retries on something that can never succeed.
     return { subQuestions: [question], outline: [], effortBudget: { searches: 6, fetches: 10 } }
   }
 }
@@ -501,7 +523,6 @@ async function planResearch(
 interface Reflection {
   assessments: { subQuestion: string; supported: boolean; gap?: string }[]
   done: boolean
-  nextFocus?: string
 }
 
 const REFLECT_SCHEMA = {
@@ -540,9 +561,18 @@ async function reflect(
   try {
     const out = (await extractStructured(model, prompt, REFLECT_SCHEMA as Record<string, unknown>, signal, trace)) as Reflection
     return { assessments: out.assessments ?? [], done: !!out.done }
-  } catch {
-    // Can't assess — mark the focus supported so the loop makes progress and ends.
-    return { assessments: focus.map((subQuestion) => ({ subQuestion, supported: true })), done: false }
+  } catch (err) {
+    // A transient failure (network blip, 429, timeout) must reach resilient() for
+    // a real retry + paused card — NOT be swallowed into a fabricated result. The
+    // old behavior here marked every open sub-question "supported" on ANY
+    // failure, which both skipped the retry AND made isFullyCovered trivially
+    // true, silently converging on a report that covers almost nothing.
+    if (classifyError(err).kind !== 'permanent') throw err
+    // Genuinely non-retryable — do not fabricate coverage. Leave these
+    // sub-questions untouched (still open) so the next round's openGaps()
+    // revisits them, instead of asserting something that was never actually
+    // checked.
+    return { assessments: [], done: false }
   }
 }
 

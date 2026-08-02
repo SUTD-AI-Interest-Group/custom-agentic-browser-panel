@@ -26,7 +26,7 @@ import { loadPdf, renderPdfPage, renderPdfPageHighlighted, PdfError, type Loaded
 import { highlightTextOnPage, highlightRegionOnPage } from '../platform/highlight'
 import { saveShot } from '../data/screenshots'
 import type { QueuedImage } from '../agent/agent'
-import { mountPresence, setTint, focusOn, pulse, setPresenceHidden, animateNavIntent } from '../platform/presence'
+import { mountPresence, setTint, focusOn, pulse, setPresenceHidden, animateNavIntent, unmountPresence } from '../platform/presence'
 import { captureWithMarks } from '../platform/marks'
 import { createModel } from '../agent/provider'
 import { extractStructured } from '../agent/extract'
@@ -40,6 +40,7 @@ import { saveArtifact, updateArtifactContent } from '../data/artifacts'
 import { createStartResearchTool } from './research'
 import { buildCatalog, searchCatalog, partitionToolNames, type CatalogEntry } from './toolDiscovery'
 import {
+  hasElementChanged,
   isPointOfNoReturn,
   runControlStep,
   type ControlSession,
@@ -618,7 +619,7 @@ export function createAgentTools(
     // canvas the card doesn't have.
     CreateArtifact: tool({
       description:
-        'Create a self-contained interactive web artifact — one complete HTML document with inline CSS and JavaScript — shown to the user as a live, interactive card right in the chat: a visualization, chart, mini-app, formatted document, diagram, demo, or game. This is THE way to display or render HTML/JS to the user. It runs in a sealed sandbox with NO network (external scripts, CDNs and fonts will not load — inline everything), no storage, and no extension access. The card viewport is SMALL and FIXED: a narrow side-panel column about 360px wide and 360px tall (720px if the user expands it) — anything taller is clipped behind a scrollbar, not shown. Design to fit: fluid width (no fixed pixel widths), html/body{margin:0;height:100%}, compact spacing, and put long content behind tabs, accordions, pagination, or an internal scroll region instead of growing the page taller. Never emit a long scrolling document. Returns an artifactId; revise the same artifact later with UpdateArtifact instead of creating a new one. Asks the user for permission first.',
+        'Create a self-contained interactive web artifact — one complete HTML document with inline CSS and JavaScript — shown to the user as a live, interactive card right in the chat: a visualization, chart, mini-app, formatted document, diagram, demo, or game. This is THE way to display or render HTML/JS to the user. It runs in a sealed sandbox with NO network: no fetch/XHR/WebSocket, no remote scripts, fonts, or CDNs, no remote images, and no cross-origin form submission — inline everything, including images as data: URIs (a remote image URL will not load). No storage, no extension access. The card viewport is SMALL and FIXED: a narrow side-panel column about 360px wide and 360px tall (720px if the user expands it) — anything taller is clipped behind a scrollbar, not shown. Design to fit: fluid width (no fixed pixel widths), html/body{margin:0;height:100%}, compact spacing, and put long content behind tabs, accordions, pagination, or an internal scroll region instead of growing the page taller. Never emit a long scrolling document. Returns an artifactId; revise the same artifact later with UpdateArtifact instead of creating a new one. Asks the user for permission first.',
       inputSchema: z.object({
         title: z.string().describe('Short human title shown on the card, e.g. "Loan repayment explorer"'),
         html: z
@@ -1195,7 +1196,10 @@ export function createAgentTools(
         if (!approved) return DENIED
         const result = await closeTabs(plan.close)
         if (result.error) return { closed: 0, error: result.error, rejected: plan.rejected }
-        const closed = plan.close.length
+        // What was actually confirmed removed, not the pre-approval plan
+        // count: an id can vanish in the human-reaction-time gap between
+        // planning this batch and closeTabs() actually stashing/removing it.
+        const closed = result.closed.length
         return {
           closed,
           rejected: plan.rejected,
@@ -1353,6 +1357,27 @@ export function createAgentTools(
             once: true,
           })
           if (!approved) return DENIED
+          // The card's summary was built from `el` as it stood BEFORE the
+          // human reaction-time wait inside requestApproval. Re-read the page
+          // now and re-check that the same element is still at this index —
+          // an ordinary async re-render (a price/coupon recalculation
+          // relabeling this exact button) can swap what the stamp points to
+          // while the card was on screen, and the user approved what the card
+          // said, not necessarily what is about to actually happen.
+          try {
+            const freshSnap = await snapshotPage(tab.id)
+            const freshEl = spec.index !== undefined ? freshSnap.elements[spec.index] : undefined
+            if (hasElementChanged(el, freshEl)) {
+              return {
+                error:
+                  'The page changed while you were waiting for approval — re-read the elements (ReadPage or ControlPage) and try again.',
+              }
+            }
+            snap = freshSnap
+          } catch {
+            // Best-effort: if the re-read itself fails, proceed on the
+            // original (already-approved) snapshot rather than dead-end here.
+          }
         }
         const { registry, ok, message, urlChanged, origin } = await runControlStep({
           tabId: tab.id,
@@ -1421,6 +1446,7 @@ export function createAgentTools(
         if (!(await isForeground(tab))) return parkFor(tab, 'fill in this form')
         const profile = await getProfileMemories()
         const filled: number[] = []
+        const staleSkipped: number[] = []
         for (const f of fields) {
           let snap
           try { snap = await snapshotPage(tab.id) } catch { return { error: 'Cannot read this page.' } }
@@ -1433,6 +1459,24 @@ export function createAgentTools(
           if (isPointOfNoReturn(spec, el, session.origin)) {
             const approved = await requestApproval({ toolName: 'AutofillForm', summary: `Fill a sensitive field (${el?.name ?? f.index})`, reason: 'This field is sensitive.', once: true })
             if (!approved) continue
+            // Same re-check as ControlPage (see its comment): the card's
+            // summary was built from `el` as it stood before this wait, so
+            // re-verify the field is still the same one before typing into it.
+            try {
+              const freshSnap = await snapshotPage(tab.id)
+              if (freshSnap.origin !== session.origin) {
+                pageControl.endSession()
+                return { filled, error: 'The page is now on a different site; autofill stopped and page control ended for safety.' }
+              }
+              if (hasElementChanged(el, freshSnap.elements[f.index])) {
+                staleSkipped.push(f.index)
+                continue
+              }
+              snap = freshSnap
+            } catch {
+              staleSkipped.push(f.index)
+              continue
+            }
           }
           await runControlStep({
             tabId: tab.id, spec, snapshot: snap,
@@ -1443,7 +1487,11 @@ export function createAgentTools(
         }
         return {
           filled,
-          note: `Filled ${filled.length} field(s) from profile. Profile memories available: ${profile.length}. Submit is a separate, confirmed step.`,
+          note:
+            `Filled ${filled.length} field(s) from profile. Profile memories available: ${profile.length}. Submit is a separate, confirmed step.` +
+            (staleSkipped.length
+              ? ` Skipped field(s) ${staleSkipped.join(', ')} — the page changed while waiting for approval; re-read the page and try again for those.`
+              : ''),
         }
       },
     }),
@@ -1487,6 +1535,9 @@ export function createAgentTools(
         // front since `goto` may omit tabId (defaults to the active tab). Awaited
         // so the cue plays out first, but best-effort — a restricted page just
         // skips it and navigation proceeds.
+        // Tracks which tab (if any) actually got the nav-intent cue, so a
+        // failed navigation below knows what to tear down.
+        let navCueTabId: number | undefined
         if (action === 'goto' && url) {
           const targetId = tabId ?? (await resolveTab())?.id
           if (targetId !== undefined) {
@@ -1497,6 +1548,7 @@ export function createAgentTools(
               host = url
             }
             await animateNavIntent(targetId, `Navigating to ${host}…`)
+            navCueTabId = targetId
           }
         }
         const result = await navigateTab(action, { tabId, url })
@@ -1509,6 +1561,15 @@ export function createAgentTools(
         if (!result.error && result.tabId >= 0) {
           if (action !== 'activate') await new Promise((r) => setTimeout(r, 600))
           await mountPresence(result.tabId)
+        } else if (navCueTabId !== undefined) {
+          // animateNavIntent's own contract ("the load then wipes the
+          // overlay, so there is nothing to tear down") only holds when the
+          // navigation actually succeeds. On failure (malformed URL, blocked
+          // by policy) the page never navigates, so nothing wipes the dark
+          // tint/shimmer/"Navigating to…" pill it just played — tear it down
+          // explicitly instead of leaving the tab stuck looking mid-navigation
+          // for the rest of the turn.
+          await unmountPresence(navCueTabId)
         }
         return { action, ...result }
       },

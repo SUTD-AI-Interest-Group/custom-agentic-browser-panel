@@ -169,6 +169,28 @@ describe('runBrowseSession', () => {
     expect(outcome.digest).toContain('login button')
   })
 
+  it('stops promptly when its own signal is already aborted, independent of the internal 120s deadline', async () => {
+    // Locks down runBrowseSession's OWN abort-honoring behavior — distinct from
+    // tools/research.ts's separate bug (F4) in which SIGNAL it hands to `signal`
+    // in the first place. Whatever signal it's given, a page walk must not run to
+    // completion once that signal is already aborted.
+    const { broker, ops } = fakeBroker()
+    const ctrl = new AbortController()
+    ctrl.abort()
+    const outcome = await runBrowseSession({
+      sessionId: 's1',
+      url: 'https://site.test/docs',
+      objective: 'find the pricing table',
+      broker,
+      model: scriptedModel([{ text: 'unused — should never be reached' }]),
+      notebook: createNotebook(),
+      signal: ctrl.signal,
+    })
+
+    expect(outcome.stoppedBecause).not.toBe('done') // never got the chance to finish normally
+    expect(ops.at(-1)?.kind).toBe('close') // the tab lease is still always released
+  })
+
   it('stops at the step budget instead of clicking forever', async () => {
     const { broker, ops } = fakeBroker()
     // A model that only ever wants to click — the budget is the only thing that

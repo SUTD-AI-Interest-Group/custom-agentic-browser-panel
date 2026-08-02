@@ -22,7 +22,10 @@ export interface ResearchSourceRec {
   credibility?: string
   /** How the page text was obtained. */
   fetchedVia: 'headless' | 'tab'
-  /** djb2 of the normalized URL — cheap dedup key. */
+  /** djb2 of the normalized URL. This IS the dedup identity, not just a hint —
+   *  there is no fallback string comparison, so a (32-bit-hash-space,
+   *  astronomically unlikely at the scale one task reaches) collision between two
+   *  distinct URLs would silently merge them into one source/citation number. */
   contentHash: string
 }
 
@@ -46,6 +49,7 @@ export interface ResearchImage {
   author?: string
   dims?: { w: number; h: number }
   relevanceNote?: string
+  /** See ResearchSourceRec.contentHash — same "the hash IS the identity" caveat. */
   contentHash: string
 }
 

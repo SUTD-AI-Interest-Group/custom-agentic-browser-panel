@@ -37,6 +37,20 @@ describe('classifyError', () => {
     expect(classifyError(new Error('ECONNREFUSED 127.0.0.1:11434')).reason).toMatch(/network|connection/i)
     expect(describeError(new Error('boom'))).toMatch(/retry/i)
   })
+
+  it('marks a plain 400/404/422 as permanent (non-retryable) — retrying sends the identical request', () => {
+    // These are the classic "the request itself is wrong" codes (bad schema,
+    // context-length-exceeded, not-found): retrying verbatim gets the identical
+    // rejection, so burning the 24h budget on them helps nobody.
+    for (const s of [400, 404, 422]) {
+      expect(classifyError({ statusCode: s }).kind).toBe('permanent')
+    }
+    // Unchanged: 401/403/429/5xx stay transient — an expired key, a rate limit, or
+    // a down provider CAN change on retry.
+    for (const s of [429, 401, 403, 500, 502, 503, 504]) {
+      expect(classifyError({ statusCode: s }).kind).toBe('transient')
+    }
+  })
 })
 
 describe('backoffDelay', () => {
@@ -168,5 +182,20 @@ describe('withResilience', () => {
       withResilience(fn, { signal: new AbortController().signal, deadlineAt: h.deadlineAt, now: h.now, sleep: h.sleep }),
     ).rejects.toBeInstanceOf(ResearchDeadlineError)
     expect(fn).not.toHaveBeenCalled()
+  })
+
+  it('propagates a permanent failure immediately instead of retrying — it can never succeed', async () => {
+    const h = harness()
+    const onPause = vi.fn()
+    const err = { statusCode: 400, message: 'context length exceeded' }
+    const fn = vi.fn(async () => {
+      throw err
+    })
+    await expect(
+      withResilience(fn, { signal: new AbortController().signal, deadlineAt: h.deadlineAt, now: h.now, sleep: h.sleep, onPause }),
+    ).rejects.toBe(err)
+    expect(fn).toHaveBeenCalledTimes(1) // no retry
+    expect(onPause).not.toHaveBeenCalled() // no pause card for something that can't recover
+    expect(h.sleeps).toEqual([]) // never backed off
   })
 })

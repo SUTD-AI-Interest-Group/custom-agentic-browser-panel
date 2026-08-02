@@ -3,6 +3,7 @@
 // ONLY the broken fragments and splice the corrected LaTeX back into the message
 // — no answer content is regenerated. Every failure mode degrades to a no-op.
 import { validateMath, type MathSpan } from '../ui/mathValidate'
+import { normalizeMathDelimiters } from '../ui/mathDelimiters'
 
 /** A thin model call: prompt in, completion text out. Injected so this module
  *  stays pure/testable and unaware of the provider adapter. */
@@ -26,13 +27,16 @@ export function buildRepairPrompt(spans: MathSpan[]): string {
 /** True iff `f` is exactly one `$…$` or `$$…$$` span (no surrounding text, no
  *  extra delimiters) that compiles clean. Guards the repair against a model
  *  reply that dropped its delimiters and would otherwise splice raw LaTeX into
- *  prose — turning safe inert-code back into a leak. */
+ *  prose — turning safe inert-code back into a leak. Only an UNESCAPED `$`
+ *  inside the span counts as "dropped delimiters" — a legitimately escaped
+ *  `\$` (e.g. a currency sign inside the math itself) is valid LaTeX and must
+ *  not be rejected (d01 F3). */
 function isWholeMathSpan(f: string): boolean {
   const display = f.startsWith('$$') && f.endsWith('$$') && f.length > 4
   const inline = !display && f.startsWith('$') && f.endsWith('$') && f.length > 2
   if (!display && !inline) return false
   const inner = display ? f.slice(2, -2) : f.slice(1, -1)
-  if (!inner.trim() || inner.includes('$')) return false
+  if (!inner.trim() || /(?<!\\)\$/.test(inner)) return false
   return validateMath(f).invalid.length === 0
 }
 
@@ -84,9 +88,23 @@ export function spliceFixes(
 /** Validate `text`; if any math won't compile, ask `complete` to fix just those
  *  fragments and splice the corrected LaTeX back. Returns the original text on
  *  any failure or when the splice would not reduce the number of broken spans —
- *  so it can only ever improve the message, never regress it, and never throws. */
+ *  so it can only ever improve the message, never regress it, and never throws.
+ *
+ *  Detection and splicing both run against `normalizeMathDelimiters(text)`, not
+ *  the raw input (F4, d12): validateMath's SCAN only recognizes `$…$`/`$$…$$`,
+ *  so it is structurally blind to the `\(...\)`/`\[...\]` style OpenAI-family
+ *  models emit — without normalizing first, this function would silently never
+ *  detect (or repair) that entire class of broken math. Normalizing changes
+ *  string length (`\(`/`\)` are two chars, `$` is one; `\[...\]` gains
+ *  surrounding blank lines), so the MathSpan offsets from `validateMath` are
+ *  only valid against the SAME normalized string — spliceFixes must target
+ *  that string too, not the original `text`, or the offsets would land on the
+ *  wrong characters. When nothing needs fixing, or the repair doesn't help, the
+ *  original `text` is returned untouched either way, so a message whose math
+ *  was already fine (whichever delimiter style it used) is never rewritten. */
 export async function repairMessageText(text: string, complete: Complete): Promise<string> {
-  const { invalid } = validateMath(text)
+  const normalized = normalizeMathDelimiters(text)
+  const { invalid } = validateMath(normalized)
   if (invalid.length === 0) return text
   let reply: string
   try {
@@ -96,6 +114,6 @@ export async function repairMessageText(text: string, complete: Complete): Promi
   }
   const fixes = parseFixes(reply, invalid)
   if (fixes.size === 0) return text
-  const spliced = spliceFixes(text, invalid, fixes)
+  const spliced = spliceFixes(normalized, invalid, fixes)
   return validateMath(spliced).invalid.length < invalid.length ? spliced : text
 }

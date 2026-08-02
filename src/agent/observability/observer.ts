@@ -11,6 +11,7 @@ import {
   type ObservabilityConfig,
 } from '../../data/settings'
 import { LangfuseIngestionClient } from './langfuseClient'
+import { redactSecrets } from './redact'
 import type {
   EventOptions,
   Generation,
@@ -50,15 +51,40 @@ const MAX_STRING = 200_000
  * Deep-copy a value for ingestion, stripping data:image payloads unless
  * screenshots are enabled and capping pathologically long strings (a 40k-char
  * DOM dump is fine; a base64 image is not). Never throws.
+ *
+ * Date/Map/Set/Error are special-cased before the generic object branch: a
+ * plain `Object.entries` walk sees no own-enumerable properties on any of
+ * them, so without this they silently collapse to `{}` with no signal any
+ * data was lost — degrading a trace exactly when it's needed most (debugging
+ * a failure that surfaced as a caught Error). A circular reference is
+ * tracked via a WeakSet and replaced with a '[Circular]' marker at the cyclic
+ * edge instead of recursing forever — the previous behavior relied on the
+ * outer try/catch below, which caught the resulting RangeError but then
+ * dropped the ENTIRE value (not just the cyclic branch) to `undefined`.
  */
 export function sanitize(value: unknown, keepImages: boolean): unknown {
+  const seen = new WeakSet<object>()
   const walk = (v: unknown): unknown => {
     if (typeof v === 'string') {
       if (!keepImages && v.startsWith('data:image/')) return '[image omitted]'
       return v.length > MAX_STRING ? `${v.slice(0, MAX_STRING)}…[truncated]` : v
     }
-    if (Array.isArray(v)) return v.map(walk)
+    if (v instanceof Date) return v.toISOString()
+    if (v instanceof Map) {
+      const out: Record<string, unknown> = {}
+      for (const [k, val] of v.entries()) out[String(k)] = walk(val)
+      return out
+    }
+    if (v instanceof Set) return Array.from(v.values()).map(walk)
+    if (v instanceof Error) return { name: v.name, message: walk(v.message), stack: v.stack }
+    if (Array.isArray(v)) {
+      if (seen.has(v)) return '[Circular]'
+      seen.add(v)
+      return v.map(walk)
+    }
     if (v && typeof v === 'object') {
+      if (seen.has(v)) return '[Circular]'
+      seen.add(v)
       const out: Record<string, unknown> = {}
       for (const [k, val] of Object.entries(v as Record<string, unknown>)) out[k] = walk(val)
       return out
@@ -109,14 +135,49 @@ class LiveObserver implements Observer {
     })
   }
 
-  /** Apply the content-capture policy to any input/output value. */
+  /**
+   * Apply the content-capture policy to any input/output value. Secrets are
+   * redacted (redactSecrets) BEFORE the image-strip/length-cap pass
+   * (sanitize) so a card number or token can't be bisected by truncation
+   * first, and so a circular reference is neutralized into a '[Circular]'
+   * marker before sanitize's own walk would otherwise recurse into it
+   * forever (see redact.ts's walk vs. this file's own catch-all `undefined`
+   * fallback in `sanitize`, which — pre-fix — dropped the ENTIRE value on a
+   * cycle, not just the cyclic branch).
+   */
   content(v: unknown): unknown {
     if (v === undefined || !this.captureContent) return undefined
-    return sanitize(v, this.keepImages)
+    return sanitize(redactSecrets(v), this.keepImages)
   }
 
+  /**
+   * SECURITY: `metadata`, `statusMessage` and `name` are sent regardless of
+   * `captureContent` (they're small structural facts — approval outcome,
+   * error status, a trace's label — meant to stay useful even with content
+   * capture off) so they never pass through `content()` above. But `name` in
+   * particular is NOT always structural: a chat turn's trace name is the
+   * first ~80 chars of the user's own message (Chat.tsx), which can contain
+   * anything the user typed, secrets included — and a tool's `statusMessage`
+   * can echo a failed call's argument back. Redact all three unconditionally
+   * so the "always sent" fields can't become the leak the content gate was
+   * supposed to prevent.
+   */
   emit(type: string, body: Record<string, unknown>): void {
-    this.client.enqueue(type, clean(body))
+    const safe = { ...body }
+    try {
+      if (typeof safe.name === 'string') safe.name = redactSecrets(safe.name) as string
+      if (typeof safe.statusMessage === 'string') safe.statusMessage = redactSecrets(safe.statusMessage) as string
+      if (safe.metadata && typeof safe.metadata === 'object') safe.metadata = redactSecrets(safe.metadata)
+    } catch {
+      /* redactSecrets never throws by contract, but this emit path must not
+       * either — fall back to the unredacted body only if scrubbing itself
+       * somehow failed AND already logged nothing useful; erring toward
+       * dropping the risky fields entirely is safer than sending them raw. */
+      delete safe.name
+      delete safe.statusMessage
+      delete safe.metadata
+    }
+    this.client.enqueue(type, clean(safe))
   }
 
   startTrace(o: TraceOptions): Trace {
@@ -175,7 +236,7 @@ class LiveTrace implements Trace {
         id,
         traceId: this.id,
         name: o.name,
-        startTime: now(),
+        startTime: o.startTime ?? now(),
         input: this.obs.content(o.input),
         metadata: o.metadata,
         parentObservationId: o.parentObservationId,

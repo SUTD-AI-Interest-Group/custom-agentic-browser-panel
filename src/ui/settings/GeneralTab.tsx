@@ -8,6 +8,7 @@ import {
 import { testLangfuseConnection } from '../../agent/observability'
 import { Disclosure, Section } from './primitives'
 import McpSection from './McpSection'
+import { SealedChip } from './SealedChip'
 
 /**
  * General tab: system prompt, keyboard shortcut, privacy, observability. Text
@@ -130,6 +131,7 @@ function ObservabilitySection({
 
       {obs.enabled && (
         <div className="obs-panel">
+          <SealedChip scope="observability" />
           <label>
             Public key
             <input

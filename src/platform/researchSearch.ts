@@ -58,8 +58,11 @@ function injScrapeDuckDuckGo(): { rows: { title: string; url: string; snippet: s
     try {
       const abs = href.startsWith('//') ? `https:${href}` : href
       const u = new URL(abs, 'https://duckduckgo.com')
+      // Mirrors the fix in webFetch.ts's resolveDdgHref: URLSearchParams.get()
+      // already fully decodes uddg once — a second decodeURIComponent() here
+      // double-decodes any target URL that carries its own percent-escapes.
       const uddg = u.searchParams.get('uddg')
-      return uddg ? decodeURIComponent(uddg) : abs
+      return uddg || abs
     } catch {
       return href
     }

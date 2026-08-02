@@ -77,4 +77,39 @@ describe('validateMath', () => {
     expect(invalid).toHaveLength(0)
     expect(cleaned).toContain('\n\n$$E = mc^2$$')
   })
+
+  it('does not flag two $ amounts straddling a Windows path as broken math (F3)', () => {
+    // marked-katex-extension's own inline tokenizer requires whitespace/
+    // sentence-punctuation/EOS immediately after a closing $ — otherwise it
+    // never tokenizes the pairing as math in the first place. validateMath must
+    // apply the same requirement, or it neutralizes ordinary prose (and, via
+    // repairAssistantMath, can silently trigger an LLM "fix" for text that was
+    // never broken math at all).
+    const text = 'It costs $50 to license, stored at C:\\Users\\name\\config, with a $75 upgrade.'
+    const { invalid, cleaned } = validateMath(text)
+    expect(invalid).toHaveLength(0)
+    expect(cleaned).not.toContain('<code>')
+    expect(cleaned).not.toContain('`')
+  })
+
+  it('does not flag two adjacent currency amounts as broken math', () => {
+    // The audit brief's literal example: marked-katex-extension's own tokenizer
+    // never pairs these ($10 is immediately followed by a letter, not
+    // whitespace/punctuation/EOS), so validateMath must agree and never
+    // neutralize this as a broken span (whether it leaves the $ signs alone or
+    // escapes them is an implementation detail — either renders as plain text).
+    const { invalid, cleaned } = validateMath('It costs $5 and $10 depending on size.')
+    expect(invalid).toHaveLength(0)
+    expect(cleaned).not.toContain('<code>')
+    expect(cleaned).not.toContain('`')
+  })
+
+  it('still flags genuinely broken math whose closing $ is followed by punctuation/space', () => {
+    // The lookahead must only suppress pairings marked-katex-extension itself
+    // would never tokenize — a real, intentional (if broken) math span
+    // followed by a space/period must still be caught.
+    const { invalid } = validateMath('width $\\frac{a}{$ end.')
+    expect(invalid).toHaveLength(1)
+    expect(invalid[0].raw).toBe('$\\frac{a}{$')
+  })
 })

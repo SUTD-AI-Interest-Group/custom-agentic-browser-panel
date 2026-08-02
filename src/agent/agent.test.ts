@@ -139,6 +139,104 @@ describe('runAgentTurn: unloaded-tool calls are repaired into GetTool', () => {
   })
 })
 
+// repairToolCall's SECOND branch: a real, active tool called with arguments
+// that fail to parse/validate against its schema (large tool inputs occasionally
+// make a model emit malformed JSON). The SDK surfaces this as InvalidToolInputError
+// — distinct from NoSuchToolError, so the branch above never fires — and the
+// docstring's stated primary motivation for repairToolCall is to silently
+// re-ask the SAME model, with its broken call and the validation error fed
+// back, for a corrected call. Only the NoSuchToolError branch had coverage
+// before this test.
+describe('runAgentTurn: repairToolCall repairs a validation error (malformed tool-call arguments)', () => {
+  it('silently reissues the same tool with corrected arguments via a generateText fallback, and execute() runs on the repaired input', async () => {
+    let streamCall = 0
+    const model = new MockLanguageModelV3({
+      doStream: async () => {
+        streamCall += 1
+        return {
+          stream: new ReadableStream({
+            start(controller: any) {
+              controller.enqueue({ type: 'stream-start', warnings: [] })
+              if (streamCall === 1) {
+                // A real, active tool name, but input that doesn't even parse
+                // as JSON — triggers InvalidToolInputError inside the SDK's
+                // own doParseToolCall, NOT NoSuchToolError.
+                controller.enqueue({
+                  type: 'tool-call',
+                  toolCallId: 'c1',
+                  toolName: 'Foo',
+                  input: '{"name": "incomplete',
+                })
+                controller.enqueue({
+                  type: 'finish',
+                  finishReason: 'tool-calls',
+                  usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+                })
+              } else {
+                controller.enqueue({ type: 'text-start', id: 't1' })
+                controller.enqueue({ type: 'text-delta', id: 't1', delta: 'done' })
+                controller.enqueue({ type: 'text-end', id: 't1' })
+                controller.enqueue({
+                  type: 'finish',
+                  finishReason: 'stop',
+                  usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+                })
+              }
+              controller.close()
+            },
+          }),
+        }
+      },
+      // repairToolCall's own re-ask goes through generateText -> doGenerate, a
+      // separate code path from the main turn's doStream above — it always
+      // replies with the SAME tool, corrected.
+      doGenerate: async () =>
+        ({
+          content: [
+            { type: 'tool-call', toolCallId: 'c1', toolName: 'Foo', input: JSON.stringify({ name: 'fixed' }) },
+          ],
+          finishReason: { unified: 'tool-calls', raw: 'tool-calls' },
+          usage: {
+            inputTokens: { total: 1, noCache: 1, cacheRead: undefined, cacheWrite: undefined },
+            outputTokens: { total: 1, text: 1, reasoning: undefined },
+            raw: undefined,
+          },
+          warnings: [],
+        }) as any,
+    })
+
+    let executedWith: unknown
+    const tools = {
+      Foo: tool({
+        description: 'a tool with a required string field',
+        inputSchema: z.object({ name: z.string() }),
+        execute: async (input: { name: string }) => {
+          executedWith = input
+          return { received: input.name }
+        },
+      }),
+    }
+
+    const result = await runAgentTurn({
+      model,
+      system: 's',
+      history: [{ role: 'user', content: 'call Foo' }],
+      tools,
+      abortSignal: new AbortController().signal,
+      onUpdate: () => {},
+    })
+
+    const toolParts = result.parts.filter((p) => p.type === 'tool') as Extract<UIPart, { type: 'tool' }>[]
+    // The malformed call must NOT dead-end as a visible "... failed" error...
+    expect(toolParts.some((p) => p.toolName === 'Foo' && p.state === 'error')).toBe(false)
+    // ...it silently repairs and executes with the CORRECTED arguments.
+    const fooPart = toolParts.find((p) => p.toolName === 'Foo')
+    expect(fooPart?.state).toBe('done')
+    expect(executedWith).toEqual({ name: 'fixed' })
+    expect((fooPart?.output as { received: string }).received).toBe('fixed')
+  })
+})
+
 // The ungated Checkpoint control tool is merged into streamText's toolset
 // separately from `tools` (see checkpointTool in agent.ts), so it is NOT a
 // member of `Object.keys(tools)` that resolveActiveTools intersects against.
@@ -433,6 +531,123 @@ describe('agent steering: steerPending halts the loop at the next step boundary'
 
     expect(result.stop.stepsUsed).toBe(3)
     expect(result.stop.reason).toBe('budget')
+  })
+})
+
+// The single most safety-critical invariant in this file per CLAUDE.md: an
+// image can only reach the model through imageQueue, drained by prepareStep
+// into a synthetic `user` message ahead of the NEXT step — never the step that
+// queued it (the tool call hasn't finished when that step's own request goes
+// out), and never resent once drained. The caption rides WITH its own image:
+// the queue mixes ReadPage's set-of-marks shot with the screenshot tools'
+// plain crops, so a caption mismatch would have the model hunt for numbered
+// boxes on an unmarked picture.
+describe('imageQueue: prepareStep drains queued images into captioned synthetic user messages', () => {
+  it('injects each queued image as its own message paired with its own caption ahead of the next step, and never resends it', async () => {
+    const imageQueue: import('./agent').QueuedImage[] = []
+    let call = 0
+    const model = new MockLanguageModelV3({
+      doStream: async () => {
+        call += 1
+        return {
+          stream: new ReadableStream({
+            start(controller: any) {
+              controller.enqueue({ type: 'stream-start', warnings: [] })
+              if (call === 1) {
+                // Step 1: a perception tool runs and pushes two images with
+                // distinct captions onto the shared queue mid-step.
+                controller.enqueue({ type: 'tool-call', toolCallId: 'c1', toolName: 'ReadPage', input: '{}' })
+                controller.enqueue({
+                  type: 'finish',
+                  finishReason: 'tool-calls',
+                  usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+                })
+              } else if (call === 2) {
+                // Step 2: a second, unrelated tool call — forces a step 3 so
+                // we can prove the images are NOT resent once drained.
+                controller.enqueue({ type: 'tool-call', toolCallId: 'c2', toolName: 'Noop', input: '{}' })
+                controller.enqueue({
+                  type: 'finish',
+                  finishReason: 'tool-calls',
+                  usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+                })
+              } else {
+                controller.enqueue({ type: 'text-start', id: 't1' })
+                controller.enqueue({ type: 'text-delta', id: 't1', delta: 'done' })
+                controller.enqueue({ type: 'text-end', id: 't1' })
+                controller.enqueue({
+                  type: 'finish',
+                  finishReason: 'stop',
+                  usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+                })
+              }
+              controller.close()
+            },
+          }),
+        }
+      },
+    })
+
+    const tools = {
+      ReadPage: tool({
+        description: 'read the page',
+        inputSchema: z.object({}),
+        execute: async () => {
+          imageQueue.push(
+            { dataUrl: 'data:image/png;base64,AAAA', caption: 'Set-of-marks screenshot: [1] a button' },
+            { dataUrl: 'data:image/png;base64,BBBB', caption: 'A bar chart region [r1]' },
+          )
+          return { ok: true }
+        },
+      }),
+      Noop: tool({
+        description: 'does nothing',
+        inputSchema: z.object({}),
+        execute: async () => ({ ok: true }),
+      }),
+    }
+
+    await runAgentTurn({
+      model,
+      system: 's',
+      history: [{ role: 'user', content: 'look at the page' }],
+      tools,
+      abortSignal: new AbortController().signal,
+      onUpdate: () => {},
+      imageQueue,
+    })
+
+    expect(model.doStreamCalls.length).toBe(3)
+    const findFileMessages = (prompt: unknown) =>
+      (prompt as Array<{ role: string; content: unknown }>).filter(
+        (m) => m.role === 'user' && Array.isArray(m.content) && m.content.some((p: any) => p.type === 'file'),
+      )
+
+    // Step 1's own request predates the tool call that populates the queue —
+    // nothing injected yet.
+    expect(findFileMessages(model.doStreamCalls[0].prompt)).toHaveLength(0)
+
+    // Step 2's request carries BOTH images, each as its own message, in order,
+    // each caption paired with its OWN image (not swapped). The SDK's own
+    // message->prompt conversion decomposes a data: URL string into a
+    // { type: 'data', data: <base64 payload> } content object — that
+    // normalization happens beneath runAgentTurn, so assert on the base64
+    // payload it extracted rather than the original data: URL string.
+    const injectedAtStep2 = findFileMessages(model.doStreamCalls[1].prompt) as Array<{
+      content: Array<{ type: string; data?: { data?: string }; text?: string }>
+    }>
+    expect(injectedAtStep2).toHaveLength(2)
+    const [first, second] = injectedAtStep2
+    expect(first.content.find((p) => p.type === 'file')?.data?.data).toBe('AAAA')
+    expect(first.content.find((p) => p.type === 'text')?.text).toBe('Set-of-marks screenshot: [1] a button')
+    expect(second.content.find((p) => p.type === 'file')?.data?.data).toBe('BBBB')
+    expect(second.content.find((p) => p.type === 'text')?.text).toBe('A bar chart region [r1]')
+
+    // Step 3's request must NOT carry them again — drained, not resent.
+    expect(findFileMessages(model.doStreamCalls[2].prompt)).toHaveLength(0)
+
+    // The shared queue array itself ends up empty (consumers splice it, not copy it).
+    expect(imageQueue).toHaveLength(0)
   })
 })
 

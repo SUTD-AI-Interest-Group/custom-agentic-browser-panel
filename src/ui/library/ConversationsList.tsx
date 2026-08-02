@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   deleteConversation,
   listConversations,
@@ -7,9 +7,11 @@ import {
   type ConversationSummary,
 } from '../../data/conversations'
 import { deleteShotsForConversation } from '../../data/screenshots'
+import { deleteAttachmentsForConversation } from '../../data/attachments'
 import { deleteMcpArtifactsForConversation } from '../../data/mcpArtifacts'
 import { deleteArtifactsForConversation } from '../../data/artifacts'
 import { relativeTime } from '../../platform/time'
+import { conversationTitle } from '../conversationTitle'
 
 // The Library's Chats tab: the full conversation history as a list. Clicking a
 // row opens that chat; the hover-trash deletes it (with confirm). This is the
@@ -20,7 +22,7 @@ import { relativeTime } from '../../platform/time'
 /** Display title with the same "New chat" fallback used elsewhere, so the
  * fallback is searchable too (a null title shouldn't be an unsearchable row). */
 function displayTitle(c: ConversationSummary): string {
-  return c.title ?? 'New chat'
+  return conversationTitle(c.title)
 }
 
 export default function ConversationsList({
@@ -37,6 +39,10 @@ export default function ConversationsList({
   // Id of the row currently showing the rename input, plus its live draft text.
   const [renamingId, setRenamingId] = useState<string | null>(null)
   const [renameValue, setRenameValue] = useState('')
+  // Set just before Escape closes the input, so the blur it triggers (removing
+  // a focused element from the DOM fires one) doesn't re-commit what Escape
+  // just asked to discard — see the onBlur handler below.
+  const cancelledByEscapeRef = useRef(false)
 
   const refresh = useCallback(() => {
     void listConversations()
@@ -63,6 +69,7 @@ export default function ConversationsList({
       // artifacts, or they'd sit unreachable in the quota forever.
       await Promise.all([
         deleteShotsForConversation(id).catch(() => {}),
+        deleteAttachmentsForConversation(id).catch(() => {}),
         deleteMcpArtifactsForConversation(id).catch(() => {}),
         deleteArtifactsForConversation(id).catch(() => {}),
       ])
@@ -152,10 +159,23 @@ export default function ConversationsList({
                         void commitRename(c.id)
                       } else if (e.key === 'Escape') {
                         e.preventDefault()
+                        cancelledByEscapeRef.current = true
                         setRenamingId(null)
                       }
                     }}
-                    onBlur={() => setRenamingId(null)}
+                    onBlur={() => {
+                      // Losing focus any other way (clicking another row,
+                      // scrolling, opening the tab switcher) used to discard
+                      // the typed title silently. Persist it instead, matching
+                      // every other text field's "commits on blur" convention
+                      // — except right after Escape, which already asked to
+                      // discard and must not be overridden by the blur it causes.
+                      if (cancelledByEscapeRef.current) {
+                        cancelledByEscapeRef.current = false
+                        return
+                      }
+                      void commitRename(c.id)
+                    }}
                   />
                 ) : (
                   <span className="library-row-title">{displayTitle(c)}</span>

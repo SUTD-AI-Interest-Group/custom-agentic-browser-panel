@@ -157,9 +157,10 @@ export async function runBrowseSession(opts: {
         findings: z
           .array(
             z.object({
-              claim: z.string().describe('A single factual claim, in your own words'),
+              // Capped — see the identical note on tools/research.ts's WriteNotebook.
+              claim: z.string().max(500).describe('A single factual claim, in your own words'),
               sourceUrl: z.string().describe('The exact URL you read this on'),
-              quote: z.string().optional().describe('A short verbatim quote supporting the claim'),
+              quote: z.string().max(500).optional().describe('A short verbatim quote supporting the claim'),
               confidence: z.enum(['high', 'med', 'low']).optional(),
             }),
           )

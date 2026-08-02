@@ -105,6 +105,227 @@ describe('isSafeResearchAction — click', () => {
     )
     expect(v.ok).toBe(true)
   })
+
+  // (S4) — mirrors webFetch.test.ts's hardening-pass cases through the CLICK
+  // path too: an <a> click navigates the leased research tab exactly like the
+  // explicit `navigate` action does (browsePolicy.ts's own comment), so a page
+  // could otherwise smuggle a click at a blocked target around a guard that
+  // only covered `navigate`. isFetchableUrl itself is exhaustively tested in
+  // webFetch.test.ts; this end-to-end layer only needs to confirm the click
+  // path actually reaches that guard, not re-derive every bypass shape.
+  it('denies a click on an anchor whose href is in the 0.0.0.0/8 block or the RFC 6598 CGN range, or names a cloud-metadata host (S4)', () => {
+    for (const href of [
+      'http://0.0.0.1/',
+      'http://100.100.100.200/', // Alibaba Cloud's metadata service
+      'http://metadata.google.internal/computeMetadata/v1/',
+    ]) {
+      const v = isSafeResearchAction({ kind: 'click', index: 1 }, el({ tag: 'a', name: 'more info', href }))
+      expect(v.ok, `expected href ${href} to be denied`).toBe(false)
+    }
+  })
+
+  it('allows a click on an anchor just outside those same ranges (S4 boundary)', () => {
+    for (const href of ['http://1.1.1.1/', 'http://100.63.255.255/', 'http://100.128.0.1/']) {
+      const v = isSafeResearchAction({ kind: 'click', index: 1 }, el({ tag: 'a', name: 'Docs', href }))
+      expect(v.ok, `expected href ${href} to be allowed`).toBe(true)
+    }
+  })
+})
+
+describe('isSafeResearchAction — click, blind controls (no href, no accessible name)', () => {
+  // Mirrors pageControl.test.ts's equivalent table: el.type reads undefined on
+  // anything that isn't a native form control, so a <div role="button">/plain
+  // onclick <span>/icon-only <button type="button"> reports type:undefined and
+  // name:'' — passing every check above unnoticed. No human is watching this
+  // browser, so "cannot classify what this does" must resolve to deny.
+  it('denies an ARIA-role div button with no accessible name', () => {
+    const v = isSafeResearchAction({ kind: 'click', index: 1 }, el({ tag: 'div', role: 'button', name: '' }))
+    expect(v.ok).toBe(false)
+  })
+
+  it('denies a plain onclick-driven span with no role and no name', () => {
+    const v = isSafeResearchAction({ kind: 'click', index: 1 }, el({ tag: 'span', name: '' }))
+    expect(v.ok).toBe(false)
+  })
+
+  it('denies a native <button type="button"> icon button with no accessible name', () => {
+    const v = isSafeResearchAction({ kind: 'click', index: 1 }, el({ tag: 'button', type: 'button', name: '' }))
+    expect(v.ok).toBe(false)
+  })
+
+  it('denies an <a> with no href and no name', () => {
+    const v = isSafeResearchAction({ kind: 'click', index: 1 }, el({ tag: 'a', href: '', name: '' }))
+    expect(v.ok).toBe(false)
+  })
+
+  it('denies a role=tab/switch/menuitem control with no accessible name, not just role=button', () => {
+    for (const role of ['tab', 'switch', 'menuitem', 'option']) {
+      const v = isSafeResearchAction({ kind: 'click', index: 1 }, el({ tag: 'div', role, name: '' }))
+      expect(v.ok, `role=${role}`).toBe(false)
+    }
+  })
+
+  it('still allows an ARIA button that has an accessible name', () => {
+    const v = isSafeResearchAction({ kind: 'click', index: 1 }, el({ tag: 'div', role: 'button', name: 'Expand section' }))
+    expect(v.ok).toBe(true)
+  })
+
+  it('still allows a link with a real href even when it has no visible text', () => {
+    const v = isSafeResearchAction({ kind: 'click', index: 1 }, el({ tag: 'a', name: '', href: 'https://example.com/x' }))
+    expect(v.ok).toBe(true)
+  })
+})
+
+// (S2) Mirrors pageControl.test.ts: COMMITTING_NAME was English-word-only, so
+// an emoji-only or non-English label cleared both nets (non-empty name means
+// not blind; no English word means no vocabulary match) on this policy too —
+// the ONLY gate on the unattended, headless research browser.
+describe('isSafeResearchAction — click, emoji-only committing names (S2)', () => {
+  it('denies unambiguous committing icons with no text label at all, no ancestor needed', () => {
+    for (const name of ['🗑️', '🗑', '🛒', '💳', '💰', '💸', '📤']) {
+      const v = isSafeResearchAction({ kind: 'click', index: 1 }, el({ tag: 'div', role: 'button', name }))
+      expect(v.ok, `expected "${name}" to be denied`).toBe(false)
+    }
+  })
+})
+
+// (N1) Mirrors pageControl.test.ts: a bare checkmark is at least as often
+// "mark complete" / "acknowledge" as a destructive confirm, so it must not
+// deny by itself — only when the ancestor context also reads as committing.
+describe('isSafeResearchAction — click, checkmark glyphs need committing context (N1)', () => {
+  it('allows a bare checkmark with no ancestor at all — e.g. marking a to-do item done', () => {
+    for (const name of ['✅', '✔️', '✔']) {
+      const v = isSafeResearchAction({ kind: 'click', index: 1 }, el({ tag: 'div', role: 'button', name }))
+      expect(v.ok, `expected "${name}" to be allowed`).toBe(true)
+    }
+  })
+
+  it('allows a checkmark inside a benignly-named container — e.g. a checklist row', () => {
+    const v = isSafeResearchAction({ kind: 'click', index: 1 }, el({ tag: 'button', name: '✅', ancestorName: 'Task list' }))
+    expect(v.ok).toBe(true)
+  })
+
+  it('denies a checkmark whose ancestor context reads as committing — a real confirm button', () => {
+    for (const ancestorName of ['Confirm delete', 'Complete purchase']) {
+      const v = isSafeResearchAction({ kind: 'click', index: 1 }, el({ tag: 'button', name: '✅', ancestorName }))
+      expect(v.ok, `expected ancestor "${ancestorName}" to deny`).toBe(false)
+    }
+  })
+})
+
+// (N2) Mirrors pageControl.test.ts: an element's own name being an EXACT
+// dismissal word (Cancel/Close/Back/...) is the universal "back out without
+// committing" control. "cancel" (and several translations) is ALSO already
+// in COMMITTING_NAME/_INTL for phrases like "Cancel subscription" that
+// genuinely commit — exact match is what keeps that compound phrase denied.
+describe('isSafeResearchAction — click, explicit dismissal name exemption (N2)', () => {
+  it('allows a bare "Cancel" with no ancestor context at all', () => {
+    const v = isSafeResearchAction({ kind: 'click', index: 1 }, el({ tag: 'button', type: 'button', name: 'Cancel' }))
+    expect(v.ok).toBe(true)
+  })
+
+  it('allows a Cancel/Close/Back/Not-now control inside a container whose OWN name reads as committing', () => {
+    const cases = [
+      { name: 'Cancel', ancestorName: 'Confirm Purchase' },
+      { name: 'Close', ancestorName: 'Confirm Purchase' },
+      { name: 'Back', ancestorName: 'Checkout' },
+      { name: 'Not now', ancestorName: 'Complete your subscription' },
+    ]
+    for (const c of cases) {
+      const v = isSafeResearchAction({ kind: 'click', index: 1 }, el({ tag: 'button', type: 'button', ...c }))
+      expect(v.ok, `expected ${JSON.stringify(c)} to be allowed`).toBe(true)
+    }
+  })
+
+  it('allows translated dismissal equivalents inside a committing ancestor', () => {
+    const cases = [
+      { name: 'Annuler', ancestorName: "Confirmer l'achat" },
+      { name: 'Cancelar', ancestorName: 'Confirmar compra' },
+      { name: 'キャンセル', ancestorName: '購入を確認' },
+      { name: '取消', ancestorName: '确认购买' },
+    ]
+    for (const c of cases) {
+      const v = isSafeResearchAction({ kind: 'click', index: 1 }, el({ tag: 'button', type: 'button', ...c }))
+      expect(v.ok, `expected ${JSON.stringify(c)} to be allowed`).toBe(true)
+    }
+  })
+
+  it('still denies "Cancel subscription" — a compound phrase is not an exact dismissal match', () => {
+    const v = isSafeResearchAction({ kind: 'click', index: 1 }, el({ tag: 'button', type: 'button', name: 'Cancel subscription' }))
+    expect(v.ok).toBe(false)
+  })
+
+  // Security boundary: the dismissal exemption must NEVER suppress a
+  // structural check — otherwise a page could relabel a real commit control
+  // "Cancel" to dodge the refusal.
+  it('still denies a "Cancel"-labelled submit control inside a POST form', () => {
+    const v = isSafeResearchAction(
+      { kind: 'click', index: 1 },
+      el({ tag: 'button', type: 'submit', name: 'Cancel', formMethod: 'post' }),
+    )
+    expect(v.ok).toBe(false)
+  })
+
+  it('still denies a "Cancel"-labelled link to a blocked (SSRF) target', () => {
+    const v = isSafeResearchAction(
+      { kind: 'click', index: 1 },
+      el({ tag: 'a', name: 'Cancel', href: 'http://169.254.169.254/latest/meta-data/' }),
+    )
+    expect(v.ok).toBe(false)
+  })
+
+  it('still denies a "Cancel"-labelled sensitive field', () => {
+    const v = isSafeResearchAction({ kind: 'click', index: 1 }, el({ tag: 'input', name: 'Cancel', sensitive: true }))
+    expect(v.ok).toBe(false)
+  })
+})
+
+describe('isSafeResearchAction — click, non-English committing names (S2)', () => {
+  it('denies committing verbs in major non-English languages', () => {
+    const names = [
+      'Löschen', // German: delete
+      'Kaufen', // German: buy
+      'Supprimer', // French: delete
+      'Confirmer', // French: confirm
+      'Eliminar', // Spanish: delete
+      'Comprar', // Spanish: buy
+      'Confermare', // Italian: confirm
+      'Удалить', // Russian: delete
+      '削除', // Japanese: delete
+      '购买', // Chinese: buy
+      'حذف', // Arabic: delete
+    ]
+    for (const name of names) {
+      const v = isSafeResearchAction({ kind: 'click', index: 1 }, el({ tag: 'button', name }))
+      expect(v.ok, `expected "${name}" to be denied`).toBe(false)
+    }
+  })
+})
+
+// (S3) Same event-delegation gap as pageControl.test.ts: the clicked
+// descendant's own name can be innocuous while its delegated container's own
+// name (a <form>'s aria-label, a dialog's title, or the nearest
+// independently-clickable ancestor's aria-label — domIndex.ts's
+// ancestorNameOf) says otherwise. No human is watching this browser, so this
+// matters even more here than in pageControl.
+describe('isSafeResearchAction — click, delegated ancestor committing context (S3)', () => {
+  it('denies a click on an innocuously-named descendant whose delegated container self-describes as committing', () => {
+    const v = isSafeResearchAction({ kind: 'click', index: 1 }, el({ tag: 'span', name: 'Row 42', ancestorName: 'Delete row' }))
+    expect(v.ok).toBe(false)
+  })
+
+  it('allows when the ancestor name is benign — being inside SOME container is not itself committing', () => {
+    const v = isSafeResearchAction({ kind: 'click', index: 1 }, el({ tag: 'span', name: 'Row 42', ancestorName: 'Recent activity' }))
+    expect(v.ok).toBe(true)
+  })
+
+  it('does not deny merely sitting inside an unlabelled or benignly-labelled form (card-fatigue guard)', () => {
+    const v = isSafeResearchAction(
+      { kind: 'click', index: 1 },
+      el({ tag: 'button', name: 'Show more', ancestorName: 'Contact form' }),
+    )
+    expect(v.ok).toBe(true)
+  })
 })
 
 describe('isSafeResearchAction — type', () => {
@@ -158,8 +379,22 @@ describe('isSafeResearchAction — navigate / scroll / back', () => {
       'http://10.0.0.5/',
       'http://192.168.1.1/',
       'http://169.254.169.254/latest/meta-data/',
+      // (S4) — the rest of 0.0.0.0/8 beyond the exact literal, the RFC 6598
+      // carrier-grade-NAT range (Alibaba Cloud's metadata service lives at
+      // 100.100.100.200), and the canonical cloud-metadata hostnames — see
+      // webFetch.test.ts for the exhaustive isFetchableUrl coverage; this
+      // confirms the policy layer's own navigate path reaches the same guard.
+      'http://0.0.0.1/',
+      'http://100.100.100.200/',
+      'http://metadata.google.internal/',
     ]) {
       expect(isSafeResearchAction({ kind: 'navigate', url }).ok, `expected ${url} to be denied`).toBe(false)
+    }
+  })
+
+  it('allows navigation just outside the 0.0.0.0/8 and RFC 6598 ranges (S4 boundary)', () => {
+    for (const url of ['http://1.1.1.1/', 'http://100.63.255.255/', 'http://100.128.0.1/']) {
+      expect(isSafeResearchAction({ kind: 'navigate', url }).ok, `expected ${url} to be allowed`).toBe(true)
     }
   })
 

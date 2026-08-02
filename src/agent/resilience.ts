@@ -37,8 +37,10 @@ export const DEFAULT_BACKOFF = { base: 5_000, factor: 2, cap: 120_000 } as const
 export const PER_ATTEMPT_TIMEOUT_MS = 900_000
 
 export interface ErrorInfo {
-  /** 'abort' = a real Stop (do not retry); 'transient' = pause + retry. */
-  kind: 'abort' | 'transient'
+  /** 'abort' = a real Stop (do not retry); 'permanent' = the request itself can
+   *  never succeed, so retrying just repeats the identical rejection (do not
+   *  retry); 'transient' = pause + retry. */
+  kind: 'abort' | 'permanent' | 'transient'
   /** Human-readable reason shown on the paused card. */
   reason: string
 }
@@ -72,8 +74,10 @@ function truncate(s: string, max = 140): string {
 
 /**
  * Classify a failure into a Stop vs a retryable pause, plus a human reason. By
- * design EVERYTHING except a real abort is transient (we retry until the deadline);
- * the status/message inspection only picks a friendlier reason for the paused card.
+ * design almost everything except a real abort is transient (we retry until the
+ * deadline) — the one carved-out exception is a permanent 4xx (see below); the
+ * rest of the status/message inspection only picks a friendlier reason for the
+ * paused card.
  */
 export function classifyError(err: unknown): ErrorInfo {
   if (isAbortError(err)) return { kind: 'abort', reason: 'Cancelled' }
@@ -89,6 +93,16 @@ export function classifyError(err: unknown): ErrorInfo {
   if (/timeout|timed out|ETIMEDOUT/i.test(msg)) return { kind: 'transient', reason: 'The request timed out — will retry' }
   if (/fetch failed|network|ECONNREFUSED|ECONNRESET|ENOTFOUND|EAI_AGAIN|Failed to fetch|Load failed|offline/i.test(msg)) {
     return { kind: 'transient', reason: 'Network unavailable — will resume when the connection returns' }
+  }
+  // A plain 400/404/422 means the REQUEST itself is wrong (context-length-exceeded,
+  // a rejected JSON schema, a bad endpoint) rather than bad luck — retrying sends
+  // the byte-identical request and gets the byte-identical rejection, so treating
+  // it as transient just burns backoff cycles (and, eventually, the whole 24h
+  // deadline) on something that can never succeed. 401/403/429/5xx are handled
+  // above and deliberately stay transient — an expired key, a rate limit, or a
+  // down provider CAN change on retry.
+  if (status && [400, 404, 422].includes(status)) {
+    return { kind: 'permanent', reason: `Provider rejected the request (HTTP ${status}) — will not retry` }
   }
   if (status && status >= 400) return { kind: 'transient', reason: `Provider error (HTTP ${status}) — will retry` }
   return { kind: 'transient', reason: msg ? `${truncate(msg)} — will retry` : 'Temporary error — will retry' }
@@ -227,6 +241,12 @@ export async function withResilience<T>(fn: (signal: AbortSignal) => Promise<T>,
       // A real Stop (or deadline-driven finalize) always wins over a retry.
       if (signal.aborted) throw err
       if (now() >= deadlineAt) throw new ResearchDeadlineError()
+      // A permanent failure (the request itself is wrong, not bad luck) will fail
+      // identically on retry — propagate it immediately so the caller can
+      // short-circuit into its own partial/finalize path, instead of spending
+      // backoff cycles (and, eventually, the whole 24h budget) on something that
+      // can never succeed.
+      if (classifyError(err).kind === 'permanent') throw err
       // Everything else — network drop, provider 5xx/429/auth, per-attempt timeout —
       // is a transient pause: surface a reason, wait, retry.
       const reason = describeError(err)

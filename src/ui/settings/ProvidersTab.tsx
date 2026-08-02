@@ -1,8 +1,10 @@
-import { useState } from 'react'
-import { providerKind, type ModelConfig, type ProviderConfig, type ReasoningEffort, type Settings } from '../../data/settings'
+import { useEffect, useRef, useState } from 'react'
+import { providerKind, type ProviderConfig, type ReasoningEffort, type Settings } from '../../data/settings'
 import { profileFor } from '../../data/providerProfiles'
 import { fetchModelList } from '../../platform/modelList'
+import { resolveModelRefresh } from './modelRefresh'
 import { Section, Select } from './primitives'
+import { SealedChip } from './SealedChip'
 
 // Common endpoints, offered as one-click starting points, each tagged with the
 // `kind` that selects its capability profile. Anything not listed still works via
@@ -47,6 +49,12 @@ export default function ProvidersTab({
   // result/error line per provider id.
   const [refreshingId, setRefreshingId] = useState<string | null>(null)
   const [refreshMsg, setRefreshMsg] = useState<Record<string, string>>({})
+  // Always the latest `draft` prop, for refreshModels's async completion to
+  // read from — see the staleness check inside it.
+  const draftRef = useRef(draft)
+  useEffect(() => {
+    draftRef.current = draft
+  }, [draft])
 
   function toggle(id: string) {
     setOpen((prev) => {
@@ -86,25 +94,24 @@ export default function ProvidersTab({
    * models endpoint + auth). Also seeds a manual reasoning flag where the API
    * reports one that the id heuristic would miss (mainly OpenRouter), keeping
    * modelConfigs sparse. Best-effort: failures surface inline, nothing else changes.
+   *
+   * `baseline` is captured *before* the network round trip; `resolveModelRefresh`
+   * re-checks it against the freshest draft once the fetch resolves and refuses
+   * to commit if anything else changed in the meantime (another provider
+   * added/removed, a field blurred elsewhere) — a slow endpoint (LM Studio,
+   * Ollama, a flaky proxy) must never silently revert a concurrent edit made
+   * while it was outstanding.
    */
   async function refreshModels(p: ProviderConfig) {
     setRefreshingId(p.id)
     setRefreshMsg((m) => ({ ...m, [p.id]: '' }))
+    const baseline = draftRef.current.providers
     try {
       const fetched = await fetchModelList(p)
-      const models = fetched.map((f) => f.id).sort((a, b) => a.localeCompare(b))
       const detect = profileFor(providerKind(p)).detectReasoning
-      const modelConfigs: Record<string, ModelConfig> = { ...p.modelConfigs }
-      for (const f of fetched) {
-        if (f.reasoning === true && !detect(f.id)) {
-          modelConfigs[f.id] = { ...modelConfigs[f.id], reasoning: true }
-        }
-      }
-      commit({
-        ...draft,
-        providers: draft.providers.map((q) => (q.id === p.id ? { ...q, models, modelConfigs } : q)),
-      })
-      setRefreshMsg((m) => ({ ...m, [p.id]: `Loaded ${models.length} model${models.length === 1 ? '' : 's'}.` }))
+      const result = resolveModelRefresh(p.id, baseline, draftRef.current.providers, fetched, detect)
+      if (!result.stale) commit({ ...draftRef.current, providers: result.providers })
+      setRefreshMsg((m) => ({ ...m, [p.id]: result.message }))
     } catch (err) {
       setRefreshMsg((m) => ({
         ...m,
@@ -131,7 +138,8 @@ export default function ProvidersTab({
     <div className="settings-tabpane">
       <Section
         title="Providers"
-        hint="Any OpenAI-compatible endpoint. Keys stay in your browser and are sent only to that endpoint."
+        hint="Any OpenAI-compatible endpoint. Keys stay in your browser, encrypted at rest, and are sent only to that endpoint."
+        action={<SealedChip scope="providers" />}
       >
         {draft.providers.length === 0 && (
           <p className="hint">No providers yet — add one below to get started.</p>
