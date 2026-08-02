@@ -64,6 +64,8 @@ import McpContentCard from './McpContentCard'
 import McpAppCard, { registerMcpAppHostActions, type McpAppRef } from './McpAppCard'
 import { ArtifactCard } from './ArtifactCard'
 import { ApprovalQueue } from './approvalQueue'
+import { isNearBottom } from './scrollStick'
+import { createLatestRequest } from './latestRequest'
 import { shouldTearDownPageControl, type ChainExitReason } from './chainLifecycle'
 import { type ControlSession } from '../tools/pageControl'
 import { clearIndex } from '../platform/domIndex'
@@ -732,7 +734,36 @@ export default function Chat({
   // The open page-control session (RequestPageControl → ControlPage), if any.
   const pageSessionRef = useRef<ControlSession | null>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
+  // Whether the transcript should keep following new content (see scrollStick.ts).
+  // Starts true — a freshly opened chat is at its own bottom — and flips with the
+  // user's own scrolling, so a streamed token never drags them back down from
+  // something they scrolled up to re-read.
+  const stickToBottomRef = useRef(true)
   const inputRef = useRef<HTMLTextAreaElement>(null)
+  // Pending "close the @// popover after a blur" timer, so the next blur can
+  // cancel it and unmount can clear it (see the textarea's onBlur).
+  const blurCloseRef = useRef<number | null>(null)
+  useEffect(
+    () => () => {
+      if (blurCloseRef.current !== null) clearTimeout(blurCloseRef.current)
+    },
+    [],
+  )
+  // "Newest answer wins" guards for the two async composer menus, whose
+  // refreshes race each other on fast typing (see latestRequest.ts). One
+  // sequence each: they are refreshed independently.
+  const mentionSeqRef = useRef(createLatestRequest())
+  const slashSeqRef = useRef(createLatestRequest())
+  // Mirrors `streaming` but updates SYNCHRONOUSLY, at the top of runTurnChain
+  // rather than a render later. The four chain-starting callers all guarded on
+  // the `streaming` STATE, which an async caller reads from a stale closure:
+  // the park-resume effect below fires from chrome.tabs/windows listeners, and
+  // two of those landing before React re-rendered would each see
+  // `streaming === false` and start a chain, giving one conversation two
+  // concurrent turns writing into the same historyRef and clobbering each
+  // other's abort controller. The guard lives in runTurnChain itself so it
+  // covers every caller, present and future.
+  const streamingRef = useRef(false)
   // Steers queued during the running chain, drained at each cycle boundary in
   // runTurnChain (see QueuedSteer). Promises, so a steer still resolving its tab
   // context is never lost to a cycle that finishes first.
@@ -1233,9 +1264,38 @@ export default function Chat({
     }
   }, [hidden])
 
+  // Track whether the user is parked at the tail. Read on their own scrolling
+  // only — never from the programmatic scroll below, which would always
+  // re-arm itself and defeat the whole guard. `passive` since we never
+  // preventDefault, and the handler runs on every wheel notch.
   useEffect(() => {
+    const el = scrollRef.current
+    if (!el) return
+    const onScroll = () => {
+      stickToBottomRef.current = isNearBottom(el)
+    }
+    el.addEventListener('scroll', onScroll, { passive: true })
+    return () => el.removeEventListener('scroll', onScroll)
+  }, [])
+
+  // Follow the tail only while the user is already at it. `messages` gets a new
+  // identity on every streamed token, so an unconditional scroll here made
+  // reading back through a running turn impossible (see scrollStick.ts).
+  useEffect(() => {
+    if (!stickToBottomRef.current) return
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight })
-  }, [messages, approval])
+  }, [messages])
+
+  // An approval card is different: it blocks the turn until answered, so it is
+  // scrolled to even when the user has scrolled away. Split from the effect
+  // above rather than folded into its dependency list — sharing one effect
+  // would re-fire this force-scroll on every token for as long as a card is
+  // open, which is exactly the hijack being fixed.
+  useEffect(() => {
+    if (!approval) return
+    stickToBottomRef.current = true
+    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight })
+  }, [approval])
 
   // Tear down any open session: clear the ref, hide the session card, and
   // strip the on-page index stamps. Shared by endSession and by the start of
@@ -1566,6 +1626,10 @@ export default function Chat({
   }
 
   async function refreshMentionCandidates(m: { start: number; query: string }) {
+    // Claimed before the first await: a faster later keystroke must be able to
+    // mark this one stale even if its own lookup finishes first (see
+    // latestRequest.ts).
+    const token = mentionSeqRef.current.next()
     let tabs: TabSummary[]
     if (settings.tabAccess === 'all-tabs') {
       tabs = await listOpenTabs()
@@ -1591,11 +1655,17 @@ export default function Chat({
     if ('selection'.startsWith(q)) candidates.push({ kind: 'selection' })
     if ('screenshot'.startsWith(q)) candidates.push({ kind: 'screenshot' })
     candidates.push(...filtered.slice(0, 8).map((t): MentionCandidate => ({ kind: 'tab', tab: t })))
+    // A newer keystroke has issued its own refresh — drop this result rather than
+    // overwrite the menu with matches for a query the composer no longer holds.
+    if (mentionSeqRef.current.isStale(token)) return
     setMentionCandidates(candidates)
     setMentionIndex(0)
   }
 
   async function refreshSlashCandidates(s: { query: string }) {
+    // Same ordering guard as the mention menu above — its own sequence, so a
+    // keystroke in one menu cannot invalidate the other's in-flight refresh.
+    const token = slashSeqRef.current.next()
     const all = await listSkills().catch(() => [])
     const q = s.query.trim().toLowerCase()
     const matched = all
@@ -1623,6 +1693,7 @@ export default function Chat({
           (!q || `mcp:${p.server}:${p.name}`.toLowerCase().includes(q) || p.description.toLowerCase().includes(q)),
       )
       .slice(0, 6)
+    if (slashSeqRef.current.isStale(token)) return
     setSlashCandidates([...matched, ...prompts, { kind: 'browse' }])
     setSlashIndex(0)
   }
@@ -1936,6 +2007,10 @@ export default function Chat({
    * history, and runs the chain.
    */
   async function startFreshTurn(spec: MessageSpec) {
+    // Checked BEFORE the bubble and history push below, not just inside
+    // runTurnChain: bailing after those would strand a user message in the
+    // transcript and in model history with no reply and nothing running.
+    if (streamingRef.current) return
     const { text } = spec
     const slashMatch = text.match(/^\/([a-z0-9-]+)(?:\s|$)/)
     const invokedSkill = slashMatch ? await getSkill(slashMatch[1]) : null
@@ -1946,6 +2021,9 @@ export default function Chat({
       ...m,
       { id: uid(), role: 'user', parts: [{ type: 'text', text }], attachments: attachmentUiMetas(spec.attachments) },
     ])
+    // Sending is the user asking to see what comes next, so re-arm tail-following
+    // even if they had scrolled up to re-read something while composing.
+    stickToBottomRef.current = true
     // Drop any orphaned steer that raced a just-ended chain (see the finally in
     // runTurnChain) so it can't leak into this new turn.
     steerQueueRef.current = []
@@ -2005,6 +2083,8 @@ export default function Chat({
       ...m,
       { id: uid(), role: 'user', parts: [{ type: 'text', text }], attachments: attachmentUiMetas(spec.attachments) },
     ])
+    // Same as a fresh send: the user just spoke, so follow the tail again.
+    stickToBottomRef.current = true
     const ready = buildUserTurn({ ...spec, includeCurrentTab: false })
       .then(
         ({ message, attachedSources, notes }): QueuedSteer => ({
@@ -2131,8 +2211,14 @@ export default function Chat({
   /** Pull a queued follow-up back into the composer to edit or discard it. */
   function retractQueued() {
     if (!queued) return
-    setInput(queued.text)
-    setAttachments(queued.attachments)
+    // Merge into whatever is already in the composer rather than overwriting it.
+    // The user can type a second message while the first sits queued, so a plain
+    // assignment silently destroyed that draft — the same failure mergeQueuedSpec
+    // exists to prevent one step earlier in the same flow. Queued text leads
+    // (it was submitted first), matching mergeQueuedSpec's own ordering.
+    const pulled = queued
+    setInput((current) => (current.trim() ? `${pulled.text}\n\n${current}` : pulled.text))
+    setAttachments((current) => [...pulled.attachments, ...current])
     setQueued(null)
   }
 
@@ -2162,7 +2248,17 @@ export default function Chat({
      *  ran into, appended to the system prompt so the retry can correct for it. */
     retryNote?: string
   }) {
-    if (!selected) return
+    // Re-entry guard. Every caller (startFreshTurn, continueTask,
+    // resumeFromPark, regenerate) already checks the `streaming` STATE, but
+    // that value is a render old — and resumeFromPark is driven by
+    // chrome.tabs/windows listeners, so two of them firing before React has
+    // re-rendered would each see `false` and start a chain. Two chains on one
+    // conversation interleave pushes into the same historyRef and the second
+    // overwrites abortRef, leaving the first unstoppable. Checked here, on a
+    // ref set synchronously below, so the guard holds for every caller rather
+    // than depending on each remembering it.
+    if (streamingRef.current || !selected) return
+    streamingRef.current = true
     const model = selected
     const controller = new AbortController()
     abortRef.current = controller
@@ -2503,6 +2599,9 @@ export default function Chat({
         void unmountAllPresence()
       }
       abortRef.current = null
+      // Released in the same breath as the state flag, so the next chain can
+      // start the instant this one is genuinely over.
+      streamingRef.current = false
       setStreaming(false)
       setTurnStartedAt(null)
       setTurnSeq((n) => n + 1)
@@ -2567,7 +2666,7 @@ export default function Chat({
   // already in history, so a fresh chain (new step budget + auto-continue quota)
   // picks up where it left off — no new user message needed.
   async function continueTask() {
-    if (streaming) return
+    if (streamingRef.current) return
     setContinuation(null)
     autoContinuesRef.current = 0
     turnAllowed.current = new Set()
@@ -2605,7 +2704,10 @@ export default function Chat({
   }
 
   async function resumeFromPark() {
-    if (streaming) return
+    // The race this ref exists for: two tab/window listeners can both reach
+    // here before React has re-rendered, and the `streaming` state would read
+    // false in both closures. See streamingRef's declaration.
+    if (streamingRef.current) return
     setParkedReason(null)
     await runTurnChain({
       startedAt: Date.now(),
@@ -2688,7 +2790,11 @@ export default function Chat({
     // `selected` is checked here as well as inside runTurnChain: the chain
     // returns silently without a provider, which would leave the reply already
     // torn out of the transcript with nothing run to replace it.
-    if (!target || streaming || !selected) return
+    // `streamingRef` rather than the `streaming` state for the same reason
+    // runTurnChain's own guard uses it — and checked here because everything
+    // below tears the old reply out of the transcript and rewinds history
+    // before the chain is asked to replace it.
+    if (!target || streamingRef.current || !selected) return
     const cut = messagesRef.current.findIndex((m) => m.id === target.firstBubbleId)
     if (cut < 0) return
     // Read the failures out of the bubbles before they are dropped — they are
@@ -3230,10 +3336,20 @@ export default function Chat({
                 void submit()
               }
             }}
-            onBlur={() => setTimeout(() => {
-              setMentionQuery(null)
-              setSlashQuery(null)
-            }, 150)}
+            // The delay lets a click on a candidate land before the popover
+            // closes. Tracked in a ref and cleared on the next blur/unmount:
+            // an untracked timer from an earlier blur fires ~150ms later and
+            // would close a menu the user has since deliberately reopened
+            // (selecting a candidate refocuses the textarea, so blur→focus→
+            // retype well inside the window is an ordinary interaction).
+            onBlur={() => {
+              if (blurCloseRef.current !== null) clearTimeout(blurCloseRef.current)
+              blurCloseRef.current = window.setTimeout(() => {
+                blurCloseRef.current = null
+                setMentionQuery(null)
+                setSlashQuery(null)
+              }, 150)
+            }}
           />
           <div className="composer-row">
             <ModelPicker
