@@ -16,15 +16,16 @@ bug, there's a commit, a comment, or a regression test behind it.
 
 | | |
 | --- | --- |
-| **Span** | 10–24 July 2026 |
-| **Commits** | 310 |
-| **`feat`** | 129 |
-| **`docs` (specs + plans)** | 57 |
-| **`fix` / `harden`** | 59 |
+| **Span** | 10 July–2 August 2026 |
+| **Commits** | 387 |
+| **`feat`** | 165 |
+| **`docs`** | 75 |
+| **`fix` / `harden`** | 80 |
 
 That ratio is the most honest summary of how this was built. **More than a third of
-the commits produced no feature code at all** — 45 are design specs and plans, and
-another 47 are fixes and hardening *after* a feature already "worked." Almost every
+the commits produced no feature code at all** — the repository now contains 38 design
+specs and 20 implementation plans, and another 80 fixes and hardening commits landed
+*after* features already "worked." Almost every
 capability in the codebase landed as the same three-beat sequence:
 
 ```
@@ -34,12 +35,32 @@ feat: X                     ← the build
 fix: / harden: …            ← what the build taught us
 ```
 
-Thirty-two design specs and sixteen implementation plans are still in the repo
+Thirty-eight design specs and twenty implementation plans are still in the repo
 under
 [`docs/superpowers/`](https://github.com/SUTD-AI-Interest-Group/custom-agentic-browser-panel/tree/main/docs/superpowers).
 One of them — `docs: drop abandoned LM Studio/SSE design spec` (`c0f77af`) — was
 deleted rather than built. Designing something and then *not* building it is a
 result, not a waste.
+
+## Recent milestones
+
+The original feature log was written on 24 July. The later work extended the same
+patterns rather than changing the architecture:
+
+- **Sandboxed execution and artifacts (27 July)** — `RunCode` executes JavaScript in
+  a memory- and time-bounded QuickJS sandbox; artifact HTML renders in a separate
+  manifest-sandboxed page, with IndexedDB storage and per-conversation deletion.
+- **Tab management and regeneration (28 July)** — semantic tab grouping/closing tools
+  report verified results, and failed reply regeneration is fed back for self-correction.
+- **Per-tab chats (1 August)** — chats are keyed by tab and origin, background turns stay
+  mounted, and turns park safely when their tab is no longer frontmost.
+- **Secrets at rest (1–2 August)** — provider keys, observability keys, MCP headers, and
+  OAuth tokens use the IndexedDB-backed envelope-encryption vault, with automatic migration
+  and erase-all key destruction.
+- **Prompt attachments and hardening (2 August)** — provider-aware image/PDF/text delivery,
+  capped attachment storage, and the adversarial-review fixes are now part of the shipped path.
+
+The detailed, commit-linked release notes live in the repository [changelog](https://github.com/SUTD-AI-Interest-Group/custom-agentic-browser-panel/blob/main/CHANGELOG.md).
 
 ## Start here
 
