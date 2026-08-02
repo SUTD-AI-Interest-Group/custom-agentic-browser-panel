@@ -52,14 +52,52 @@ const COMMITTING_NAME_INTL =
  * text label at all) for a committing action (S2's other half — an
  * emoji-only name is non-empty, so it also clears isBlindClick below).
  * Deliberately excludes ❌/"X" — see pageControl.ts's identical constant for
- * why (it reads at least as often as "dismiss" as "delete").
+ * why (it reads at least as often as "dismiss" as "delete"). (N1 pulled the
+ * checkmark glyphs OUT of this set too — see AMBIGUOUS_COMMITTING_EMOJI.)
  */
-const COMMITTING_EMOJI = /🗑️|🗑|🛒|💳|💰|💸|📤|✅|✔️|✔/
+const COMMITTING_EMOJI = /🗑️|🗑|🛒|💳|💰|💸|📤/
+
+/**
+ * Checkmark glyphs (N1) — see pageControl.ts's identical constant for the
+ * full rationale: a bare check mark is at least as often "mark complete" /
+ * "acknowledge" as a destructive confirm, so it only counts as committing
+ * when the ancestor context also reads as committing (isCommittingCheckmark
+ * below), never from the bare glyph alone.
+ */
+const AMBIGUOUS_COMMITTING_EMOJI = /✅|✔️|✔/
 
 /** True when `name` reads as committing in English, a major non-English
- *  language, or a common committing icon. */
+ *  language, or an unambiguous committing icon. Deliberately excludes the
+ *  ambiguous checkmark glyphs (isCommittingCheckmark) and, for an exact
+ *  bare-word match, the dismissal vocabulary (isDismissalName). */
 const isCommittingName = (name: string): boolean =>
   COMMITTING_NAME.test(name) || COMMITTING_NAME_INTL.test(name) || COMMITTING_EMOJI.test(name)
+
+/**
+ * N1: a checkmark glyph denies only when its own ancestor context also
+ * reads as committing — never from the bare glyph alone. See
+ * pageControl.ts's identical function for the full rationale.
+ */
+const isCommittingCheckmark = (el: IndexedElement): boolean =>
+  AMBIGUOUS_COMMITTING_EMOJI.test(el.name) && !!el.ancestorName && isCommittingName(el.ancestorName)
+
+/**
+ * N2: the universal "back out of this flow without committing" label —
+ * Cancel/Close/Back/Dismiss/No/Not now and translated equivalents — matched
+ * ONLY as the WHOLE (trimmed) accessible name, never a substring. Identical
+ * vocabulary and exact-match reasoning as pageControl.ts's DISMISSAL_NAME:
+ * "cancel" (and several translations — annuler, cancelar, キャンセル, 取消,
+ * إلغاء) is ALSO already in COMMITTING_NAME/_INTL for phrases like "Cancel
+ * subscription" that genuinely commit; the bare word alone is instead the
+ * ordinary dismiss-button convention. Exact match keeps the compound phrase
+ * denied — only the standalone label is exempted.
+ */
+const DISMISSAL_NAME =
+  /^(cancel|close|back|dismiss|no|not now|skip|abbrechen|schließen|zurück|nein|annuler|fermer|retour|non|cancelar|cerrar|fechar|atrás|voltar|não|annulla|chiudi|indietro|отмена|закрыть|назад|нет|キャンセル|閉じる|戻る|いいえ|取消|关闭|返回|否|إلغاء|إغلاق|رجوع|لا)$/i
+
+/** True when `name`, taken as a WHOLE (not a substring), is an explicit
+ *  dismissal control. See DISMISSAL_NAME above. */
+const isDismissalName = (name: string): boolean => DISMISSAL_NAME.test(name.trim())
 
 /** Field types that are never a site-search box, whatever they are labelled. */
 const CREDENTIAL_TYPE = /^(password|email|tel|number|date|file|checkbox|radio)$/i
@@ -86,6 +124,15 @@ const isBlindClick = (el: IndexedElement): boolean => !el.href && !el.name.trim(
  * including why every check that does NOT depend on `name` (sensitive, the
  * href/SSRF guard, formMethod==='post') stays unconditional so a benign name
  * can never suppress one of those.
+ *
+ * N2 narrows the ancestorName mitigation the same way as pageControl.ts: an
+ * element whose OWN name is an EXACT dismissal word (isDismissalName) is no
+ * longer denied by either the own-name or the ancestor-derived check, even
+ * with a committing ancestor — see pageControl.ts's comment above
+ * isPointOfNoReturn for the full trade-off (a "Cancel" button in a
+ * legitimate confirm dialog vs. the narrower, self-contradictory attack
+ * shape this gives up). Exact-match only, and never touches the structural
+ * checks (sensitive, formMethod==='post', the href/SSRF guard) below.
  */
 
 /**
@@ -131,21 +178,37 @@ export function isSafeResearchAction(action: BrowseAction, el?: IndexedElement):
     case 'click': {
       if (!el) return deny(`element ${action.index} is not on the page`)
       if (el.sensitive) return deny('refused to click a password/payment field')
-      if (isCommittingName(el.name)) {
-        return deny(`refused to click "${el.name}" — it looks like it commits an action (purchase/auth/destructive)`)
-      }
-      // Event delegation (S3): a container attaches one handler and
-      // dispatches by target, so the clicked descendant can carry an
-      // innocuous name while its delegated container's own name (a <form>'s
-      // aria-label, a dialog's title, or the nearest independently-clickable
-      // ancestor's aria-label — domIndex.ts's ancestorNameOf) says otherwise.
-      // Scoped to containers that self-describe as committing, not "inside
-      // any form/dialog" — that's what keeps an ordinary search/filter form
-      // from denying every click inside it.
-      if (el.ancestorName && isCommittingName(el.ancestorName)) {
-        return deny(
-          `refused to click inside "${el.ancestorName}" — its container looks like it commits an action (purchase/auth/destructive)`,
-        )
+      // N2: an explicit dismissal name (bare "Cancel"/"Close"/"Back"/etc.,
+      // see isDismissalName) is the standard "back out without committing"
+      // control. Checked once and used to gate every remaining name-based
+      // check below — both this element's own name (bare "cancel" and
+      // several of its translations are otherwise committing, for "Cancel
+      // subscription"-style phrases) and its ancestor's (S3). Never gates
+      // the structural checks further down (formMethod==='post', the
+      // href/SSRF guard) — those stay unconditional.
+      const dismissal = isDismissalName(el.name)
+      if (!dismissal) {
+        if (isCommittingName(el.name)) {
+          return deny(`refused to click "${el.name}" — it looks like it commits an action (purchase/auth/destructive)`)
+        }
+        // N1: a checkmark alone is too ambiguous (to-do "done", toast
+        // acknowledge) to deny; it only counts with a committing ancestor.
+        if (isCommittingCheckmark(el)) {
+          return deny(`refused to click "${el.name}" — it looks like it commits an action (purchase/auth/destructive)`)
+        }
+        // Event delegation (S3): a container attaches one handler and
+        // dispatches by target, so the clicked descendant can carry an
+        // innocuous name while its delegated container's own name (a <form>'s
+        // aria-label, a dialog's title, or the nearest independently-clickable
+        // ancestor's aria-label — domIndex.ts's ancestorNameOf) says otherwise.
+        // Scoped to containers that self-describe as committing, not "inside
+        // any form/dialog" — that's what keeps an ordinary search/filter form
+        // from denying every click inside it.
+        if (el.ancestorName && isCommittingName(el.ancestorName)) {
+          return deny(
+            `refused to click inside "${el.ancestorName}" — its container looks like it commits an action (purchase/auth/destructive)`,
+          )
+        }
       }
       // A <button> with no explicit type reports type="submit" from the DOM, so
       // this catches the default-submit case too. GET submits are search-shaped

@@ -181,11 +181,108 @@ describe('isPointOfNoReturn — click, blind controls (no href, no accessible na
 // (clears COMMITTING_NAME) — both nets miss at once. These are the exact
 // repro shapes from the adversarial review.
 describe('isPointOfNoReturn — click, emoji-only committing names (S2)', () => {
-  it('flags common committing icons with no text label at all', () => {
-    for (const name of ['🗑️', '🗑', '🛒', '💳', '✅']) {
+  it('flags unambiguous committing icons with no text label at all, no ancestor needed', () => {
+    for (const name of ['🗑️', '🗑', '🛒', '💳', '💰', '💸', '📤']) {
       const target = el({ tag: 'div', role: 'button', name })
       expect(isPointOfNoReturn(spec({ action: 'click', index: 0 }), target, ORIGIN), `expected "${name}" to be flagged`).toBe(true)
     }
+  })
+})
+
+// (N1) A bare checkmark is at least as often "mark complete" / "acknowledge"
+// — a to-do app's done-checkbox, a toast's dismiss-check — as it is a
+// destructive confirm. Unlike the unambiguous icons above, treating it as
+// committing by itself would be card fatigue for one of the most common
+// icons in ordinary UI. It only commits when the ancestor context (the same
+// S3 signal) also reads as committing.
+describe('isPointOfNoReturn — click, checkmark glyphs need committing context (N1)', () => {
+  it('does not flag a bare checkmark with no ancestor at all — e.g. marking a to-do item done', () => {
+    for (const name of ['✅', '✔️', '✔']) {
+      const target = el({ tag: 'div', role: 'button', name })
+      expect(isPointOfNoReturn(spec({ action: 'click', index: 0 }), target, ORIGIN), `expected "${name}" NOT to be flagged`).toBe(false)
+    }
+  })
+
+  it('does not flag a checkmark inside a benignly-named container — e.g. a checklist row', () => {
+    const target = el({ tag: 'button', name: '✅', ancestorName: 'Task list' })
+    expect(isPointOfNoReturn(spec({ action: 'click', index: 0 }), target, ORIGIN)).toBe(false)
+  })
+
+  it('flags a checkmark whose ancestor context reads as committing — a real confirm button', () => {
+    for (const ancestorName of ['Confirm delete', 'Complete purchase']) {
+      const target = el({ tag: 'button', name: '✅', ancestorName })
+      expect(isPointOfNoReturn(spec({ action: 'click', index: 0 }), target, ORIGIN), `expected ancestor "${ancestorName}" to flag`).toBe(true)
+    }
+  })
+})
+
+// (N2) An element's own name being an EXACT dismissal word (Cancel/Close/
+// Back/Dismiss/No/Not now, or a translated equivalent) is the universal
+// "back out of this flow without committing" control. "cancel" (and several
+// of its translations) is ALSO already in COMMITTING_NAME/_INTL, because
+// "Cancel subscription" / "Annuler l'abonnement" genuinely commits (it stops
+// a live thing) — but the bare word alone, with nothing else in the name, is
+// overwhelmingly the ordinary dismiss-button convention instead. Exact
+// match is what keeps the compound phrase still flagged.
+describe('isPointOfNoReturn — click, explicit dismissal name exemption (N2)', () => {
+  it('does not flag a bare "Cancel" with no ancestor context at all', () => {
+    const target = el({ tag: 'button', type: 'button', name: 'Cancel' })
+    expect(isPointOfNoReturn(spec({ action: 'click', index: 0 }), target, ORIGIN)).toBe(false)
+  })
+
+  it('does not flag a Cancel/Close/Back/Not-now button inside a dialog whose OWN name reads as committing', () => {
+    const cases = [
+      { name: 'Cancel', ancestorName: 'Confirm Purchase' },
+      { name: 'Close', ancestorName: 'Confirm Purchase' },
+      { name: 'Back', ancestorName: 'Checkout' },
+      { name: 'Not now', ancestorName: 'Complete your subscription' },
+    ]
+    for (const c of cases) {
+      const target = el({ tag: 'button', type: 'button', ...c })
+      expect(
+        isPointOfNoReturn(spec({ action: 'click', index: 0 }), target, ORIGIN),
+        `expected ${JSON.stringify(c)} NOT to be flagged`,
+      ).toBe(false)
+    }
+  })
+
+  it('does not flag translated dismissal equivalents inside a committing ancestor', () => {
+    const cases = [
+      { name: 'Annuler', ancestorName: "Confirmer l'achat" },
+      { name: 'Cancelar', ancestorName: 'Confirmar compra' },
+      { name: 'キャンセル', ancestorName: '購入を確認' },
+      { name: '取消', ancestorName: '确认购买' },
+    ]
+    for (const c of cases) {
+      const target = el({ tag: 'button', type: 'button', ...c })
+      expect(
+        isPointOfNoReturn(spec({ action: 'click', index: 0 }), target, ORIGIN),
+        `expected ${JSON.stringify(c)} NOT to be flagged`,
+      ).toBe(false)
+    }
+  })
+
+  it('still flags "Cancel subscription" — a compound phrase is not an exact dismissal match', () => {
+    const target = el({ tag: 'button', type: 'button', name: 'Cancel subscription' })
+    expect(isPointOfNoReturn(spec({ action: 'click', index: 0 }), target, ORIGIN)).toBe(true)
+  })
+
+  // Security boundary: the dismissal exemption must NEVER suppress a
+  // structural check — otherwise a hostile page could relabel a real commit
+  // control "Cancel" to dodge the card.
+  it('still flags a "Cancel"-labelled real submit button', () => {
+    const target = el({ tag: 'button', type: 'submit', name: 'Cancel' })
+    expect(isPointOfNoReturn(spec({ action: 'click', index: 0 }), target, ORIGIN)).toBe(true)
+  })
+
+  it('still flags a "Cancel"-labelled cross-origin link', () => {
+    const target = el({ tag: 'a', name: 'Cancel', href: 'https://other.test/x' })
+    expect(isPointOfNoReturn(spec({ action: 'click', index: 0 }), target, ORIGIN)).toBe(true)
+  })
+
+  it('still flags a "Cancel"-labelled sensitive field', () => {
+    const target = el({ tag: 'input', name: 'Cancel', sensitive: true })
+    expect(isPointOfNoReturn(spec({ action: 'type', index: 0 }), target, ORIGIN)).toBe(true)
   })
 })
 

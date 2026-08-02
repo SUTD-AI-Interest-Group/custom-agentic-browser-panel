@@ -181,11 +181,102 @@ describe('isSafeResearchAction — click, blind controls (no href, no accessible
 // not blind; no English word means no vocabulary match) on this policy too —
 // the ONLY gate on the unattended, headless research browser.
 describe('isSafeResearchAction — click, emoji-only committing names (S2)', () => {
-  it('denies common committing icons with no text label at all', () => {
-    for (const name of ['🗑️', '🗑', '🛒', '💳', '✅']) {
+  it('denies unambiguous committing icons with no text label at all, no ancestor needed', () => {
+    for (const name of ['🗑️', '🗑', '🛒', '💳', '💰', '💸', '📤']) {
       const v = isSafeResearchAction({ kind: 'click', index: 1 }, el({ tag: 'div', role: 'button', name }))
       expect(v.ok, `expected "${name}" to be denied`).toBe(false)
     }
+  })
+})
+
+// (N1) Mirrors pageControl.test.ts: a bare checkmark is at least as often
+// "mark complete" / "acknowledge" as a destructive confirm, so it must not
+// deny by itself — only when the ancestor context also reads as committing.
+describe('isSafeResearchAction — click, checkmark glyphs need committing context (N1)', () => {
+  it('allows a bare checkmark with no ancestor at all — e.g. marking a to-do item done', () => {
+    for (const name of ['✅', '✔️', '✔']) {
+      const v = isSafeResearchAction({ kind: 'click', index: 1 }, el({ tag: 'div', role: 'button', name }))
+      expect(v.ok, `expected "${name}" to be allowed`).toBe(true)
+    }
+  })
+
+  it('allows a checkmark inside a benignly-named container — e.g. a checklist row', () => {
+    const v = isSafeResearchAction({ kind: 'click', index: 1 }, el({ tag: 'button', name: '✅', ancestorName: 'Task list' }))
+    expect(v.ok).toBe(true)
+  })
+
+  it('denies a checkmark whose ancestor context reads as committing — a real confirm button', () => {
+    for (const ancestorName of ['Confirm delete', 'Complete purchase']) {
+      const v = isSafeResearchAction({ kind: 'click', index: 1 }, el({ tag: 'button', name: '✅', ancestorName }))
+      expect(v.ok, `expected ancestor "${ancestorName}" to deny`).toBe(false)
+    }
+  })
+})
+
+// (N2) Mirrors pageControl.test.ts: an element's own name being an EXACT
+// dismissal word (Cancel/Close/Back/...) is the universal "back out without
+// committing" control. "cancel" (and several translations) is ALSO already
+// in COMMITTING_NAME/_INTL for phrases like "Cancel subscription" that
+// genuinely commit — exact match is what keeps that compound phrase denied.
+describe('isSafeResearchAction — click, explicit dismissal name exemption (N2)', () => {
+  it('allows a bare "Cancel" with no ancestor context at all', () => {
+    const v = isSafeResearchAction({ kind: 'click', index: 1 }, el({ tag: 'button', type: 'button', name: 'Cancel' }))
+    expect(v.ok).toBe(true)
+  })
+
+  it('allows a Cancel/Close/Back/Not-now control inside a container whose OWN name reads as committing', () => {
+    const cases = [
+      { name: 'Cancel', ancestorName: 'Confirm Purchase' },
+      { name: 'Close', ancestorName: 'Confirm Purchase' },
+      { name: 'Back', ancestorName: 'Checkout' },
+      { name: 'Not now', ancestorName: 'Complete your subscription' },
+    ]
+    for (const c of cases) {
+      const v = isSafeResearchAction({ kind: 'click', index: 1 }, el({ tag: 'button', type: 'button', ...c }))
+      expect(v.ok, `expected ${JSON.stringify(c)} to be allowed`).toBe(true)
+    }
+  })
+
+  it('allows translated dismissal equivalents inside a committing ancestor', () => {
+    const cases = [
+      { name: 'Annuler', ancestorName: "Confirmer l'achat" },
+      { name: 'Cancelar', ancestorName: 'Confirmar compra' },
+      { name: 'キャンセル', ancestorName: '購入を確認' },
+      { name: '取消', ancestorName: '确认购买' },
+    ]
+    for (const c of cases) {
+      const v = isSafeResearchAction({ kind: 'click', index: 1 }, el({ tag: 'button', type: 'button', ...c }))
+      expect(v.ok, `expected ${JSON.stringify(c)} to be allowed`).toBe(true)
+    }
+  })
+
+  it('still denies "Cancel subscription" — a compound phrase is not an exact dismissal match', () => {
+    const v = isSafeResearchAction({ kind: 'click', index: 1 }, el({ tag: 'button', type: 'button', name: 'Cancel subscription' }))
+    expect(v.ok).toBe(false)
+  })
+
+  // Security boundary: the dismissal exemption must NEVER suppress a
+  // structural check — otherwise a page could relabel a real commit control
+  // "Cancel" to dodge the refusal.
+  it('still denies a "Cancel"-labelled submit control inside a POST form', () => {
+    const v = isSafeResearchAction(
+      { kind: 'click', index: 1 },
+      el({ tag: 'button', type: 'submit', name: 'Cancel', formMethod: 'post' }),
+    )
+    expect(v.ok).toBe(false)
+  })
+
+  it('still denies a "Cancel"-labelled link to a blocked (SSRF) target', () => {
+    const v = isSafeResearchAction(
+      { kind: 'click', index: 1 },
+      el({ tag: 'a', name: 'Cancel', href: 'http://169.254.169.254/latest/meta-data/' }),
+    )
+    expect(v.ok).toBe(false)
+  })
+
+  it('still denies a "Cancel"-labelled sensitive field', () => {
+    const v = isSafeResearchAction({ kind: 'click', index: 1 }, el({ tag: 'input', name: 'Cancel', sensitive: true }))
+    expect(v.ok).toBe(false)
   })
 })
 

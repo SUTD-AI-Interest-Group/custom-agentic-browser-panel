@@ -107,15 +107,61 @@ const COMMITTING_NAME_INTL =
  * this file already treats bare "cancel" as committing — flagging the
  * ubiquitous corner-of-every-modal dismiss button too would be a real
  * card-fatigue regression for little added safety (a genuine delete-via-X is
- * rare next to dismiss-via-X).
+ * rare next to dismiss-via-X). (N1 pulled the checkmark glyphs OUT of this
+ * set for the same reason — see AMBIGUOUS_COMMITTING_EMOJI below.)
  */
-const COMMITTING_EMOJI = /🗑️|🗑|🛒|💳|💰|💸|📤|✅|✔️|✔/
+const COMMITTING_EMOJI = /🗑️|🗑|🛒|💳|💰|💸|📤/
+
+/**
+ * Checkmark glyphs (N1): at least as often "mark complete" / "acknowledge" —
+ * a to-do app's done-checkbox, a toast's dismiss-check — as a destructive
+ * confirm. A bare check mark is core, everyday UI; treating it as committing
+ * by itself would be exactly the card-fatigue regression this file's own
+ * reasoning about ❌ above already rejects for a comparably ambiguous glyph.
+ * It only counts as committing when the surrounding container ALSO reads as
+ * committing — a dialog titled "Confirm delete", a form named "Complete
+ * purchase" — via the same ancestorName signal the S3 delegation fix already
+ * computes. See isCommittingCheckmark below, the only place this is used.
+ */
+const AMBIGUOUS_COMMITTING_EMOJI = /✅|✔️|✔/
 
 /** True when `name` reads as committing in English, a major non-English
- *  language, or a common committing icon. See the three checks above for
- *  what each closes and what each deliberately leaves out. */
+ *  language, or an unambiguous committing icon. See the checks above for
+ *  what each closes. Deliberately excludes the ambiguous checkmark glyphs
+ *  (isCommittingCheckmark below needs ancestor context too) and, for an
+ *  exact bare-word match, the dismissal vocabulary (isDismissalName below). */
 const isCommittingName = (name: string): boolean =>
   COMMITTING_NAME.test(name) || COMMITTING_NAME_INTL.test(name) || COMMITTING_EMOJI.test(name)
+
+/**
+ * N1: a checkmark glyph commits only when its own ancestor context also
+ * reads as committing — never from the bare glyph alone. See
+ * AMBIGUOUS_COMMITTING_EMOJI above for the full reasoning.
+ */
+const isCommittingCheckmark = (el: IndexedElement): boolean =>
+  AMBIGUOUS_COMMITTING_EMOJI.test(el.name) && !!el.ancestorName && isCommittingName(el.ancestorName)
+
+/**
+ * N2: the universal "back out of this flow without committing" label —
+ * Cancel/Close/Back/Dismiss/No/Not now and translated equivalents — matched
+ * ONLY as the WHOLE (trimmed) accessible name, never a substring. Exact
+ * match is what keeps this safe: "cancel" (and several of its translations —
+ * annuler, cancelar, キャンセル, 取消, إلغاء) is ALSO already in
+ * COMMITTING_NAME/_INTL, because "Cancel subscription" / "Annuler
+ * l'abonnement" genuinely commits (it stops/destroys a live thing) — but the
+ * bare word alone, with nothing else in the name, is overwhelmingly the
+ * ordinary dismiss-button convention instead. "Cancel subscription" does not
+ * match this regex (it has an object after the verb), so it stays flagged;
+ * only the standalone label is exempted. A representative, not exhaustive,
+ * set, same convention and language coverage as COMMITTING_NAME_INTL above.
+ */
+const DISMISSAL_NAME =
+  /^(cancel|close|back|dismiss|no|not now|skip|abbrechen|schließen|zurück|nein|annuler|fermer|retour|non|cancelar|cerrar|fechar|atrás|voltar|não|annulla|chiudi|indietro|отмена|закрыть|назад|нет|キャンセル|閉じる|戻る|いいえ|取消|关闭|返回|否|إلغاء|إغلاق|رجوع|لا)$/i
+
+/** True when `name`, taken as a WHOLE (not a substring), is an explicit
+ *  dismissal control. See DISMISSAL_NAME above and its use in
+ *  isPointOfNoReturn below for what this does and does not suppress. */
+const isDismissalName = (name: string): boolean => DISMISSAL_NAME.test(name.trim())
 
 /**
  * A click target the approval card could not describe at all: no href (so it
@@ -142,11 +188,25 @@ const isBlindClick = (el: IndexedElement): boolean => !el.href && !el.name.trim(
  * `sensitive` flag) runs UNCONDITIONALLY, so a benign-sounding name can never
  * suppress one of those. Keep it that way — do not add an "unless the name
  * looks safe" escape hatch to any structural check, or a lying label stops
- * being merely unhelped and starts being actively trusted. (The ancestorName
- * check is an incidental partial mitigation when the conflict spans two
- * levels — e.g. the clicked element says "Cancel" but its delegated
- * container's OWN aria-label says "Delete row" — but a single element lying
- * about itself, with no structural tell at all, remains undetectable.)
+ * being merely unhelped and starts being actively trusted.
+ *
+ * N2 narrows the ancestorName mitigation on purpose: an element whose OWN
+ * name is an EXACT dismissal word (isDismissalName — bare "Cancel"/"Close"/
+ * "Back"/etc.) is no longer flagged by either the own-name or the
+ * ancestor-derived check, even when the ancestor's own name reads as
+ * committing. That gives up the previous incidental catch of "the clicked
+ * element says 'Cancel' but its delegated container's OWN aria-label says
+ * 'Delete row'" for the FAR more common legitimate shape — literally every
+ * purchase/delete confirmation dialog's own Cancel button, which has exactly
+ * this shape (dialog named after the committing flow, containing a plain
+ * "Cancel" control). A page that mislabels its real commit control "Cancel"
+ * while leaving an honestly-committing ancestor label in place is a narrow,
+ * self-contradictory attack shape next to the ubiquitous safe pattern it
+ * would otherwise put a card on every single time; treat it as folded into
+ * the same accepted-undetectable class as the rest of this paragraph, one
+ * level less mitigated than before. The exemption is exact-match only, so it
+ * never touches a compound name ("Cancel subscription" keeps flagging) or
+ * any of the structural checks above.
  */
 
 /**
@@ -166,20 +226,36 @@ export function isPointOfNoReturn(
   }
   if (spec.action === 'press' && /enter/i.test(spec.keys ?? '')) return true
   if (spec.action === 'click' && el) {
+    // Structural checks: these never look at `name`, so nothing below this
+    // point — including the N2 dismissal exemption — can ever suppress them.
     if (el.href && hostOf(el.href) !== sessionOrigin) return true
     if (el.type === 'submit' || el.type === 'image') return true
-    if (isCommittingName(el.name)) return true
-    // Event delegation (S3): a container attaches one handler and dispatches
-    // by target, so the clicked descendant (an icon, a row's plain text) can
-    // carry an innocuous name while the ancestor that actually defines what
-    // happens — a <form>'s own aria-label, a dialog's title, or the nearest
-    // independently-clickable ancestor's own aria-label (domIndex.ts's
-    // ancestorNameOf) — says otherwise. This deliberately does NOT fire for
-    // merely sitting inside SOME form/dialog: only when that container's own
-    // name reads as committing, the same bar as the element's own name gets
-    // held to. That scoping is what keeps this from flagging every button in
-    // every ordinary search/contact/login form (card fatigue).
-    if (el.ancestorName && isCommittingName(el.ancestorName)) return true
+    // N2: an explicit dismissal name (bare "Cancel"/"Close"/"Back"/etc., see
+    // isDismissalName) is the standard "back out without committing"
+    // control. It is checked once here and used to gate every remaining
+    // name-based check below — both this element's own name (bare "cancel"
+    // and several of its translations are otherwise committing, for "Cancel
+    // subscription"-style phrases) and its ancestor's (S3).
+    const dismissal = isDismissalName(el.name)
+    if (!dismissal) {
+      if (isCommittingName(el.name)) return true
+      // N1: a checkmark alone is too ambiguous (to-do "done", toast
+      // acknowledge) to treat as committing; it only counts with a
+      // committing ancestor.
+      if (isCommittingCheckmark(el)) return true
+      // Event delegation (S3): a container attaches one handler and
+      // dispatches by target, so the clicked descendant (an icon, a row's
+      // plain text) can carry an innocuous name while the ancestor that
+      // actually defines what happens — a <form>'s own aria-label, a
+      // dialog's title, or the nearest independently-clickable ancestor's
+      // own aria-label (domIndex.ts's ancestorNameOf) — says otherwise. This
+      // deliberately does NOT fire for merely sitting inside SOME
+      // form/dialog: only when that container's own name reads as
+      // committing, the same bar as the element's own name gets held to.
+      // That scoping is what keeps this from flagging every button in every
+      // ordinary search/contact/login form (card fatigue).
+      if (el.ancestorName && isCommittingName(el.ancestorName)) return true
+    }
     if (isBlindClick(el)) return true
   }
   return false
