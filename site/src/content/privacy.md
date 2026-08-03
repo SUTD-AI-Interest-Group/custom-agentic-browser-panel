@@ -1,7 +1,7 @@
 # Privacy Policy for Lychee AI
 
-**Last updated: 27 July 2026**
-**Applies to: Lychee AI Chrome Extension, version 0.2.0 and later**
+**Last updated: 3 August 2026**
+**Applies to: Lychee AI Chrome Extension, version 0.3.0 and later**
 
 Lychee AI is a Chrome side-panel AI assistant. It has **no backend server of its
 own**. Everything it stores stays on your computer, and everything it sends goes
@@ -32,6 +32,7 @@ sync storage, so none of this is uploaded to your Google account.
 | Your conversation history | Lets you reopen past chats |
 | Long-term memories, including any personal profile details you save (such as your name, email, or address) | Personalises replies and fills forms when you ask it to |
 | Screenshots the assistant captured | Shown in the panel so you can see what the assistant looked at |
+| Files you attach to a message (images, PDFs, text files) | Kept so the attachment still displays when you reopen that chat |
 | Generated artifacts, tables and cards | Rendered in the conversation |
 | Skills you write or import | Reusable instructions you invoke by name |
 
@@ -56,6 +57,8 @@ LM Studio). That request can contain:
 
 - your messages and the conversation so far,
 - **the text, structure, and screenshots of web pages you ask it to read or act on**,
+- any file you attach to a message — an image, a PDF, or a text file you drag in,
+  paste, or pick with the paperclip,
 - when you ask about your open tabs, the title, address, and a one-line
   self-description of each tab in that window,
 - relevant saved memories,
@@ -142,14 +145,22 @@ it leaves every other feature working.
 
 ## Security
 
-API keys and access tokens are stored in Chrome's extension storage, isolated to
-this extension and to your browser profile. They are transmitted only to the
-provider endpoint they authenticate against, over HTTPS. Because there is no
-backend, there is no server-side database of user credentials to breach.
+API keys and access tokens are **encrypted at rest**. Every secret Lychee AI
+stores — the API keys for the providers you add, the access tokens and header
+values for MCP servers you connect, and the tracing keys if you enable that — is
+sealed with an encryption key generated on your device, held in a form the browser
+will not let any script export, and never sent anywhere. Secrets are unsealed only
+in memory, at the moment a request needs them, and transmitted only to the endpoint
+they authenticate against, over HTTPS. Because there is no backend, there is no
+server-side database of user credentials to breach.
 
-Note that extension storage is not encrypted at rest beyond your operating
-system's own disk protections. Anyone with access to your unlocked computer and
-Chrome profile could read them, as with any locally stored credential.
+Two honest limits on what that protects against. It secures the stored values
+against anything that reads your profile's files, but it is not a substitute for
+locking your computer — someone using your unlocked Chrome profile can still open
+the extension, which unseals your keys normally. And if the browser ever makes that
+encryption unavailable, Lychee AI keeps your keys working rather than locking you
+out of your own credentials, storing them unsealed until it recovers; Settings
+shows the current state either way, so this never happens silently.
 
 Code that the assistant generates and runs on your behalf executes inside a
 sealed interpreter with no network access and no access to your browser, your

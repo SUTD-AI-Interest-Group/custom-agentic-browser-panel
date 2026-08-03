@@ -3,17 +3,33 @@
 All notable changes to **Lychee AI** are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the
-project aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Lychee AI
-is still pre-release (`0.2.0`) and carries no git tags yet, so the sections below are grouped
-by **development milestone (date)** rather than by released version — each date is a distinct
-burst of work on `main`. Short commit hashes are given in parentheses so any entry can be
-traced back to its change.
+project aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Lychee AI is
+pre-1.0. Most sections below are grouped by **development milestone (date)** rather than by
+released version — each date is a distinct burst of work on `main` — with a **version heading**
+marking each Chrome Web Store release and naming the milestones it shipped. Short commit hashes
+are given in parentheses so any entry can be traced back to its change.
 
 This log covers **12 July 2026 onward**. The project's first two days (10–11 July 2026) — the
 initial side-panel, onboarding, model settings, memory/dreaming, `@mentions`, page control,
 the approval gate, and the `AutofillForm`/`profile`-memory groundwork — predate this window and
 are not itemised here; see the [wiki Engineering Log](https://github.com/SUTD-AI-Interest-Group/custom-agentic-browser-panel/wiki)
 for that history.
+
+---
+
+## [0.3.0] — 2026-08-03 — *Chrome Web Store update*
+
+The second store release. Users get three things they can see — files they can attach to a
+message, a conversation that belongs to the tab it was started on, and API keys that are
+encrypted where they sit — on top of a whole-codebase adversarial security review.
+
+**No permission changes.** The manifest's only difference from `0.2.0` is an added
+`content_security_policy` for extension pages, which narrows what they may load. Existing
+installs update without being disabled for a re-grant.
+
+Contents: the two milestones below dated 2026-08-01 and 2026-08-02 in full, plus the fixes at
+the tail of 2026-07-28 (duplicate context menus, an invalid research tool name, a hung message
+channel) that landed after the `0.2.0` package was cut and so never reached a store user.
 
 ---
 
@@ -138,6 +154,17 @@ one. History stays unified — any finished chat can be reopened on any tab. Des
   the main checkout and Vite resolved the `pdf.worker.min.mjs?url` import to its real path,
   outside the worktree root, tripping Vite's filesystem guard. The suite was green in the
   main checkout and red in every worktree.
+
+---
+
+## [0.2.0] — 2026-08-01 — *first Chrome Web Store release*
+
+The initial public listing: a side-panel assistant with bring-your-own-model support, page
+reading, approved page control, tab organising, background research with citations, long-term
+memory, skills, MCP tool servers, and sandboxed code execution. Passed review first time.
+
+Contents: every milestone below, plus the *Added* items of 2026-07-28 — that milestone is split
+across two releases, since its fixes landed after the package was cut and shipped in `0.3.0`.
 
 ---
 

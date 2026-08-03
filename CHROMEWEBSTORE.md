@@ -1,6 +1,16 @@
 # Chrome Web Store Listing — Lychee AI
 
-> Last Updated: 2026-07-28 · Manifest version 0.2.0 · **Status: not yet submitted**
+> Last Updated: 2026-08-03 · Manifest version 0.3.0 · **Status: 0.3.0 is an update
+> to a published listing**
+>
+> **Item ID:** `jijmdjncddemapjkbidjdbfbjmonagpn` ·
+> [listing](https://chromewebstore.google.com/detail/jijmdjncddemapjkbidjdbfbjmonagpn)
+> · published as `angkahshin`, v0.2.0, live since 2026-08-01.
+>
+> This ID is load-bearing beyond the listing: MCP OAuth redirects resolve to
+> `https://jijmdjncddemapjkbidjdbfbjmonagpn.chromiumapp.org/`, so an unpacked build
+> (which gets a different ID) will not complete an OAuth flow registered against the
+> published one.
 
 This is the single source of truth for the store listing. Copy from here into the
 Developer Dashboard at submission time. This file must **not** ship in the upload
@@ -33,6 +43,12 @@ Connect OpenAI, Anthropic, OpenRouter, Groq, or any OpenAI-compatible endpoint u
 WORKS WITH THE PAGE IN FRONT OF YOU
 Ask about the article you're reading, and Lychee reads it. Ask it to pull the pricing table out of a page, and you get clean structured data. Open a PDF and ask questions about page 40. Point at a chart and Lychee looks at it. It can read other open tabs when you ask, so you can compare two products side by side without copying anything.
 
+BRING YOUR OWN FILES
+Drag an image, a PDF, or a text file straight into the message box, paste a screenshot from your clipboard, or pick one with the paperclip. Ask about a chart someone sent you, a contract you downloaded, or a log file, without uploading it anywhere first.
+
+A CHAT PER TAB
+Each tab keeps its own conversation, so switching tabs no longer drops you into an unrelated thread. A chat you walk away from carries on working in the background and tells you when it has finished or needs your permission, and any past chat can be reopened on any tab.
+
 LET IT DRIVE, WHEN YOU SAY SO
 Lychee can click, type, scroll, and fill in forms for you. Every session starts with your explicit approval, you watch each step happen on the page, and anything you can't take back — submitting a form, leaving for another site, touching a password or payment field — stops and asks you again first. Nothing is submitted on your behalf without a confirmation.
 
@@ -52,7 +68,7 @@ YOU'RE IN CONTROL
 Every action that touches a page, your data, or the network asks first, and you decide per-tool whether it should keep asking. Access to your history, bookmarks, and downloads is entirely optional — Chrome only asks for it if you switch those features on.
 
 PRIVACY
-There is no Lychee server. Your conversations, keys, and memories are stored on your own computer, and your page content goes only to the AI provider you configured, under your own account. We collect nothing, receive nothing, and sell nothing. Full policy: https://lychee-ai.netlify.app/privacy
+There is no Lychee server. Your conversations, keys, and memories are stored on your own computer — your API keys and tool-server tokens encrypted at rest — and your page content goes only to the AI provider you configured, under your own account. We collect nothing, receive nothing, and sell nothing. Full policy: https://lychee-ai.netlify.app/privacy
 
 REQUIREMENTS
 Chrome 116 or later, and an API key from a supported provider (or a local model server). Open the panel with the toolbar icon or Ctrl+E / Cmd+E.
@@ -128,6 +144,13 @@ reviewers want to see the extension in context.
 5. **Research report** ⬜ — a finished report with inline source citations. Not
    captured; the bug that prevented it is fixed — see "Research shot" below.
 
+**Still valid for 0.3.0?** Yes — all four remain accurate, and nothing they depict
+has changed, so the update needs no re-upload. Two optional refreshes, neither
+blocking: shot 1 predates the paperclip button now in the composer, and neither
+attachments nor per-tab chats appear anywhere in the set. If you want the new
+features visible on the listing, the cheapest win is one capture of a PDF or image
+attached in the composer, *added* as #5 rather than replacing a shot that works.
+
 Two alternates are kept beside them for swapping into the listing:
 `alt-control-consent.png` (the "Let the agent control arxiv.org?" card, which states
 the full plan before acting — arguably a stronger trust artefact than #2) and
@@ -200,6 +223,11 @@ the window, Quartz `CGEvent`s type into the panel and click the approval cards, 
 Paste each cell into the matching field in the Developer Dashboard. Each one names
 the user-facing feature that requires it.
 
+**0.3.0 changes nothing in this table.** The permission set is identical to the
+published 0.2.0 — the only manifest change since is an added
+`content_security_policy` entry, which *narrows* what extension pages may load.
+These justifications carry over untouched.
+
 | Permission | Type | Justification |
 |------------|------|---------------|
 | `sidePanel` | permissions | The entire user interface is Chrome's side panel. The extension has no popup — the panel is where the user reads replies, approves actions, and changes settings. |
@@ -255,6 +283,7 @@ receives no data and operates no server.
 | Web history | Optional — only if the user enables browsing insights and grants the permission | Yes — the matching results are included in the request to the user's provider when they ask | Answering questions about pages the user visited | No |
 | User activity | Yes — which pages the user asks the assistant to read or act on, and, when the user asks about their open tabs, the title, URL, and a short self-description of each tab in that window | Yes — to the user's configured AI provider | Carrying out the user's request on that page; grouping or closing tabs the user asked to tidy | No |
 | Website content | Yes — text, structure, and screenshots of pages the user asks about | Yes — to the user's configured AI provider | The assistant cannot summarise or act on a page it is not shown | No |
+| Files the user attaches | Yes — images, PDFs, and text files the user drags in, pastes, or picks with the paperclip, stored on device so the chat still renders them when reopened | Yes — to the user's configured AI provider | The user attached the file in order to ask about it | No |
 
 **Not used:** `chrome.storage.sync` — nothing is uploaded to the user's Google
 account. No analytics, telemetry, crash reporting, or advertising SDK of any kind
@@ -287,6 +316,20 @@ https://lychee-ai.netlify.app/privacy
 generated from `PRIVACY.md` by `site/scripts/sync-content.mjs`, so the policy the
 store links to and the policy in the repo cannot drift apart.
 
+⚠️ **0.3.0 changes the policy, so this page must be redeployed before you submit.**
+Editing `PRIVACY.md` is not sufficient on its own: run `npm run sync:content` in
+`site/` (done — `site/src/content/privacy.md` is regenerated and committed), then
+deploy the site. A listing whose linked policy still describes the previous
+version's data handling is precisely the disclosure-versus-policy mismatch that
+gets updates rejected, and nothing in the dashboard will warn you.
+
+⚠️ **`sync:content` also re-clones the GitHub wiki, which is currently *behind* the
+copy vendored here.** On 2026-08-03 it silently reverted
+`site/src/content/wiki/Home.md` to a stale late-July revision (310 commits, span
+ending 24 July) over the newer committed one; that was reverted by hand. Until
+someone pushes the current engineering log up to the wiki, always check
+`git status` after running the sync and keep only the `privacy.md` change.
+
 Equivalent public mirrors, if the dashboard ever objects to the redirect:
 
 ```
@@ -307,14 +350,25 @@ https://github.com/SUTD-AI-Interest-Group/custom-agentic-browser-panel/blob/main
 
 ## Developer Info
 
-**Publisher Name** [REQUIRED]
+**Publisher Name** — determined by the account, not by this file
 
 ```
-SUTD AI Interest Group
+angkahshin
 ```
 
-⚠️ Confirm this matches the Chrome Web Store developer account that will publish.
-Publishing under an organisation name requires that account's verified identity.
+⚠️ **Corrected 2026-08-03.** This file previously claimed "SUTD AI Interest Group".
+The live listing publishes as **`angkahshin`**, a personal Google account. That was
+aspirational, not factual, and is fixed here so the repo stops disagreeing with the
+store.
+
+A personal account cannot simply type a group name into this field — displaying an
+organisation name requires an account verified as that organisation, which is a
+separate Google identity process. Moving Lychee under the group identity is
+therefore a migration to plan deliberately, not a field to edit at submission time.
+Worth deciding soon either way: transferring a published item gets harder as the
+user base grows, and the listing currently shows an individual's handle as the
+publisher of an extension that requests `<all_urls>` — which some reviewers and
+users read as less accountable than an institution.
 
 **Contact Email** [REQUIRED] — displayed publicly on the listing
 
@@ -346,6 +400,30 @@ points somewhere else looks like a mismatch to a reviewer.
 ---
 
 ## Submission Process
+
+### Publishing an update — this is what 0.3.0 is
+
+The account steps below are already done. For an update the flow is much shorter:
+
+1. **The version must increase.** The dashboard refuses a package whose manifest
+   version is not higher than the published one. 0.3.0 > 0.2.0 ✅
+2. **Upload the new ZIP** under Package → Upload new package. Listing copy,
+   screenshots, and privacy answers all carry over — edit only what changed.
+3. **Re-check the Privacy tab even though it is prefilled.** The data-use answers
+   persist from 0.2.0, and 0.3.0 adds a data type (files the user attaches). An
+   update whose disclosures no longer match the code is a rejection, and nothing in
+   the dashboard prompts you to revisit them. This is the single easiest way to
+   fail an update that would otherwise sail through.
+4. **No new permissions in 0.3.0**, so this update avoids both the extra
+   permission-change scrutiny and the disable-until-re-accepted behaviour that a
+   newly *required* permission inflicts on every existing install.
+5. **Submit for review.** The published 0.2.0 keeps serving users throughout; a
+   rejected update does not take the live version down.
+
+Update reviews are usually faster than the first, but the same slow-down triggers
+apply — `<all_urls>`, sensitive permissions, code volume — so budget days, not hours.
+
+### First-time account setup — already completed, kept for reference
 
 Two of these are irreversible or block publishing outright, so read before paying
 the fee.
@@ -394,7 +472,8 @@ no response, that is the point to contact developer support.
 
 | Version | Date | Changes | Status |
 |---------|------|---------|--------|
-| 0.2.0 | 2026-07-28 | First store submission. Side-panel assistant with bring-your-own-model support, page reading, approved page control, tab organising (grouping and closing, with undo), background research with citations, long-term memory, skills, MCP tool servers, and sandboxed code execution. | Draft — not yet submitted |
+| 0.3.0 | 2026-08-03 | Update. Prompt attachments — drag, paste, or pick images, PDFs, and text files into the composer. A separate chat per tab, with background chats that keep working and announce themselves when they finish or need permission. Every stored secret encrypted at rest, with a live status indicator in Settings. A whole-codebase adversarial security review closing defects across tool authorisation, browse policy, service-worker lifetime, dream re-entrancy, and page-control classification. **No permission changes.** | Preparing |
+| 0.2.0 | 2026-07-28 | First store submission. Side-panel assistant with bring-your-own-model support, page reading, approved page control, tab organising (grouping and closing, with undo), background research with citations, long-term memory, skills, MCP tool servers, and sandboxed code execution. | ✅ Published 2026-08-01 — passed review first time |
 
 ---
 
@@ -411,11 +490,12 @@ no response, that is the point to contact developer support.
    — see "Screenshot Notes" above.
 2. ~~Privacy policy URL must resolve publicly~~ — ✅ done 2026-07-28.
    `https://lychee-ai.netlify.app/privacy` verified live, public, and anonymous.
-3. **Publisher name** — still to confirm against the actual developer account.
-   The listing says "SUTD AI Interest Group", and Google will only show that name
-   if the account is registered and verified as that organisation; a personal
-   account cannot simply type a group name into the field. ✅ Contact email
-   settled: `ai@sso.sutd.edu.sg` (someone must be monitoring it).
+3. ~~Publisher name~~ — ✅ resolved 2026-08-03, though not the way this file
+   assumed. The account is personal and the listing publishes as **`angkahshin`**;
+   the "SUTD AI Interest Group" claim has been corrected in Developer Info. The
+   contact email is likewise already settled — the item published, and publishing
+   is blocked while that field is unverified, so `ai@sso.sutd.edu.sg` is verified
+   and must stay monitored.
 4. ~~No LICENSE file exists~~ — ✅ done 2026-07-28. MIT, copyright SUTD AI
    Interest Group. Every dependency in the tree is MIT / Apache-2.0 / ISC / BSD
    with no copyleft, so nothing in the stack constrained the choice.
@@ -521,7 +601,7 @@ email and we will provide one.
 
 ### Rejection history
 
-None — not yet submitted.
+None. 0.2.0 passed review first time and published on 2026-08-01.
 
 | Date | Reason | Fix Applied | Resubmitted |
 |------|--------|-------------|-------------|
