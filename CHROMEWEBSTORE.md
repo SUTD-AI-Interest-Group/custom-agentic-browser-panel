@@ -323,12 +323,13 @@ deploy the site. A listing whose linked policy still describes the previous
 version's data handling is precisely the disclosure-versus-policy mismatch that
 gets updates rejected, and nothing in the dashboard will warn you.
 
-⚠️ **`sync:content` also re-clones the GitHub wiki, which is currently *behind* the
-copy vendored here.** On 2026-08-03 it silently reverted
+ℹ️ **`sync:content` also re-clones the GitHub wiki — resolved 2026-08-03.** The wiki
+had fallen *behind* the copy vendored here, so the sync silently reverted
 `site/src/content/wiki/Home.md` to a stale late-July revision (310 commits, span
-ending 24 July) over the newer committed one; that was reverted by hand. Until
-someone pushes the current engineering log up to the wiki, always check
-`git status` after running the sync and keep only the `privacy.md` change.
+ending 24 July) on every run. The newer text has been pushed to the wiki
+(`b58e524`), and the sync is now idempotent — running it produces no diff. If it
+ever does again, the wiki has drifted behind the repo once more: push the vendored
+copy up rather than committing the regression.
 
 Equivalent public mirrors, if the dashboard ever objects to the redirect:
 
