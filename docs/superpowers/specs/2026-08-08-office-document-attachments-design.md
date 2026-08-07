@@ -78,7 +78,7 @@ exports, and switch when it lands.
 | `.xlsx` | `…spreadsheetml.sheet` | workbook |
 | `.odt` / `.odp` / `.ods` | `application/vnd.oasis.opendocument.{text,presentation,spreadsheet}` | prose / prose / workbook |
 | `.rtf` | `application/rtf`, `text/rtf` | prose |
-| `.epub` | `application/epub+zip` | prose (per chapter) |
+| `.epub` | `application/epub+zip` | prose (segmented on level-1 headings — see note) |
 
 - **Per-file cap: 25 MB.** Office files are zip-compressed; 25 MB is already enormous, and the
   decompression limit below is the real guard.
@@ -149,7 +149,23 @@ holds the nodes; prose documents yield `{ type: 'heading' | 'paragraph', … }`,
 `rows` must be rebuilt **by column index**, not by array position — otherwise a blank B2 silently
 shifts C2 left into its place and every downstream value is misaligned by one column.
 
-`ast.attachments` exposes embedded image bytes; v1 reads only its length for the image count.
+Three claims in an earlier draft of this spec were **disproved during implementation** and are
+corrected here:
+
+- **epub has no `chapter` or `section` node type** — they do not exist in officeParser at all. Every
+  spine XHTML flattens into the same heading/paragraph stream as docx. Segmentation therefore falls
+  back to an epub-only heuristic that cuts on level-1 headings, degrading to a single segment when a
+  book has none. pptx and odp *do* group under real `slide` nodes; docx and odt do not group at all.
+- **`imageCount` cannot come from `ast.attachments.length`.** That array is populated only when
+  `extractAttachments: true`, and it also counts charts. Worse, the flag is not merely a payload
+  toggle: `WordParser.js:585` wraps docx image-*node* construction in `if (config.extractAttachments)`,
+  and `RtfParser.js:963` does the same, while `PowerPointParser.js:643` and `OpenOfficeParser.js:534`
+  build image nodes unconditionally. So docx and rtf yield **zero** image nodes without the flag.
+  `office.ts` sets it unconditionally and counts `type === 'image'` content nodes. The attachment
+  payloads are discarded — `ast` is local to `doParse` and never cached.
+- **`decompressionLimits` applies to OOXML and ODF only**, per officeParser's own docs — not epub or
+  rtf. For those two the zip-bomb guard is the 25 MB `MAX_OFFICE_BYTES` pre-parse cap alone.
+
 `ast.to('markdown')` emits an empty YAML frontmatter block (`---\n---`) when metadata is absent,
 which the formatter strips.
 
