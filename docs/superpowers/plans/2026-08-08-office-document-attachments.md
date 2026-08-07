@@ -438,9 +438,13 @@ describe('formatWorkbook', () => {
   })
 
   it('states the shown row range against the true total', () => {
+    // Budget 200 leaves ~140 chars for rows after the manifest — comfortably
+    // more than one row and comfortably less than all 100, so the assertion
+    // does not sit on a knife edge against the manifest's exact length.
     const s = sheet('Q1', Array.from({ length: 100 }, (_, i) => [`r${i}`]))
-    const out = formatWorkbook(book([s]), 'w.xlsx', 60)
+    const out = formatWorkbook(book([s]), 'w.xlsx', 200)
     expect(out.text).toMatch(/rows 1–\d+ of 100/)
+    expect(out.truncated).toBe(true)
   })
 
   it('emits the manifest for an entirely empty workbook', () => {
