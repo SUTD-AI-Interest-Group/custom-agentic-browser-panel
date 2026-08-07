@@ -52,7 +52,8 @@ whole request on the compat adapter.
   (dragenter/dragleave counter); dropping anywhere attaches.
 - **Paste.** `onPaste` on the composer textarea: when `clipboardData` carries files (screenshot
   paste, Finder copy), attach them and suppress the text insertion; otherwise untouched.
-- **Picker.** Paperclip button in `.composer-btns` beside the camera button, backed by a hidden
+- **Picker.** A "+" button in the composer's left gutter (`.composer-main`, beside the textarea
+  rather than in the `.composer-btns` cluster), backed by a hidden
   `<input type="file" multiple>` with the accept list — the exact pattern already used in
   `SkillEditor.tsx` and `McpSection.tsx` (including the `value = ''` reset).
 - **Chips.** One `.attachment-row` for everything: images keep the current `.attachment-thumb`

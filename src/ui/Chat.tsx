@@ -444,16 +444,10 @@ function ToolsIcon() {
   )
 }
 
-function PaperclipIcon() {
+function PlusIcon() {
   return (
     <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-      <path
-        d="M13.2 7.4 8.3 12.3a3.4 3.4 0 0 1-4.8-4.8l5.2-5.2a2.3 2.3 0 0 1 3.2 3.2L6.7 10.7a1.1 1.1 0 0 1-1.6-1.6l4.6-4.6"
-        stroke="currentColor"
-        strokeWidth="1.3"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
+      <path d="M8 3.6v8.8M3.6 8h8.8" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
     </svg>
   )
 }
@@ -1459,7 +1453,7 @@ export default function Chat({
   }
 
   /**
-   * Attach incoming files (drop, paste, or the paperclip picker). Errors are
+   * Attach incoming files (drop, paste, or the "+" picker). Errors are
    * per-file — the rest of the batch still attaches — and surface on the same
    * line as capture failures. Rides the `capturing` busy flag so a slow PDF
    * parse shows on the buttons.
@@ -3102,266 +3096,275 @@ export default function Chat({
               ))}
             </div>
           )}
-          <textarea
-            ref={inputRef}
-            value={input}
-            placeholder={
-              !selected
-                ? 'Add a provider in settings to start'
-                : streaming
-                  ? 'Reply — queues as a follow-up…'
-                  : 'Ask anything…'
-            }
-            // Stays usable while a turn runs — a message sent now is parked in the
-            // steer strip above (submit()); it auto-sends when the turn finishes, or
-            // "Steer now" injects it mid-turn.
-            disabled={!selected}
-            rows={1}
-            onPaste={(e) => {
-              // A pasted screenshot or Finder file attaches; text pastes untouched.
-              const files = Array.from(e.clipboardData?.files ?? [])
-              if (files.length > 0) {
-                e.preventDefault()
+          {/* The "+" attach button sits to the LEFT of the text column (textarea +
+              model/action row) rather than in .composer-btns, and is pinned to the
+              first text line so it doesn't drift as the textarea auto-grows. The
+              attachment/steer strips stay above at full width, outside this row. */}
+          <div className="composer-main">
+            <button
+              className="attach-btn"
+              title="Attach files (images, PDFs, text)"
+              aria-label="Attach files"
+              disabled={!selected || capturing}
+              onClick={() => fileInputRef.current?.click()}
+            >
+              <PlusIcon />
+            </button>
+            <input
+              ref={fileInputRef}
+              type="file"
+              multiple
+              accept="image/png,image/jpeg,image/webp,image/gif,application/pdf,text/*,.md,.markdown,.csv,.tsv,.json,.jsonl,.yaml,.yml,.xml,.html,.css,.js,.jsx,.ts,.tsx,.py,.rb,.go,.rs,.java,.kt,.c,.h,.cpp,.hpp,.sh,.toml,.ini,.log,.sql"
+              style={{ display: 'none' }}
+              onChange={(e) => {
+                const files = Array.from(e.target.files ?? [])
+                // Reset so re-picking the same file re-fires onChange.
+                e.target.value = ''
                 void addFiles(files)
-              }
-            }}
-            onChange={(e) => {
-              handleInputChange(e.target.value, e.target.selectionStart ?? e.target.value.length)
-              e.target.style.height = 'auto'
-              e.target.style.height = `${Math.min(e.target.scrollHeight, 160)}px`
-            }}
-            onKeyDown={(e) => {
-              // Confirming an IME composition (kanji/hanja/hangul candidate)
-              // with Enter, or navigating its candidate list with Arrow keys,
-              // must not fall through to submit/history-recall/popover-nav
-              // below — checked first so it uniformly guards all of them.
-              if (shouldIgnoreComposerKeydown(e.nativeEvent)) return
-              if (slashQuery && slashCandidates.length > 0) {
-                if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
-                  e.preventDefault()
-                  const delta = e.key === 'ArrowDown' ? 1 : -1
-                  setSlashIndex((i) => (i + delta + slashCandidates.length) % slashCandidates.length)
-                  return
-                }
-                if (e.key === 'Enter' || e.key === 'Tab') {
-                  e.preventDefault()
-                  selectSlash(slashCandidates[slashIndex])
-                  return
-                }
-                if (e.key === 'Escape') {
-                  e.preventDefault()
-                  setSlashQuery(null)
-                  return
-                }
-              }
-              if (mentionQuery && mentionCandidates.length > 0) {
-                if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
-                  e.preventDefault()
-                  const delta = e.key === 'ArrowDown' ? 1 : -1
-                  setMentionIndex(
-                    (i) => (i + delta + mentionCandidates.length) % mentionCandidates.length,
-                  )
-                  return
-                }
-                if (e.key === 'Enter' || e.key === 'Tab') {
-                  e.preventDefault()
-                  selectMention(mentionCandidates[mentionIndex])
-                  return
-                }
-                if (e.key === 'Escape') {
-                  e.preventDefault()
-                  setMentionQuery(null)
-                  return
-                }
-              }
-              // Shell-style history recall (3b): ArrowUp on an empty composer
-              // (or with the caret at position 0) walks backward through this
-              // conversation's previous user messages, newest first;
-              // ArrowDown walks forward and then restores the live draft;
-              // Escape restores it directly. CRITICAL: only when neither
-              // popover above owns the Arrow/Escape keys.
-              const noPopover = !mentionQuery && !slashQuery
-              // Resize like a normal keystroke and put the caret at the end —
-              // matches the onChange handler's auto-grow behavior, since a
-              // programmatic setInput below doesn't fire onChange.
-              const syncAfterRecall = () => {
-                requestAnimationFrame(() => {
-                  const el = inputRef.current
-                  if (!el) return
-                  el.style.height = 'auto'
-                  el.style.height = `${Math.min(el.scrollHeight, 160)}px`
-                  const len = el.value.length
-                  el.setSelectionRange(len, len)
-                })
-              }
-              // Computed lazily (only reached on an actual ArrowUp/ArrowDown
-              // press with no popover open) rather than reactively — see
-              // recallableUserTexts's own doc comment for why this must not
-              // be a useMemo keyed on `messages`.
-              const recallTexts = () => recallableUserTexts(messages)
-              const recallAt = (index: number) => {
-                recallIndexRef.current = index
-                setInput(recallTexts()[index])
-                syncAfterRecall()
-              }
-              const restoreLiveDraft = () => {
-                recallIndexRef.current = -1
-                setInput(preRecallDraftRef.current)
-                syncAfterRecall()
-              }
-              const caret = e.currentTarget.selectionStart ?? 0
-              if (e.key === 'ArrowUp' && noPopover && (input === '' || caret === 0)) {
-                const texts = recallTexts()
-                if (texts.length > 0) {
-                  e.preventDefault()
-                  if (recallIndexRef.current === -1) preRecallDraftRef.current = input
-                  recallAt(Math.min(recallIndexRef.current + 1, texts.length - 1))
-                  return
-                }
-              }
-              if (e.key === 'ArrowDown' && noPopover && recallIndexRef.current !== -1) {
-                e.preventDefault()
-                const next = recallIndexRef.current - 1
-                if (next < 0) restoreLiveDraft()
-                else recallAt(next)
-                return
-              }
-              if (e.key === 'Escape' && noPopover && recallIndexRef.current !== -1) {
-                e.preventDefault()
-                restoreLiveDraft()
-                return
-              }
-              if (e.key === 'Enter' && !e.shiftKey) {
-                e.preventDefault()
-                void submit()
-              }
-            }}
-            onBlur={() => setTimeout(() => {
-              setMentionQuery(null)
-              setSlashQuery(null)
-            }, 150)}
-          />
-          <div className="composer-row">
-            <ModelPicker
-              settings={settings}
-              onUpdateSettings={onUpdateSettings}
-              onOpenSettings={onOpenSettings}
+              }}
             />
-            <div className="composer-btns">
-              {/* Tools and screenshot as their own buttons. Below the narrow
-                  breakpoint only the tools button collapses into the "…" menu
-                  (see .composer-btns in styles.css); the camera always stays out. */}
-              <div className="tools-menu-wrap" ref={toolsMenuRef}>
-                <button
-                  className="tools-btn"
-                  title="Tools & permissions"
-                  aria-haspopup="menu"
-                  aria-expanded={toolsOpen}
-                  onClick={() => setToolsOpen((o) => !o)}
-                >
-                  <ToolsIcon />
-                </button>
-                {toolsOpen && (
-                  <div className="tools-popover" role="dialog" aria-label="Tools">
-                    <div className="tools-popover-head">Tools</div>
-                    <ToolsMenuBody
-                      settings={settings}
-                      toggleTool={toggleTool}
-                      onOpenFull={() => {
-                        setToolsOpen(false)
-                        onOpenSettings()
-                      }}
-                    />
-                  </div>
-                )}
-              </div>
-              <button
-                className="attach-btn"
-                title="Attach files (images, PDFs, text)"
-                disabled={!selected || capturing}
-                onClick={() => fileInputRef.current?.click()}
-              >
-                <PaperclipIcon />
-              </button>
-              <input
-                ref={fileInputRef}
-                type="file"
-                multiple
-                accept="image/png,image/jpeg,image/webp,image/gif,application/pdf,text/*,.md,.markdown,.csv,.tsv,.json,.jsonl,.yaml,.yml,.xml,.html,.css,.js,.jsx,.ts,.tsx,.py,.rb,.go,.rs,.java,.kt,.c,.h,.cpp,.hpp,.sh,.toml,.ini,.log,.sql"
-                style={{ display: 'none' }}
-                onChange={(e) => {
-                  const files = Array.from(e.target.files ?? [])
-                  // Reset so re-picking the same file re-fires onChange.
-                  e.target.value = ''
-                  void addFiles(files)
+            <div className="composer-stack">
+              <textarea
+                ref={inputRef}
+                value={input}
+                placeholder={
+                  !selected
+                    ? 'Add a provider in settings to start'
+                    : streaming
+                      ? 'Reply — queues as a follow-up…'
+                      : 'Ask anything…'
+                }
+                // Stays usable while a turn runs — a message sent now is parked in the
+                // steer strip above (submit()); it auto-sends when the turn finishes, or
+                // "Steer now" injects it mid-turn.
+                disabled={!selected}
+                rows={1}
+                onPaste={(e) => {
+                  // A pasted screenshot or Finder file attaches; text pastes untouched.
+                  const files = Array.from(e.clipboardData?.files ?? [])
+                  if (files.length > 0) {
+                    e.preventDefault()
+                    void addFiles(files)
+                  }
                 }}
+                onChange={(e) => {
+                  handleInputChange(e.target.value, e.target.selectionStart ?? e.target.value.length)
+                  e.target.style.height = 'auto'
+                  e.target.style.height = `${Math.min(e.target.scrollHeight, 160)}px`
+                }}
+                onKeyDown={(e) => {
+                  // Confirming an IME composition (kanji/hanja/hangul candidate)
+                  // with Enter, or navigating its candidate list with Arrow keys,
+                  // must not fall through to submit/history-recall/popover-nav
+                  // below — checked first so it uniformly guards all of them.
+                  if (shouldIgnoreComposerKeydown(e.nativeEvent)) return
+                  if (slashQuery && slashCandidates.length > 0) {
+                    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+                      e.preventDefault()
+                      const delta = e.key === 'ArrowDown' ? 1 : -1
+                      setSlashIndex((i) => (i + delta + slashCandidates.length) % slashCandidates.length)
+                      return
+                    }
+                    if (e.key === 'Enter' || e.key === 'Tab') {
+                      e.preventDefault()
+                      selectSlash(slashCandidates[slashIndex])
+                      return
+                    }
+                    if (e.key === 'Escape') {
+                      e.preventDefault()
+                      setSlashQuery(null)
+                      return
+                    }
+                  }
+                  if (mentionQuery && mentionCandidates.length > 0) {
+                    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+                      e.preventDefault()
+                      const delta = e.key === 'ArrowDown' ? 1 : -1
+                      setMentionIndex(
+                        (i) => (i + delta + mentionCandidates.length) % mentionCandidates.length,
+                      )
+                      return
+                    }
+                    if (e.key === 'Enter' || e.key === 'Tab') {
+                      e.preventDefault()
+                      selectMention(mentionCandidates[mentionIndex])
+                      return
+                    }
+                    if (e.key === 'Escape') {
+                      e.preventDefault()
+                      setMentionQuery(null)
+                      return
+                    }
+                  }
+                  // Shell-style history recall (3b): ArrowUp on an empty composer
+                  // (or with the caret at position 0) walks backward through this
+                  // conversation's previous user messages, newest first;
+                  // ArrowDown walks forward and then restores the live draft;
+                  // Escape restores it directly. CRITICAL: only when neither
+                  // popover above owns the Arrow/Escape keys.
+                  const noPopover = !mentionQuery && !slashQuery
+                  // Resize like a normal keystroke and put the caret at the end —
+                  // matches the onChange handler's auto-grow behavior, since a
+                  // programmatic setInput below doesn't fire onChange.
+                  const syncAfterRecall = () => {
+                    requestAnimationFrame(() => {
+                      const el = inputRef.current
+                      if (!el) return
+                      el.style.height = 'auto'
+                      el.style.height = `${Math.min(el.scrollHeight, 160)}px`
+                      const len = el.value.length
+                      el.setSelectionRange(len, len)
+                    })
+                  }
+                  // Computed lazily (only reached on an actual ArrowUp/ArrowDown
+                  // press with no popover open) rather than reactively — see
+                  // recallableUserTexts's own doc comment for why this must not
+                  // be a useMemo keyed on `messages`.
+                  const recallTexts = () => recallableUserTexts(messages)
+                  const recallAt = (index: number) => {
+                    recallIndexRef.current = index
+                    setInput(recallTexts()[index])
+                    syncAfterRecall()
+                  }
+                  const restoreLiveDraft = () => {
+                    recallIndexRef.current = -1
+                    setInput(preRecallDraftRef.current)
+                    syncAfterRecall()
+                  }
+                  const caret = e.currentTarget.selectionStart ?? 0
+                  if (e.key === 'ArrowUp' && noPopover && (input === '' || caret === 0)) {
+                    const texts = recallTexts()
+                    if (texts.length > 0) {
+                      e.preventDefault()
+                      if (recallIndexRef.current === -1) preRecallDraftRef.current = input
+                      recallAt(Math.min(recallIndexRef.current + 1, texts.length - 1))
+                      return
+                    }
+                  }
+                  if (e.key === 'ArrowDown' && noPopover && recallIndexRef.current !== -1) {
+                    e.preventDefault()
+                    const next = recallIndexRef.current - 1
+                    if (next < 0) restoreLiveDraft()
+                    else recallAt(next)
+                    return
+                  }
+                  if (e.key === 'Escape' && noPopover && recallIndexRef.current !== -1) {
+                    e.preventDefault()
+                    restoreLiveDraft()
+                    return
+                  }
+                  if (e.key === 'Enter' && !e.shiftKey) {
+                    e.preventDefault()
+                    void submit()
+                  }
+                }}
+                onBlur={() => setTimeout(() => {
+                  setMentionQuery(null)
+                  setSlashQuery(null)
+                }, 150)}
               />
-              <button
-                className="cam-btn"
-                title="Screenshot part of the page"
-                disabled={!selected || capturing}
-                onClick={() => void capture()}
-              >
-                <CameraIcon />
-              </button>
-
-              {/* Narrow panel: only the tools button collapses into this menu —
-                  the camera above stays out as its own button at every width. */}
-              <div className="more-menu-wrap" ref={moreMenuRef}>
-                <button
-                  className="more-btn"
-                  title="Tools"
-                  aria-haspopup="menu"
-                  aria-expanded={moreOpen}
-                  onClick={() => setMoreOpen((o) => !o)}
-                >
-                  <svg width="15" height="15" viewBox="0 0 16 16" aria-hidden="true">
-                    <circle cx="3" cy="8" r="1.4" fill="currentColor" />
-                    <circle cx="8" cy="8" r="1.4" fill="currentColor" />
-                    <circle cx="13" cy="8" r="1.4" fill="currentColor" />
-                  </svg>
-                </button>
-                {moreOpen && (
-                  <div className="tools-popover" role="dialog" aria-label="Tools">
-                    <div className="tools-popover-head">Tools</div>
-                    <ToolsMenuBody
-                      settings={settings}
-                      toggleTool={toggleTool}
-                      onOpenFull={() => {
-                        setMoreOpen(false)
-                        onOpenSettings()
-                      }}
-                    />
+              <div className="composer-row">
+                <ModelPicker
+                  settings={settings}
+                  onUpdateSettings={onUpdateSettings}
+                  onOpenSettings={onOpenSettings}
+                />
+                <div className="composer-btns">
+                  {/* Tools and screenshot as their own buttons. Below the narrow
+                      breakpoint only the tools button collapses into the "…" menu
+                      (see .composer-btns in styles.css); the camera always stays out. */}
+                  <div className="tools-menu-wrap" ref={toolsMenuRef}>
+                    <button
+                      className="tools-btn"
+                      title="Tools & permissions"
+                      aria-haspopup="menu"
+                      aria-expanded={toolsOpen}
+                      onClick={() => setToolsOpen((o) => !o)}
+                    >
+                      <ToolsIcon />
+                    </button>
+                    {toolsOpen && (
+                      <div className="tools-popover" role="dialog" aria-label="Tools">
+                        <div className="tools-popover-head">Tools</div>
+                        <ToolsMenuBody
+                          settings={settings}
+                          toggleTool={toggleTool}
+                          onOpenFull={() => {
+                            setToolsOpen(false)
+                            onOpenSettings()
+                          }}
+                        />
+                      </div>
+                    )}
                   </div>
-                )}
-              </div>
+                  <button
+                    className="cam-btn"
+                    title="Screenshot part of the page"
+                    disabled={!selected || capturing}
+                    onClick={() => void capture()}
+                  >
+                    <CameraIcon />
+                  </button>
 
-              {/* While the agent works, Stop sits beside the send button and the
-                  send arrow queues a follow-up (parked in the steer strip); idle,
-                  it's just the send button. */}
-              {streaming && (
-                <button className="send-btn stop" title="Stop" onClick={stop}>
-                  <svg width="12" height="12" viewBox="0 0 12 12">
-                    <rect x="2" y="2" width="8" height="8" rx="1.5" fill="currentColor" />
-                  </svg>
-                </button>
-              )}
-              <button
-                className="send-btn"
-                title={streaming ? 'Queue as a follow-up' : 'Send'}
-                disabled={(!input.trim() && attachments.length === 0) || !selected}
-                onClick={() => void submit()}
-              >
-                <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-                  <path
-                    d="M7 11.5V2.5M7 2.5L3 6.5M7 2.5l4 4"
-                    stroke="currentColor"
-                    strokeWidth="1.8"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                  />
-                </svg>
-              </button>
+                  {/* Narrow panel: only the tools button collapses into this menu —
+                      the camera above stays out as its own button at every width. */}
+                  <div className="more-menu-wrap" ref={moreMenuRef}>
+                    <button
+                      className="more-btn"
+                      title="Tools"
+                      aria-haspopup="menu"
+                      aria-expanded={moreOpen}
+                      onClick={() => setMoreOpen((o) => !o)}
+                    >
+                      <svg width="15" height="15" viewBox="0 0 16 16" aria-hidden="true">
+                        <circle cx="3" cy="8" r="1.4" fill="currentColor" />
+                        <circle cx="8" cy="8" r="1.4" fill="currentColor" />
+                        <circle cx="13" cy="8" r="1.4" fill="currentColor" />
+                      </svg>
+                    </button>
+                    {moreOpen && (
+                      <div className="tools-popover" role="dialog" aria-label="Tools">
+                        <div className="tools-popover-head">Tools</div>
+                        <ToolsMenuBody
+                          settings={settings}
+                          toggleTool={toggleTool}
+                          onOpenFull={() => {
+                            setMoreOpen(false)
+                            onOpenSettings()
+                          }}
+                        />
+                      </div>
+                    )}
+                  </div>
+
+                  {/* While the agent works, Stop sits beside the send button and the
+                      send arrow queues a follow-up (parked in the steer strip); idle,
+                      it's just the send button. */}
+                  {streaming && (
+                    <button className="send-btn stop" title="Stop" onClick={stop}>
+                      <svg width="12" height="12" viewBox="0 0 12 12">
+                        <rect x="2" y="2" width="8" height="8" rx="1.5" fill="currentColor" />
+                      </svg>
+                    </button>
+                  )}
+                  <button
+                    className="send-btn"
+                    title={streaming ? 'Queue as a follow-up' : 'Send'}
+                    disabled={(!input.trim() && attachments.length === 0) || !selected}
+                    onClick={() => void submit()}
+                  >
+                    <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+                      <path
+                        d="M7 11.5V2.5M7 2.5L3 6.5M7 2.5l4 4"
+                        stroke="currentColor"
+                        strokeWidth="1.8"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                      />
+                    </svg>
+                  </button>
+                </div>
+              </div>
             </div>
           </div>
         </div>

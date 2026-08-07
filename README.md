@@ -94,7 +94,7 @@ is why no proxy server is needed.
   capture or drag for an arbitrary area. The shot lands as a thumbnail on the
   composer and rides along as an image part of your next message.
 - **Attach files** — images, PDFs, and text files — by dragging them onto the
-  panel, pasting into the composer, or the paperclip button. Delivery adapts to
+  panel, pasting into the composer, or the composer's **+** button. Delivery adapts to
   the provider: native PDF parts on OpenAI/Anthropic, rendered page images on
   vision-capable models elsewhere, extracted text for text-only models.
 
