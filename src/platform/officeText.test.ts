@@ -90,8 +90,13 @@ describe('formatProse', () => {
     // '😀' is one astral char = two UTF-16 code units. A budget landing between
     // them would leave a lone high surrogate, which a UTF-8 encode turns into
     // U+FFFD on the wire.
+    //
+    // Search the WHOLE string for an unpaired high surrogate. Anchoring to `$`
+    // would assert nothing: formatProse appends the note and footer after the
+    // truncated body, so the cut point is never the last character and a broken
+    // safeSlice would leave its lone surrogate mid-string, passing silently.
     const out = formatProse(prose([{ label: 'A', text: '😀'.repeat(10) }]), 'd.docx', 15)
-    expect(out.text).not.toMatch(/[\uD800-\uDBFF]$/)
+    expect(out.text).not.toMatch(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/)
   })
 
   it('reports images instead of an empty block when there is no text', () => {
