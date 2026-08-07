@@ -1,6 +1,6 @@
 # Office document attachments: docx, pptx, xlsx, ODF, RTF and EPUB uploads
 
-**Date:** 2026-08-08 · **Status:** Approved (library: officeParser slim; integration: lazy-imported prebuilt bundle; scope: office+ODF+RTF+EPUB only; spreadsheets: manifest + fair-share rows; embedded images: out of scope for v1)
+**Date:** 2026-08-08 · **Status:** Approved (library: officeParser slim; integration: lazy-imported prebuilt bundle; scope: office+ODF+RTF+EPUB only; spreadsheets: manifest + fair-share rows; embedded images: out of scope for v1) · Implemented 2026-08-08
 
 ## Summary
 
