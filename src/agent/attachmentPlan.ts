@@ -12,8 +12,10 @@
 // unit-testable — same species as planShotDelivery / planTabProbe. The impure
 // executor that turns routes into message parts lives in src/ui/attachments.ts.
 
+import { officeFormatFor, isLegacyOfficeName } from '../platform/officeText'
+
 /** What a dropped/picked file was classified as. */
-export type AttachmentKind = 'image' | 'pdf' | 'text'
+export type AttachmentKind = 'image' | 'pdf' | 'text' | 'document'
 
 /** Most attachments one message may carry; violations are per-file errors. */
 export const MAX_ATTACHMENTS = 10
@@ -27,6 +29,10 @@ export const TEXT_FILE_MAX_BYTES = 2 * 1024 * 1024
 export const INLINE_TEXT_BUDGET = 48_000
 /** Char budget for blind-model PDF text extraction. */
 export const PDF_TEXT_BUDGET = 48_000
+/** Office documents are zip-compressed; 25 MB is already an enormous one. */
+export const DOCUMENT_MAX_BYTES = 25 * 1024 * 1024
+/** Char budget for an extracted office document. */
+export const DOCUMENT_TEXT_BUDGET = 48_000
 
 const IMAGE_MIME = /^image\/(png|jpeg|webp|gif)$/
 // Extension fallback for text-like files: browsers report many of these with an
@@ -53,6 +59,17 @@ export function classifyIncomingFile(
     return byteSize > PDF_MAX_BYTES
       ? { error: `"${name}" is larger than the 50 MB PDF limit.` }
       : { kind: 'pdf' }
+  }
+  if (isLegacyOfficeName(name, mimeType)) {
+    const modern = /\.doc$|msword/i.test(`${name} ${mimeType}`) ? '.docx'
+      : /\.xls$|ms-excel/i.test(`${name} ${mimeType}`) ? '.xlsx'
+      : '.pptx'
+    return { error: `"${name}" is a legacy binary Office file, which can't be read here — re-save as ${modern}.` }
+  }
+  if (officeFormatFor(name, mimeType)) {
+    return byteSize > DOCUMENT_MAX_BYTES
+      ? { error: `"${name}" is larger than the 25 MB document limit.` }
+      : { kind: 'document' }
   }
   if (mimeType.startsWith('text/') || TEXT_EXT.test(name)) {
     return byteSize > TEXT_FILE_MAX_BYTES
@@ -99,6 +116,7 @@ export type DeliveryRoute =
   | { route: 'native-pdf' }
   | { route: 'pdf-pages'; pages: number[]; truncationNote: string | null }
   | { route: 'pdf-text'; budget: number }
+  | { route: 'document-text'; budget: number }
   | { route: 'inline-text'; budget: number }
 
 /**
@@ -137,6 +155,12 @@ export function planAttachmentDelivery(
       return { route: 'pdf-pages', pages, truncationNote }
     }
     return { route: 'pdf-text', budget: PDF_TEXT_BUDGET }
+  }
+  if (att.kind === 'document') {
+    // No provider takes an office file natively — the two native adapters accept
+    // PDF documents only, and the compat adapter throws on any non-image file
+    // part. Extracted text is the one form that works everywhere.
+    return { route: 'document-text', budget: DOCUMENT_TEXT_BUDGET }
   }
   return { route: 'inline-text', budget: INLINE_TEXT_BUDGET }
 }
