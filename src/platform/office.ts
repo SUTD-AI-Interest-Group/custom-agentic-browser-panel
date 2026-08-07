@@ -64,6 +64,29 @@ function nodeText(node: any): string {
 }
 
 /**
+ * Recursively count `type === 'image'` content nodes — exported for direct
+ * unit testing against a synthetic node tree, since hand-authoring an
+ * image-bearing OOXML fixture is fiddly.
+ *
+ * This is the only reliable way to count images: `ast.attachments` mixes
+ * images and charts together (`OfficeAttachment.type` is `'image' | 'chart'`),
+ * so counting it would over-count a document with an embedded chart. Counting
+ * `type === 'image'` content nodes instead counts only real images, and,
+ * unlike `ast.attachments`, matches this module's own comment on `toProse`
+ * about the AST being one flat vocabulary shared by every format — an image
+ * can be nested arbitrarily deep (e.g. inside a pptx/odp `slide`), hence the
+ * recursion through `children`.
+ */
+export function countImageNodes(content: any[]): number {
+  let count = 0
+  for (const node of content) {
+    if (node?.type === 'image') count++
+    if (Array.isArray(node?.children)) count += countImageNodes(node.children)
+  }
+  return count
+}
+
+/**
  * Rebuild one sheet row by column index. officeParser emits cells sparsely with
  * a 0-based `metadata.col`, so a row that skips B yields two cells — appending
  * them in order would slide C into B's place and misalign every value on that
@@ -159,14 +182,26 @@ async function doParse(bytes: Uint8Array, name: string, mimeType: string): Promi
   const { parseOffice } = await getOfficeParser()
   let ast: any
   try {
-    ast = await parseOffice(bytes, { decompressionLimits: DECOMPRESSION_LIMITS })
+    // extractAttachments is required for a correct imageCount, not optional:
+    // verified against the library's own source that for docx and rtf
+    // specifically, `image` content nodes are built ONLY when this flag is
+    // set — without it, a docx paragraph holding a `w:drawing` parses as
+    // completely empty, no `image` node anywhere in `content`. pptx/odp/odt
+    // already emit `image` nodes unconditionally, so this flag is a no-op
+    // for them; requesting it uniformly avoids a per-format branch that
+    // would silently break again if officeParser's gating ever changes.
+    // The resulting attachment payloads are discarded — only countImageNodes
+    // (walking `content`, not `ast.attachments`) is read — but decoding them
+    // is unavoidable to populate those `image` nodes at all. Cost is bounded
+    // by DECOMPRESSION_LIMITS, the same cap already guarding this call.
+    ast = await parseOffice(bytes, { decompressionLimits: DECOMPRESSION_LIMITS, extractAttachments: true })
   } catch (err) {
     throw new OfficeError(
       `Could not read "${name}": ${err instanceof Error ? err.message : String(err)}`,
     )
   }
   const content: any[] = Array.isArray(ast?.content) ? ast.content : []
-  const imageCount = Array.isArray(ast?.attachments) ? ast.attachments.length : 0
+  const imageCount = countImageNodes(content)
   return format === 'xlsx' || format === 'ods'
     ? toWorkbook(content, format, imageCount)
     : toProse(content, format, imageCount)

@@ -1,6 +1,14 @@
 import { describe, it, expect } from 'vitest'
 import { zipSync, strToU8 } from 'fflate'
-import { parseOfficeDocument, OfficeError } from './office'
+import { parseOfficeDocument, OfficeError, countImageNodes } from './office'
+
+// A real, minimal, valid PNG (1x1 transparent pixel) — small enough to inline,
+// large enough to be a real decodable image so a fixture using it is a real
+// embedded-image document, not a placeholder.
+const PNG_B64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII='
+function pngBytes(): Uint8Array {
+  return Uint8Array.from(atob(PNG_B64), (c) => c.charCodeAt(0))
+}
 
 const CONTENT_TYPES_DOCX = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
@@ -24,6 +32,40 @@ function makeDocx(): Uint8Array {
     '[Content_Types].xml': strToU8(CONTENT_TYPES_DOCX),
     '_rels/.rels': strToU8(ROOT_RELS),
     'word/document.xml': strToU8(doc),
+  })
+}
+
+/**
+ * A docx with one inline `w:drawing` embedding a real image part. This is the
+ * exact shape a hand-authored fixture needs to catch officeParser's own
+ * source gating: `image` content nodes for docx are built ONLY when
+ * `extractAttachments: true` is passed to `parseOffice` — without it, the
+ * paragraph holding the drawing parses as completely empty (confirmed against
+ * the real library, not assumed). This fixture is what actually exercises
+ * that path end to end.
+ */
+function makeDocxWithImage(): Uint8Array {
+  const doc = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><w:body>
+<w:p><w:r><w:t>Before the image.</w:t></w:r></w:p>
+<w:p><w:r><w:drawing><wp:inline><wp:extent cx="914400" cy="914400"/><wp:docPr id="1" name="Picture 1"/><a:graphic xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture"><pic:pic xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture"><pic:nvPicPr><pic:cNvPr id="0" name="image1.png"/><pic:cNvPicPr/></pic:nvPicPr><pic:blipFill><a:blip r:embed="rId2"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill><pic:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="914400" cy="914400"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></pic:spPr></pic:pic></a:graphicData></a:graphic></wp:inline></w:drawing></w:r></w:p>
+<w:p><w:r><w:t>After the image.</w:t></w:r></w:p>
+</w:body></w:document>`
+  return zipSync({
+    '[Content_Types].xml': strToU8(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+<Default Extension="xml" ContentType="application/xml"/>
+<Default Extension="png" ContentType="image/png"/>
+<Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
+</Types>`),
+    '_rels/.rels': strToU8(ROOT_RELS),
+    'word/document.xml': strToU8(doc),
+    'word/_rels/document.xml.rels': strToU8(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/image1.png"/>
+</Relationships>`),
+    'word/media/image1.png': pngBytes(),
   })
 }
 
@@ -190,6 +232,21 @@ describe('parseOfficeDocument', () => {
     const all = doc.segments.map((s) => s.text).join('\n')
     expect(all).toContain('Quarterly Report')
     expect(all).toContain('Revenue grew 12% in APAC.')
+    expect(doc.imageCount).toBe(0)
+  })
+
+  // Regression: a docx's `image` content nodes are built by officeParser ONLY
+  // when `extractAttachments: true` is passed — without it, the paragraph
+  // holding a `w:drawing` parses as completely empty, and imageCount silently
+  // stayed 0 for every docx/pptx/etc regardless of how many images it held.
+  it('counts an embedded image in a real docx', async () => {
+    const doc = await parseOfficeDocument(makeDocxWithImage(), 'id-docx-image', 'deck.docx', '')
+    expect(doc.shape).toBe('prose')
+    if (doc.shape !== 'prose') throw new Error('unreachable')
+    const all = doc.segments.map((s) => s.text).join('\n')
+    expect(all).toContain('Before the image.')
+    expect(all).toContain('After the image.')
+    expect(doc.imageCount).toBe(1)
   })
 
   it('maps an xlsx to named sheets', async () => {
@@ -265,5 +322,46 @@ describe('parseOfficeDocument', () => {
     expect(doc.segments.map((s) => s.label)).toEqual(['Chapter One', 'Chapter Two'])
     expect(doc.segments[0].text).toContain('The beginning of the story.')
     expect(doc.segments[1].text).toContain('The middle of the story.')
+  })
+})
+
+describe('countImageNodes', () => {
+  it('counts zero for a tree with no image nodes', () => {
+    const content = [
+      { type: 'heading', children: [{ type: 'text', text: 'Title' }] },
+      { type: 'paragraph', children: [{ type: 'text', text: 'Body' }] },
+    ]
+    expect(countImageNodes(content)).toBe(0)
+  })
+
+  it('counts two top-level image nodes among other content', () => {
+    const content = [
+      { type: 'paragraph', children: [{ type: 'text', text: 'Before' }] },
+      { type: 'image', metadata: { attachmentName: 'a.png' } },
+      { type: 'paragraph', children: [{ type: 'text', text: 'Between' }] },
+      { type: 'image', metadata: { attachmentName: 'b.png' } },
+    ]
+    expect(countImageNodes(content)).toBe(2)
+  })
+
+  it('recurses into children — an image nested inside a slide still counts', () => {
+    // Mirrors the real pptx shape: a top-level `slide` node whose children
+    // hold the title heading and, when the slide has a picture, an `image`.
+    const content = [
+      {
+        type: 'slide',
+        metadata: { slideNumber: 1 },
+        children: [
+          { type: 'heading', children: [{ type: 'text', text: 'Welcome' }] },
+          { type: 'image', metadata: { attachmentName: 'photo.jpg' } },
+        ],
+      },
+    ]
+    expect(countImageNodes(content)).toBe(1)
+  })
+
+  it('does not count chart nodes as images', () => {
+    const content = [{ type: 'chart', metadata: {} }]
+    expect(countImageNodes(content)).toBe(0)
   })
 })
