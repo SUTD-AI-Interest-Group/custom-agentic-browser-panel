@@ -22,7 +22,8 @@ import { snapshotPage, type PageSnapshot } from '../platform/domIndex'
 import { snapshotRegions } from '../platform/regionIndex'
 import { capture, tileShot, ShotError, planShotDelivery } from '../platform/screenshot'
 import { looksLikePdfUrl, parsePageRange, searchPages, assemblePagesText } from '../platform/pdfText'
-import { loadPdf, renderPdfPage, renderPdfPageHighlighted, PdfError, type LoadedPdf } from '../platform/pdf'
+import { loadPdf, loadPdfMeta, renderPdfPage, renderPdfPageHighlighted, PdfError, type LoadedPdf } from '../platform/pdf'
+import { scannedNote } from '../platform/pdfExtract'
 import { highlightTextOnPage, highlightRegionOnPage } from '../platform/highlight'
 import { saveShot } from '../data/screenshots'
 import type { QueuedImage } from '../agent/agent'
@@ -772,22 +773,33 @@ export function createAgentTools(
           if (err instanceof PdfError) return { error: err.message }
           return { error: `Could not read the PDF (${err instanceof Error ? err.message : String(err)}).` }
         }
-        const { info, pages: pageTexts, outline } = loaded
+        const { info, pages: pageTexts } = loaded
         const notes: string[] = []
         if (info.pageCount > info.extractedPages) {
           notes.push(`Text was extracted for the first ${info.extractedPages} of ${info.pageCount} pages.`)
         }
 
         if (mode === 'outline') {
+          // Bookmarks and author are the one thing pdf-inspector does not
+          // expose, so this mode — and only this mode — pays for a pdf.js
+          // parse. Best-effort by contract: a document pdf.js cannot open
+          // yields empty values and falls through to the first-page preview.
+          const meta = await loadPdfMeta(target, creds)
           return {
             url: info.url,
             title: info.title,
-            ...(info.author ? { author: info.author } : {}),
+            ...(meta.author ? { author: meta.author } : {}),
             pageCount: info.pageCount,
-            ...(outline.length
-              ? { bookmarks: outline }
+            ...(meta.outline.length
+              ? { bookmarks: meta.outline }
               : { firstPage: pageTexts[0]?.text.slice(0, 600) ?? '' }),
-            note: ['Use mode:"search" to locate topics, then mode:"pages" to read them.', ...notes].join(' '),
+            note: [
+              'Use mode:"search" to locate topics, then mode:"pages" to read them.',
+              ...notes,
+              scannedNote(info, pageTexts.map((p) => p.page)) ?? '',
+            ]
+              .filter(Boolean)
+              .join(' '),
           }
         }
 
@@ -821,10 +833,13 @@ export function createAgentTools(
             `The character budget cut page${omittedPages.length > 1 ? 's' : ''} ${omittedPages.join(', ')} — request ${omittedPages.length > 1 ? 'them' : 'it'} in a smaller range.`,
           )
         }
-        if (blocks.length > 0 && blocks.every((b) => b.text.trim().length < 20)) {
-          notes.push(
-            'These pages have little or no text layer — this may be a scanned PDF. Use mode:"view" to look at a page as an image.',
-          )
+        // pdf-inspector reports which pages actually lack a text layer, so this
+        // names them instead of inferring "everything came back short, so it
+        // was probably scanned" after the fact — and it fires correctly on a
+        // MIXED document, where the old all-or-nothing guess never could.
+        const scanned = scannedNote(info, parsed.pages)
+        if (scanned) {
+          notes.push(scanned)
         } else if (blocks.length > 0) {
           notes.push(
             'When your answer comes from a specific passage here, call HighlightContent with that quoted text and its page number to mark it for the user.',

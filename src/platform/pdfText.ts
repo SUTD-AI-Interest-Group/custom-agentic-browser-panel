@@ -6,7 +6,21 @@
 /** One page's extracted text, 1-based. */
 export interface PageText {
   page: number
+  /** Markdown, as pdf-inspector produced it — this is what the model reads. */
   text: string
+  /**
+   * The same page with Markdown syntax stripped (pdfExtract.ts's stripMarkdown).
+   * Everything that MATCHES text against the document reads this instead, because
+   * emphasis lands mid-phrase: "**Encoder:** The encoder…" makes a literal search
+   * for "Encoder: The encoder…" miss. Optional so a test or a caller with plain
+   * text can omit it; consumers fall back to `text`.
+   */
+  plain?: string
+}
+
+/** The form to match against — stripped where available, raw otherwise. */
+export function matchable(p: PageText): string {
+  return p.plain ?? p.text
 }
 
 /**
@@ -113,6 +127,10 @@ const SNIPPET_RADIUS = 80
  * Case-insensitive literal search across page texts. Whitespace is normalized
  * on both sides so a phrase matches across line breaks. Returns one entry per
  * matching page (count + a snippet around the first occurrence), capped.
+ *
+ * Matches AND snippets on the stripped form (`matchable`), never the Markdown:
+ * a snippet carrying `**` would be quoted back by the model to HighlightContent
+ * and fail to match the rendered page.
  */
 export function searchPages(
   pages: PageText[],
@@ -125,8 +143,9 @@ export function searchPages(
   const matches: PdfSearchMatch[] = []
   let totalMatches = 0
   let matchingPages = 0
-  for (const { page, text } of pages) {
-    const haystack = text.replace(/\s+/g, ' ')
+  for (const entry of pages) {
+    const { page } = entry
+    const haystack = matchable(entry).replace(/\s+/g, ' ')
     const lower = haystack.toLowerCase()
     let count = 0
     let first = -1

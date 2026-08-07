@@ -285,12 +285,18 @@ async function pdfAwareTabContent(c: TabContent): Promise<TabContent> {
   if (!looksLikePdfUrl(c.url) || (!c.error && c.text.trim())) return c
   try {
     const { info, pages } = await loadPdf(c.url, { credentials: 'include' })
-    const first = pages[0]?.text.replace(/\s+/g, ' ').trim().slice(0, 1500) ?? ''
+    // The snippet is collapsed to one line anyway, so take the stripped form —
+    // flattening Markdown here would just spend the budget on `##` and `**`.
+    const first = (pages[0]?.plain ?? pages[0]?.text ?? '').replace(/\s+/g, ' ').trim().slice(0, 1500)
+    // Author would cost a whole pdf.js parse (loadPdfMeta) on every tab attach;
+    // whether the document even HAS a text layer is both free and far more
+    // actionable, since it tells the model to look rather than read.
+    const scanned = info.pagesNeedingOcr.length >= info.extractedPages && info.extractedPages > 0
     return {
       ...c,
       error: undefined,
       title: info.title || c.title,
-      text: `[This tab is a PDF: "${info.title}", ${info.pageCount} page${info.pageCount === 1 ? '' : 's'}.${info.author ? ` Author: ${info.author}.` : ''} Use the ReadPdf tool to search or read the rest.]\n\nFirst page:\n${first}`,
+      text: `[This tab is a PDF: "${info.title}", ${info.pageCount} page${info.pageCount === 1 ? '' : 's'}.${scanned ? ' It is a scanned document with no text layer — use ReadPdf mode:"view" to look at a page.' : ' Use the ReadPdf tool to search or read the rest.'}]\n\nFirst page:\n${first}`,
       truncated: info.pageCount > 1,
     }
   } catch {

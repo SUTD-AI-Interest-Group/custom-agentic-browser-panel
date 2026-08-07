@@ -330,7 +330,10 @@ src/platform/presence.ts      On-page overlay: tint + gliding cursor + spotlight
 src/platform/marks.ts         Set-of-marks screenshot (numbered boxes over a capture)
 src/platform/researchTab.ts   Leased, isolated, minimized tab for research
 src/platform/webFetch.ts      Fetch + readability extraction (SSRF-guarded)
-src/platform/pdf.ts           PDF fetch/parse/render core (pdf.js, cached)
+src/platform/pdf.ts           PDF fetch/extract/render core (cached, two engines)
+src/platform/pdfExtract.ts    Pure Markdown→per-page translation (tested)
+src/platform/pdfEngine.ts     Client for the extraction worker (ExecHost analog)
+src/platform/pdfWorker.ts     Worker hosting the pdf-inspector WASM
 src/platform/pdfText.ts       Pure PDF logic: ranges, search, budgets (tested)
 ```
 

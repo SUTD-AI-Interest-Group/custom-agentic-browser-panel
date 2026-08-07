@@ -1,22 +1,37 @@
 /// <reference types="vite/client" />
-// PDF fetch/parse/render core, built on pdf.js (pdfjs-dist). Chrome's PDF
-// viewer is a plugin with no scriptable DOM, so a PDF tab cannot be read the
-// way ordinary pages are (tabs.ts) — instead the bytes are fetched directly
-// (host_permissions <all_urls> exempts the fetch from CORS) and parsed here.
+// PDF fetch/extract/render core. Chrome's PDF viewer is a plugin with no
+// scriptable DOM, so a PDF tab cannot be read the way ordinary pages are
+// (tabs.ts) — instead the bytes are fetched directly (host_permissions
+// <all_urls> exempts the fetch from CORS) and processed here.
 //
-// Context matters: pdf.js needs a page-like environment (DOM, workers), so this
-// module runs where its consumers already live — the side panel (ReadPdf tool)
+// TWO engines, split by what each can actually do:
+//
+//   • TEXT comes from pdf-inspector (Rust/lopdf compiled to WASM), off-thread
+//     via pdfEngine.ts. It does position-aware extraction with multi-column
+//     reading order, table detection and Markdown conversion — measured ~10x
+//     faster than the pdf.js text walk it replaced, and structurally far better
+//     (pdf.js could only join text items with spaces, which shredded two-column
+//     papers and tables).
+//
+//   • PIXELS come from pdf.js, which stays because pdf-inspector has NO
+//     rasterizer. ReadPdf mode:"view", the PDF HighlightContent path and the
+//     attachment vision ladder all need a rendered page; so does the bookmark
+//     outline, which pdf-inspector does not expose. pdf.js is therefore
+//     dynamically imported ONLY on those paths — a text-only read never pays
+//     for it.
+//
+// Context matters: both engines need a page-like environment (DOM, workers), so
+// this module runs where its consumers already live — the side panel (ReadPdf)
 // and the offscreen document (research's FetchUrl). The MV3 service worker
-// never imports it. The heavy library is imported dynamically so it stays out
-// of both entry bundles until a PDF is actually read; the worker script rides
-// along as a Vite-emitted asset (same-origin, so the default extension CSP
-// allows it).
+// never imports it.
 //
-// The pure logic (URL/byte detection, range parsing, search, budgeting) lives
-// in pdfText.ts — keep it that way so it stays unit-testable.
-import workerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url'
+// The pure logic lives next door and stays Chrome-free: range parsing, search
+// and budgeting in pdfText.ts, the Markdown→PageText translation in
+// pdfExtract.ts. Keep it that way.
 import type { PDFDocumentLoadingTask, PDFDocumentProxy } from 'pdfjs-dist'
 import { sniffPdf, flattenOutline, type PageText, type OutlineEntry, type OutlineNode } from './pdfText'
+import { toPageTexts, stripMarkdown, type PdfType } from './pdfExtract'
+import { getPdfEngine } from './pdfEngine'
 import { findTextInChunks } from './highlightText'
 
 /** An expected, explainable failure — the message is a sentence the model (and user) can act on. */
@@ -27,33 +42,51 @@ export interface PdfInfo {
   url: string
   /** Document title (metadata), else the URL's filename. */
   title: string
-  author: string
   pageCount: number
   /** Pages whose text was actually extracted (≤ pageCount — huge docs are capped). */
   extractedPages: number
+  /** pdf-inspector's classification — what the document IS, not a guess after the fact. */
+  pdfType: PdfType
+  /** 1-based pages with no text layer, i.e. the ones that need eyes on them. */
+  pagesNeedingOcr: number[]
+  /** True when the fonts decode badly enough that the text layer is unreliable. */
+  hasEncodingIssues: boolean
 }
 
 export interface LoadedPdf {
   info: PdfInfo
   /** Extracted text, one entry per page, 1-based, in order. */
   pages: PageText[]
-  /** Flattened bookmark outline with resolved 1-based page numbers (empty when the PDF has none). */
+}
+
+/** Bookmarks + author — pdf.js only, so they cost a parse (see loadPdfMeta). */
+export interface PdfMeta {
+  author: string
   outline: OutlineEntry[]
 }
 
 const MAX_PDF_BYTES = 50 * 1024 * 1024
 const MAX_EXTRACT_PAGES = 500
 const FETCH_TIMEOUT_MS = 30_000
-// A parsed PDF is expensive (fetch + parse + full text walk), and a Q&A session
-// hammers the same document repeatedly — so keep a few parsed docs alive. Small,
-// because each holds its pdf.js doc handle (worker memory) for page rendering.
+// A loaded PDF is expensive (fetch + extract), and a Q&A session hammers the
+// same document repeatedly — so keep a few alive. Small, because each holds the
+// raw bytes and may hold a pdf.js doc handle (worker memory) for page rendering.
 const CACHE_MAX = 3
 
 interface CacheEntry {
-  /** The loading task owns the worker resources — destroy() lives here, not on the doc proxy. */
-  task: PDFDocumentLoadingTask
-  doc: PDFDocumentProxy
+  /**
+   * The fetched bytes, retained. This is what makes rendering lazy: a text-only
+   * read never parses with pdf.js at all, and a later render (or a second one,
+   * or all 20 pages of an attachment) re-parses from here instead of re-fetching
+   * the document. Bounded by CACHE_MAX × MAX_PDF_BYTES, and strictly cheaper
+   * than the fully-parsed pdf.js documents this cache used to hold outright.
+   */
+  bytes: Uint8Array
   loaded: LoadedPdf
+  /** pdf.js handle, created on first render/outline and memoized. */
+  render?: Promise<{ task: PDFDocumentLoadingTask; doc: PDFDocumentProxy }>
+  /** Bookmarks + author, created on first mode:"outline" and memoized. */
+  meta?: Promise<PdfMeta>
 }
 
 // Keyed by credentials mode + URL; holds the in-flight promise so concurrent
@@ -64,9 +97,9 @@ const cache = new Map<string, Promise<CacheEntry>>()
 // getBytesEntry (acquired before the caller's await, released in their
 // finally). Concurrent history hydration can fire many renderPdfPageFromBytes
 // calls across several distinct documents at once, all sharing this one small
-// cache — an in-flight canvas render or text-content fetch still holds the
-// doc/task, and destroy()ing it out from under that caller aborts pdf.js's
-// worker mid-operation. See planEviction.
+// cache — an in-flight canvas render still holds the doc/task, and destroy()ing
+// it out from under that caller aborts pdf.js's worker mid-operation. See
+// planEviction.
 const refCounts = new Map<string, number>()
 
 function acquire(key: string) {
@@ -85,7 +118,7 @@ function release(key: string) {
  * by recency. Left over-capacity when every entry is in use (safety over
  * strict capacity). Pure and exported for testing; `evictExcess` is the
  * impure shell that acts on its answer (destroying the corresponding pdf.js
- * task).
+ * task, when one was ever created).
  */
 export function planEviction(
   keysOldestFirst: string[],
@@ -108,12 +141,17 @@ function evictExcess() {
   for (const k of doomed) {
     const v = cache.get(k)
     cache.delete(k)
-    v?.then((e) => e.task.destroy().catch(() => {})).catch(() => {})
+    // Only a render-touched entry holds worker memory; a text-only one is
+    // plain data the GC reclaims on its own.
+    v?.then((e) => e.render?.then((r) => r.task.destroy().catch(() => {})).catch(() => {})).catch(() => {})
   }
 }
 
 async function getPdfjs() {
-  const pdfjs = await import('pdfjs-dist')
+  const [pdfjs, { default: workerUrl }] = await Promise.all([
+    import('pdfjs-dist'),
+    import('pdfjs-dist/build/pdf.worker.min.mjs?url'),
+  ])
   if (!pdfjs.GlobalWorkerOptions.workerSrc) pdfjs.GlobalWorkerOptions.workerSrc = workerUrl
   return pdfjs
 }
@@ -239,65 +277,78 @@ function filenameOf(url: string): string {
 
 async function doLoad(url: string, credentials: RequestCredentials, signal?: AbortSignal): Promise<CacheEntry> {
   const { bytes, finalUrl } = await fetchPdfBytes(url, credentials, signal)
-  return parsePdfBytes(bytes, finalUrl, filenameOf(finalUrl))
+  return extractPdfBytes(bytes, finalUrl, filenameOf(finalUrl))
 }
 
-// Parse + extract, source-agnostic: doLoad hands over fetched bytes, the
-// attachment path (getBytesEntry) hands over a dropped file's bytes.
-async function parsePdfBytes(
+// Extract + build the cache entry, source-agnostic: doLoad hands over fetched
+// bytes, the attachment path (getBytesEntry) hands over a dropped file's bytes.
+async function extractPdfBytes(
   bytes: Uint8Array,
   sourceUrl: string,
   titleFallback: string,
 ): Promise<CacheEntry> {
-  const pdfjs = await getPdfjs()
-  const task = pdfjs.getDocument({ data: bytes })
-  let doc: PDFDocumentProxy
+  let r
   try {
-    doc = await task.promise
+    r = await getPdfEngine().extract(bytes)
   } catch (err) {
-    const name = err instanceof Error ? err.name : ''
-    if (name === 'PasswordException') {
-      throw new PdfError('This PDF is password-protected and cannot be read.')
-    }
-    throw new PdfError(
-      `Could not parse this PDF (${err instanceof Error ? err.message : String(err)}).`,
-    )
+    // pdfEngine already mapped a parse failure to an actionable sentence
+    // (pdfErrorMessage); anything else is an engine/transport fault.
+    throw new PdfError(err instanceof Error ? err.message : String(err))
   }
-  try {
-    const meta = await doc.getMetadata().catch(() => null)
-    const metaInfo = (meta?.info ?? {}) as Record<string, unknown>
-    const extractCount = Math.min(doc.numPages, MAX_EXTRACT_PAGES)
-    const pages: PageText[] = []
-    for (let n = 1; n <= extractCount; n++) {
-      const page = await doc.getPage(n)
-      const content = await page.getTextContent()
-      // Items carry no reliable inter-run spacing; joining with a space
-      // over-separates occasionally but never merges words, and every consumer
-      // (search, display) normalizes whitespace anyway.
-      const text = content.items
-        .map((it) => ('str' in it ? it.str + (it.hasEOL ? '\n' : ' ') : ''))
-        .join('')
-        .replace(/[ \t]+\n/g, '\n')
-        .trim()
-      pages.push({ page: n, text })
-    }
-    const loaded: LoadedPdf = {
+  // Cap the per-page model the way the pdf.js path did: text past this point is
+  // beyond any budget a consumer would spend anyway. pdfType/pagesNeedingOcr
+  // still describe the WHOLE document, which is what makes them useful.
+  const extractCount = Math.min(r.pageCount, MAX_EXTRACT_PAGES)
+  return {
+    bytes,
+    loaded: {
       info: {
         url: sourceUrl,
-        title: (typeof metaInfo.Title === 'string' && metaInfo.Title.trim()) || titleFallback,
-        author: typeof metaInfo.Author === 'string' ? metaInfo.Author : '',
-        pageCount: doc.numPages,
+        title: r.title.trim() || titleFallback,
+        pageCount: r.pageCount,
         extractedPages: extractCount,
+        pdfType: r.pdfType,
+        pagesNeedingOcr: r.pagesNeedingOcr,
+        hasEncodingIssues: r.hasEncodingIssues,
       },
-      pages,
-      outline: await resolveOutline(doc),
-    }
-    return { task, doc, loaded }
-  } catch (err) {
-    // Extraction failed after a successful parse — release the worker memory.
-    task.destroy().catch(() => {})
-    throw err
+      pages: toPageTexts(r.markdown, extractCount),
+    },
   }
+}
+
+/**
+ * The pdf.js document for an entry, parsed on first use and memoized. Only the
+ * pixel/bookmark paths reach this — a text-only read never loads pdf.js at all.
+ *
+ * pdf.js TRANSFERS the buffer it is handed to its worker, detaching it. The
+ * cache keeps `bytes` alive for exactly this reason (a second render, all 20
+ * pages of an attachment), so it must always be handed a COPY. Keep this slice.
+ */
+function getRenderDoc(entry: CacheEntry) {
+  if (!entry.render) {
+    entry.render = (async () => {
+      const pdfjs = await getPdfjs()
+      const task = pdfjs.getDocument({ data: entry.bytes.slice() })
+      try {
+        return { task, doc: await task.promise }
+      } catch (err) {
+        task.destroy().catch(() => {})
+        const name = err instanceof Error ? err.name : ''
+        if (name === 'PasswordException') {
+          throw new PdfError('This PDF is password-protected and cannot be read.')
+        }
+        throw new PdfError(
+          `Could not render this PDF (${err instanceof Error ? err.message : String(err)}).`,
+        )
+      }
+    })()
+    // A failed parse must not poison the entry forever — the text side is still
+    // perfectly usable, and a later render deserves a fresh attempt.
+    entry.render.catch(() => {
+      entry.render = undefined
+    })
+  }
+  return entry.render
 }
 
 /** A checked-out cache entry plus the release the caller must call (in a
@@ -307,24 +358,20 @@ interface CheckedOutEntry {
   release: () => void
 }
 
-async function getEntry(
-  url: string,
-  opts?: { credentials?: RequestCredentials; signal?: AbortSignal },
-): Promise<CheckedOutEntry> {
-  const credentials = opts?.credentials ?? 'omit'
-  const key = `${credentials}:${url}`
+// Shared tail of getEntry/getBytesEntry: refresh recency, acquire before
+// eviction runs (so this freshly-touched key can never be the one evictExcess
+// picks, even in a fully-saturated cache), then await.
+async function checkOut(key: string, start: () => Promise<CacheEntry>): Promise<CheckedOutEntry> {
   let pending = cache.get(key)
   if (pending) {
     // Refresh recency (Map order is the LRU order).
     cache.delete(key)
     cache.set(key, pending)
   } else {
-    pending = doLoad(url, credentials, opts?.signal)
+    pending = start()
     cache.set(key, pending)
     pending.catch(() => cache.delete(key))
   }
-  // Acquire before eviction runs, so this key (freshly touched/inserted) can
-  // never be the one evictExcess picks even in a fully-saturated cache.
   acquire(key)
   evictExcess()
   try {
@@ -336,25 +383,70 @@ async function getEntry(
   }
 }
 
+function getEntry(
+  url: string,
+  opts?: { credentials?: RequestCredentials; signal?: AbortSignal },
+): Promise<CheckedOutEntry> {
+  const credentials = opts?.credentials ?? 'omit'
+  return checkOut(`${credentials}:${url}`, () => doLoad(url, credentials, opts?.signal))
+}
+
 /**
- * Fetch and parse a PDF, returning its metadata, per-page text, and outline.
- * Cached (a few docs, LRU), so repeated search/read/view calls on the same
- * document cost one fetch+parse. Throws PdfError with an actionable sentence
- * on every expected failure (not a PDF, password, oversize, file-access…).
+ * Fetch and extract a PDF, returning its metadata and per-page text. Cached (a
+ * few docs, LRU), so repeated search/read/view calls on the same document cost
+ * one fetch+extract. Throws PdfError with an actionable sentence on every
+ * expected failure (not a PDF, password, oversize, file-access…).
+ *
+ * Bookmarks and author are NOT here — they cost a pdf.js parse; see loadPdfMeta.
  */
 export async function loadPdf(
   url: string,
   opts?: { credentials?: RequestCredentials; signal?: AbortSignal },
 ): Promise<LoadedPdf> {
   const { entry, release } = await getEntry(url, opts)
-  release() // .loaded is already fully computed — no further async pdf.js work to protect
+  release() // .loaded is already fully computed — no further async work to protect
   return entry.loaded
+}
+
+/**
+ * Bookmarks + author for a PDF. Separate from loadPdf because pdf-inspector
+ * exposes neither, so answering costs a pdf.js parse that only ReadPdf
+ * mode:"outline" ever wants to pay. Best-effort: a document pdf.js cannot open
+ * yields empty values rather than failing the whole call, and the caller falls
+ * back to showing the first page's text.
+ */
+export async function loadPdfMeta(
+  url: string,
+  opts?: { credentials?: RequestCredentials; signal?: AbortSignal },
+): Promise<PdfMeta> {
+  const { entry, release } = await getEntry(url, opts)
+  try {
+    if (!entry.meta) {
+      entry.meta = (async () => {
+        const { doc } = await getRenderDoc(entry)
+        const meta = await doc.getMetadata().catch(() => null)
+        const info = (meta?.info ?? {}) as Record<string, unknown>
+        return {
+          author: typeof info.Author === 'string' ? info.Author : '',
+          outline: await resolveOutline(doc),
+        }
+      })()
+      entry.meta.catch(() => {
+        entry.meta = undefined
+      })
+    }
+    return await entry.meta
+  } catch {
+    return { author: '', outline: [] }
+  } finally {
+    release()
+  }
 }
 
 /**
  * Byte-source variant of getEntry, for PDFs that have no URL (a user-dropped
  * file). Cached under `bytes:<key>` in the same LRU, so the 20 sequential page
- * renders of one attached document parse it once. `key` is the attachment id.
+ * renders of one attached document extract it once. `key` is the attachment id.
  */
 async function getBytesEntry(
   bytes: Uint8Array,
@@ -362,34 +454,15 @@ async function getBytesEntry(
   titleFallback?: string,
 ): Promise<CheckedOutEntry> {
   const cacheKey = `bytes:${key}`
-  let pending = cache.get(cacheKey)
-  if (pending) {
-    // Refresh recency (Map order is the LRU order).
-    cache.delete(cacheKey)
-    cache.set(cacheKey, pending)
-  } else {
+  if (!cache.has(cacheKey)) {
     if (bytes.byteLength > MAX_PDF_BYTES) throw new PdfError('This PDF is larger than the 50 MB limit.')
     if (!sniffPdf(bytes)) throw new PdfError('This file is not a PDF (no %PDF header found).')
-    // pdf.js TRANSFERS the buffer it is handed to its worker, detaching the
-    // caller's Uint8Array — without this copy the attachment's bytes silently
-    // become zero-length after the attach-time parse and persist as an empty
-    // record. The URL path (doLoad) needs no copy: its fetched bytes are
-    // single-use. Keep this slice.
-    pending = parsePdfBytes(bytes.slice(), `attachment:${key}`, titleFallback ?? key)
-    cache.set(cacheKey, pending)
-    pending.catch(() => cache.delete(cacheKey))
   }
-  // Acquire before eviction runs, so this key (freshly touched/inserted) can
-  // never be the one evictExcess picks even in a fully-saturated cache.
-  acquire(cacheKey)
-  evictExcess()
-  try {
-    const entry = await pending
-    return { entry, release: () => release(cacheKey) }
-  } catch (err) {
-    release(cacheKey) // the load failed — no caller will get a release() to call
-    throw err
-  }
+  // No defensive copy needed here: pdfEngine copies before transferring, and
+  // getRenderDoc copies before handing bytes to pdf.js. Both engines detach
+  // what they are given, and both are fed copies — the attachment's own array
+  // is never the one that goes over a boundary.
+  return checkOut(cacheKey, () => extractPdfBytes(bytes, `attachment:${key}`, titleFallback ?? key))
 }
 
 /** loadPdf for raw bytes (a dropped file). Same caching, errors, and shape. */
@@ -399,7 +472,7 @@ export async function loadPdfFromBytes(
   titleFallback?: string,
 ): Promise<LoadedPdf> {
   const { entry, release } = await getBytesEntry(bytes, key, titleFallback)
-  release() // .loaded is already fully computed — no further async pdf.js work to protect
+  release() // .loaded is already fully computed — no further async work to protect
   return entry.loaded
 }
 
@@ -423,19 +496,13 @@ async function renderPageToCanvas(doc: PDFDocumentProxy, pageNumber: number) {
   return { page, canvas, ctx, viewport }
 }
 
-/**
- * Render one page (1-based) to a PNG data URL. Shares loadPdf's document cache.
- * Runs only where a DOM canvas exists (side panel) — the research path never
- * renders.
- */
-export async function renderPdfPage(
-  url: string,
+/** Shared body of the two plain-render entry points. */
+async function renderFromEntry(
+  { entry, release }: CheckedOutEntry,
   pageNumber: number,
-  opts?: { credentials?: RequestCredentials; signal?: AbortSignal },
 ): Promise<{ dataUrl: string; width: number; height: number; pageCount: number; title: string }> {
-  const { entry, release } = await getEntry(url, opts)
   try {
-    const { doc, loaded } = entry
+    const { doc } = await getRenderDoc(entry)
     if (pageNumber < 1 || pageNumber > doc.numPages) {
       throw new PdfError(`No page ${pageNumber} — this PDF has ${doc.numPages} pages.`)
     }
@@ -445,36 +512,29 @@ export async function renderPdfPage(
       width: canvas.width,
       height: canvas.height,
       pageCount: doc.numPages,
-      title: loaded.info.title,
+      title: entry.loaded.info.title,
     }
   } finally {
     release()
   }
 }
 
-/** renderPdfPage for raw bytes (a dropped file). Shares the bytes: cache entry. */
-export async function renderPdfPageFromBytes(
-  bytes: Uint8Array,
-  key: string,
+/**
+ * Render one page (1-based) to a PNG data URL. Shares loadPdf's document cache,
+ * so a page already read as text renders without re-fetching. Runs only where a
+ * DOM canvas exists (side panel) — the research path never renders.
+ */
+export async function renderPdfPage(
+  url: string,
   pageNumber: number,
-): Promise<{ dataUrl: string; width: number; height: number; pageCount: number; title: string }> {
-  const { entry, release } = await getBytesEntry(bytes, key)
-  try {
-    const { doc, loaded } = entry
-    if (pageNumber < 1 || pageNumber > doc.numPages) {
-      throw new PdfError(`No page ${pageNumber} — this PDF has ${doc.numPages} pages.`)
-    }
-    const { canvas } = await renderPageToCanvas(doc, pageNumber)
-    return {
-      dataUrl: canvas.toDataURL('image/png'),
-      width: canvas.width,
-      height: canvas.height,
-      pageCount: doc.numPages,
-      title: loaded.info.title,
-    }
-  } finally {
-    release()
-  }
+  opts?: { credentials?: RequestCredentials; signal?: AbortSignal },
+) {
+  return renderFromEntry(await getEntry(url, opts), pageNumber)
+}
+
+/** renderPdfPage for raw bytes (a dropped file). Shares the bytes: cache entry. */
+export async function renderPdfPageFromBytes(bytes: Uint8Array, key: string, pageNumber: number) {
+  return renderFromEntry(await getBytesEntry(bytes, key), pageNumber)
 }
 
 /** The subset of a pdf.js text item the highlighter needs (TextMarkedContent has no `str`). */
@@ -510,7 +570,7 @@ export async function renderPdfPageHighlighted(
 }> {
   const { entry, release } = await getEntry(url, opts)
   try {
-    const { doc, loaded } = entry
+    const { doc } = await getRenderDoc(entry)
     if (pageNumber < 1 || pageNumber > doc.numPages) {
       throw new PdfError(`No page ${pageNumber} — this PDF has ${doc.numPages} pages.`)
     }
@@ -519,7 +579,11 @@ export async function renderPdfPageHighlighted(
     const items = (content.items as unknown[]).filter(
       (it): it is PdfTextItem => typeof (it as PdfTextItem).str === 'string',
     )
-    const m = findTextInChunks(items.map((it) => it.str), query)
+    // The passage is matched against pdf.js TEXT ITEMS, which carry no Markdown
+    // — but the model got its text from ReadPdf, which serves pdf-inspector's
+    // Markdown, so a quoted passage can arrive as "**Encoder:** The encoder…".
+    // Strip it to the words a reader sees, or the highlight silently misses.
+    const m = findTextInChunks(items.map((it) => it.str), stripMarkdown(query))
     if (m.first) {
       const pdfjs = await getPdfjs()
       ctx.globalCompositeOperation = 'multiply'
@@ -541,7 +605,7 @@ export async function renderPdfPageHighlighted(
       width: canvas.width,
       height: canvas.height,
       pageCount: doc.numPages,
-      title: loaded.info.title,
+      title: entry.loaded.info.title,
       matched: m.first !== null,
       matchCount: m.count,
     }
