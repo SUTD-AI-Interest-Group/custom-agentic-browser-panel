@@ -323,12 +323,28 @@ async function extractPdfBytes(
  * pdf.js TRANSFERS the buffer it is handed to its worker, detaching it. The
  * cache keeps `bytes` alive for exactly this reason (a second render, all 20
  * pages of an attachment), so it must always be handed a COPY. Keep this slice.
+ *
+ * `verbosity` is load-bearing for a reason that has nothing to do with rendering:
+ * pdf.js defaults to VerbosityLevel.WARNINGS, and its font sanitizer warns once
+ * per quirk in an embedded font's hinting program ("TT: undefined function: 21"
+ * and friends). Those are advisory — the hints are dropped and the page renders
+ * correctly — but chrome://extensions collects every console.warn an extension
+ * page or worker emits, so an ordinary PDF fills the extension's error console
+ * with warnings that look like defects and bury real ones. ERRORS silences warn()
+ * and info() only; a genuine parse failure still throws and is handled below.
+ * Read the level off the dynamically-imported namespace: a static value import
+ * from 'pdfjs-dist' would pull pdf.js into the bundle unconditionally and undo
+ * the lazy loading this whole path is built around (the type-only import above
+ * is erased; a value import would not be).
  */
 function getRenderDoc(entry: CacheEntry) {
   if (!entry.render) {
     entry.render = (async () => {
       const pdfjs = await getPdfjs()
-      const task = pdfjs.getDocument({ data: entry.bytes.slice() })
+      const task = pdfjs.getDocument({
+        data: entry.bytes.slice(),
+        verbosity: pdfjs.VerbosityLevel.ERRORS,
+      })
       try {
         return { task, doc: await task.promise }
       } catch (err) {
