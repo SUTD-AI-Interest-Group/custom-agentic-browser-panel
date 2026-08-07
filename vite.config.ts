@@ -8,6 +8,16 @@ export default defineConfig({
   plugins: [react()],
   build: {
     target: 'es2022',
+    // No <link rel="modulepreload">. Vite emits them with `crossorigin`, which
+    // in an extension page makes Chrome fetch the preload in a different world
+    // than the module import that follows — the request never matches, so the
+    // asset is fetched twice and DevTools logs a "cross-world extension
+    // resource mismatch" warning per chunk. There is nothing to win by fixing
+    // the attribute instead: every chunk is a local file the browser already
+    // has, so preloading saves no latency worth a duplicate fetch. The polyfill
+    // this also disables is likewise moot — modulepreload is native well below
+    // our `minimum_chrome_version: 116` floor.
+    modulePreload: false,
     rollupOptions: {
       input: {
         sidepanel: 'sidepanel.html',
