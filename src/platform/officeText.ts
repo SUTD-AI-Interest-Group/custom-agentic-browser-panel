@@ -162,3 +162,107 @@ export function formatProse(doc: OfficeDoc, name: string, budget: number): Forma
   const tail = note ? `\n${note}` : ''
   return { text: `${header}\n${blocks.join('\n\n')}${tail}\n${footer}`, truncated: truncated || omitted.length > 0, note }
 }
+
+/** Column headers shown per sheet in the manifest. */
+const HEADER_PREVIEW = 8
+
+/**
+ * Max-min fair allocation of `budget` across sheets wanting `sizes` chars.
+ *
+ * Equal shares, then any share a small sheet does not use is redistributed to
+ * the sheets that want more — repeatedly, until no sheet is under-using its
+ * share. A single pass would strand the second-smallest sheet's surplus. This
+ * is what keeps a 12-row Notes sheet visible beside a 5,000-row Q1: a purely
+ * sequential budget (the prose policy) would spend everything on Q1 and the
+ * model would never learn Notes exists.
+ */
+export function planSheetBudget(sizes: number[], budget: number): number[] {
+  const alloc = new Array<number>(sizes.length).fill(0)
+  let pending = sizes.map((_, i) => i)
+  let remaining = budget
+  while (pending.length > 0) {
+    const share = Math.floor(remaining / pending.length)
+    if (share <= 0) break
+    const satisfied = pending.filter((i) => sizes[i] <= share)
+    if (satisfied.length === 0) {
+      // Nobody fits: split what is left evenly and stop.
+      for (const i of pending) alloc[i] = share
+      break
+    }
+    for (const i of satisfied) {
+      alloc[i] = sizes[i]
+      remaining -= sizes[i]
+    }
+    pending = pending.filter((i) => sizes[i] > share)
+  }
+  return alloc
+}
+
+/** One CSV row, quoting only cells that need it (RFC 4180). */
+export function toCsvRow(cells: string[]): string {
+  return cells
+    .map((cell) => (/[",\n\r]/.test(cell) ? `"${cell.replace(/"/g, '""')}"` : cell))
+    .join(',')
+}
+
+/**
+ * Workbook delivery: a manifest of every sheet first — names, dimensions and
+ * headers — then as many CSV rows as the fair-share budget allows.
+ *
+ * The manifest is never truncated. It is small and bounded, and it is the thing
+ * that must survive: knowing sheet 3 exists and what its columns are is worth
+ * more than another hundred rows of sheet 1. Rows go out as CSV rather than
+ * Markdown tables — markedly fewer tokens per cell for the same information.
+ */
+export function formatWorkbook(doc: OfficeDoc, name: string, budget: number): FormattedDoc {
+  if (doc.shape !== 'workbook') throw new Error('formatWorkbook called with a prose document')
+
+  const manifestLines = doc.sheets.map((s) => {
+    const headers = (s.rows[0] ?? []).slice(0, HEADER_PREVIEW).map((h) => h.trim()).filter(Boolean)
+    const more = (s.rows[0]?.length ?? 0) > HEADER_PREVIEW ? '…' : ''
+    const cols = headers.length > 0 ? `: ${headers.join(', ')}${more}` : ''
+    return `  ${s.name} (${s.rowCount.toLocaleString()} rows × ${s.colCount} cols)${cols}`
+  })
+  const manifest = `[workbook: ${name} — ${describeOfficeDoc(doc)}]\n${manifestLines.join('\n')}`
+
+  // Serialize each sheet's rows once, so the budget is planned against the real
+  // cost rather than an estimate, and the slicing below reuses the same strings.
+  const serialized = doc.sheets.map((s) => s.rows.map(toCsvRow))
+  const sizes = serialized.map((rows) => rows.reduce((n, r) => n + r.length + 1, 0))
+  const rowBudget = Math.max(0, budget - manifest.length)
+  const alloc = planSheetBudget(sizes, rowBudget)
+
+  const blocks: string[] = []
+  let truncated = false
+  doc.sheets.forEach((s, i) => {
+    const rows = serialized[i]
+    if (rows.length === 0) return
+    let spent = 0
+    let shown = 0
+    for (const row of rows) {
+      const cost = row.length + 1
+      if (spent + cost > alloc[i]) break
+      spent += cost
+      shown++
+    }
+    if (shown === 0) {
+      truncated = true
+      return
+    }
+    if (shown < rows.length) truncated = true
+    const range = `rows 1–${shown} of ${s.rowCount.toLocaleString()}`
+    blocks.push(`--- ${s.name} (${range}) ---\n${rows.slice(0, shown).join('\n')}`)
+  })
+
+  const note = truncated
+    ? '[Note: some rows were omitted to fit the text budget; every sheet is listed above with its true dimensions.]'
+    : null
+  const body = blocks.length > 0 ? `\n\n${blocks.join('\n\n')}` : ''
+  const tail = note ? `\n${note}` : ''
+  return { text: `${manifest}${body}${tail}`, truncated, note }
+}
+
+/** Format any normalized document — the single entry point attachments.ts uses. */
+export function formatOfficeDoc(doc: OfficeDoc, name: string, budget: number): FormattedDoc {
+  return doc.shape === 'workbook' ? formatWorkbook(doc, name, budget) : formatProse(doc, name, budget)
+}
