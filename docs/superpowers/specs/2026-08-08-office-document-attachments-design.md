@@ -163,8 +163,15 @@ corrected here:
   build image nodes unconditionally. So docx and rtf yield **zero** image nodes without the flag.
   `office.ts` sets it unconditionally and counts `type === 'image'` content nodes. The attachment
   payloads are discarded — `ast` is local to `doParse` and never cached.
-- **`decompressionLimits` applies to OOXML and ODF only**, per officeParser's own docs — not epub or
-  rtf. For those two the zip-bomb guard is the 25 MB `MAX_OFFICE_BYTES` pre-parse cap alone.
+- **`decompressionLimits` covers every zip-container format we accept, including epub.** An earlier
+  revision of this spec claimed, from officeParser's docs, that the limits applied to OOXML and ODF
+  only. That was wrong and is corrected here: `EpubParser.js:40` passes `config.decompressionLimits`
+  into `zipUtils`, which enforces them (`zipUtils.js:81`). Verified empirically — an 83 KB epub whose
+  chapter deflates to 80 MB is rejected with *"ZIP uncompressed size limit exceeded (67108864
+  bytes)"* under this code's exact limits. RTF is the only accepted format the limits do not reach,
+  and that is moot: officeParser does not treat RTF as a zip container at all, so there is no
+  decompression-amplification vector — the 25 MB `MAX_OFFICE_BYTES` cap is a complete bound for it
+  rather than a fallback.
 
 `ast.to('markdown')` emits an empty YAML frontmatter block (`---\n---`) when metadata is absent,
 which the formatter strips.
@@ -291,6 +298,35 @@ and the composer flow work in the panel.
 2. No second `pdfjs` copy in the bundle beyond the existing one.
 
 Check 2 is what catches the known failure mode of the chosen approach.
+
+## Known follow-ups (from the final review, none blocking)
+
+Ordered by the reviewer's assessment of residual risk:
+
+1. **No committed odt / odp / ods / rtf fixtures** — the largest residual risk. `office.test.ts`
+   exercises docx, pptx, xlsx and epub end to end; the other four rest on the library's `.d.ts` plus
+   an uncommitted scratch probe. Notably `toWorkbook`/`formatWorkbook` are shared between xlsx and
+   **ods**, and only xlsx is tested. A wrong AST assumption fails safely — garbled or empty text, not
+   a crash, since every parse is caught up to `ingestFiles` — but it would ship silently.
+2. **`office.ts`'s LRU cache is currently unreachable.** `parseOfficeDocument` is called once per
+   attachment with a fresh `crypto.randomUUID()`, and the result is held on `ComposerAttachment.doc`,
+   which `assembleAttachments` reads directly — so no path re-invokes it with a repeated id. This
+   mirrors `pdf.ts`'s cache without the send-time re-entry that makes that one fire. Either wire a
+   genuine reuse point or trim it; it is inert today, and its doc comment describes behavior that
+   does not happen.
+3. **`formatWorkbook`'s `budget` is a soft cap** — `text.length` can exceed it when the manifest
+   alone does, because the manifest must never truncate. Wants a one-line doc comment so no caller
+   assumes a hard invariant.
+4. **A docx chip reads "1 section"** — correct (docx has no grouping node) but uninformative for a
+   40-page document. A page or word count, or plain byte size for flat formats, would read better.
+5. **The document and PDF chip glyphs share a byte-identical outer path**, differing only in their
+   inner lines, so they look alike at a glance.
+6. **`OFFICE_MIME` (attachments.ts) mirrors `MIME_FORMATS` (officeText.ts) in reverse.** Drift is
+   caught at compile time by `Record<OfficeFormat, string>`, but one exported table could serve both.
+7. **`safeSlice` now exists in three modules.** Deliberate and human-ruled — consolidating would edit
+   `pdf*` files owned by concurrent work. Revisit once that lands.
+8. **Coverage gaps, both hand-traced as correct:** a single row larger than its whole sheet
+   allocation, and a sheet with rows but `colCount: 0`.
 
 ## Out of scope (explicit)
 
