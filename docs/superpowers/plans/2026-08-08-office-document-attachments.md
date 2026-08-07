@@ -1356,20 +1356,28 @@ rm -rf dist && npm run build
 
 - [ ] **Step 2: Verify officeParser was code-split, not inlined**
 
+A bare `grep -c officeparser dist/sidepanel.js` is NOT the check — it returns non-zero even on success, because the dynamic-import *specifier* (`import("./assets/officeparser.browser.slim-<hash>.js")`) legitimately appears in `sidepanel.js`. That is what a working code-split looks like. Check instead that every occurrence is inside an import specifier, and that the chunk exists on its own:
+
 ```bash
-grep -c "officeparser\|OfficeErrorType" dist/sidepanel.js || echo "0 — not inlined (correct)"
-ls -la dist/assets/ | awk '$5 > 500000 {printf "%10d  %s\n", $5, $9}'
+echo "--- occurrences in sidepanel.js (each must be an import specifier) ---"
+grep -o -E '.{40}officeparser.{40}' dist/sidepanel.js
+echo "--- the split-out chunk ---"
+ls -la dist/assets/officeparser.browser.slim-*.js
 ```
 
-Expected: `sidepanel.js` contains **no** officeParser marker, and a separate chunk of roughly 2.7 MB exists in `dist/assets/`. If the marker appears in `sidepanel.js`, the import in `office.ts` was made static — fix it and rebuild.
+Expected: every occurrence sits inside `import("./assets/officeparser.browser.slim-….js")`, and a standalone chunk of roughly 2.7 MB exists. If instead you see officeParser's *code* (identifiers like `OfficeErrorType` being defined, long minified bodies), the import was made static — fix `office.ts` and rebuild.
 
 - [ ] **Step 3: Verify no second pdf.js copy**
 
+Count only *real* workers by size — Vite also emits a ~68-byte URL re-export shim whose whole content is a path to the real worker, and counting filenames alone miscounts it as a duplicate:
+
 ```bash
-ls dist/assets/ | grep -ci "pdf.worker"
+find dist/assets -name "pdf.worker*" -size +100k | wc -l
+echo "--- all pdf.worker artifacts, for context ---"
+ls -la dist/assets/ | grep -i "pdf.worker"
 ```
 
-Expected: `1`. A `2` means officeParser's inlined pdf.js was emitted as a separate worker asset as well; record the finding and report it rather than proceeding.
+Expected: exactly `1` real worker (~1.25 MB). Any small sibling should be a one-line `export default "/assets/pdf.worker.min-<hash>.mjs"` shim — `cat` it to confirm before treating it as a duplicate. A genuine second multi-hundred-KB worker means officeParser's inlined pdf.js is being emitted too; record and report rather than proceeding.
 
 - [ ] **Step 4: Exercise the panel end to end**
 
