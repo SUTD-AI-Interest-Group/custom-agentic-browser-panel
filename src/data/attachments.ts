@@ -26,6 +26,8 @@ export interface AttachmentMeta {
   pageCount?: number
   /** 240px JPEG preview for image attachments; absent for docs. */
   thumbDataUrl?: string
+  /** Office documents only — a short summary like "12 slides" for the chip. */
+  docSummary?: string
 }
 
 /** A stored attachment. `dataUrl` is the original file, base64-encoded. */

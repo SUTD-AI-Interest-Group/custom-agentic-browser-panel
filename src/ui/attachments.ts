@@ -24,6 +24,8 @@ import { makeThumb } from '../data/screenshots'
 import { loadPdfFromBytes, renderPdfPageFromBytes, PdfError } from '../platform/pdf'
 import { assemblePagesText } from '../platform/pdfText'
 import type { CapturedImage } from '../platform/capture'
+import { parseOfficeDocument, OfficeError } from '../platform/office'
+import { formatOfficeDoc, describeOfficeDoc, type OfficeDoc, type OfficeFormat } from '../platform/officeText'
 
 /** One attachment sitting in the composer, ready to send. */
 export type ComposerAttachment =
@@ -38,6 +40,16 @@ export type ComposerAttachment =
     }
   | { kind: 'pdf'; id: string; name: string; bytes: Uint8Array; byteSize: number; pageCount: number }
   | { kind: 'text'; id: string; name: string; text: string; byteSize: number }
+  | {
+      kind: 'document'
+      id: string
+      name: string
+      bytes: Uint8Array
+      byteSize: number
+      /** Parsed at attach time; reused at send time. */
+      doc: OfficeDoc
+      docSummary: string
+    }
 
 export interface IngestResult {
   attachments: ComposerAttachment[]
@@ -127,6 +139,41 @@ async function ingestPdf(file: File, id: string): Promise<ComposerAttachment> {
   return { kind: 'pdf', id, name: file.name, bytes, byteSize: bytes.byteLength, pageCount: loaded.info.pageCount }
 }
 
+// Canonical MIME per office format, for persisting a document's original bytes
+// with a type that actually describes them. Mirrors officeText.ts's internal
+// MIME_FORMATS table (not imported — that one is scoped to *detecting* a format
+// from an incoming, possibly-wrong MIME; this is the reverse direction, off a
+// format we already parsed successfully, so trusting it is safe and duplicating
+// eight literal strings is cheaper than adding a cross-file dependency for it).
+const OFFICE_MIME: Record<OfficeFormat, string> = {
+  docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  odt: 'application/vnd.oasis.opendocument.text',
+  odp: 'application/vnd.oasis.opendocument.presentation',
+  ods: 'application/vnd.oasis.opendocument.spreadsheet',
+  rtf: 'application/rtf',
+  epub: 'application/epub+zip',
+}
+
+async function ingestDocument(file: File, id: string): Promise<ComposerAttachment> {
+  const bytes = new Uint8Array(await file.arrayBuffer())
+  // Parsing here doubles as validation: a corrupt, encrypted or mislabelled
+  // file throws an OfficeError NOW, in the composer, rather than failing the
+  // send later. The parse stays in office.ts's cache under this id, so the
+  // send-time format is free.
+  const doc = await parseOfficeDocument(bytes, id, file.name, file.type)
+  return {
+    kind: 'document',
+    id,
+    name: file.name,
+    bytes,
+    byteSize: bytes.byteLength,
+    doc,
+    docSummary: describeOfficeDoc(doc),
+  }
+}
+
 async function ingestText(file: File, id: string): Promise<ComposerAttachment | { error: string }> {
   const text = await file.text()
   if (!text.trim()) return { error: `"${file.name}" is empty.` }
@@ -159,13 +206,18 @@ export async function ingestFiles(files: File[], existingCount: number): Promise
         attachments.push(await ingestImage(file, id))
       } else if (classified.kind === 'pdf') {
         attachments.push(await ingestPdf(file, id))
+      } else if (classified.kind === 'document') {
+        attachments.push(await ingestDocument(file, id))
       } else {
         const result = await ingestText(file, id)
         if ('error' in result) errors.push(result.error)
         else attachments.push(result)
       }
     } catch (err) {
-      const msg = err instanceof PdfError ? err.message : `Could not read "${file.name}".`
+      const msg =
+        err instanceof PdfError || err instanceof OfficeError
+          ? err.message
+          : `Could not read "${file.name}".`
       errors.push(msg)
     }
   }
@@ -194,6 +246,7 @@ export function attachmentUiMetas(atts: ComposerAttachment[]): AttachmentMeta[] 
     byteSize: a.kind === 'image' ? approxBytes(a.dataUrl) : a.byteSize,
     ...(a.kind === 'pdf' ? { pageCount: a.pageCount } : {}),
     ...(a.kind === 'image' ? { thumbDataUrl: a.thumbDataUrl } : {}),
+    ...(a.kind === 'document' ? { docSummary: a.docSummary } : {}),
   }))
 }
 
@@ -327,6 +380,8 @@ export async function assembleAttachments(
         blocks.push(
           `--- attached file: ${att.name} (${att.pageCount}-page PDF, text extracted) ---\n${body}${cutNote}\n--- end of ${att.name} ---`,
         )
+      } else if (plan.route === 'document-text' && att.kind === 'document') {
+        blocks.push(formatOfficeDoc(att.doc, att.name, plan.budget).text)
       } else if (plan.route === 'inline-text' && att.kind === 'text') {
         blocks.push(formatInlineTextBlock(att.name, att.text, plan.budget))
       }
@@ -346,14 +401,21 @@ export async function assembleAttachments(
         ? att.dataUrl
         : att.kind === 'pdf'
           ? (pdfDataUrl ?? bytesToDataUrl(att.bytes, 'application/pdf'))
-          : bytesToDataUrl(new TextEncoder().encode(att.text), 'text/plain')
+          : att.kind === 'document'
+            ? bytesToDataUrl(att.bytes, OFFICE_MIME[att.doc.format])
+            : bytesToDataUrl(new TextEncoder().encode(att.text), 'text/plain')
     const meta = attachmentUiMetas([att])[0]
     await saveAttachment({ id: att.id, conversationId: o.conversationId, meta, dataUrl }).catch((err) => {
       console.warn('attachment not persisted:', err)
     })
   }
 
-  const label = (a: ComposerAttachment) => (a.kind === 'pdf' ? `${a.name} (${a.pageCount} pages)` : a.name)
+  const label = (a: ComposerAttachment) =>
+    a.kind === 'pdf'
+      ? `${a.name} (${a.pageCount} pages)`
+      : a.kind === 'document'
+        ? `${a.name} (${a.docSummary})`
+        : a.name
   const notes = [`[attached: ${atts.map(label).join(', ')}]`]
   return { parts, appendText: blocks.join('\n\n'), notes, errors }
 }

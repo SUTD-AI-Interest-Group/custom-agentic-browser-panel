@@ -472,8 +472,13 @@ function CameraIcon() {
   )
 }
 
-/** Glyph for a non-image attachment chip: a page outline (pdf) or code brackets (text). */
-function FileKindIcon({ kind }: { kind: 'pdf' | 'text' }) {
+/**
+ * Glyph for a non-image attachment chip: a page outline (pdf) or code brackets
+ * (text, and documents until Task 6 gives office files their own glyph — the
+ * ComposerAttachment union now includes 'document', so this signature must
+ * accept it or the composer's attachment row fails to typecheck).
+ */
+function FileKindIcon({ kind }: { kind: 'pdf' | 'text' | 'document' }) {
   return kind === 'pdf' ? (
     <svg className="attachment-file-icon" width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
       <path
