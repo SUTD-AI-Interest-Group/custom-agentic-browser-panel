@@ -473,12 +473,23 @@ function CameraIcon() {
 }
 
 /**
- * Glyph for a non-image attachment chip: a page outline (pdf) or code brackets
- * (text, and documents until Task 6 gives office files their own glyph — the
- * ComposerAttachment union now includes 'document', so this signature must
- * accept it or the composer's attachment row fails to typecheck).
+ * Glyph for a non-image attachment chip: a page outline (pdf), a lined page
+ * (document — office files), or code brackets (text).
  */
 function FileKindIcon({ kind }: { kind: 'pdf' | 'text' | 'document' }) {
+  if (kind === 'document') {
+    return (
+      <svg className="attachment-file-icon" width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+        <path
+          d="M4 1.8h5.2L12.8 5v9.2a.9.9 0 0 1-.9.9H4a.9.9 0 0 1-.9-.9V2.7a.9.9 0 0 1 .9-.9Z"
+          stroke="currentColor"
+          strokeWidth="1.3"
+          strokeLinejoin="round"
+        />
+        <path d="M5.6 7.4h4.8M5.6 9.6h4.8M5.6 11.8h3" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
+      </svg>
+    )
+  }
   return kind === 'pdf' ? (
     <svg className="attachment-file-icon" width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
       <path
@@ -3089,7 +3100,9 @@ export default function Chat({
                         <span className="attachment-file-sub">
                           {att.kind === 'pdf'
                             ? `${att.pageCount} page${att.pageCount === 1 ? '' : 's'}`
-                            : formatBytes(att.byteSize)}
+                            : att.kind === 'document'
+                              ? att.docSummary
+                              : formatBytes(att.byteSize)}
                         </span>
                       </span>
                     </>
@@ -3643,12 +3656,14 @@ const MessageView = memo(function MessageView({
                 .filter((a) => a.kind !== 'image')
                 .map((a) => (
                   <span className="msg-attachment-chip" key={a.id} title={a.name}>
-                    <FileKindIcon kind={a.kind === 'pdf' ? 'pdf' : 'text'} />
+                    <FileKindIcon kind={a.kind === 'pdf' ? 'pdf' : a.kind === 'document' ? 'document' : 'text'} />
                     <span className="attachment-file-name">{a.name}</span>
                     <span className="attachment-file-sub">
                       {a.kind === 'pdf' && a.pageCount !== undefined
                         ? `${a.pageCount} page${a.pageCount === 1 ? '' : 's'}`
-                        : formatBytes(a.byteSize)}
+                        : a.kind === 'document' && a.docSummary
+                          ? a.docSummary
+                          : formatBytes(a.byteSize)}
                     </span>
                   </span>
                 ))}
