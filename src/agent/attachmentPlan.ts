@@ -61,8 +61,13 @@ export function classifyIncomingFile(
       : { kind: 'pdf' }
   }
   if (isLegacyOfficeName(name, mimeType)) {
-    const modern = /\.doc$|msword/i.test(`${name} ${mimeType}`) ? '.docx'
-      : /\.xls$|ms-excel/i.test(`${name} ${mimeType}`) ? '.xlsx'
+    // name and mimeType are tested independently — joining them into one string
+    // (`${name} ${mimeType}`) always puts a space before mimeType, so `\.doc$`/
+    // `\.xls$` could only ever match at the very end of mimeType and never at
+    // the end of name, silently defaulting every blank-MIME .doc/.xls upload
+    // (the common case on Linux and older Windows) to the wrong suggestion.
+    const modern = /\.doc$/i.test(name) || /msword/i.test(mimeType) ? '.docx'
+      : /\.xls$/i.test(name) || /ms-excel/i.test(mimeType) ? '.xlsx'
       : '.pptx'
     return { error: `"${name}" is a legacy binary Office file, which can't be read here — re-save as ${modern}.` }
   }

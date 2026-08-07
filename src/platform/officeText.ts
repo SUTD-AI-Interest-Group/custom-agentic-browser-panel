@@ -78,9 +78,20 @@ export function officeFormatFor(name: string, mimeType: string): OfficeFormat | 
   return MIME_FORMATS[mimeType] ?? null
 }
 
-/** True for .doc/.xls/.ppt — parseable by nothing we ship. */
+/**
+ * True for .doc/.xls/.ppt — parseable by nothing we ship. Extension is the
+ * primary signal and is trusted unconditionally: some pipelines (browsers,
+ * older Linux MIME databases, email/download servers that stamp Content-Type
+ * from a lookup table rather than sniffing the file) hand over a legacy MIME
+ * type on a file whose extension already unambiguously names a *modern*
+ * format — e.g. "deck.pptx" served as application/vnd.ms-powerpoint. Checking
+ * `officeFormatFor(name, '')` (extension-only, so it can't itself be fooled by
+ * the same bad MIME) before trusting a legacy MIME is what keeps that valid
+ * .pptx from being rejected with a "re-save as .pptx" error.
+ */
 export function isLegacyOfficeName(name: string, mimeType: string): boolean {
-  return LEGACY_EXT.test(name) || LEGACY_MIME.has(mimeType)
+  if (LEGACY_EXT.test(name)) return true
+  return LEGACY_MIME.has(mimeType) && officeFormatFor(name, '') === null
 }
 
 /**

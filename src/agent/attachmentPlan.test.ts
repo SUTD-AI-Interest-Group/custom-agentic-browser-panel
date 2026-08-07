@@ -29,8 +29,11 @@ describe('classifyIncomingFile', () => {
   })
 
   it('rejects unsupported types with the filename in the error', () => {
-    const r = classifyIncomingFile('deck.pptx', 'application/vnd.ms-powerpoint', 10)
-    expect('error' in r && r.error).toContain('deck.pptx')
+    // deck.pptx used to sit here, but a .pptx is a supported office document
+    // now (see the office-documents describe block below) — an .exe keeps
+    // this test actually testing the "no supported type matched" fallback.
+    const r = classifyIncomingFile('installer.exe', 'application/x-msdownload', 10)
+    expect('error' in r && r.error).toContain('installer.exe')
   })
 
   it('rejects oversize per kind', () => {
@@ -160,12 +163,35 @@ describe('classifyIncomingFile — office documents', () => {
     expect((result as { error: string }).error).toMatch(/25 MB/)
   })
 
-  it('gives legacy binary formats their own message', () => {
-    for (const name of ['old.doc', 'old.xls', 'old.ppt']) {
-      const result = classifyIncomingFile(name, '', 1000)
+  it('gives legacy binary formats their own message, naming the right modern extension', () => {
+    // Blank MIME is the common case for legacy .doc/.xls uploads (Linux, older
+    // Windows without a registered association) — this is what the joined
+    // `${name} ${mimeType}` regex used to get wrong, since it could only ever
+    // match at the tail of mimeType, never of name.
+    const cases: [string, string, string][] = [
+      ['old.doc', '', '.docx'],
+      ['old.xls', '', '.xlsx'],
+      ['old.ppt', '', '.pptx'],
+      ['old.doc', 'application/msword', '.docx'],
+      ['old.xls', 'application/vnd.ms-excel', '.xlsx'],
+      ['old.ppt', 'application/vnd.ms-powerpoint', '.pptx'],
+    ]
+    for (const [name, mimeType, expectedExt] of cases) {
+      const result = classifyIncomingFile(name, mimeType, 1000)
       expect(result).toHaveProperty('error')
-      expect((result as { error: string }).error).toMatch(/re-save as/i)
+      const message = (result as { error: string }).error
+      expect(message).toMatch(/re-save as/i)
+      expect(message).toContain(`re-save as ${expectedExt}`)
     }
+  })
+
+  it('does not reject a modern-extension file carrying a legacy MIME type', () => {
+    // A .pptx/.docx served with its Office-97 MIME (some browsers, older Linux
+    // MIME databases, or download pipelines that stamp Content-Type from a
+    // lookup table) is still a modern, parseable file — the extension is the
+    // stronger signal and must win over a stale/incorrect MIME.
+    expect(classifyIncomingFile('deck.pptx', 'application/vnd.ms-powerpoint', 1000)).toEqual({ kind: 'document' })
+    expect(classifyIncomingFile('report.docx', 'application/msword', 1000)).toEqual({ kind: 'document' })
   })
 
   it('still routes text-like files to text, unchanged', () => {
