@@ -55,7 +55,9 @@ describe('dehydrateHistory', () => {
 describe('hydrateHistory', () => {
   it('round-trips: resolve restores the original data', async () => {
     const original = [msg([filePart('data:application/pdf;base64,AAAA', 'a1')])]
-    const out = await hydrateHistory(dehydrateHistory(original), async () => 'data:application/pdf;base64,AAAA')
+    const out = await hydrateHistory(dehydrateHistory(original), async () => ({
+      data: 'data:application/pdf;base64,AAAA',
+    }))
     expect(partsOf(out[0])[0].data).toBe('data:application/pdf;base64,AAAA')
     expect(partsOf(out[0])[0].type).toBe('file')
   })
@@ -74,9 +76,24 @@ describe('hydrateHistory', () => {
     const seen: AttachmentRef[] = []
     await hydrateHistory(dehydrateHistory([msg([filePart('d', 'a2', 7)])]), async (ref) => {
       seen.push(ref)
-      return 'd'
+      return { data: 'd' }
     })
     expect(seen).toEqual([{ id: 'a2', page: 7 }])
+  })
+
+  it('passes the part\'s mediaType to the resolver, so it can tell a native-pdf part from an ordinary image', async () => {
+    const seen: (string | undefined)[] = []
+    const history = [
+      msg([
+        filePart('d', 'a1'),
+        { ...filePart('d', 'a2'), mediaType: 'image' },
+      ]),
+    ]
+    await hydrateHistory(dehydrateHistory(history), async (_ref, mediaType) => {
+      seen.push(mediaType)
+      return { data: 'd' }
+    })
+    expect(seen).toEqual(['application/pdf', 'image'])
   })
 
   it('leaves non-sentinel messages untouched without calling the resolver', async () => {
@@ -101,7 +118,7 @@ describe('hydrateHistory', () => {
       ]),
     ]
     const out = await hydrateHistory(dehydrateHistory(history), async (ref) =>
-      ref.id === 'ok' ? `data:application/pdf;base64,PAGE${ref.page}` : null,
+      ref.id === 'ok' ? { data: `data:application/pdf;base64,PAGE${ref.page}` } : null,
     )
     const parts = partsOf(out[0])
     expect(parts[0]).toMatchObject({ type: 'file', data: 'data:application/pdf;base64,PAGE1' })
@@ -115,8 +132,38 @@ describe('hydrateHistory', () => {
     const history: ModelMessage[] = [msg([{ type: 'file', mediaType: 'application/pdf', data: 'lychee-attachment:abc#page=xyz' }])]
     await hydrateHistory(history, async (ref) => {
       seen.push(ref)
-      return 'd'
+      return { data: 'd' }
     })
     expect(seen).toEqual([{ id: 'abc' }])
+  })
+
+  it('splices a `replace` result\'s parts into the message in place of the original — one part becomes many', async () => {
+    // The shape a re-planned native-pdf-turned-incompatible part produces: a
+    // leading caption plus one file part per rendered page.
+    const history = [msg([{ type: 'text', text: 'before' }, filePart('d', 'a1'), { type: 'text', text: 'after' }])]
+    const out = await hydrateHistory(dehydrateHistory(history), async () => ({
+      replace: [
+        { type: 'text' as const, text: 'caption' },
+        { type: 'file' as const, mediaType: 'image', data: 'data:image/png;base64,P1' },
+        { type: 'file' as const, mediaType: 'image', data: 'data:image/png;base64,P2' },
+      ],
+    }))
+    const parts = partsOf(out[0])
+    expect(parts).toHaveLength(5)
+    expect(parts[0]).toMatchObject({ type: 'text', text: 'before' })
+    expect(parts[1]).toMatchObject({ type: 'text', text: 'caption' })
+    expect(parts[2]).toMatchObject({ type: 'file', data: 'data:image/png;base64,P1' })
+    expect(parts[3]).toMatchObject({ type: 'file', data: 'data:image/png;base64,P2' })
+    expect(parts[4]).toMatchObject({ type: 'text', text: 'after' })
+  })
+
+  it('a `replace` result can also collapse a part down to a single text part', async () => {
+    const history = [msg([filePart('d', 'a1')])]
+    const out = await hydrateHistory(dehydrateHistory(history), async () => ({
+      replace: [{ type: 'text' as const, text: 'extracted text instead' }],
+    }))
+    const parts = partsOf(out[0])
+    expect(parts).toHaveLength(1)
+    expect(parts[0]).toMatchObject({ type: 'text', text: 'extracted text instead' })
   })
 })

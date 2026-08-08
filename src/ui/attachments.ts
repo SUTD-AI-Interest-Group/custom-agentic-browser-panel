@@ -12,14 +12,21 @@ import { ensureVisionCapability } from '../agent/vision'
 import {
   classifyIncomingFile,
   formatInlineTextBlock,
+  isNativePdfPart,
   looksBinary,
   pageCaption,
   planAttachmentDelivery,
   MAX_ATTACHMENTS,
   type AttachmentDescriptor,
+  type DeliveryContext,
 } from '../agent/attachmentPlan'
-import { lycheeProviderOptions } from '../data/attachmentRefs'
-import { saveAttachment, approxBytes, type AttachmentMeta } from '../data/attachments'
+import {
+  lycheeProviderOptions,
+  type AttachmentRef,
+  type ReplacementPart,
+  type ResolvedAttachmentPart,
+} from '../data/attachmentRefs'
+import { saveAttachment, getAttachment, approxBytes, type AttachmentMeta } from '../data/attachments'
 import { makeThumb } from '../data/screenshots'
 import { loadPdfFromBytes, renderPdfPageFromBytes, PdfError } from '../platform/pdf'
 import { assemblePagesText } from '../platform/pdfText'
@@ -271,6 +278,95 @@ export interface AssembledAttachments {
 }
 
 /**
+ * Render a pdf-pages plan's pages in order, tagging each as a `[id]#page=N`
+ * file part. Each page renders independently — a failure on page k must not
+ * orphan pages 1..k-1 as uncaptioned image parts (already rendered, already
+ * meant to be shown), so this stops at the first failure and reports exactly
+ * how far it got rather than throwing and losing what already succeeded.
+ * Shared by a fresh send (assembleAttachments) and a historical native-PDF
+ * part being re-planned for a provider that no longer takes it natively
+ * (makeHistoricalAttachmentResolver).
+ */
+async function renderPdfPagesAsParts(
+  bytes: Uint8Array,
+  id: string,
+  pages: number[],
+): Promise<{
+  parts: OutgoingFilePart[]
+  rendered: number[]
+  failure: { page: number; message: string } | null
+}> {
+  const parts: OutgoingFilePart[] = []
+  const rendered: number[] = []
+  let failure: { page: number; message: string } | null = null
+  for (const page of pages) {
+    try {
+      const r = await renderPdfPageFromBytes(bytes, id, page)
+      parts.push({
+        type: 'file',
+        mediaType: 'image',
+        data: r.dataUrl,
+        providerOptions: lycheeProviderOptions({ id, page }),
+      })
+      rendered.push(page)
+    } catch (err) {
+      failure = { page, message: err instanceof Error ? err.message : String(err) }
+      break
+    }
+  }
+  return { parts, rendered, failure }
+}
+
+/** The user-facing caption for a renderPdfPagesAsParts result. */
+function pdfPagesCaption(
+  name: string,
+  pageCount: number,
+  rendered: number[],
+  failure: { page: number; message: string } | null,
+  truncationNote: string | null,
+): string {
+  if (rendered.length === 0) {
+    const why = failure ? ` (${failure.message})` : ''
+    return `[The user attached the PDF "${name}" (${pageCount} pages), but no pages could be rendered as images${why}.]`
+  }
+  const first = rendered[0]
+  const last = rendered[rendered.length - 1]
+  const partialNote = failure
+    ? ` Page ${failure.page} failed to render (${failure.message}), so later pages are omitted.`
+    : truncationNote
+      ? `\n${truncationNote}`
+      : ''
+  return `[The user attached the PDF "${name}" (${pageCount} pages). Its pages are attached as images, in order: ${pageCaption(name, first, pageCount)} through ${pageCaption(name, last, pageCount)}.]${partialNote}`
+}
+
+/**
+ * Extracted-text block for the pdf-text route (blind models). Shared by a
+ * fresh send and the historical resolver's same-route degrade.
+ */
+async function extractPdfTextBlock(
+  bytes: Uint8Array,
+  id: string,
+  name: string,
+  pageCount: number,
+  budget: number,
+): Promise<string> {
+  const loaded = await loadPdfFromBytes(bytes, id, name)
+  const assembled = assemblePagesText(
+    loaded.pages,
+    loaded.pages.map((p) => p.page),
+    budget,
+  )
+  const body = assembled.blocks.map((b) => `[page ${b.page}]\n${b.text}`).join('\n\n')
+  const cuts: string[] = []
+  if (assembled.blocks.some((b) => b.truncated)) cuts.push('the last shown page is truncated')
+  if (assembled.omittedPages.length > 0) cuts.push(`${assembled.omittedPages.length} later pages were omitted`)
+  if (loaded.info.pageCount > loaded.info.extractedPages)
+    cuts.push(`only the first ${loaded.info.extractedPages} of ${loaded.info.pageCount} pages were extracted`)
+  const cutNote = cuts.length > 0 ? `\n[Note: ${cuts.join('; ')} to fit the text budget.]` : ''
+  return `--- attached file: ${name} (${pageCount}-page PDF, text extracted) ---\n${body}${cutNote}\n--- end of ${name} ---`
+}
+
+/**
  * Execute the delivery plan for every attachment: build the message parts and
  * appended text this provider/model can actually consume, and persist the
  * originals to the capped store. Store failures degrade to an unpersisted send
@@ -326,60 +422,11 @@ export async function assembleAttachments(
         })
         blocks.push(`[The user attached the PDF "${att.name}" (${att.pageCount} pages).]`)
       } else if (plan.route === 'pdf-pages' && att.kind === 'pdf') {
-        // Each page renders independently — a failure on page k must not
-        // orphan pages 1..k-1 as uncaptioned image parts (already pushed,
-        // already shown to the model) nor propagate to the outer catch below,
-        // which would also skip persisting the attachment entirely. Stop at
-        // the first failure and caption exactly what was actually attached.
-        const rendered: number[] = []
-        let failure: { page: number; message: string } | null = null
-        for (const page of plan.pages) {
-          try {
-            const r = await renderPdfPageFromBytes(att.bytes, att.id, page)
-            parts.push({
-              type: 'file',
-              mediaType: 'image',
-              data: r.dataUrl,
-              providerOptions: lycheeProviderOptions({ id: att.id, page }),
-            })
-            rendered.push(page)
-          } catch (err) {
-            failure = { page, message: err instanceof Error ? err.message : String(err) }
-            break
-          }
-        }
-        if (rendered.length === 0) {
-          const why = failure ? ` (${failure.message})` : ''
-          blocks.push(`[The user attached the PDF "${att.name}" (${att.pageCount} pages), but no pages could be rendered as images${why}.]`)
-        } else {
-          const first = rendered[0]
-          const last = rendered[rendered.length - 1]
-          const partialNote = failure
-            ? ` Page ${failure.page} failed to render (${failure.message}), so later pages are omitted.`
-            : plan.truncationNote
-              ? `\n${plan.truncationNote}`
-              : ''
-          blocks.push(
-            `[The user attached the PDF "${att.name}" (${att.pageCount} pages). Its pages are attached as images, in order: ${pageCaption(att.name, first, att.pageCount)} through ${pageCaption(att.name, last, att.pageCount)}.]${partialNote}`,
-          )
-        }
+        const { parts: pageParts, rendered, failure } = await renderPdfPagesAsParts(att.bytes, att.id, plan.pages)
+        parts.push(...pageParts)
+        blocks.push(pdfPagesCaption(att.name, att.pageCount, rendered, failure, plan.truncationNote))
       } else if (plan.route === 'pdf-text' && att.kind === 'pdf') {
-        const loaded = await loadPdfFromBytes(att.bytes, att.id, att.name)
-        const assembled = assemblePagesText(
-          loaded.pages,
-          loaded.pages.map((p) => p.page),
-          plan.budget,
-        )
-        const body = assembled.blocks.map((b) => `[page ${b.page}]\n${b.text}`).join('\n\n')
-        const cuts: string[] = []
-        if (assembled.blocks.some((b) => b.truncated)) cuts.push('the last shown page is truncated')
-        if (assembled.omittedPages.length > 0) cuts.push(`${assembled.omittedPages.length} later pages were omitted`)
-        if (loaded.info.pageCount > loaded.info.extractedPages)
-          cuts.push(`only the first ${loaded.info.extractedPages} of ${loaded.info.pageCount} pages were extracted`)
-        const cutNote = cuts.length > 0 ? `\n[Note: ${cuts.join('; ')} to fit the text budget.]` : ''
-        blocks.push(
-          `--- attached file: ${att.name} (${att.pageCount}-page PDF, text extracted) ---\n${body}${cutNote}\n--- end of ${att.name} ---`,
-        )
+        blocks.push(await extractPdfTextBlock(att.bytes, att.id, att.name, att.pageCount, plan.budget))
       } else if (plan.route === 'document-text' && att.kind === 'document') {
         blocks.push(formatOfficeDoc(att.doc, att.name, plan.budget).text)
       } else if (plan.route === 'inline-text' && att.kind === 'text') {
@@ -418,4 +465,120 @@ export async function assembleAttachments(
         : a.name
   const notes = [`[attached: ${atts.map(label).join(', ')}]`]
   return { parts, appendText: blocks.join('\n\n'), notes, errors }
+}
+
+/**
+ * Build a per-conversation resolver for hydrateHistory (src/data/attachmentRefs.ts)
+ * — the counterpart to assembleAttachments for ALREADY-SENT history. A stored
+ * attachment was routed by whichever provider was active when it was
+ * attached, and that may not be the provider active now: a whole-document
+ * native-PDF part (isNativePdfPart) only stays a native-PDF part if the
+ * CURRENTLY active provider still supports native documents — otherwise it is
+ * re-planned down the same ladder a fresh attachment would take (rendered
+ * page images, then extracted text), so a conversation never sends a wire
+ * form the active provider can't accept just because it once could.
+ *
+ * Every other ref (images, an already-rendered PDF page, a native-PDF part
+ * that's still native) is wire-compatible regardless of provider, so
+ * isNativePdfPart is a cheap gate BEFORE any byte fetch or PDF re-render: the
+ * common case costs exactly what it did before this fix (one IndexedDB read
+ * to get the original data back), and the expensive path (loading pdf.js,
+ * rendering pages, extracting text) only runs on an actual downgrade.
+ * visionCapable is probed at most once per resolver instance — reused across
+ * every ref in the conversation, matching assembleAttachments's one probe per
+ * batch — not once per attachment.
+ */
+export function makeHistoricalAttachmentResolver(
+  provider: ProviderConfig,
+  modelId: string,
+): (ref: AttachmentRef, mediaType: string | undefined) => Promise<ResolvedAttachmentPart> {
+  const profile = profileFor(providerKind(provider))
+  let visionCapable: Promise<boolean> | null = null
+  const activeCtx = (): Promise<DeliveryContext> => {
+    if (!visionCapable) visionCapable = ensureVisionCapability(provider, modelId).catch(() => false)
+    return visionCapable.then((v) => ({
+      supportsNativeDocuments: profile.supportsNativeDocuments,
+      nativeDocMaxBytes: profile.nativeDocMaxBytes,
+      visionCapable: v,
+    }))
+  }
+
+  return async (ref, mediaType) => {
+    const rec = await getAttachment(ref.id).catch(() => null)
+    if (!rec) return null
+
+    if (ref.page !== undefined) {
+      // A derived page render is always a plain image part — wire-compatible
+      // on every provider (isNativePdfPart is the only provider-sensitive
+      // shape). Re-render from the cached original bytes, same as before
+      // this fix — no replanning needed here.
+      try {
+        const { dataUrl } = await renderPdfPageFromBytes(dataUrlToBytes(rec.dataUrl), ref.id, ref.page)
+        return { data: dataUrl }
+      } catch {
+        return null
+      }
+    }
+
+    if (!isNativePdfPart(mediaType) || rec.meta.kind !== 'pdf') return { data: rec.dataUrl }
+
+    // Second cheap gate, mirroring planAttachmentDelivery's own native-pdf
+    // condition (attachmentPlan.ts): still native and still under the active
+    // provider's byte cap needs no replanning, so skip straight past the
+    // vision probe below — on a cache miss ensureVisionCapability is a LIVE
+    // model round-trip, not a storage read, and simply loading a conversation
+    // full of untouched native-pdf attachments must never fire one.
+    if (profile.supportsNativeDocuments && rec.meta.byteSize <= profile.nativeDocMaxBytes) {
+      return { data: rec.dataUrl }
+    }
+
+    // Whole-document native-PDF part that no longer fits: replan against the
+    // active provider via the SAME planner a fresh attachment goes through
+    // (single-sourced with the pre-check above, so both stay in lockstep).
+    const descriptor: AttachmentDescriptor = {
+      kind: 'pdf',
+      name: rec.meta.name,
+      byteSize: rec.meta.byteSize,
+      pageCount: rec.meta.pageCount,
+    }
+    const plan = planAttachmentDelivery(descriptor, await activeCtx())
+    if (plan.route === 'native-pdf') return { data: rec.dataUrl }
+
+    try {
+      const bytes = dataUrlToBytes(rec.dataUrl)
+      if (plan.route === 'pdf-pages') {
+        const { parts, rendered, failure } = await renderPdfPagesAsParts(bytes, ref.id, plan.pages)
+        const caption: ReplacementPart = {
+          type: 'text',
+          text: pdfPagesCaption(rec.meta.name, rec.meta.pageCount ?? 1, rendered, failure, plan.truncationNote),
+        }
+        // rendered.length===0 means every page failed — never splice in an
+        // empty page list, just the explanatory caption on its own.
+        return { replace: rendered.length > 0 ? [caption, ...parts] : [caption] }
+      }
+      if (plan.route === 'pdf-text') {
+        const text = await extractPdfTextBlock(bytes, ref.id, rec.meta.name, rec.meta.pageCount ?? 1, plan.budget)
+        return { replace: [{ type: 'text', text }] }
+      }
+      // A 'pdf' descriptor only ever plans native-pdf | pdf-pages | pdf-text
+      // (planAttachmentDelivery) — this is unreachable in practice, but the
+      // static type is the FULL DeliveryRoute union (the planner isn't typed
+      // per input kind), so fall back to the unchanged data rather than assume.
+      return { data: rec.dataUrl }
+    } catch (err) {
+      // Rendering/extraction itself failed (corrupt cached bytes, pdf.js
+      // unavailable, …) — degrade to a plain note rather than propagating and
+      // leaving the sentinel unresolved, which hydrateHistory would otherwise
+      // have no choice but to drop entirely.
+      const msg = err instanceof Error ? err.message : String(err)
+      return {
+        replace: [
+          {
+            type: 'text',
+            text: `[the PDF "${rec.meta.name}" could not be converted for the current model (${msg}) — its earlier content is unavailable]`,
+          },
+        ],
+      }
+    }
+  }
 }

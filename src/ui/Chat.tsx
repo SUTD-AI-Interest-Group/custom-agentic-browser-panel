@@ -14,16 +14,20 @@ import { cancelRegionCapture, captureRegion, type CapturedImage } from '../platf
 import { ensureVisionCapability } from '../agent/vision'
 import { copyElementAsPng } from '../platform/domImage'
 import { getConversation, renameConversation, saveConversation, type RegenTarget } from '../data/conversations'
-import { dehydrateHistory, hydrateHistory, type AttachmentRef } from '../data/attachmentRefs'
+import {
+  dehydrateHistory,
+  hydrateHistory,
+  type AttachmentRef,
+  type ResolvedAttachmentPart,
+} from '../data/attachmentRefs'
 import { formatBytes } from '../data/usage'
 import { getAttachment } from '../data/attachments'
-import { renderPdfPageFromBytes } from '../platform/pdf'
 import {
   assembleAttachments,
   attachmentUiMetas,
-  dataUrlToBytes,
   fromCapturedImage,
   ingestFiles,
+  makeHistoricalAttachmentResolver,
   type ComposerAttachment,
 } from './attachments'
 import { buildRetryNote } from './regenerate'
@@ -68,6 +72,7 @@ import { ApprovalQueue } from './approvalQueue'
 import { shouldTearDownPageControl, type ChainExitReason } from './chainLifecycle'
 import { type ControlSession } from '../tools/pageControl'
 import { clearIndex } from '../platform/domIndex'
+import { clearRegions } from '../platform/regionIndex'
 import { unmountPresence, unmountAllPresence } from '../platform/presence'
 import { clearAllHighlights } from '../platform/highlight'
 import { grantedCapabilities, type BrowsingCapability } from '../platform/permissions'
@@ -839,18 +844,20 @@ export default function Chat({
   useEffect(() => {
     let cancelled = false
     setRestored(false)
-    const resolveRef = async (ref: AttachmentRef): Promise<string | null> => {
-      const rec = await getAttachment(ref.id).catch(() => null)
-      if (!rec) return null
-      if (ref.page === undefined) return rec.dataUrl
-      // Rendered PDF pages are derived, not stored — re-render from the original
-      // bytes (the parse is cached across all pages of one document).
-      try {
-        return (await renderPdfPageFromBytes(dataUrlToBytes(rec.dataUrl), ref.id, ref.page)).dataUrl
-      } catch {
-        return null
-      }
-    }
+    // Re-plan each stored attachment against the provider that is active NOW,
+    // not the one that was active when it was attached. A PDF attached under a
+    // native-document provider is stored as a real `application/pdf` part; if
+    // the conversation is later continued on a compatible provider, resending
+    // that part verbatim breaks every subsequent turn, with no UI to remove it.
+    // The resolver degrades it down the same ladder a fresh attachment uses.
+    // Without a selected provider there is nothing to plan against, so fall
+    // back to the plain byte swap.
+    const resolveRef = selected
+      ? makeHistoricalAttachmentResolver(selected.provider, selected.modelId)
+      : async (ref: AttachmentRef): Promise<ResolvedAttachmentPart> => {
+          const rec = await getAttachment(ref.id).catch(() => null)
+          return rec ? { data: rec.dataUrl } : null
+        }
     void getConversation(conversationId).then(async (c) => {
       if (cancelled) return
       if (c) {
@@ -1258,11 +1265,19 @@ export default function Chat({
   // strip the on-page index stamps. Shared by endSession and by the start of
   // requestSession, which must close out a stale session before opening a
   // new one (otherwise the old tab keeps its data-agent-idx stamps).
+  //
+  // BOTH registries have to be cleared, not just the interactive one:
+  // ReadPage(mode:'regions') deliberately skips its approval card while a
+  // session already owns the tab (tools.ts), so a session can stamp
+  // data-agent-region as well as data-agent-idx. Clearing only the latter left
+  // region stamps on the user's live page indefinitely after the agent was
+  // done with it.
   function teardownSession() {
     const s = pageSessionRef.current
     pageSessionRef.current = null
     if (s) {
       void clearIndex(s.tabId)
+      void clearRegions(s.tabId)
       void unmountPresence(s.tabId)
     }
   }
@@ -2194,6 +2209,30 @@ export default function Chat({
     // long-forgotten bound tab.
     setParkedReason(null)
     setTurnStartedAt(ctx.startedAt)
+
+    // Re-plan every historical attachment against the provider active for THIS
+    // chain. The mount-restore effect above only re-plans on conversation load,
+    // and switching the model picker does not remount — so without this, a PDF
+    // attached under a native-document provider stays a raw application/pdf
+    // part when the user switches to a compatible one mid-conversation, and
+    // every subsequent send fails with no UI to remove it.
+    //
+    // Here specifically because all four ways a turn can start
+    // (startFreshTurn / continueTask / resumeFromPark / regenerate) funnel
+    // through runTurnChain, each having already finished mutating
+    // historyRef.current — so this is the one point that sees the final
+    // history AND knows the model. Round-tripping through dehydrate rebuilds
+    // the sentinels (the providerOptions.lychee tags survive hydration, so a
+    // part can be re-planned any number of times) and the resolver's own gates
+    // keep the common case cheap: an untouched part costs one IndexedDB read,
+    // with no vision probe and no PDF work unless a downgrade is genuinely
+    // needed. Message count is unchanged — a downgrade splices parts within a
+    // message — so regen.historyLen offsets stay valid.
+    historyRef.current = await hydrateHistory(
+      dehydrateHistory(historyRef.current),
+      makeHistoricalAttachmentResolver(model.provider, model.modelId),
+    )
+
     // Observability: one Langfuse trace per continuation chain, grouped into the
     // conversation's session. Each cycle's model steps become generations and its
     // tool calls become spans (wired via runAgentTurn + createAgentTools). No-op

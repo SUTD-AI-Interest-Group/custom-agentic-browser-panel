@@ -1,12 +1,18 @@
 // The attachment delivery planner — the single place that knows which wire form
 // a user attachment can take on which provider. Documents have NO provider-
 // agnostic format: the two native adapters (Anthropic Messages, OpenAI
-// Responses) turn an application/pdf `file` part into a native document block,
-// but the OpenAI-compatible adapter THROWS on any non-image file part, 400ing
-// the whole request — so a raw PDF must never be routed at a compatible
-// provider. Everything else degrades down a ladder: rendered page images for
-// vision-capable models, extracted text for blind ones, inline fenced text for
-// text-like files.
+// Responses) turn an application/pdf `file` part into a native document block.
+// The OpenAI-compatible adapter does NOT throw on one — confirmed against the
+// installed @ai-sdk/openai-compatible@3.0.7 (convertToOpenAICompatibleChatMessages,
+// dist/index.js:207-219): an application/pdf data part is converted into
+// OpenAI's own chat-completions extension, `{type:'file', file:{filename,
+// file_data}}`. That shape is OpenAI-proprietary — most non-OpenAI compatible
+// backends (Groq, Ollama, LM Studio, a generic custom endpoint) don't
+// recognize it and reject the request downstream (400/422), so the user-visible
+// failure is the same even though it no longer happens inside the SDK. Either
+// way, a raw PDF must never be routed at a compatible provider. Everything else
+// degrades down a ladder: rendered page images for vision-capable models,
+// extracted text for blind ones, inline fenced text for text-like files.
 //
 // Pure logic (no Chrome, no AI SDK imports) so the routing matrix is fully
 // unit-testable — same species as planShotDelivery / planTabProbe. The impure
@@ -162,12 +168,28 @@ export function planAttachmentDelivery(
     return { route: 'pdf-text', budget: PDF_TEXT_BUDGET }
   }
   if (att.kind === 'document') {
-    // No provider takes an office file natively — the two native adapters accept
-    // PDF documents only, and the compat adapter throws on any non-image file
-    // part. Extracted text is the one form that works everywhere.
+    // No provider takes an office file natively — the two native adapters
+    // accept PDF documents only, and an office file part has no adapter-level
+    // form at all (unlike a PDF, there's no proprietary fallback shape either).
+    // Extracted text is the one form that works everywhere.
     return { route: 'document-text', budget: DOCUMENT_TEXT_BUDGET }
   }
   return { route: 'inline-text', budget: INLINE_TEXT_BUDGET }
+}
+
+/**
+ * Whether a persisted file part is a whole-document native-PDF part — the
+ * ONLY attachment shape that differs by provider (see `supportsNativeDocuments`
+ * above). An ordinary image part, or an already-rendered PDF page (route
+ * `pdf-pages` always tags its parts `mediaType:'image'`, never
+ * `application/pdf`), is wire-compatible on every adapter regardless of which
+ * provider attached it, so nothing else needs re-planning after a provider
+ * switch. Used at the `hydrateHistory` boundary (`src/data/attachmentRefs.ts`)
+ * as the cheap gate before any byte fetch or PDF re-render: most historical
+ * parts are NOT native-pdf and must skip straight past the expensive path.
+ */
+export function isNativePdfPart(mediaType: string | undefined): boolean {
+  return mediaType === 'application/pdf'
 }
 
 /** Caption for one rendered PDF page, so the model can name what it sees. */

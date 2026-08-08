@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   classifyIncomingFile,
   formatInlineTextBlock,
+  isNativePdfPart,
   looksBinary,
   pageCaption,
   planAttachmentDelivery,
@@ -41,6 +42,21 @@ describe('classifyIncomingFile', () => {
     expect('error' in classifyIncomingFile('a.pdf', 'application/pdf', PDF_MAX_BYTES + 1)).toBe(true)
     expect('error' in classifyIncomingFile('a.txt', 'text/plain', TEXT_FILE_MAX_BYTES + 1)).toBe(true)
     expect(classifyIncomingFile('a.png', 'image/png', IMAGE_MAX_BYTES)).toEqual({ kind: 'image' })
+  })
+})
+
+describe('isNativePdfPart', () => {
+  it('is true only for a whole-document application/pdf part', () => {
+    expect(isNativePdfPart('application/pdf')).toBe(true)
+  })
+
+  it('is false for an ordinary image part or an already-rendered PDF page (mediaType:image)', () => {
+    // pdf-pages route always tags rendered pages mediaType:'image', never
+    // application/pdf — this is the axis hydrateHistory's cheap gate relies
+    // on to skip everything except a whole-document native-pdf part.
+    expect(isNativePdfPart('image')).toBe(false)
+    expect(isNativePdfPart(undefined)).toBe(false)
+    expect(isNativePdfPart('text/plain')).toBe(false)
   })
 })
 
