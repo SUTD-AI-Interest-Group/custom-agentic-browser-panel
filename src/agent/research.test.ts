@@ -4,6 +4,7 @@ import { extractStructured } from './extract'
 import { createModel } from './provider'
 import { createResearchTools } from '../tools/research'
 import { generateText } from 'ai'
+import { StructuredOutputError } from './resilience'
 import type { ProviderConfig } from '../data/settings'
 
 // research.ts is the whole Plan → (Gather ↔ Reflect) → Synthesize → Verify state
@@ -160,6 +161,49 @@ describe('reflect() resilience (F1 — CRITICAL)', () => {
     // The run still completes (report gets written from whatever the notebook has).
     expect(result.report.length).toBeGreaterThan(0)
   })
+
+  it('on a StructuredOutputError (both structured-output paths exhausted), reaches the fallback in ONE call — no retry storm', async () => {
+    // This is the regression this whole fix targets: extractStructured's real
+    // implementation throws exactly this typed error when generateObject fails
+    // AND the generateText+parseJsonLoose fallback also can't produce valid
+    // JSON (e.g. a small local model via Ollama/LM Studio that can't reliably
+    // emit schema-conforming JSON at all). Before the fix, classifyError fell
+    // through to its transient catch-all for this shape, and reflect() would
+    // retry with backoff (5s→10s→...→120s capped) all the way to the research
+    // task's 24h deadline instead of reaching this documented fallback promptly.
+    const plan = { subQuestions: ['q1'], outline: [] }
+    let reflectCalls = 0
+    scriptExtract({
+      plan: () => plan,
+      reflect: () => {
+        reflectCalls++
+        throw new StructuredOutputError('Model reply did not contain valid JSON for structured extraction')
+      },
+    })
+    mockedRunAgentTurn.mockResolvedValue(EMPTY_TURN)
+    const onPause = vi.fn()
+
+    const result = await runResearch({
+      taskId: 't1',
+      question: 'What is X?',
+      provider: fakeProvider,
+      modelId: 'm',
+      onUpdate: vi.fn(),
+      signal: new AbortController().signal,
+      onPause,
+    })
+
+    // onPause fires exclusively from withResilience's transient-retry path, so its
+    // absence directly proves no backoff/retry ever happened. reflect() is still
+    // called once per gather round by design (a fresh chance each round, capped at
+    // MAX_GATHER_ROUNDS=5) — that outer-loop repetition is NOT a retry, so bound it
+    // instead of asserting exactly 1 to avoid conflating the two.
+    expect(onPause).not.toHaveBeenCalled()
+    expect(reflectCalls).toBeGreaterThan(0)
+    expect(reflectCalls).toBeLessThanOrEqual(5)
+    expect(result.notebook.coverage['q1']).toBeUndefined()
+    expect(result.report.length).toBeGreaterThan(0)
+  })
 })
 
 describe('planResearch() resilience (F2 — HIGH)', () => {
@@ -202,6 +246,38 @@ describe('planResearch() resilience (F2 — HIGH)', () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+
+  it('on a StructuredOutputError, degrades to the one-question fallback plan in exactly ONE call — no retry storm', async () => {
+    // planResearch() runs exactly once per task (unlike reflect(), which runs
+    // once per gather round), so — unlike the reflect() test above — a single
+    // call count here is an exact, unambiguous signal that no retry happened.
+    let planCalls = 0
+    scriptExtract({
+      plan: () => {
+        planCalls++
+        throw new StructuredOutputError('Model reply did not contain valid JSON for structured extraction')
+      },
+      reflect: () => ({ assessments: [{ subQuestion: 'What is X?', supported: true }], done: true }),
+    })
+    mockedRunAgentTurn.mockResolvedValue(EMPTY_TURN)
+    const onPause = vi.fn()
+
+    const result = await runResearch({
+      taskId: 't1',
+      question: 'What is X?',
+      provider: fakeProvider,
+      modelId: 'm',
+      onUpdate: vi.fn(),
+      signal: new AbortController().signal,
+      onPause,
+    })
+
+    expect(onPause).not.toHaveBeenCalled()
+    expect(planCalls).toBe(1) // no retry — reached the fallback on the first attempt
+    // The documented degraded fallback: a single sub-question, no outline.
+    expect(result.notebook.plan.subQuestions).toEqual(['What is X?'])
+    expect(result.notebook.plan.outline).toEqual([])
   })
 })
 

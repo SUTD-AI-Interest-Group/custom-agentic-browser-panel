@@ -17,6 +17,7 @@ vi.mock('ai', async (importOriginal) => {
 })
 
 import { extractStructured } from './extract'
+import { StructuredOutputError } from './resilience'
 
 const MODEL = {} as Parameters<typeof extractStructured>[0]
 const SCHEMA = { type: 'object', properties: { ok: { type: 'boolean' } } }
@@ -60,18 +61,29 @@ describe('extractStructured', () => {
     expect(generateTextMock).not.toHaveBeenCalled()
   })
 
-  it('rethrows when the generateText fallback also fails (no third tier)', async () => {
+  it('rethrows when the generateText fallback also fails (no third tier), preserving its shape untouched', async () => {
     generateObjectMock.mockRejectedValue(new Error('no structured-output mode'))
-    const textErr = new Error('endpoint unreachable')
+    // A real request failure (status-bearing, like a 503) from generateText itself
+    // is NOT a "model can't do structured output" signal — it must reach the
+    // caller as-is so classifyError can classify it by its own status, and a
+    // genuinely transient failure here still retries.
+    const textErr = Object.assign(new Error('endpoint unreachable'), { statusCode: 503 })
     generateTextMock.mockRejectedValue(textErr)
 
     await expect(extractStructured(MODEL, 'prompt', SCHEMA)).rejects.toBe(textErr)
   })
 
-  it('rethrows when the fallback text is not parseable as JSON', async () => {
+  it('throws a typed StructuredOutputError (not the raw parse error) when the fallback text is not parseable as JSON', async () => {
+    // This is the regression case: generateObject fails (no structured-output
+    // support), AND the prompted-JSON fallback's own reply still isn't valid
+    // JSON. Both structured-output paths are now exhausted — a capability
+    // failure, not bad luck — so this must be a recognizable typed error rather
+    // than parseJsonLoose's bare, no-status `Error('no JSON found in text')`,
+    // which resilience.ts's classifyError could not otherwise tell apart from a
+    // genuinely transient failure.
     generateObjectMock.mockRejectedValue(new Error('no structured-output mode'))
     generateTextMock.mockResolvedValue({ text: 'sorry, I cannot help with that', usage: {} })
 
-    await expect(extractStructured(MODEL, 'prompt', SCHEMA)).rejects.toThrow()
+    await expect(extractStructured(MODEL, 'prompt', SCHEMA)).rejects.toBeInstanceOf(StructuredOutputError)
   })
 })

@@ -14,12 +14,33 @@
  * driven entirely through injected `now`/`sleep`/`rng` in tests.
  */
 
+import { NoObjectGeneratedError } from 'ai'
+
 /** Thrown by `withResilience` when the 24h deadline passes mid-retry. The research
  *  loop catches this specifically to finalize a partial report instead of erroring. */
 export class ResearchDeadlineError extends Error {
   constructor(message = 'The research deadline was reached.') {
     super(message)
     this.name = 'ResearchDeadlineError'
+  }
+}
+
+/**
+ * Thrown by `extractStructured` (`src/agent/extract.ts`) when BOTH structured-
+ * output paths have failed: the endpoint's native `generateObject` mode errored,
+ * AND the prompted-JSON fallback's own reply still didn't parse as JSON. This is
+ * a capability failure of the model/endpoint — the HTTP round-trip succeeded, the
+ * model just never produced usable JSON — so there is no status code for
+ * `classifyError` to inspect, and the failure will recur identically on retry
+ * (the same model given the same prompt has no reason to suddenly start emitting
+ * valid JSON). Recognized by TYPE here rather than by matching the underlying
+ * message text, which is `parseJsonLoose`'s implementation detail and could
+ * change without this classification noticing (or silently stop matching).
+ */
+export class StructuredOutputError extends Error {
+  constructor(message = 'The model did not return valid structured output.', options?: { cause?: unknown }) {
+    super(message, options)
+    this.name = 'StructuredOutputError'
   }
 }
 
@@ -81,6 +102,15 @@ function truncate(s: string, max = 140): string {
  */
 export function classifyError(err: unknown): ErrorInfo {
   if (isAbortError(err)) return { kind: 'abort', reason: 'Cancelled' }
+  // Both structured-output paths were exhausted (see StructuredOutputError above),
+  // or the AI SDK's own generateObject failure reached us unwrapped — either way
+  // this is a model/endpoint capability gap, not bad luck, and carries no status
+  // code to fall through to the generic checks below. `.isInstance()` is the SDK's
+  // own robust check (survives a duplicated 'ai' module instance), matching the
+  // `NoSuchToolError.isInstance()` pattern already used in agent.ts.
+  if (err instanceof StructuredOutputError || NoObjectGeneratedError.isInstance(err)) {
+    return { kind: 'permanent', reason: 'The model did not return valid structured output — will not retry' }
+  }
   const status = statusOf(err)
   const msg = messageOf(err)
   if (status === 429) return { kind: 'transient', reason: 'Rate limited by the provider — will retry' }

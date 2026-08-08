@@ -1,7 +1,7 @@
 import { generateObject, generateText, jsonSchema, type LanguageModel } from 'ai'
 import { parseJsonLoose } from '../platform/webFetch'
 import type { Trace } from './observability'
-import { isAbortError } from './resilience'
+import { isAbortError, StructuredOutputError } from './resilience'
 
 /**
  * Extract a JSON value matching `schema` (a JSON Schema object) from `prompt`.
@@ -48,7 +48,19 @@ export async function extractStructured(
       prompt: `${prompt}\n\nReturn ONLY JSON matching this schema:\n${JSON.stringify(schema)}`,
       abortSignal: signal,
     })
-    const parsed = parseJsonLoose(text)
+    let parsed: unknown
+    try {
+      parsed = parseJsonLoose(text)
+    } catch (parseErr) {
+      // generateObject already failed above (for any non-abort reason) and now
+      // the prompted-JSON fallback's own reply isn't valid JSON either — BOTH
+      // structured-output paths are exhausted. This is deliberately scoped to
+      // just the parse failure, not the whole generateText call: a real request
+      // failure from generateText itself (a 429/503/network error) keeps its own
+      // status/shape and must still retry normally via classifyError below — only
+      // "the model replied, but not with JSON" is the non-retryable case.
+      throw new StructuredOutputError('Model reply did not contain valid JSON for structured extraction', { cause: parseErr })
+    }
     gen?.end({ output: text, usage })
     return parsed
   } catch (err) {

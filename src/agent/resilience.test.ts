@@ -1,6 +1,8 @@
 import { describe, it, expect, vi } from 'vitest'
+import { NoObjectGeneratedError } from 'ai'
 import {
   ResearchDeadlineError,
+  StructuredOutputError,
   classifyError,
   describeError,
   isAbortError,
@@ -50,6 +52,35 @@ describe('classifyError', () => {
     for (const s of [429, 401, 403, 500, 502, 503, 504]) {
       expect(classifyError({ statusCode: s }).kind).toBe('transient')
     }
+  })
+
+  it('marks a StructuredOutputError as permanent even though it carries no status code', () => {
+    // This is exactly what parseJsonLoose's plain `Error('no JSON found in text')`
+    // used to fall through as — no statusCode/status field anywhere on it, so
+    // statusOf() found nothing and classifyError's catch-all called it transient,
+    // which is the root cause of the retry storm this type exists to fix.
+    const err = new StructuredOutputError('Model reply did not contain valid JSON for structured extraction', {
+      cause: new Error('no JSON found in text'),
+    })
+    expect((err as { statusCode?: number }).statusCode).toBeUndefined()
+    expect(classifyError(err).kind).toBe('permanent')
+  })
+
+  it('marks the AI SDK\'s own NoObjectGeneratedError as permanent, independent of StructuredOutputError', () => {
+    // Confirmed against the installed `ai` package: this error also carries no
+    // statusCode/status — it is thrown by generateObject when the model's reply
+    // could not be parsed/validated as the requested object, which is the same
+    // "model incapable of structured output" signal as the JSON-parse failure
+    // above, just from the other structured-output code path.
+    const err = new NoObjectGeneratedError({
+      message: 'No object generated: could not parse the response.',
+      text: 'not json',
+      response: { id: 'r1', timestamp: new Date(), modelId: 'm' },
+      usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 } as any,
+      finishReason: 'stop',
+    })
+    expect((err as { statusCode?: number }).statusCode).toBeUndefined()
+    expect(classifyError(err).kind).toBe('permanent')
   })
 })
 
@@ -196,6 +227,25 @@ describe('withResilience', () => {
     ).rejects.toBe(err)
     expect(fn).toHaveBeenCalledTimes(1) // no retry
     expect(onPause).not.toHaveBeenCalled() // no pause card for something that can't recover
+    expect(h.sleeps).toEqual([]) // never backed off
+  })
+
+  it('propagates a StructuredOutputError immediately instead of retrying to the 24h deadline', async () => {
+    // This is the exact regression this type exists to prevent: before it, a
+    // plain no-status Error from parseJsonLoose classified as transient and
+    // withResilience backed off + retried an identically-failing request until
+    // the research task's 24h deadline (~700+ retries at the 120s cap).
+    const h = harness()
+    const onPause = vi.fn()
+    const err = new StructuredOutputError('no JSON found in text')
+    const fn = vi.fn(async () => {
+      throw err
+    })
+    await expect(
+      withResilience(fn, { signal: new AbortController().signal, deadlineAt: h.deadlineAt, now: h.now, sleep: h.sleep, onPause }),
+    ).rejects.toBe(err)
+    expect(fn).toHaveBeenCalledTimes(1) // no retry
+    expect(onPause).not.toHaveBeenCalled()
     expect(h.sleeps).toEqual([]) // never backed off
   })
 })
