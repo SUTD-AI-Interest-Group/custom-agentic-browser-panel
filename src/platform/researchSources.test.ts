@@ -1,10 +1,11 @@
-import { test, expect } from 'vitest'
+import { test, expect, afterEach, vi } from 'vitest'
 import {
   reconstructAbstract,
   parseOpenAlexWork,
   parseCommonsImages,
   parseOpenverse,
   parseImgTags,
+  harvestImages,
 } from './researchSources'
 
 test('reconstructAbstract rebuilds plain text from the inverted index', () => {
@@ -105,4 +106,63 @@ test('parseImgTags resolves relative URLs, uses figcaption, skips sprites/tiny',
   expect(urls.some((u) => u.includes('tiny'))).toBe(false) // too small
   const graph = out.find((r) => r.url.endsWith('graph.png'))
   expect(graph?.caption).toBe('Fig 1. A graph')
+})
+
+// --- C2: harvestImages SSRF guard -------------------------------------------
+// Mirrors webFetch.test.ts's fetchReadable redirect-guard tests: harvestImages
+// fetches a caller-supplied url directly, so it needs the same two checks —
+// on the input url, and on the post-redirect res.url — or a prompt-injected
+// HarvestImages({url: 'http://169.254.169.254/...'}) reaches cloud metadata /
+// RFC1918 / loopback services from this privileged, no-CORS context.
+
+const originalFetch = globalThis.fetch
+afterEach(() => {
+  globalThis.fetch = originalFetch
+})
+
+test('harvestImages refuses a blocked input URL without ever calling fetch', async () => {
+  const fetchSpy = vi.fn()
+  globalThis.fetch = fetchSpy
+  const out = await harvestImages('http://169.254.169.254/latest/meta-data/')
+  expect('error' in out).toBe(true)
+  if ('error' in out) expect(out.error).toMatch(/refused to fetch/)
+  expect(fetchSpy).not.toHaveBeenCalled()
+})
+
+test('harvestImages refuses a response whose final (redirected) URL is blocked, and discards the body', async () => {
+  const textSpy = vi.fn(async () => '<html><body><img src="/secret.jpg" width="200" height="200"></body></html>')
+  globalThis.fetch = vi.fn(async () =>
+    ({
+      ok: true,
+      url: 'http://169.254.169.254/latest/meta-data/',
+      status: 200,
+      headers: new Headers({ 'content-type': 'text/html' }),
+      text: textSpy,
+    }) as unknown as Response,
+  )
+  const out = await harvestImages('https://example.com/redirects-away')
+  expect('error' in out).toBe(true)
+  if ('error' in out) expect(out.error).toMatch(/redirected to a blocked target/)
+  // The actual bug: content harvested from the redirect target must never be
+  // returned, even though the INPUT url ('https://example.com/redirects-away')
+  // passed the pre-fetch guard.
+  expect(textSpy).not.toHaveBeenCalled()
+})
+
+test('harvestImages still succeeds for a normal allowed URL (no false positive)', async () => {
+  globalThis.fetch = vi.fn(async () =>
+    ({
+      ok: true,
+      url: 'https://example.com/final',
+      status: 200,
+      headers: new Headers({ 'content-type': 'text/html' }),
+      text: async () => '<img src="/photo.jpg" width="400" height="300">',
+    }) as unknown as Response,
+  )
+  const out = await harvestImages('https://example.com/start')
+  expect('error' in out).toBe(false)
+  if (!('error' in out)) {
+    expect(out.results).toHaveLength(1)
+    expect(out.results[0].url).toBe('https://example.com/photo.jpg')
+  }
 })

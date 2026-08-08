@@ -13,11 +13,31 @@
 // BEFORE the page is touched. There is no human at the gate here — the agent runs
 // while the user may well be asleep — so a refusal is returned to the model as a
 // normal result (it can then try another route) and the page is left alone.
+//
+// That pre-check only ever sees the REQUESTED target though (a click's el.href,
+// an explicit navigate's url) — it cannot see where a redirect actually lands,
+// and Chrome follows one transparently with no permission to intercept it. Two
+// dispatched action kinds can end in a navigation without going through
+// navigateAndWait's own landed-URL guard: `click` on an <a href>, and the
+// `navigate` action (both via pageActions.ts, neither of which waits for/
+// re-validates where the tab ends up).
+//
+// TOCTOU: a separate "check the tab's url, THEN separately read its content"
+// step is racy regardless of how little happens in between — page JS can
+// redirect the tab in that gap (a delayed `location.href =`), and the earlier
+// check would have already passed. So there is no separate landed-URL check
+// here at all: observe() below validates the url returned BY snapshotPage
+// (domIndex.ts) and readReadableText (researchRender.ts) themselves — each
+// captures `location.href` in the SAME synchronous page-world execution that
+// harvests its content, so the url validated is never stale relative to what
+// it's guarding. Neither the element registry nor the text is ever exposed —
+// nor kept in `session.elements` — for a page that turns out to be blocked.
 
 import { serializeRegistry, snapshotPage, type IndexedElement } from './domIndex'
 import { clickElement, navigateTab, pressKey, scrollPage, typeIntoElement, waitForStable } from './pageActions'
 import { readReadableText } from './researchRender'
 import { acquireTab, navigateAndWait, type TabLease } from './researchTab'
+import { isFetchableUrl } from './webFetch'
 import { isSafeResearchAction, type BrowseAction } from '../tools/browsePolicy'
 import type { BrowseObservation, BrowseOp, BrowseResult } from '../data/researchTasks'
 
@@ -83,9 +103,17 @@ async function openSession(sessionId: string, url: string): Promise<BrowseResult
     session = { lease, elements: [], ttl: armTtl(sessionId) }
     sessions.set(sessionId, session)
   }
-  await navigateAndWait(session.lease.tabId, url)
-  const observation = await observe(session)
-  return { ok: true, message: `opened ${observation.url}`, observation }
+  const nav = await navigateAndWait(session.lease.tabId, url)
+  // Fast path only — NOT the real guarantee (see the module header's TOCTOU
+  // note and observe() below). Page JS can still redirect between this check
+  // and the observe() call; observe()'s own atomic checks are what actually
+  // close that window.
+  if (nav.blockedReason) {
+    return { ok: false, message: `refused to open: redirected to a blocked target (${nav.blockedReason})` }
+  }
+  const obs = await observe(session)
+  if (!obs.ok) return { ok: false, message: `refused to open: ${obs.reason}` }
+  return { ok: true, message: `opened ${obs.observation.url}`, observation: obs.observation }
 }
 
 /** Run one action, then re-observe the page it produced. */
@@ -104,22 +132,31 @@ async function actInSession(sessionId: string, action: BrowseAction): Promise<Br
   if (!verdict.ok) {
     // Refused BEFORE touching the page. Re-observe anyway so the model gets a
     // fresh registry with its refusal, rather than a dead end. bumpTtl only
-    // AFTER observe() succeeds (see below) — not at entry — so a session
+    // AFTER observe() resolves (see below) — not at entry — so a session
     // retrying against an already-dead tab can't extend its hold on the one
     // shared resource indefinitely instead of being caught by handleBrowseOp's
     // dead-tab detection.
-    const observation = await observe(session)
+    const obs = await observe(session)
     bumpTtl(sessionId, session)
-    return { ok: false, message: verdict.reason, observation }
+    return obs.ok
+      ? { ok: false, message: verdict.reason, observation: obs.observation }
+      : { ok: false, message: verdict.reason }
   }
 
   const { tabId } = session.lease
   const result = await dispatch(tabId, action)
   // Let the page settle (SPA route change, filtered list, expanded section).
   await waitForStable(tabId, { quietMs: 400, timeoutMs: 6_000 })
-  const observation = await observe(session)
+
+  // Any dispatched action can end in a navigation the pre-check above only
+  // half-saw (a click's el.href, or an explicit navigate's url, before any
+  // redirect) — observe()'s own atomic checks (not a separate chrome.tabs.get
+  // sampled here) are what catch a redirect to a blocked target before
+  // anything is read off the page.
+  const obs = await observe(session)
   bumpTtl(sessionId, session)
-  return { ok: result.ok, message: result.message, observation }
+  if (!obs.ok) return { ok: false, message: `refused to continue: ${obs.reason}` }
+  return { ok: result.ok, message: result.message, observation: obs.observation }
 }
 
 /** Dispatch an already-approved action to the page. */
@@ -146,26 +183,82 @@ async function dispatch(tabId: number, action: BrowseAction) {
 async function readSession(sessionId: string): Promise<BrowseResult> {
   const session = sessions.get(sessionId)
   if (!session) return { ok: false, message: 'no open browse session — call open first' }
-  const { title, text } = await readReadableText(session.lease.tabId)
-  const tab = await chrome.tabs.get(session.lease.tabId).catch(() => undefined)
+  // readReadableText validates the url it actually read FROM, captured
+  // atomically with the content — see its doc comment (researchRender.ts) and
+  // the module header's TOCTOU note. No separate chrome.tabs.get here: that
+  // would just re-open the exact race this design closes.
+  const read = await readReadableText(session.lease.tabId)
   // Only bump once the round trip actually reached the page — see actInSession.
   bumpTtl(sessionId, session)
-  return { ok: true, message: `read ${tab?.url ?? title}`, text, url: tab?.url, title }
+  if (read.blockedReason) {
+    return { ok: false, message: `refused to read: the tab is on a blocked target (${read.blockedReason})` }
+  }
+  return { ok: true, message: `read ${read.url || read.title}`, text: read.text, url: read.url, title: read.title }
 }
 
-/** Snapshot the page: numbered interactive elements + a text excerpt. */
-async function observe(session: Session): Promise<BrowseObservation> {
+/** observe()'s result: a real observation, or a reason it refused to produce
+ *  one. Kept local to this module — the browse protocol's BrowseObservation
+ *  type (src/data/researchTasks.ts) never needs a "blocked" variant, since a
+ *  blocked observe() never becomes an observation the model sees at all (see
+ *  every caller below). */
+type ObserveOutcome = { ok: true; observation: BrowseObservation } | { ok: false; reason: string }
+
+/**
+ * Snapshot the page: numbered interactive elements + a text excerpt.
+ *
+ * Both snapshotPage (domIndex.ts) and readReadableText (researchRender.ts)
+ * capture their content and `location.href` in the SAME synchronous
+ * page-world execution — so the url checked here is atomic with the content
+ * it guards, unlike a chrome.tabs.get sampled separately before or after
+ * (the TOCTOU a redirect mid-navigation, mid-settle, or mid-round-trip could
+ * otherwise slip through — see the module header). Neither the element
+ * registry nor the text — nor `session.elements` — is ever populated from a
+ * page that turns out to be blocked. The two captures are still two separate
+ * round trips, though, so a page bouncing between two different (both safe)
+ * urls between them is caught by comparing the two atomically-captured urls
+ * — see the comment at that check below.
+ */
+async function observe(session: Session): Promise<ObserveOutcome> {
   const snap = await snapshotPage(session.lease.tabId)
+  const snapGuard = isFetchableUrl(snap.url)
+  if (!snapGuard.ok) {
+    return { ok: false, reason: `the tab landed on a blocked target (${snapGuard.reason})` }
+  }
+  const read = await readReadableText(session.lease.tabId)
+  if (read.blockedReason) {
+    // The page moved again between the two injections above — snap.url was
+    // fine a moment ago, but readReadableText's own atomic check just caught
+    // a further redirect. Discard the (now-stale) elements too, not just the text.
+    return { ok: false, reason: `the tab landed on a blocked target (${read.blockedReason})` }
+  }
+  // Each capture is individually atomic (its own url is captured in the SAME
+  // synchronous execution as its own content), but the two round trips are
+  // NOT atomic relative to EACH OTHER — this can never leak BLOCKED content
+  // (each half independently refuses that on its own), but a page bouncing
+  // between two ordinary PUBLIC urls (neither ever blocked) can still have
+  // elements captured from one and text from the other. That is a
+  // correctness bug, not an SSRF bypass: a report citing page-A while
+  // quoting page-B, or a session.elements registry for a page the model
+  // isn't being shown. Refuse and let the model retry rather than return a
+  // mixed-provenance observation. Combining both extractions into a single
+  // injected function (domIndex.ts's snapshotPage) would close this
+  // structurally, but that file is out of scope here — compare-and-refuse is
+  // the cheapest correct fix available from this side.
+  if (read.url !== snap.url) {
+    return { ok: false, reason: `the page moved during observation (elements from ${snap.url}, text from ${read.url}) — retry` }
+  }
   session.elements = snap.elements
-  const { text } = await readReadableText(session.lease.tabId)
-  const excerpt = text.slice(0, EXCERPT_CHARS)
+  const excerpt = read.text.slice(0, EXCERPT_CHARS)
   return {
-    url: snap.url,
-    title: snap.title,
-    elements: serializeRegistry(snap.elements),
-    excerpt,
-    // Tell the model there is more, so it knows `read` is worth calling.
-    more: text.length > excerpt.length,
+    ok: true,
+    observation: {
+      url: snap.url,
+      title: snap.title,
+      elements: serializeRegistry(snap.elements),
+      excerpt,
+      // Tell the model there is more, so it knows `read` is worth calling.
+      more: read.text.length > excerpt.length,
+    },
   }
 }
 

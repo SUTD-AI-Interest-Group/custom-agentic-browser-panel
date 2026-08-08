@@ -5,6 +5,14 @@
 //
 // No API keys (fits the no-backend/keyless stance). host_permissions:<all_urls>
 // exempts these cross-origin GETs from CORS, so no proxy is needed.
+//
+// harvestImages fetches a caller-supplied URL directly (unlike the search
+// helpers above, which only ever hit fixed, trusted API hosts), so it is
+// SSRF-guarded the same way webFetch.ts's fetchReadable is: isFetchableUrl on
+// the input AND on the post-redirect res.url, since redirect:'follow' walks a
+// hop to a private/loopback target transparently before we ever see it.
+
+import { isFetchableUrl } from './webFetch'
 
 const TIMEOUT_MS = 15_000
 
@@ -219,8 +227,15 @@ export function parseImgTags(html: string, baseUrl: string, max = 12): ImageResu
 }
 
 export async function harvestImages(url: string, signal?: AbortSignal): Promise<{ results: ImageResult[] } | { error: string }> {
+  const guard = isFetchableUrl(url)
+  if (!guard.ok) return { error: `refused to fetch (${guard.reason})` }
   try {
     const res = await fetch(url, { credentials: 'omit', redirect: 'follow', signal: timeout(signal) })
+    // See webFetch.ts's fetchReadable for why this second check is necessary:
+    // the guard above only saw the INPUT url, and redirect:'follow' walks any
+    // hop (including one to a blocked private/loopback target) transparently.
+    const finalGuard = isFetchableUrl(res.url)
+    if (!finalGuard.ok) return { error: `refused: redirected to a blocked target (${finalGuard.reason})` }
     if (!res.ok) return { error: `fetch failed: HTTP ${res.status}` }
     const ct = res.headers.get('content-type') ?? ''
     if (!/text\/html|application\/xhtml/i.test(ct)) return { error: `not an HTML page: ${ct}` }

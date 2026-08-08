@@ -29,7 +29,16 @@ export async function searchInTab(query: string, maxResults = 8): Promise<Search
     // The no-JS HTML endpoint: a real navigation renders full result rows with
     // inline snippets, and its markup is stabler to scrape than the SPA SERP.
     const url = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`
-    await navigateAndWait(lease.tabId, url)
+    const nav = await navigateAndWait(lease.tabId, url)
+    // Defense in depth: the destination is a fixed, hardcoded DDG host (the
+    // query is the only attacker-influenced part), so this isn't reachable
+    // today the way researchRender.ts's/researchBrowse.ts's arbitrary-url
+    // navigations are — but navigateAndWait's return value exists precisely
+    // to be checked, and a discarded NavigateOutcome here means a future edit
+    // could wrongly assume this call site is already guarded.
+    if (nav.blockedReason) {
+      return { error: `tab search failed: redirected to a blocked target (${nav.blockedReason})` }
+    }
     const [res] = await exec(lease.tabId, injScrapeDuckDuckGo)
     const scraped = (res?.result as { rows?: SearchResultRow[]; challenged?: boolean } | undefined) ?? {}
     if (scraped.challenged && !scraped.rows?.length) {

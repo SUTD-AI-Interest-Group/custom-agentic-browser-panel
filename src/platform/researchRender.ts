@@ -9,9 +9,24 @@
 // navigate the page out from under a live browse session.
 //
 // Boundaries (there is no human at the point-of-no-return gate here, so these are
-// hard): the caller pre-checks the URL with isFetchableUrl (SSRF); a render is
+// hard): the caller pre-checks the URL with isFetchableUrl (SSRF), and
+// navigateAndWait (researchTab.ts) re-checks WHERE the tab actually landed
+// after following any redirects — a public URL can 302 to a private/loopback
+// target, so the pre-navigation check alone is not enough. A render is
 // read-only + safe settling only (navigate to the requested URL, scroll to trigger
 // lazy content) — never a form submit, cross-origin navigation, or auth.
+//
+// TOCTOU: navigateAndWait's check happens at load-complete, but this function
+// then scrolls and sleeps (SETTLE_MS) before reading anything — a delayed
+// `location.href = ...` (a `setTimeout` fired from the page's own JS) can
+// redirect the tab to a blocked target inside that window, AFTER the check
+// already passed. A second `chrome.tabs.get` immediately before the read
+// would only shrink that window, not close it — the same bug reappears at
+// the next site the tab is sampled from. The actual fix: readReadableText
+// captures `location.href` in the SAME synchronous page-world execution that
+// extracts the content, so the url it validates is never stale relative to
+// what it's guarding — there is no window between "check" and "read" because
+// they are the same call.
 //
 // PDFs never reach this broker: FetchUrl routes them to the pdf.js extractor
 // (platform/pdf.ts) before escalation — Chrome's plugin viewer has no DOM text,
@@ -31,7 +46,29 @@ export interface RenderOutcome {
 const SETTLE_MS = 900
 const MAX_TEXT = 20_000
 
-/** Render one URL in the isolated tab and return its readable text (+ shot). */
+/**
+ * Render one URL in the isolated tab and return its readable text (+ shot).
+ *
+ * ⚠️ SCREENSHOT MODE (`want: 'screenshot' | 'both'`) IS CURRENTLY UNREACHABLE
+ * DEAD CODE — both callers of the research.renderPage broker (src/tools/
+ * research.ts) hardcode `want: 'text'` — and it must STAY that way until the
+ * blocker below is fixed. DO NOT wire up a caller that passes 'screenshot' or
+ * 'both' without first addressing this:
+ *
+ * `captureBestEffort` (researchTab.ts) uses `chrome.tabs.captureVisibleTab`,
+ * which captures whatever is visually COMPOSITED on screen — same-origin AND
+ * cross-origin iframes alike, since the Same-Origin Policy governs DOM/JS
+ * access, not painting. Every url guard in this file (navigateAndWait, the
+ * post-capture re-check just above) only ever inspects the TOP frame's
+ * `location.href`. A page can sit on a permanently-safe, never-redirecting
+ * url while embedding `<iframe src="http://169.254.169.254/latest/meta-data/
+ * iam/security-credentials/">` — many internal services send no
+ * X-Frame-Options — and that iframe's content is rendered straight into the
+ * screenshot with NOTHING here ever checking its src. No race, no redirect,
+ * no TOCTOU needed — a static embed does it on the very first capture. The
+ * text path is unaffected (ordinary SOP already blocks cross-origin iframe
+ * DOM/text access), which is why this is a screenshot-only blocker.
+ */
 export async function renderPage(url: string, want: 'text' | 'screenshot' | 'both'): Promise<RenderOutcome> {
   // Defense in depth — the SW message handler already guards, re-check here.
   const guard = isFetchableUrl(url)
@@ -44,14 +81,38 @@ export async function renderPage(url: string, want: 'text' | 'screenshot' | 'bot
     return { error: `render failed: ${err instanceof Error ? err.message : String(err)}` }
   }
   try {
-    await navigateAndWait(lease.tabId, url)
+    const nav = await navigateAndWait(lease.tabId, url)
+    // Fast path only — NOT the real guarantee (see the module header's TOCTOU
+    // note). Page JS can still redirect the tab during the scroll/settle
+    // window below, after this check already passed; this just skips that
+    // work for a load that was already bad at the time it completed.
+    if (nav.blockedReason) return { error: `refused: redirected to a blocked target (${nav.blockedReason})` }
     // Safe, non-committing settle: scroll to bottom to trigger lazy content.
     await exec(lease.tabId, injScrollToBottom).catch(() => {})
     await sleep(SETTLE_MS)
-    const { title, text } = await readReadableText(lease.tabId)
-    const screenshotDataUrl = want === 'text' ? undefined : await captureBestEffort()
-    const tab = await chrome.tabs.get(lease.tabId).catch(() => undefined)
-    return { text, title, finalUrl: tab?.url ?? url, screenshotDataUrl }
+    // The real guarantee: readReadableText validates the url it actually read
+    // FROM, captured atomically with the content itself — never a url sampled
+    // before or after the fact.
+    const read = await readReadableText(lease.tabId)
+    if (read.blockedReason) return { error: `refused: redirected to a blocked target (${read.blockedReason})` }
+    let screenshotDataUrl = want === 'text' ? undefined : await captureBestEffort()
+    if (screenshotDataUrl) {
+      // captureBestEffort has its own small window AFTER the validated read
+      // above (un-minimize, settle, capture) — re-check immediately adjacent
+      // to the actual pixel capture so a redirect landing exactly there can't
+      // hand back a screenshot of a different, blocked page under an
+      // otherwise-safe finalUrl/text pair. Same bug class as the text TOCTOU,
+      // in the same function — closed here too rather than left open.
+      // Fail CLOSED on "couldn't determine": if chrome.tabs.get throws or the
+      // tab has no url, that is NOT evidence the page is safe — treat it the
+      // same as a positively-blocked landing and drop the screenshot. The
+      // inverse (`post?.url && !isFetchableUrl(...).ok`) is the exact
+      // fail-open shape review round 1 found in checkLandedUrl and deleted —
+      // it silently KEEPS the screenshot whenever the url can't be read.
+      const post = await chrome.tabs.get(lease.tabId).catch(() => undefined)
+      if (!post?.url || !isFetchableUrl(post.url).ok) screenshotDataUrl = undefined
+    }
+    return { text: read.text, title: read.title, finalUrl: read.url, screenshotDataUrl }
   } catch (err) {
     return { error: `render failed: ${err instanceof Error ? err.message : String(err)}` }
   } finally {
@@ -60,13 +121,28 @@ export async function renderPage(url: string, want: 'text' | 'screenshot' | 'bot
 }
 
 /**
- * Reduce the tab's LIVE (rendered) DOM to readable text. Shared with the browse
- * session, which re-reads the page after each interaction.
+ * Reduce the tab's LIVE (rendered) DOM to readable text — and validate WHERE
+ * that content actually came from, ATOMICALLY with reading it. Shared with the
+ * browse session, which re-reads the page after each interaction.
+ *
+ * A caller-side check-then-read (sample the tab's url via chrome.tabs.get,
+ * THEN separately read its content) is inherently racy: page JS can redirect
+ * the tab in the gap between the two calls. injExtractReadable below captures
+ * `location.href` in the SAME synchronous page-world execution that extracts
+ * the content, so the url validated here can never be stale relative to what
+ * it's guarding — there is no window between "check" and "read" because they
+ * are the same call. A blocked landing returns empty title/text and
+ * `blockedReason` set; content is never handed back for a blocked url.
  */
-export async function readReadableText(tabId: number): Promise<{ title: string; text: string }> {
+export async function readReadableText(
+  tabId: number,
+): Promise<{ title: string; text: string; url: string; blockedReason?: string }> {
   const [res] = await exec(tabId, injExtractReadable)
-  const out = (res?.result as { title?: string; text?: string } | undefined) ?? {}
-  return { title: out.title ?? '', text: (out.text ?? '').slice(0, MAX_TEXT) }
+  const out = (res?.result as { title?: string; text?: string; url?: string } | undefined) ?? {}
+  const url = out.url ?? ''
+  const guard = isFetchableUrl(url)
+  if (!guard.ok) return { title: '', text: '', url, blockedReason: guard.reason }
+  return { title: out.title ?? '', text: (out.text ?? '').slice(0, MAX_TEXT), url }
 }
 
 // ---- Injected page-world functions (self-contained; no imports/closures) ----
@@ -81,18 +157,22 @@ function injScrollToBottom(): void {
 }
 
 /** Reduce the LIVE (rendered) DOM to readable text — operating on a CLONE so the
- *  page is never mutated. Mirrors platform/webFetch.extractReadableText. */
-function injExtractReadable(): { title: string; text: string } {
+ *  page is never mutated. Mirrors platform/webFetch.extractReadableText.
+ *  Returns `location.href` alongside the content, captured in this SAME
+ *  synchronous execution — see readReadableText's doc comment for why that
+ *  atomicity is load-bearing. */
+function injExtractReadable(): { title: string; text: string; url: string } {
   const title = (document.title || '').trim()
+  const url = location.href
   const pick = document.querySelector('main') || document.querySelector('article') || document.body
-  if (!pick) return { title, text: '' }
+  if (!pick) return { title, text: '', url }
   const root = pick.cloneNode(true) as HTMLElement
   root.querySelectorAll('script,style,noscript,nav,footer,header,aside,form,svg').forEach((n) => n.remove())
   root
     .querySelectorAll('p,div,section,article,h1,h2,h3,h4,h5,h6,li,br,tr,td,th,blockquote,pre')
     .forEach((el) => el.after(document.createTextNode('\n')))
   const text = (root.textContent || '').replace(/[ \t]+/g, ' ').replace(/\n\s*\n\s*/g, '\n\n').trim()
-  return { title, text: text.slice(0, 20000) }
+  return { title, text: text.slice(0, 20000), url }
 }
 
 export { renderIsIsolated } from './researchTab'

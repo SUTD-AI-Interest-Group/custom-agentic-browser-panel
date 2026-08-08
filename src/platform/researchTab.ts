@@ -12,6 +12,17 @@
 // research agent never rides the user's logged-in cookies (it falls back to a
 // normal background window otherwise). Everything the agent may do to the page is
 // bounded by src/tools/browsePolicy.ts — there is no human at the gate here.
+//
+// Redirects: Chrome follows an HTTP redirect transparently and there is no
+// webNavigation/webRequest permission that would let us inspect a hop before
+// it completes, so a URL that passed isFetchableUrl pre-navigation can still
+// land the tab somewhere blocked (a public URL 302ing to link-local metadata,
+// a LAN admin panel, localhost, …). navigateAndWait re-validates WHERE the tab
+// actually landed after every navigation — the same shape as webFetch.ts's
+// fetchReadable post-redirect recheck — so this is closed once for every
+// caller instead of patched per call site.
+
+import { isFetchableUrl } from './webFetch'
 
 const NAV_TIMEOUT_MS = 30_000
 const IDLE_TEARDOWN_MS = 60_000
@@ -125,8 +136,25 @@ async function ensureTab(): Promise<number> {
   return renderTabId
 }
 
-/** Navigate the research tab and wait for the load to complete (bounded). */
-export async function navigateAndWait(tabId: number, url: string): Promise<void> {
+/** Result of a guarded navigation: where the tab actually landed, and whether
+ *  that landing is blocked. */
+export interface NavigateOutcome {
+  /** The tab's URL once loading settled — the post-redirect, landed URL. */
+  url: string
+  /** Set when `url` fails isFetchableUrl even though the requested url passed
+   *  it pre-navigation. The navigation has already happened by this point (that
+   *  part can't be undone) — this is the signal every caller MUST check before
+   *  reading or observing the page, so the landed content never reaches the
+   *  model or the research notebook. */
+  blockedReason?: string
+}
+
+/**
+ * Navigate the research tab and wait for the load to complete (bounded), then
+ * re-validate WHERE it actually landed (see the module-level Redirects note).
+ * Never throws for a blocked landing — callers must check `blockedReason`.
+ */
+export async function navigateAndWait(tabId: number, url: string): Promise<NavigateOutcome> {
   await chrome.tabs.update(tabId, { url })
   await new Promise<void>((resolve) => {
     let done = false
@@ -148,6 +176,23 @@ export async function navigateAndWait(tabId: number, url: string): Promise<void>
       .then((t) => t.status === 'complete' && finish())
       .catch(() => finish())
   })
+  const tab = await chrome.tabs.get(tabId).catch(() => undefined)
+  // Deliberately OPTIMISTIC, not fail-closed, when this lookup itself fails:
+  // falling back to the REQUESTED `url` (not refusing outright) means a
+  // transient chrome.tabs.get hiccup doesn't spuriously refuse a perfectly
+  // good render. This is safe ONLY because every caller of navigateAndWait
+  // pairs this fast-path check with an independent, atomic url+content
+  // capture downstream — readReadableText (researchRender.ts) and observe()
+  // (researchBrowse.ts) — via chrome.scripting.executeScript, a DIFFERENT
+  // API that is unaffected by chrome.tabs.get failing and that captures
+  // location.href in the SAME synchronous execution as the content it reads.
+  // That downstream check is what actually catches a redirect this fallback
+  // optimistically waved through. If it is ever removed, weakened, or
+  // bypassed, THIS fallback becomes a live TOCTOU hole — the two must be
+  // read and changed together, never one without the other.
+  const landed = tab?.url ?? url
+  const guard = isFetchableUrl(landed)
+  return guard.ok ? { url: landed } : { url: landed, blockedReason: guard.reason }
 }
 
 /**
