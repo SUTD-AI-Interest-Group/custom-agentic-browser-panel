@@ -32,15 +32,29 @@ describe('runJs', () => {
     expect(out.timedOut).toBe(true)
   })
 
+  // Filling 8 MB through QuickJS is real allocation work: ~1 s idle, but
+  // measured ~10 s when the parallel suite is saturating the CPU. Two separate
+  // clocks have to clear that, and both were too tight:
+  //
+  //   engine deadline (below) — with the original 5 s the clock beat the
+  //     allocator under load, so `timedOut` flipped true and the assertion
+  //     reported a memory-cap regression when nothing was wrong.
+  //   Vitest's per-test timeout — defaults to 5 s, so merely widening the
+  //     engine deadline just moved the failure to "Test timed out in 5000ms".
+  //
+  // Keep the engine deadline BELOW Vitest's so a genuinely broken memory cap
+  // still fails through `timedOut` with a meaningful message, rather than as an
+  // opaque harness timeout. Neither bound slows the happy path: the run ends
+  // the moment 8 MB is exhausted.
   it('enforces the memory cap', async () => {
     const out = await runJs(
       await modPromise,
       'const a = []; while (true) a.push(new Array(65536).fill(0))',
-      { timeoutMs: 5000, memoryBytes: 8 * 1024 * 1024 },
+      { timeoutMs: 20_000, memoryBytes: 8 * 1024 * 1024 },
     )
     expect(out.ok).toBe(false)
     expect(out.timedOut).toBe(false)
-  })
+  }, 30_000)
 
   it('settles resolved promise chains', async () => {
     const out = await runJs(await modPromise, 'Promise.resolve(20).then((n) => n * 2)', LIMITS)
