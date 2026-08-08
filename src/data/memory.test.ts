@@ -165,6 +165,62 @@ describe('episodes', () => {
       vi.useRealTimers()
     }
   })
+
+  // markEpisodesConsolidated/pruneConsolidatedEpisodes now batch every id in
+  // one shared IndexedDB transaction (src/data/memory.ts's batchTransaction)
+  // instead of a sequential get-then-put/delete loop, so a dream cycle's up
+  // to MAX_EPISODES_PER_DREAM ids don't pay for hundreds of serialized round
+  // trips. These tests exercise a batch far larger than any single-item test
+  // above would, and mix ids that exist with ids that don't in the SAME
+  // call — the case a sequential-vs-batched implementation could most
+  // plausibly diverge on (e.g. an early failure or an off-by-one silently
+  // dropping every id after the first).
+  it('markEpisodesConsolidated marks every id in a large batch, ignoring ids that do not exist, in one call', async () => {
+    const real = Array.from({ length: 50 }, (_, i) => `ep-${i}`)
+    for (const id of real) await appendToEpisode(id, [msg('x')])
+
+    await markEpisodesConsolidated([...real, 'ep-missing-1', 'ep-missing-2'])
+
+    expect(await listUnconsolidatedEpisodes()).toEqual([])
+  })
+
+  it('markEpisodesConsolidated is a no-op for an empty id list', async () => {
+    await appendToEpisode('ep-untouched', [msg('x')])
+    await expect(markEpisodesConsolidated([])).resolves.toBeUndefined()
+    expect((await listUnconsolidatedEpisodes()).map((e) => e.id)).toEqual(['ep-untouched'])
+  })
+
+  it('pruneConsolidatedEpisodes deletes a large batch of stale episodes together, leaving fresh ones untouched', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    try {
+      vi.setSystemTime(0)
+      const stale = Array.from({ length: 30 }, (_, i) => `ep-stale-${i}`)
+      for (const id of stale) await appendToEpisode(id, [msg('x')])
+
+      vi.setSystemTime(20 * 86_400_000)
+      await appendToEpisode('ep-fresh', [msg('y')])
+      await markEpisodesConsolidated([...stale, 'ep-fresh'])
+
+      await pruneConsolidatedEpisodes() // default cutoff: 14 days back from day 20
+
+      // All 30 stale rows are gone: re-appending starts brand new,
+      // unconsolidated records for every one of them.
+      for (const id of stale) await appendToEpisode(id, [msg('reborn')])
+      const pending = (await listUnconsolidatedEpisodes()).map((e) => e.id).sort()
+      expect(pending).toEqual([...stale].sort())
+
+      // ep-fresh survived the prune (still consolidated, untouched).
+      expect(pending).not.toContain('ep-fresh')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('pruneConsolidatedEpisodes is a no-op when nothing is stale', async () => {
+    await appendToEpisode('ep-new', [msg('x')])
+    await expect(pruneConsolidatedEpisodes()).resolves.toBeUndefined()
+    expect((await listUnconsolidatedEpisodes()).map((e) => e.id)).toEqual(['ep-new'])
+  })
 })
 
 describe('clearMemory', () => {

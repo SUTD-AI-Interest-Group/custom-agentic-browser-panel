@@ -65,13 +65,3 @@ export async function ungroupTabs(tabIds: number[]): Promise<{ ungrouped: number
     return { ungrouped: [], error: err instanceof Error ? err.message : String(err) }
   }
 }
-
-/** Current groups, for reporting back what exists. Empty when the permission is absent. */
-export async function listTabGroups(): Promise<{ id: number; title: string; color: string; windowId: number }[]> {
-  try {
-    const groups = await chrome.tabGroups.query({})
-    return groups.map((g) => ({ id: g.id, title: g.title ?? '', color: g.color, windowId: g.windowId }))
-  } catch {
-    return []
-  }
-}

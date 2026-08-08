@@ -775,3 +775,114 @@ describe('domIndex — bare swift/bic no longer leak through kebab-case neighbor
     expect((result.elements as Array<{ sensitive: boolean }>)[0]?.sensitive).toBe(false)
   })
 })
+
+// (Follow-up MEDIUM — perf) collectAll used to build ONE array holding every
+// element in the document via Array.from(document.querySelectorAll('*'))
+// BEFORE maxElements was ever consulted — a huge or adversarial DOM forced a
+// full-document array allocation on every ReadPage regardless of the cap.
+// The fix replaces it with two array-free recursive walks: walkLabels (always
+// exhaustive — a <label for> can sit anywhere relative to its input) and
+// walkElements (genuinely stops once `out` is full, since every label it
+// could need is already indexed by then). Both properties are proven against
+// the REAL extracted buildInteractiveIndex, not a hand-copied reimplementation.
+describe('domIndex — bounded walk does not materialize the whole document (follow-up MEDIUM)', () => {
+  const savedContains = Element.prototype.contains
+  afterEach(() => {
+    Element.prototype.contains = savedContains
+  })
+
+  // Uniform layout/hit-test stub (same technique as the O(inputs×labels)
+  // describe block above, widened to also cover shadow-DOM content): every
+  // element reports a valid rect, and the hit-test always passes — plain
+  // Node.contains() does not pierce shadow boundaries, so document.body
+  // .contains(shadowElement) is really false under a native contains(); this
+  // fixture fakes it true so shadow content isn't spuriously excluded by an
+  // unrelated hit-testing gap the tests in this block don't care about.
+  function stubUniformLayout() {
+    Element.prototype.getBoundingClientRect = function () {
+      return { x: 0, y: 0, top: 0, left: 0, right: 100, bottom: 40, width: 100, height: 40, toJSON() {} } as DOMRect
+    }
+    document.elementFromPoint = () => document.body
+    Element.prototype.contains = function () {
+      return true
+    }
+  }
+
+  it('still finds a label that sits AFTER far more than maxElements other elements (checkbox/radio ordering)', () => {
+    // The security property: an input well within the cap must never lose
+    // its label just because the label happens to live past where a naive
+    // "stop the whole walk at the cap" implementation would already have
+    // given up. maxElements is deliberately tiny (3) and the input is
+    // followed by 50 filler buttons — an implementation that stopped its
+    // ENTIRE traversal at the cap (rather than just skipping the expensive
+    // classification past it) would never reach the label below.
+    const parts = ['<input id="target" placeholder="x">']
+    for (let i = 0; i < 50; i++) parts.push(`<button>filler ${i}</button>`)
+    parts.push('<label for="target">Card number</label>')
+    document.body.innerHTML = parts.join('')
+    stubUniformLayout()
+
+    const buildInteractiveIndex = extractInjected('buildInteractiveIndex')
+    const result = buildInteractiveIndex('data-agent-idx', 3)
+    const entries = result.elements as Array<{ tag: string; sensitive: boolean }>
+    expect(entries).toHaveLength(3) // capped, as requested
+    const input = entries.find((e) => e.tag === 'input')
+    expect(input, 'the input must still be indexed — it is within the cap').toBeTruthy()
+    expect(input?.sensitive, 'the label past the cap must still have been found').toBe(true)
+  })
+
+  it('still finds a label inside a shadow root, after 30 shadow-local filler elements past the cap', () => {
+    // A <label for> only associates with an id in the SAME root (native
+    // shadow DOM semantics — id/for never cross a shadow boundary), so both
+    // the target input and its label must live inside the shadow root
+    // together. One light-DOM filler button eats a cap slot before the
+    // walk even reaches the shadow host, so the shadow-scoped input is
+    // matched with only cap-1 slots left inside its own root — proving
+    // walkLabels (which runs to completion across every root, including
+    // this shadow root, before classification starts at all) already found
+    // the label 30 elements past where THIS root's own share of the cap runs out.
+    document.body.innerHTML = '<button>light filler</button><my-widget></my-widget>'
+    const host = document.querySelector('my-widget')!
+    const shadow = (host as any).attachShadow ? host.attachShadow({ mode: 'open' }) : null
+    if (!shadow) return // jsdom build without Shadow DOM support — skip rather than false-fail
+    const parts = ['<input id="shadow-target" placeholder="x">']
+    for (let i = 0; i < 30; i++) parts.push(`<button>shadow filler ${i}</button>`)
+    parts.push('<label for="shadow-target">Card number</label>')
+    shadow.innerHTML = parts.join('')
+    stubUniformLayout()
+
+    const buildInteractiveIndex = extractInjected('buildInteractiveIndex')
+    const result = buildInteractiveIndex('data-agent-idx', 3)
+    const entries = result.elements as Array<{ tag: string; sensitive: boolean }>
+    expect(entries).toHaveLength(3) // capped, as requested
+    const input = entries.find((e) => e.tag === 'input')
+    expect(input, 'the shadow-scoped input must still be indexed — it is within the cap').toBeTruthy()
+    expect(input?.sensitive, 'the label 30 elements past the cap must still have been found').toBe(true)
+  })
+
+  it('stops calling getComputedStyle once the cap is reached — the walk does not keep classifying past it', () => {
+    // Structural proof, not a timing assertion: spy on getComputedStyle
+    // (called by isInteractive/isVisible for every element classify()
+    // actually evaluates) and confirm the count stays bounded near the cap
+    // instead of growing with the number of filler elements after it.
+    const parts: string[] = []
+    for (let i = 0; i < 300; i++) parts.push(`<button>btn ${i}</button>`)
+    document.body.innerHTML = parts.join('')
+    stubUniformLayout()
+
+    const spy = vi.spyOn(window, 'getComputedStyle')
+    const buildInteractiveIndex = extractInjected('buildInteractiveIndex')
+    const result = buildInteractiveIndex('data-agent-idx', 5)
+    expect((result.elements as unknown[]).length).toBe(5)
+    expect(result.truncated).toBe(true)
+
+    // isInteractive and isVisible each call getComputedStyle once per
+    // classified candidate, so the call count is a small constant multiple
+    // of the cap — nowhere near the 300 filler elements in the document.
+    // Before this fix, collectAll's array-building pass alone touched every
+    // one of the 300 elements before classification even started; this
+    // assertion is what pins the early-stop down structurally.
+    expect(spy.mock.calls.length).toBeLessThan(30)
+    spy.mockRestore()
+  })
+})

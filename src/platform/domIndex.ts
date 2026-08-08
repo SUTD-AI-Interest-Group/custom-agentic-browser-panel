@@ -288,31 +288,40 @@ function buildInteractiveIndex(attr: string, maxElements: number) {
   // that has an id — O(inputs × labels), measured ~1.2s on a 200-input/
   // 2000-label form vs ~150ms at 300 labels. This taxes exactly the large
   // enterprise forms AutofillForm exists for. Build one `for` → text[] map
-  // per root in a single pass (piggybacked on collectAll's existing
-  // querySelectorAll('*') walk below, so it costs no extra DOM traversal),
-  // then look up by id in O(1). Keyed by the root's own object identity
-  // (not a string) — the exact same object `el.getRootNode()` returns for
-  // any element inside it — so a `for` value is never resolved against a
-  // DIFFERENT shadow root's labels; each root gets its own map, preserving
-  // the same per-root scoping the original per-element querySelectorAll had.
+  // per root in a single walk (walkLabels, right below), then look up by id
+  // in O(1). Keyed by the root's own object identity (not a string) — the
+  // exact same object `el.getRootNode()` returns for any element inside it
+  // — so a `for` value is never resolved against a DIFFERENT shadow root's
+  // labels; each root gets its own map, preserving the same per-root
+  // scoping the original per-element querySelectorAll had.
   const labelForMaps = new Map<ParentNode, Map<string, string[]>>()
 
-  // A plain querySelectorAll('*') never descends into an element's shadow
-  // root (a separate tree, not part of the light DOM this walks) — so any
-  // interactive element inside a web component (payment widgets, many
-  // design-system components, cookie banners built as custom elements) was
-  // entirely invisible to this index. Recurse into each open shadow root
-  // encountered; closed shadow roots stay genuinely inaccessible, same as a
-  // cross-origin iframe — an acknowledged residual limit, not fixed here.
-  const collectAll = (root: ParentNode): Element[] => {
-    const found: Element[] = []
-    // This root's OWN label→for map. root.querySelectorAll('*') never
-    // pierces into a nested shadow root (see above), so this only ever
-    // collects labels that actually live in `root` — a recursive call for
-    // el.shadowRoot builds and registers its own, separate map below.
-    const forMap = new Map<string, string[]>()
-    for (const el of Array.from(root.querySelectorAll('*'))) {
-      found.push(el)
+  // Index every <label for> across the whole document (and every open
+  // shadow root) BEFORE any element is classified below — label text must
+  // be fully known the moment classify() asks for it, since a
+  // <label for="x"> very commonly comes AFTER its <input id="x"> in the
+  // markup (checkbox/radio patterns put the label second). This walk is
+  // deliberately NOT capped by maxElements: a labelled input silently
+  // losing its label because the label happened to sit past some cap would
+  // be a security regression — labelAssociationTextOf (below) feeds the
+  // sensitive-field detection the approval gate relies on. It stays cheap
+  // and array-free regardless: each visited node only does a tagName check
+  // plus two attribute/text reads, never the layout-triggering
+  // getComputedStyle/getBoundingClientRect classify() needs — walking the
+  // whole document for that alone is unavoidable (there is no way to know a
+  // label wasn't dropped without having looked at every node), but avoiding
+  // Array.from(root.querySelectorAll('*')) still means this never allocates
+  // one array holding every element in the document at once.
+  //
+  // Recurses into every open shadow root the same way querySelectorAll('*')
+  // never can on its own; closed shadow roots stay genuinely inaccessible,
+  // same as a cross-origin iframe — an acknowledged residual limit, not
+  // fixed here. `forMap` threads through unchanged across light-DOM
+  // recursion (same map for the whole root) and is swapped for a brand new
+  // one when crossing into a shadow root — the per-root scoping
+  // labelForMaps depends on.
+  const walkLabels = (node: ParentNode, forMap: Map<string, string[]>): void => {
+    for (const el of Array.from(node.children)) {
       if (el.tagName === 'LABEL') {
         const forValue = el.getAttribute('for')
         const text = el.textContent
@@ -322,18 +331,24 @@ function buildInteractiveIndex(attr: string, maxElements: number) {
           else forMap.set(forValue, [text])
         }
       }
-      if (el.shadowRoot) found.push(...collectAll(el.shadowRoot))
+      if (el.shadowRoot) {
+        const shadowMap = new Map<string, string[]>()
+        labelForMaps.set(el.shadowRoot, shadowMap)
+        walkLabels(el.shadowRoot, shadowMap)
+      }
+      walkLabels(el, forMap)
     }
-    labelForMaps.set(root, forMap)
-    return found
   }
+  const documentLabelMap = new Map<string, string[]>()
+  labelForMaps.set(document, documentLabelMap)
+  walkLabels(document, documentLabelMap)
 
   // C5: an element's human-readable label is very often NOT its own name/id
   // — an associated `<label for="id">` or a wrapping `<label>...<input>...
   // </label>` is standard HTML, and is exactly how most React/MUI-style
   // forms label a field whose id is machine-generated (id="mui-42").
   // accessibleName() doesn't compute either: it only reads attributes/text
-  // ON the element itself. `labelForMaps` (built by collectAll, above) is
+  // ON the element itself. `labelForMaps` (built by walkLabels, below) is
   // already scoped per root the same way closestAcrossShadow pierces shadow
   // boundaries, so a labelled control inside a web component isn't silently
   // skipped — and neither this nor the map-building above ever builds an
@@ -385,15 +400,18 @@ function buildInteractiveIndex(attr: string, maxElements: number) {
     formMethod?: string
     ancestorName?: string
   }> = []
-  const all = collectAll(document)
   let index = 0
   let truncated = false
-  for (const el of all) {
-    if (out.length >= maxElements) {
-      truncated = true
-      break
-    }
-    if (!isInteractive(el) || !isVisible(el)) continue
+
+  // Classify one element: isInteractive/isVisible both call
+  // getComputedStyle, and isVisible also calls getBoundingClientRect +
+  // elementFromPoint — real layout-triggering work. Unlike walkLabels above,
+  // the walk that calls this (walkElements, below) genuinely stops once
+  // `out` is full: every label classify() might need was already indexed by
+  // walkLabels, so nothing correctness-relevant is lost by not visiting the
+  // rest of a huge document once the cap is met.
+  const classify = (el: Element): void => {
+    if (!isInteractive(el) || !isVisible(el)) return
     const r = el.getBoundingClientRect()
     const input = el as HTMLInputElement
     const type = input.type || undefined
@@ -468,6 +486,36 @@ function buildInteractiveIndex(attr: string, maxElements: number) {
     })
     index++
   }
+
+  // Walk the tree classifying elements, again without ever materializing a
+  // full-document array — a querySelectorAll('*') on a huge or adversarial
+  // DOM allocates one array holding every element in it before ANY cap gets
+  // a say. Visits elements in the same order the old collectAll's
+  // Array.from(root.querySelectorAll('*')) + eager shadow-root splice used
+  // to produce: an element, then its shadow content (if any, fully,
+  // recursively) before its own light-DOM children.
+  //
+  // Unlike walkLabels above, this walk genuinely stops the moment `out` is
+  // full — returning `false` propagates back up through every enclosing
+  // call (shadow-root recursion included) so the ENTIRE walk halts, not
+  // just the current node's remaining siblings. That is safe specifically
+  // because walkLabels already finished indexing every label in the
+  // document before this walk started; classify() has everything it will
+  // ever need regardless of where the cap lands.
+  const walkElements = (node: ParentNode): boolean => {
+    for (const el of Array.from(node.children)) {
+      if (out.length >= maxElements) {
+        truncated = true
+        return false
+      }
+      classify(el)
+      if (el.shadowRoot && !walkElements(el.shadowRoot)) return false
+      if (!walkElements(el)) return false
+    }
+    return true
+  }
+  walkElements(document)
+
   return {
     url: location.href,
     title: document.title,

@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach } from 'vitest'
+import { describe, it, expect, afterEach, vi } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
@@ -228,5 +228,50 @@ describe('regionIndex — shadow DOM piercing (F5)', () => {
     const result = buildRegionIndex('data-agent-region', 240, SEMANTIC_TAG_SOURCE)
     const names = (result.regions as Array<{ name: string }>).map((r) => r.name)
     expect(names).toContain('Q3 revenue')
+  })
+})
+
+// (Follow-up MEDIUM — perf) collectAll used to build ONE array holding every
+// element in the document via Array.from(document.querySelectorAll('*'))
+// BEFORE maxCandidates was ever consulted — a huge or adversarial DOM forced
+// a full-document array allocation on every ReadPage regardless of the cap.
+// Unlike domIndex.ts's buildInteractiveIndex, there is no label-style
+// completeness requirement here, so the fix is a single walk (no separate
+// label pass needed) that genuinely stops the moment maxCandidates is
+// reached, proven against the REAL extracted buildRegionIndex.
+describe('regionIndex — bounded walk does not materialize the whole document (follow-up MEDIUM)', () => {
+  const savedRect = Element.prototype.getBoundingClientRect
+  const savedScrollWidth = Object.getOwnPropertyDescriptor(Element.prototype, 'scrollWidth')
+  const savedScrollHeight = Object.getOwnPropertyDescriptor(Element.prototype, 'scrollHeight')
+
+  afterEach(() => {
+    document.body.innerHTML = ''
+    Element.prototype.getBoundingClientRect = savedRect
+    if (savedScrollWidth) Object.defineProperty(Element.prototype, 'scrollWidth', savedScrollWidth)
+    if (savedScrollHeight) Object.defineProperty(Element.prototype, 'scrollHeight', savedScrollHeight)
+  })
+
+  it('stops calling getComputedStyle once maxCandidates is reached — the walk does not keep classifying past it', () => {
+    // Structural proof, not a timing assertion: spy on getComputedStyle
+    // (called once per candidate by isRendered, after kindOf has already
+    // matched it as a <table>) and confirm the count stays bounded near the
+    // cap instead of growing with the number of filler tables after it.
+    Object.defineProperty(document.documentElement, 'scrollWidth', { value: 1200, configurable: true })
+    Object.defineProperty(document.documentElement, 'scrollHeight', { value: 2000, configurable: true })
+    Element.prototype.getBoundingClientRect = function () {
+      return { x: 0, y: 0, top: 0, left: 0, right: 600, bottom: 400, width: 600, height: 400, toJSON() {} } as DOMRect
+    }
+    document.body.innerHTML = Array.from({ length: 300 }, () => '<table></table>').join('')
+
+    const spy = vi.spyOn(window, 'getComputedStyle')
+    const buildRegionIndex = extractInjected('buildRegionIndex')
+    const result = buildRegionIndex('data-agent-region', 10, SEMANTIC_TAG_SOURCE)
+    expect((result.regions as unknown[]).length).toBe(10)
+    expect(result.truncated).toBe(true)
+    // Before this fix, collectAll's array-building pass alone visited every
+    // one of the 300 tables before classification even started; this
+    // assertion is what pins the early-stop down structurally.
+    expect(spy.mock.calls.length).toBeLessThan(30)
+    spy.mockRestore()
   })
 })

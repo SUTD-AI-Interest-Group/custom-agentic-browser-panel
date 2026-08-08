@@ -87,18 +87,67 @@ function requestOf<T>(store: string, mode: IDBTransactionMode, fn: (s: IDBObject
   )
 }
 
+/**
+ * Run `fn` once per id against a SINGLE shared transaction, instead of
+ * opening one transaction per id. IndexedDB serializes overlapping
+ * transactions against the same store regardless (see the conversations.ts
+ * `mutate()` invariant), so N parallel per-id transactions here would just
+ * queue up behind each other at the engine level while each still pays its
+ * own open/commit overhead — a batch of up to MAX_EPISODES_PER_DREAM ids is
+ * exactly the case where that overhead adds up. One transaction lets every
+ * get/put/delete pipeline without a JS-side round trip between requests, and
+ * commits — or aborts — the whole batch together: a mid-batch failure no
+ * longer leaves some ids already written and others untouched, the failure
+ * mode the old sequential-await loop had.
+ *
+ * `fn` is called synchronously for every id in the same task, before any of
+ * their requests can resolve — new requests issued from a request's own
+ * onsuccess (e.g. a `put` queued from a `get`'s callback) extend the
+ * transaction the same way, so a get-then-conditionally-put per id is safe
+ * here even though it isn't a single atomic request.
+ */
+function batchTransaction(
+  store: string,
+  mode: IDBTransactionMode,
+  ids: string[],
+  fn: (s: IDBObjectStore, id: string) => void,
+): Promise<void> {
+  if (ids.length === 0) return Promise.resolve()
+  return openDb().then(
+    (db) =>
+      new Promise<void>((resolve, reject) => {
+        const tx = db.transaction(store, mode)
+        const s = tx.objectStore(store)
+        tx.oncomplete = () => resolve()
+        tx.onerror = () => reject(tx.error)
+        tx.onabort = () => reject(tx.error ?? new Error('transaction aborted'))
+        for (const id of ids) fn(s, id)
+      }),
+  )
+}
+
 // ---------------------------------------------------------------------------
 // Memories
 //
-// updateMemory/appendToEpisode/markEpisodesConsolidated below are each a get
-// in one IndexedDB transaction followed by a separate put in another — not
-// atomic, so two callers racing on the SAME id can interleave a lost update.
-// That's fine: their one caller that ever runs on a schedule from two
-// contexts at once (dream.ts, consolidating episodes into memories) now
-// serializes itself with a chrome.storage.local-backed lock (see
-// acquireDreamLock in dream.ts) specifically so it never calls these
-// concurrently with itself. A future caller that DOES need to run these
-// concurrently for the same id would need its own serialization the same way.
+// updateMemory/appendToEpisode below are each a get in one IndexedDB
+// transaction followed by a separate put in another — not atomic, so two
+// callers racing on the SAME id can interleave a lost update. That's fine:
+// their one caller that ever runs on a schedule from two contexts at once
+// (dream.ts, consolidating episodes into memories) now serializes itself
+// with a chrome.storage.local-backed lock (see acquireDreamLock in
+// dream.ts) specifically so it never calls these concurrently with itself.
+// A future caller that DOES need to run these concurrently for the same id
+// would need its own serialization the same way.
+//
+// markEpisodesConsolidated/pruneConsolidatedEpisodes below instead batch
+// their whole id list into ONE shared transaction each (see
+// batchTransaction) purely for throughput — a dream cycle can touch up to
+// MAX_EPISODES_PER_DREAM ids, and that no longer needs N sequential
+// get-then-put round trips. This makes each BATCH atomic (all its ids
+// commit together or none do), but two separate markEpisodesConsolidated
+// calls from different contexts can still interleave across DIFFERENT ids
+// the same as above — the dream lock is still what rules that out, not the
+// transaction.
 // ---------------------------------------------------------------------------
 
 export async function saveMemory(input: {
@@ -227,21 +276,23 @@ export async function listUnconsolidatedEpisodes(): Promise<EpisodeRecord[]> {
 }
 
 export async function markEpisodesConsolidated(ids: string[]): Promise<void> {
-  for (const id of ids) {
-    const e = await requestOf<EpisodeRecord | undefined>(EPISODES, 'readonly', (s) => s.get(id))
-    if (e) await requestOf(EPISODES, 'readwrite', (s) => s.put({ ...e, consolidated: true }))
-  }
+  await batchTransaction(EPISODES, 'readwrite', ids, (store, id) => {
+    const getReq = store.get(id)
+    getReq.onsuccess = () => {
+      const e = getReq.result as EpisodeRecord | undefined
+      if (e) store.put({ ...e, consolidated: true })
+    }
+  })
 }
 
 /** Consolidated episodes are kept briefly for debugging, then dropped. */
 export async function pruneConsolidatedEpisodes(olderThanMs = 14 * 86_400_000): Promise<void> {
   const all = await requestOf<EpisodeRecord[]>(EPISODES, 'readonly', (s) => s.getAll())
   const cutoff = Date.now() - olderThanMs
-  for (const e of all) {
-    if (e.consolidated && e.updatedAt < cutoff) {
-      await requestOf(EPISODES, 'readwrite', (s) => s.delete(e.id))
-    }
-  }
+  const doomed = all.filter((e) => e.consolidated && e.updatedAt < cutoff).map((e) => e.id)
+  await batchTransaction(EPISODES, 'readwrite', doomed, (store, id) => {
+    store.delete(id)
+  })
 }
 
 /**

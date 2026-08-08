@@ -270,25 +270,12 @@ function buildRegionIndex(attr: string, maxCandidates: number, semanticSource: s
 
   document.querySelectorAll('[' + attr + ']').forEach((n) => n.removeAttribute(attr))
 
-  // Same shadow-DOM gap as domIndex.ts's buildInteractiveIndex — see its
-  // comment for the full rationale. Recurse into each open shadow root so a
-  // chart/table living inside a web component is not silently invisible.
-  const collectAll = (root: ParentNode): Element[] => {
-    const found: Element[] = []
-    for (const el of Array.from(root.querySelectorAll('*'))) {
-      found.push(el)
-      if (el.shadowRoot) found.push(...collectAll(el.shadowRoot))
-    }
-    return found
-  }
-
   // Type annotations are erased before this function is serialized into the page,
   // so naming a module type here costs nothing at runtime (same as domIndex).
   const out: RawRegion[] = []
   // Maps an element to its index in `out`, so a child can name its nearest
   // indexed ancestor without a second tree walk.
   const idOf = new Map<Element, number>()
-  const all = collectAll(document)
   let truncated = false
 
   // el.parentElement is null at the very top of a shadow root (a ShadowRoot
@@ -301,24 +288,21 @@ function buildRegionIndex(attr: string, maxCandidates: number, semanticSource: s
     return root instanceof ShadowRoot ? root.host : null
   }
 
-  for (const el of all) {
-    if (out.length >= maxCandidates) {
-      truncated = true
-      break
-    }
+  const classify = (el: Element): void => {
     const kind = kindOf(el)
-    if (!kind) continue
-    if (!isRendered(el)) continue
+    if (!kind) return
+    if (!isRendered(el)) return
     const r = el.getBoundingClientRect()
-    if (r.width < MIN_W || r.height < MIN_H) continue
+    if (r.width < MIN_W || r.height < MIN_H) return
     const area = r.width * r.height
     // A wrapper spanning the whole document is the page, not a region on it.
-    if (area > docArea * MAX_AREA_RATIO) continue
+    if (area > docArea * MAX_AREA_RATIO) return
     // A styled <div> claiming most of the page is a layout shell, not a card.
-    if (!SEMANTIC.test(el.tagName.toUpperCase()) && kind === 'card' && area > docArea * 0.6) continue
+    if (!SEMANTIC.test(el.tagName.toUpperCase()) && kind === 'card' && area > docArea * 0.6) return
 
     // Nearest already-indexed ancestor. Walking up from here is cheap because
-    // ancestors are always visited before descendants in document order.
+    // ancestors are always visited before descendants in document order —
+    // still true under the walk below (see its own comment).
     let parentId = -1
     let p: Element | null = parentOrHost(el)
     while (p) {
@@ -345,6 +329,36 @@ function buildRegionIndex(attr: string, maxCandidates: number, semanticSource: s
       belowFold: r.top > vh || r.bottom < 0,
     })
   }
+
+  // Walk the tree without ever materializing a full-document array — a
+  // querySelectorAll('*') on a huge or adversarial DOM allocates one array
+  // holding every element in it before maxCandidates is ever consulted. Same
+  // shadow-DOM gap and fix as domIndex.ts's buildInteractiveIndex (see its
+  // comment for the full rationale on why shadow roots need explicit
+  // recursion at all) — but unlike domIndex, there is no label-style
+  // completeness requirement pinning this one open: nothing else in this
+  // file needs to have seen the rest of the document once maxCandidates
+  // candidates are found, so this walk genuinely stops there. Returning
+  // `false` propagates back up through every enclosing call (shadow-root
+  // recursion included) so the ENTIRE walk halts, not just the current
+  // node's remaining siblings — and because classify(el) always runs before
+  // descending into el's shadow root or light-DOM children, an ancestor is
+  // still guaranteed to be indexed (if it qualifies at all) before any of
+  // its descendants are classified, exactly like the old collectAll +
+  // document-order loop.
+  const walk = (node: ParentNode): boolean => {
+    for (const el of Array.from(node.children)) {
+      if (out.length >= maxCandidates) {
+        truncated = true
+        return false
+      }
+      classify(el)
+      if (el.shadowRoot && !walk(el.shadowRoot)) return false
+      if (!walk(el)) return false
+    }
+    return true
+  }
+  walk(document)
 
   return {
     url: location.href,
