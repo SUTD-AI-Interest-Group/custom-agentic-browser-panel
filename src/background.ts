@@ -2,8 +2,19 @@
 // hosts work that must outlive the panel — today that is the "dreaming"
 // memory-consolidation cycle, which runs on an hourly alarm and only fires
 // when the user has been idle for a while (see dream.ts).
+//
+// It *schedules* that cycle; it does not run it. Chrome terminates a service
+// worker "when a single request, such as an event or API call, takes longer than
+// 5 minutes to process" — and a dream generation over a whole day of transcript
+// can exceed that. Measured against this worker: a 6-minute generation awaited
+// here was killed mid-flight, losing the finished answer and stranding the dream
+// lock. The alarm now checks the gates, takes the lock and hands the job to the
+// offscreen document, which has no such ceiling; the result comes back as a
+// message (dream.result / dream.failed) that revives this worker if it has since
+// been killed.
 
-import { dreamIfDue } from './agent/dream'
+import { abandonDispatchedDream, completeDispatchedDream, dreamIfDue, type DreamJob } from './agent/dream'
+import { postDreamMsg, type DreamMsg } from './data/dreamMessages'
 import type { ComposerAction } from './platform/composerActions'
 import { COMPOSER_ACTION_MSG, setComposerAction } from './platform/composerActions'
 import type { ResearchMsg } from './data/researchTasks'
@@ -104,12 +115,32 @@ chrome.alarms.onAlarm.addListener((alarm) => {
     return
   }
   if (alarm.name !== DREAM_ALARM) return
-  dreamIfDue()
+  // Note what is NOT awaited here: the generation. dreamIfDue resolves as soon as
+  // the job is handed to the offscreen host, so this handler stays short and this
+  // worker is free to be killed while the host works — the result message wakes
+  // it back up to record the outcome (see the dream.result branch below).
+  dreamIfDue(dispatchDream)
     .then((outcome) => {
       if (outcome.status === 'dreamed') console.info('[dream]', outcome)
     })
     .catch((err) => console.error('[dream] failed', err))
 })
+
+/**
+ * Hand a due dream to the offscreen host. Throwing is meaningful: dreamIfDue
+ * releases the lock it took when this rejects, so a failure to create the host
+ * costs one alarm tick rather than blocking every cycle (and the user's own
+ * "Dream now") until the lock's TTL expires.
+ */
+async function dispatchDream(job: DreamJob, token: string): Promise<void> {
+  try {
+    await ensureOffscreen()
+  } catch (err) {
+    console.warn('[dream] could not start the offscreen host', err)
+    throw err
+  }
+  postDreamMsg({ type: 'dream.run', token, job })
+}
 
 // ---------------------------------------------------------------------------
 // Toggle the side panel with a browser-global keyboard shortcut (default
@@ -282,7 +313,7 @@ function ensureOffscreen(): Promise<void> {
     await chrome.offscreen.createDocument({
       url: OFFSCREEN_URL,
       reasons: [chrome.offscreen.Reason.DOM_PARSER],
-      justification: 'Parse fetched HTML for background research.',
+      justification: 'Parse fetched HTML for background research and consolidate memories while idle.',
     })
   })().finally(() => { creatingOffscreen = null })
   return creatingOffscreen
@@ -375,10 +406,23 @@ async function resumeStrandedResearch(): Promise<void> {
 // until the sender is torn down, and every sender that did not attach a .catch
 // gets "A listener indicated an asynchronous response by returning true, but the
 // message channel closed before a response was received" as an uncaught rejection.
-chrome.runtime.onMessage.addListener((msg: ResearchMsg, _sender, sendResponse) => {
+chrome.runtime.onMessage.addListener((msg: ResearchMsg | DreamMsg, _sender, sendResponse) => {
   ;(async () => {
     try {
-      if (msg?.type === 'research.ensureAndStart') {
+      if (msg?.type === 'dream.result') {
+        // The other half of the alarm's cycle, arriving in its own event —
+        // this worker may be a fresh instance that this very message revived,
+        // which is exactly why the lock token travels with the result instead
+        // of living in memory here.
+        const outcome = await completeDispatchedDream(msg.result, msg.token)
+        if (outcome.status === 'dreamed') console.info('[dream]', outcome)
+      } else if (msg?.type === 'dream.failed') {
+        // The generation itself failed (provider unreachable, model error). Not
+        // this worker's problem to retry: drop the lock and let the next alarm
+        // tick start a fresh cycle over the same still-unconsolidated episodes.
+        await abandonDispatchedDream(msg.token)
+        console.warn('[dream] cycle failed in the offscreen host:', msg.error)
+      } else if (msg?.type === 'research.ensureAndStart') {
         const now = Date.now()
         await saveTask({
           id: msg.taskId,

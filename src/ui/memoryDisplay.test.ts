@@ -25,3 +25,10 @@ test('a single added memory is singular, plural episodes still plural', () => {
   const res: DreamOutcome = { status: 'dreamed', added: 1, updated: 0, deleted: 0, episodes: 2, summary: null }
   expect(describeOutcome(res)).toBe('Dreamed over 2 conversations — 1 added.')
 })
+
+// A dispatched cycle is running in the offscreen host and will report back
+// later (the alarm path). The panel's own "Dream now" never produces one, but
+// the status line must still say something truthful if it ever sees it.
+test('a dispatched dream reads as in-progress, not as a finished dream', () => {
+  expect(describeOutcome({ status: 'dispatched' })).toBe('Dreaming in the background…')
+})
