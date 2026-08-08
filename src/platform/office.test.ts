@@ -1,6 +1,25 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import { zipSync, strToU8 } from 'fflate'
-import { parseOfficeDocument, OfficeError, countImageNodes } from './office'
+
+// office.ts now hands parsing to officeEngine.ts, which spawns a real browser
+// Worker — unavailable under Vitest (no chrome.runtime, no Worker). Mock the
+// engine to delegate straight to officeParse.ts's parseOfficeBytes instead of
+// a canned fixture: unlike pdfVerbosity.test.ts's pdfEngine mock (that path is
+// a 4.8 MB WASM module, too heavy to run in tests at all), officeParser is
+// plain, lightweight JS — running it for real here is what keeps these tests
+// meaningful end-to-end coverage of the actual parse output, not just proof
+// that a mock was called. The worker/queue/timeout plumbing itself is covered
+// separately in officeEngine.test.ts against a fake Worker.
+vi.mock('./officeEngine', () => ({
+  getOfficeEngine: () => ({
+    parse: async (bytes: Uint8Array, name: string, mimeType: string) => {
+      const { parseOfficeBytes } = await import('./officeParse')
+      return parseOfficeBytes(bytes, name, mimeType)
+    },
+  }),
+}))
+
+const { parseOfficeDocument, OfficeError, countImageNodes } = await import('./office')
 
 // A real, minimal, valid PNG (1x1 transparent pixel) — small enough to inline,
 // large enough to be a real decodable image so a fixture using it is a real

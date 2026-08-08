@@ -1,39 +1,25 @@
-// Office document parsing — the impure shell over officeParser's slim browser
-// bundle. Bytes in, the normalized OfficeDoc from officeText.ts out; it never
-// formats text. Same division of labour as pdf.ts / pdfText.ts.
-//
-// Two hard rules live here:
-//
-// 1. The import is `officeparser/slim` and it is DYNAMIC. The default entry
-//    resolves the pdf.js worker and Tesseract language data from jsDelivr at
-//    runtime — remotely hosted code, which Manifest V3 forbids and which this
-//    product forbids on principle. The slim bundle strips both. Keeping the
-//    import dynamic is what makes Vite code-split its ~845 KB into a chunk that
-//    loads only when a user actually attaches a document, instead of taxing
-//    every panel open.
-// 2. decompressionLimits are set on every call. officeParser's defaults (512 MB
-//    / 10k entries) are generous enough to let a zip bomb exhaust the panel's
-//    memory; these files are untrusted user input.
+// Office document parsing — the thin, panel-resident client over
+// officeEngine.ts. This file used to run officeParser inline on the main
+// thread; it now only holds the size gate and the LRU parse cache, and hands
+// the actual work to the worker (see officeEngine.ts / officeWorker.ts /
+// officeParse.ts for why, and officeCellBudget.ts for the XLSX cell-count
+// decompression-bomb guard those files apply before the real parse runs).
 //
 // Runs in page-like contexts (side panel, offscreen host) — never the service
 // worker, matching pdf.ts.
 
-import {
-  officeFormatFor,
-  type OfficeDoc,
-  type OfficeFormat,
-  type ProseSegment,
-  type WorkbookSheet,
-} from './officeText'
+import { OfficeError, type OfficeDoc } from './officeText'
+import { getOfficeEngine } from './officeEngine'
 
-/** Parse failures the UI shows verbatim — mirrors PdfError. */
-export class OfficeError extends Error {}
+// Re-exported for backward compatibility: attachments.ts imports both
+// `parseOfficeDocument` and `OfficeError` from this module, and office.test.ts
+// imports `countImageNodes` from it too (its AST-walking home is officeText.ts
+// now, alongside toWorkbook/toProse, since none of it needs Chrome/a Worker).
+export { OfficeError }
+export { countImageNodes } from './officeText'
 
 /** Matches DOCUMENT_MAX_BYTES in attachmentPlan.ts — the parse ceiling. */
 export const MAX_OFFICE_BYTES = 25 * 1024 * 1024
-
-// Untrusted archives: well under officeParser's 512 MB / 10k defaults.
-const DECOMPRESSION_LIMITS = { maxUncompressedBytes: 64 * 1024 * 1024, maxZipEntries: 2000 }
 
 // A parsed document is reused between attach time (validation) and send time
 // (formatting), and a chat may revisit the same attachment across turns. Small,
@@ -41,170 +27,19 @@ const DECOMPRESSION_LIMITS = { maxUncompressedBytes: 64 * 1024 * 1024, maxZipEnt
 const CACHE_MAX = 4
 const cache = new Map<string, Promise<OfficeDoc>>()
 
-let parserPromise: Promise<typeof import('officeparser/slim')> | null = null
-
-/** Load the slim bundle once, lazily. Never make this a static import. */
-function getOfficeParser(): Promise<typeof import('officeparser/slim')> {
-  if (!parserPromise) {
-    parserPromise = import('officeparser/slim').catch((err) => {
-      // Let a failed load retry on the next attachment rather than poisoning
-      // the module for the life of the panel.
-      parserPromise = null
-      throw new OfficeError(`Could not load the document parser: ${err instanceof Error ? err.message : String(err)}`)
-    })
-  }
-  return parserPromise
-}
-
-/** Text of one AST node and everything under it. */
-function nodeText(node: any): string {
-  if (typeof node?.text === 'string' && node.text.length > 0) return node.text
-  const kids: any[] = Array.isArray(node?.children) ? node.children : []
-  return kids.map(nodeText).join('')
-}
-
-/**
- * Recursively count `type === 'image'` content nodes — exported for direct
- * unit testing against a synthetic node tree, since hand-authoring an
- * image-bearing OOXML fixture is fiddly.
- *
- * This is the only reliable way to count images: `ast.attachments` mixes
- * images and charts together (`OfficeAttachment.type` is `'image' | 'chart'`),
- * so counting it would over-count a document with an embedded chart. Counting
- * `type === 'image'` content nodes instead counts only real images, and,
- * unlike `ast.attachments`, matches this module's own comment on `toProse`
- * about the AST being one flat vocabulary shared by every format — an image
- * can be nested arbitrarily deep (e.g. inside a pptx/odp `slide`), hence the
- * recursion through `children`.
- */
-export function countImageNodes(content: any[]): number {
-  let count = 0
-  for (const node of content) {
-    if (node?.type === 'image') count++
-    if (Array.isArray(node?.children)) count += countImageNodes(node.children)
-  }
-  return count
-}
-
-/**
- * Rebuild one sheet row by column index. officeParser emits cells sparsely with
- * a 0-based `metadata.col`, so a row that skips B yields two cells — appending
- * them in order would slide C into B's place and misalign every value on that
- * row against the header. Gaps become empty strings instead.
- */
-function rowCells(row: any): string[] {
-  const cells: any[] = Array.isArray(row?.children) ? row.children : []
-  const out: string[] = []
-  for (const cell of cells) {
-    const col = typeof cell?.metadata?.col === 'number' ? cell.metadata.col : out.length
-    while (out.length < col) out.push('')
-    out[col] = nodeText(cell)
-  }
-  return out
-}
-
-function toWorkbook(content: any[], format: 'xlsx' | 'ods', imageCount: number): OfficeDoc {
-  const sheets: WorkbookSheet[] = content
-    .filter((n) => n?.type === 'sheet')
-    .map((node) => {
-      const rows = (Array.isArray(node.children) ? node.children : [])
-        .filter((r: any) => r?.type === 'row')
-        .map(rowCells)
-      const colCount = rows.reduce((m: number, r: string[]) => Math.max(m, r.length), 0)
-      // Pad every row to the widest, so consumers can index columns safely.
-      for (const row of rows) while (row.length < colCount) row.push('')
-      return { name: String(node.metadata?.sheetName ?? 'Sheet'), rows, rowCount: rows.length, colCount }
-    })
-  return { shape: 'workbook', format, sheets, imageCount }
-}
-
-/**
- * Prose mapping. officeParser's AST is a single flat vocabulary shared by every
- * format it supports — verified empirically (see office.test.ts and the task-3
- * report) against docx/pptx/odt/odp/epub fixtures built with fflate:
- *
- * - pptx and odp both group an entire slide under one top-level `slide` node
- *   (`metadata.slideNumber`, no title field) whose children are walked as a
- *   unit — that grouping is real and this function keys off it.
- * - docx, odt and rtf never group at all: `content` is a flat run of `heading`
- *   / `paragraph` nodes, which is why everything else falls into one running
- *   "Document" body with headings kept inline (`# `-prefixed).
- * - epub ALSO never groups. There is no `chapter` or `section` node anywhere
- *   in officeParser's real type union (`OfficeContentNode` in
- *   officeparser.browser.slim.d.ts) — every spine XHTML file flattens into the
- *   exact same heading/paragraph stream a docx gets, with chapter boundaries
- *   completely invisible in the AST. The nearest real signal is a level-1
- *   heading, which is what EPUB authoring tools put at the top of each chapter
- *   file, so epub alone treats one as a segment boundary and uses its text as
- *   the label. This is a heuristic, not a guarantee: a book that doesn't open
- *   every chapter with an H1 will fall back to fewer, larger segments — never
- *   an error, since `formatProse` handles a single all-encompassing segment
- *   fine.
- */
-function toProse(content: any[], format: Exclude<OfficeFormat, 'xlsx' | 'ods'>, imageCount: number): OfficeDoc {
-  const segments: ProseSegment[] = []
-  let unit = 0
-  let label = 'Document'
-  let body: string[] = []
-
-  const flush = () => {
-    const text = body.join('\n\n')
-    if (text.trim().length > 0) segments.push({ label, text })
-    body = []
-  }
-
-  for (const node of content) {
-    if (node?.type === 'slide') {
-      flush()
-      unit++
-      label = `Slide ${unit}`
-      const text = (Array.isArray(node.children) ? node.children : []).map(nodeText).join('\n\n')
-      if (text.trim().length > 0) body.push(text)
-      continue
-    }
-    if (format === 'epub' && node?.type === 'heading' && node?.metadata?.level === 1) {
-      flush()
-      unit++
-      const text = nodeText(node)
-      label = text.trim().length > 0 ? text : `Chapter ${unit}`
-      continue
-    }
-    const text = nodeText(node)
-    if (text.trim().length > 0) body.push(node?.type === 'heading' ? `# ${text}` : text)
-  }
-  flush()
-  return { shape: 'prose', format, segments, imageCount }
-}
-
 async function doParse(bytes: Uint8Array, name: string, mimeType: string): Promise<OfficeDoc> {
-  const format = officeFormatFor(name, mimeType)
-  if (!format) throw new OfficeError(`"${name}" is not a supported office document.`)
-  const { parseOffice } = await getOfficeParser()
-  let ast: any
   try {
-    // extractAttachments is required for a correct imageCount, not optional:
-    // verified against the library's own source that for docx and rtf
-    // specifically, `image` content nodes are built ONLY when this flag is
-    // set — without it, a docx paragraph holding a `w:drawing` parses as
-    // completely empty, no `image` node anywhere in `content`. pptx/odp/odt
-    // already emit `image` nodes unconditionally, so this flag is a no-op
-    // for them; requesting it uniformly avoids a per-format branch that
-    // would silently break again if officeParser's gating ever changes.
-    // The resulting attachment payloads are discarded — only countImageNodes
-    // (walking `content`, not `ast.attachments`) is read — but decoding them
-    // is unavoidable to populate those `image` nodes at all. Cost is bounded
-    // by DECOMPRESSION_LIMITS, the same cap already guarding this call.
-    ast = await parseOffice(bytes, { decompressionLimits: DECOMPRESSION_LIMITS, extractAttachments: true })
+    return await getOfficeEngine().parse(bytes, name, mimeType)
   } catch (err) {
-    throw new OfficeError(
-      `Could not read "${name}": ${err instanceof Error ? err.message : String(err)}`,
-    )
+    // The worker already turns a real parse failure into an actionable
+    // sentence (officeParse.ts); anything else here is an engine/transport
+    // fault (boot failure, wedge timeout). Re-wrapped as a fresh OfficeError
+    // so `instanceof OfficeError` at the call site (attachments.ts) sees the
+    // right class — a custom Error subclass does not survive the worker's
+    // postMessage structured clone, so the worker's own OfficeError instance
+    // never actually crosses the boundary; this reconstructs it on this side.
+    throw new OfficeError(err instanceof Error ? err.message : String(err))
   }
-  const content: any[] = Array.isArray(ast?.content) ? ast.content : []
-  const imageCount = countImageNodes(content)
-  return format === 'xlsx' || format === 'ods'
-    ? toWorkbook(content, format, imageCount)
-    : toProse(content, format, imageCount)
 }
 
 /**

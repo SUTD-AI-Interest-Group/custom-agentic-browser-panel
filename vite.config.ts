@@ -29,6 +29,11 @@ export default defineConfig({
         // unhashed filename exactly like background.js and offscreen.js — which
         // is what entryFileNames below already guarantees.
         pdfWorker: 'src/platform/pdfWorker.ts',
+        // The officeParser host (C1/H1 fix — see officeEngine.ts). Same plain-
+        // entry reasoning as pdfWorker above: officeEngine.ts spawns it by
+        // extension URL (chrome.runtime.getURL('officeWorker.js')), so it
+        // needs the same stable, unhashed filename.
+        officeWorker: 'src/platform/officeWorker.ts',
         // The MCP Apps sandbox host is NOT an entry: public/sandbox.html ships
         // verbatim with an inline classic script, because a manifest-sandboxed
         // page has an opaque origin and a module script would fail CORS.

@@ -1,12 +1,26 @@
 // Pure office-document text logic — format detection, the normalized document
-// model, and the two char-budget policies that turn it into what the model
-// reads. No officeParser, no Chrome: everything here is unit-testable
-// (officeText.test.ts). The impure side (lazy-importing the parser, walking its
-// AST, caching) lives in office.ts and calls into this.
+// model, the officeParser-AST-to-model mapping, and the two char-budget
+// policies that turn a model into what the model (the LLM) reads. No
+// officeParser import, no Chrome: everything here is unit-testable
+// (officeText.test.ts), including the AST walk, which only ever touches a
+// plain `any[]` node tree handed to it — never the parser itself. The impure
+// side (lazy-importing officeParser, running it off-thread, caching) lives in
+// office.ts / officeParse.ts / officeEngine.ts and calls into this.
 //
 // Sits beside its format in src/platform/ for the same reason pdfText.ts does,
 // even though it is pure: it is format mechanics. Provider-delivery routing is a
 // separate concern and lives in src/agent/attachmentPlan.ts.
+
+/**
+ * Parse failures the UI shows verbatim — mirrors PdfError. Lives here (not
+ * office.ts) so officeParse.ts's worker-side parse can construct one directly,
+ * and office.ts can re-throw a fresh instance at the engine-call boundary: a
+ * custom Error subclass does not survive a postMessage structured clone, so
+ * `instanceof OfficeError` at the real call site (attachments.ts) only works
+ * because both sides import the *same* class from here, not because the
+ * worker's own instance crossed the boundary.
+ */
+export class OfficeError extends Error {}
 
 /** An office format we can parse. PDF is deliberately absent — pdf.ts owns it. */
 export type OfficeFormat = 'docx' | 'pptx' | 'odt' | 'odp' | 'ods' | 'xlsx' | 'rtf' | 'epub'
@@ -33,6 +47,128 @@ export interface WorkbookSheet {
 export type OfficeDoc =
   | { shape: 'prose'; format: Exclude<OfficeFormat, 'xlsx' | 'ods'>; segments: ProseSegment[]; imageCount: number }
   | { shape: 'workbook'; format: 'xlsx' | 'ods'; sheets: WorkbookSheet[]; imageCount: number }
+
+/** Text of one AST node and everything under it. */
+function nodeText(node: any): string {
+  if (typeof node?.text === 'string' && node.text.length > 0) return node.text
+  const kids: any[] = Array.isArray(node?.children) ? node.children : []
+  return kids.map(nodeText).join('')
+}
+
+/**
+ * Recursively count `type === 'image'` content nodes — exported for direct
+ * unit testing against a synthetic node tree, since hand-authoring an
+ * image-bearing OOXML fixture is fiddly.
+ *
+ * This is the only reliable way to count images: `ast.attachments` mixes
+ * images and charts together (`OfficeAttachment.type` is `'image' | 'chart'`),
+ * so counting it would over-count a document with an embedded chart. Counting
+ * `type === 'image'` content nodes instead counts only real images, and,
+ * unlike `ast.attachments`, matches this module's own comment on `toProse`
+ * about the AST being one flat vocabulary shared by every format — an image
+ * can be nested arbitrarily deep (e.g. inside a pptx/odp `slide`), hence the
+ * recursion through `children`.
+ */
+export function countImageNodes(content: any[]): number {
+  let count = 0
+  for (const node of content) {
+    if (node?.type === 'image') count++
+    if (Array.isArray(node?.children)) count += countImageNodes(node.children)
+  }
+  return count
+}
+
+/**
+ * Rebuild one sheet row by column index. officeParser emits cells sparsely with
+ * a 0-based `metadata.col`, so a row that skips B yields two cells — appending
+ * them in order would slide C into B's place and misalign every value on that
+ * row against the header. Gaps become empty strings instead.
+ */
+function rowCells(row: any): string[] {
+  const cells: any[] = Array.isArray(row?.children) ? row.children : []
+  const out: string[] = []
+  for (const cell of cells) {
+    const col = typeof cell?.metadata?.col === 'number' ? cell.metadata.col : out.length
+    while (out.length < col) out.push('')
+    out[col] = nodeText(cell)
+  }
+  return out
+}
+
+/** Maps officeParser's raw AST `content` array to a workbook OfficeDoc. */
+export function toWorkbook(content: any[], format: 'xlsx' | 'ods', imageCount: number): OfficeDoc {
+  const sheets: WorkbookSheet[] = content
+    .filter((n) => n?.type === 'sheet')
+    .map((node) => {
+      const rows = (Array.isArray(node.children) ? node.children : [])
+        .filter((r: any) => r?.type === 'row')
+        .map(rowCells)
+      const colCount = rows.reduce((m: number, r: string[]) => Math.max(m, r.length), 0)
+      // Pad every row to the widest, so consumers can index columns safely.
+      for (const row of rows) while (row.length < colCount) row.push('')
+      return { name: String(node.metadata?.sheetName ?? 'Sheet'), rows, rowCount: rows.length, colCount }
+    })
+  return { shape: 'workbook', format, sheets, imageCount }
+}
+
+/**
+ * Maps officeParser's raw AST `content` array to a prose OfficeDoc.
+ * officeParser's AST is a single flat vocabulary shared by every format it
+ * supports — verified empirically (see office.test.ts and the task-3
+ * report) against docx/pptx/odt/odp/epub fixtures built with fflate:
+ *
+ * - pptx and odp both group an entire slide under one top-level `slide` node
+ *   (`metadata.slideNumber`, no title field) whose children are walked as a
+ *   unit — that grouping is real and this function keys off it.
+ * - docx, odt and rtf never group at all: `content` is a flat run of `heading`
+ *   / `paragraph` nodes, which is why everything else falls into one running
+ *   "Document" body with headings kept inline (`# `-prefixed).
+ * - epub ALSO never groups. There is no `chapter` or `section` node anywhere
+ *   in officeParser's real type union (`OfficeContentNode` in
+ *   officeparser.browser.slim.d.ts) — every spine XHTML file flattens into the
+ *   exact same heading/paragraph stream a docx gets, with chapter boundaries
+ *   completely invisible in the AST. The nearest real signal is a level-1
+ *   heading, which is what EPUB authoring tools put at the top of each chapter
+ *   file, so epub alone treats one as a segment boundary and uses its text as
+ *   the label. This is a heuristic, not a guarantee: a book that doesn't open
+ *   every chapter with an H1 will fall back to fewer, larger segments — never
+ *   an error, since `formatProse` handles a single all-encompassing segment
+ *   fine.
+ */
+export function toProse(content: any[], format: Exclude<OfficeFormat, 'xlsx' | 'ods'>, imageCount: number): OfficeDoc {
+  const segments: ProseSegment[] = []
+  let unit = 0
+  let label = 'Document'
+  let body: string[] = []
+
+  const flush = () => {
+    const text = body.join('\n\n')
+    if (text.trim().length > 0) segments.push({ label, text })
+    body = []
+  }
+
+  for (const node of content) {
+    if (node?.type === 'slide') {
+      flush()
+      unit++
+      label = `Slide ${unit}`
+      const text = (Array.isArray(node.children) ? node.children : []).map(nodeText).join('\n\n')
+      if (text.trim().length > 0) body.push(text)
+      continue
+    }
+    if (format === 'epub' && node?.type === 'heading' && node?.metadata?.level === 1) {
+      flush()
+      unit++
+      const text = nodeText(node)
+      label = text.trim().length > 0 ? text : `Chapter ${unit}`
+      continue
+    }
+    const text = nodeText(node)
+    if (text.trim().length > 0) body.push(node?.type === 'heading' ? `# ${text}` : text)
+  }
+  flush()
+  return { shape: 'prose', format, segments, imageCount }
+}
 
 /** A formatted document, ready to append to the model-facing message text. */
 export interface FormattedDoc {
