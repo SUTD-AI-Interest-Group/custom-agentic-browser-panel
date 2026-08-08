@@ -48,8 +48,15 @@ vi.mock('@modelcontextprotocol/sdk/client/index.js', () => {
   return { Client: FakeClient }
 })
 
-function stubChromeStorage(): void {
-  const store: Record<string, unknown> = {}
+/**
+ * `seed` lets a test pre-populate storage (e.g. a `mcpAuth:<name>` entry, or
+ * the `mcpCatalog` cache) before the manager ever touches it. Real
+ * `remove()` is needed for the token-scoping tests below: they assert on
+ * actual storage state after a purge rather than mocking `clearAuth` itself,
+ * so the purge path exercises the real (trivial) implementation.
+ */
+function stubChromeStorage(seed: Record<string, unknown> = {}): Record<string, unknown> {
+  const store: Record<string, unknown> = { ...seed }
   vi.stubGlobal('chrome', {
     storage: {
       local: {
@@ -57,9 +64,13 @@ function stubChromeStorage(): void {
         set: vi.fn(async (items: Record<string, unknown>) => {
           Object.assign(store, items)
         }),
+        remove: vi.fn(async (key: string) => {
+          delete store[key]
+        }),
       },
     },
   })
+  return store
 }
 
 function deferred<T>(): { promise: Promise<T>; resolve: (v: T) => void; reject: (e: unknown) => void } {
@@ -127,6 +138,83 @@ describe('McpManager — catalog-fetch failure after a successful handshake (F3)
     const pending = manager.ensureConnected('srv')
     gate.reject(new Error('listTools boom'))
     await expect(pending).rejects.toThrow(/listTools boom/)
+
+    manager.disconnectAll()
+  })
+})
+
+// Regression coverage for the OAuth token-replay fix: refresh() must purge a
+// server's stored auth (src/mcp/auth.ts's `mcpAuth:<name>` record) exactly
+// when its identity actually changes — URL edit or outright removal — and
+// never on an ordinary reconnect where nothing changed. These assert on real
+// `chrome.storage.local` state (no mocking of ./auth) so the purge path
+// exercises the real clearAuth() implementation, not a stand-in for it.
+describe('McpManager — MCP OAuth token scoping', () => {
+  const seedToken = { 'mcpAuth:srv': { tokens: { access_token: 'at-1', token_type: 'Bearer' }, boundUrl: 'https://a.example.com/mcp' } }
+
+  it('purges stored auth when an entry\'s URL changes, before reconnecting', async () => {
+    const store = stubChromeStorage(seedToken)
+    const manager = new McpManager()
+
+    await manager.refresh({ mcp: { servers: { srv: { url: 'https://a.example.com/mcp' } } } } as unknown as Settings)
+    // First-ever population of this slot: nothing to diff against yet, so no
+    // purge — the pre-seeded token must survive untouched.
+    expect(store['mcpAuth:srv']).toBeDefined()
+
+    await manager.refresh({ mcp: { servers: { srv: { url: 'https://b.example.com/mcp' } } } } as unknown as Settings)
+    expect(store['mcpAuth:srv']).toBeUndefined()
+
+    manager.disconnectAll()
+  })
+
+  it('keeps stored auth across a refresh where the entry is unchanged (no false purge)', async () => {
+    const store = stubChromeStorage(seedToken)
+    const manager = new McpManager()
+    const cfg = { mcp: { servers: { srv: { url: 'https://a.example.com/mcp' } } } } as unknown as Settings
+
+    await manager.refresh(cfg)
+    // A second save elsewhere in Settings re-triggers refresh() with the same
+    // MCP config — App.tsx calls refresh() on every settings change.
+    await manager.refresh(cfg)
+    expect(store['mcpAuth:srv']).toBeDefined()
+
+    manager.disconnectAll()
+  })
+
+  it('does not false-purge a server\'s first-ever connection when its slot was seeded from the catalog cache', async () => {
+    // loadCatalogCache() seeds a placeholder slot (entry: {}) for a name it
+    // has cached tools for but has never actually connected to this session
+    // (see its own comment: "refresh() will fix status/entry immediately
+    // after"). That placeholder's `.entry.url` is undefined, which must NOT
+    // be treated as a prior "real" URL that then looks changed once refresh()
+    // fills in the actual entry.
+    const store = stubChromeStorage({
+      ...seedToken,
+      mcpCatalog: { srv: { tools: [{ name: 'x', description: '', inputSchema: {} }], resources: [], prompts: [] } },
+    })
+    const manager = new McpManager()
+
+    await manager.refresh({ mcp: { servers: { srv: { url: 'https://a.example.com/mcp' } } } } as unknown as Settings)
+    expect(store['mcpAuth:srv']).toBeDefined()
+
+    manager.disconnectAll()
+  })
+
+  it('purges stored auth when a server is removed — a later re-add under the same name does not inherit it', async () => {
+    const store = stubChromeStorage(seedToken)
+    const manager = new McpManager()
+    const withServer = { mcp: { servers: { srv: { url: 'https://a.example.com/mcp' } } } } as unknown as Settings
+
+    await manager.refresh(withServer)
+    expect(store['mcpAuth:srv']).toBeDefined()
+
+    await manager.refresh({ mcp: { servers: {} } } as unknown as Settings)
+    expect(store['mcpAuth:srv']).toBeUndefined()
+
+    // Re-added under the identical name AND URL — even so, nothing is left
+    // to inherit, because removal purges by name outright.
+    await manager.refresh(withServer)
+    expect(store['mcpAuth:srv']).toBeUndefined()
 
     manager.disconnectAll()
   })

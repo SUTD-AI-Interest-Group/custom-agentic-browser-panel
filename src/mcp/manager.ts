@@ -167,18 +167,34 @@ export class McpManager {
       }
       wanted.set(name, entry)
     }
-    // Remove slots whose config entry is gone entirely.
+    // Remove slots whose config entry is gone entirely. A name leaving the
+    // config is a trust-severing act (the user explicitly deleted it, or
+    // replaced the whole server map) — its OAuth tokens must not linger to be
+    // silently inherited by whatever server gets configured under that same
+    // name next (single-row remove, a JSON editor Save/import that drops it,
+    // …: everything funnels through this one reconciliation). See "MCP OAuth
+    // token scoping" in src/mcp/auth.ts.
     for (const [name, slot] of this.slots) {
       if (!(name in mcp.servers)) {
         this.teardown(name, slot)
         this.slots.delete(name)
+        void clearAuth(name).catch(() => {})
       }
     }
     for (const [name, entry] of wanted) {
       const slot = this.slots.get(name) as ServerSlot
       const changed = JSON.stringify(slot.entry) !== JSON.stringify(entry)
+      // A bearer token is only ever valid for the URL that issued it, so a
+      // name repointed at a different URL must not reconnect carrying the
+      // old one. `slot.entry.url` must be a genuine previously-seen string,
+      // not the `{}` placeholder loadCatalogCache() seeds for a slot the
+      // manager has never actually populated yet (see its comment) — treating
+      // that placeholder as "changed" would purge auth on every server's very
+      // first connection each session, forcing re-auth on every panel open.
+      const urlChanged = changed && typeof slot.entry.url === 'string' && slot.entry.url !== entry.url
       slot.entry = entry
       if (changed) this.teardown(name, slot)
+      if (urlChanged) await clearAuth(name).catch(() => {})
       if (!slot.client && !slot.connectPromise) {
         void this.ensureConnected(name).catch(() => {})
       }
@@ -230,7 +246,7 @@ export class McpManager {
     const url = new URL(slot.entry.url as string)
     const headers = slot.entry.headers
     const requestInit: RequestInit | undefined = headers ? { headers } : undefined
-    const authProvider = new ChromeOAuthProvider(name)
+    const authProvider = new ChromeOAuthProvider(name, url.toString())
 
     const attempt = async (kind: 'http' | 'sse') => {
       const client = newClient()
@@ -431,7 +447,7 @@ export class McpManager {
     if (!slot) throw new Error(`No MCP server named "${name}" is configured.`)
     this.teardown(name, slot)
     const serverUrl = new URL(slot.entry.url as string)
-    const provider = new ChromeOAuthProvider(name, { interactive: true })
+    const provider = new ChromeOAuthProvider(name, serverUrl.toString(), { interactive: true })
     try {
       // 'AUTHORIZED': existing/refreshed tokens suffice — no popup was needed.
       // 'REDIRECT': our provider ran launchWebAuthFlow (awaited, so it has

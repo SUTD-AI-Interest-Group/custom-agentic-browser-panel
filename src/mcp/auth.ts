@@ -12,6 +12,31 @@
 // instead of popping a window uninvited. Token REFRESH is silent and needs no
 // interaction, so persisted sessions keep working across restarts.
 //
+// Token-scoping invariant: storage is still keyed by the server's display NAME
+// (`mcpAuth:<name>`, unchanged — see keyFor) so `clearAuth(name)` stays a
+// stable, name-addressable operation for callers like
+// resetSettingsKeepingProviders (src/data/settings.ts) that only ever have a
+// name to work with. But a NAME is mutable and reusable — the user can point
+// "linear" at a different origin, or delete "linear" and add a totally
+// different server under that same name later — while a bearer token is only
+// ever valid for the origin that issued it. Reusing the name as the sole
+// identifier would let a token minted for one endpoint get replayed against
+// whatever now sits under that name. So every StoredAuth record additionally
+// carries `boundUrl`: the exact resource URL it was issued for. save() (via
+// ChromeOAuthProvider's constructor `resourceUrl`) stamps it on every write,
+// and every read (`tokens`/`clientInformation`/`codeVerifier`, via
+// loadBound()) refuses anything whose `boundUrl` doesn't match the URL the
+// provider was constructed with — including a legacy pre-fix record that has
+// no `boundUrl` at all, which can therefore never again match any real URL
+// and is evicted the first time it's touched. That closes the hole even for
+// installs that already had a repointed/reused name before this fix shipped;
+// no separate migration step is needed. src/mcp/manager.ts additionally
+// purges auth explicitly on an entry's URL change and on server removal
+// (before the eviction-on-read path would ever run) — belt and suspenders,
+// and what makes "remove, then re-add the same name" a clean slate even when
+// the new entry happens to reuse the exact same URL (boundUrl alone would
+// still match there; the explicit removal purge is what severs it).
+//
 // Vault-outage invariant: StoredAuth is sealed as ONE JSON blob (unlike
 // settingsVault.ts's field-level sealing), so there is no "still sealed,
 // re-sealing is a no-op" passthrough available to a caller that needs to
@@ -35,6 +60,13 @@ interface StoredAuth {
   clientInformation?: OAuthClientInformationMixed
   tokens?: OAuthTokens
   codeVerifier?: string
+  /**
+   * The exact resource URL these credentials were issued for/against. See the
+   * "Token-scoping invariant" above — every write stamps it, every read
+   * requires it to match. Absent on any record written before this field
+   * existed; that is deliberately never treated as a match (see loadBound).
+   */
+  boundUrl?: string
 }
 
 /** At-rest shape since the vault: the whole StoredAuth JSON sealed as one unit. */
@@ -94,24 +126,55 @@ async function persist(server: string, auth: StoredAuth): Promise<void> {
 }
 
 /**
- * Merge a patch onto the stored record. Refuses to write while `load()`
- * reports `locked`: persisting `{...{}, ...patch}` in that state would
- * silently replace a still-sealed (recoverable) blob with a record holding
- * only this call's own field(s) — permanent data loss from a transient
- * hiccup. The rejected promise is an ordinary failure to every current call
- * site (the SDK's OAuth orchestrator, awaited from manager.ts's connect()/
- * authorize()), which already turns any thrown error into a retryable
- * `needs-auth`/`error` status — a recoverable failure beats silent data loss.
+ * Merge a patch onto the stored record, scoped to `resourceUrl`. Refuses to
+ * write while `load()` reports `locked`: persisting `{...{}, ...patch}` in
+ * that state would silently replace a still-sealed (recoverable) blob with a
+ * record holding only this call's own field(s) — permanent data loss from a
+ * transient hiccup. The rejected promise is an ordinary failure to every
+ * current call site (the SDK's OAuth orchestrator, awaited from manager.ts's
+ * connect()/authorize()), which already turns any thrown error into a
+ * retryable `needs-auth`/`error` status — a recoverable failure beats silent
+ * data loss.
+ *
+ * When the record on disk was bound to a DIFFERENT url (or has no `boundUrl`
+ * at all — legacy), `current`'s other fields must NOT be carried forward:
+ * merging a patch onto them would silently re-bind an unvalidated, possibly
+ * stale credential (e.g. `tokens` from a prior url) to this url just because
+ * some unrelated field (say `codeVerifier`) happened to be saved here next.
+ * Starting clean in that case is what makes `boundUrl` actually load-bearing
+ * on the write side, not just the read side (loadBound).
  */
-async function save(server: string, patch: Partial<StoredAuth>): Promise<void> {
+async function save(server: string, resourceUrl: string, patch: Partial<StoredAuth>): Promise<void> {
   const { auth: current, locked } = await load(server)
   if (locked) throw new Error('MCP auth vault is temporarily unavailable — try again shortly.')
-  await persist(server, { ...current, ...patch })
+  const base = current.boundUrl === resourceUrl ? current : {}
+  await persist(server, { ...base, ...patch, boundUrl: resourceUrl })
 }
 
 /** Forget a server's tokens, registration and in-flight verifier ("sign out"). */
 export async function clearAuth(server: string): Promise<void> {
   await chrome.storage.local.remove(keyFor(server))
+}
+
+/**
+ * Read the stored auth for `server`, valid only if it was bound to
+ * `resourceUrl` (see the "Token-scoping invariant" file comment). A mismatch
+ * — including a legacy record with no `boundUrl` at all — is treated as
+ * "nothing here" and the stale entry is evicted on the spot, so this
+ * self-heals the first time anything actually tries to read it; no separate
+ * migration pass is needed. Only evicts when there is something to evict
+ * (`hasAny`), so a server that has simply never authorized doesn't pay a
+ * storage write on every single read.
+ */
+async function loadBound(server: string, resourceUrl: string): Promise<LoadResult> {
+  const result = await load(server)
+  if (result.locked) return result
+  const hasAny = Boolean(result.auth.tokens || result.auth.clientInformation || result.auth.codeVerifier)
+  if (hasAny && result.auth.boundUrl !== resourceUrl) {
+    await clearAuth(server).catch(() => {})
+    return { auth: {}, locked: false }
+  }
+  return result
 }
 
 /**
@@ -121,6 +184,12 @@ export async function clearAuth(server: string): Promise<void> {
  * still-sealed blob actually holds a `tokens` field without opening it. This
  * function never writes, so a stale-until-vault-recovers "no auth" reading
  * costs nothing — unlike the write path, there is no data-loss risk here.
+ *
+ * Deliberately NOT `boundUrl`-scoped (unlike ChromeOAuthProvider's own
+ * getters): this only drives a UI hint, never a credential that reaches a
+ * server, and by the time a settings row renders, the manager's own connect
+ * attempt has typically already run and self-evicted any stale record via
+ * loadBound — so this stays a plain presence check, not a security boundary.
  */
 export async function hasStoredAuth(server: string): Promise<boolean> {
   return Boolean((await load(server)).auth.tokens)
@@ -141,8 +210,16 @@ export class ChromeOAuthProvider implements OAuthClientProvider {
   private expectedState?: string
   private authorizationCode?: string
 
+  /**
+   * `resourceUrl` is the exact URL this provider instance is currently
+   * connecting to — always `slot.entry.url` at construction time in
+   * manager.ts. It is NOT the storage key (that's still `server`, the
+   * display name — see keyFor); it's the value every read/write validates
+   * against, per the "Token-scoping invariant" file comment.
+   */
   constructor(
     private server: string,
+    private resourceUrl: string,
     private opts: { interactive?: boolean } = {},
   ) {}
 
@@ -170,27 +247,27 @@ export class ChromeOAuthProvider implements OAuthClientProvider {
   }
 
   async clientInformation(): Promise<OAuthClientInformationMixed | undefined> {
-    return (await load(this.server)).auth.clientInformation
+    return (await loadBound(this.server, this.resourceUrl)).auth.clientInformation
   }
 
   async saveClientInformation(clientInformation: OAuthClientInformationMixed): Promise<void> {
-    await save(this.server, { clientInformation })
+    await save(this.server, this.resourceUrl, { clientInformation })
   }
 
   async tokens(): Promise<OAuthTokens | undefined> {
-    return (await load(this.server)).auth.tokens
+    return (await loadBound(this.server, this.resourceUrl)).auth.tokens
   }
 
   async saveTokens(tokens: OAuthTokens): Promise<void> {
-    await save(this.server, { tokens })
+    await save(this.server, this.resourceUrl, { tokens })
   }
 
   async saveCodeVerifier(codeVerifier: string): Promise<void> {
-    await save(this.server, { codeVerifier })
+    await save(this.server, this.resourceUrl, { codeVerifier })
   }
 
   async codeVerifier(): Promise<string> {
-    const v = (await load(this.server)).auth.codeVerifier
+    const v = (await loadBound(this.server, this.resourceUrl)).auth.codeVerifier
     if (!v) throw new Error('No PKCE verifier saved — restart the authorization flow.')
     return v
   }
@@ -200,13 +277,28 @@ export class ChromeOAuthProvider implements OAuthClientProvider {
     // everything," so there is nothing to protect and no need to see (let
     // alone decrypt) the existing record — this proceeds even while locked.
     if (scope === 'all') return clearAuth(this.server)
-    const { auth: current, locked } = await load(this.server)
+    // Routed through loadBound, not load(): a single-scope delete reads,
+    // mutates and re-persists "the rest of the record" — if that record
+    // belongs to a DIFFERENT resourceUrl, this would edit and hand back a
+    // credential this provider has no business touching, the same hole the
+    // other three getters close. In practice this method is currently only
+    // ever reached via the SDK's auth() catch handler, which by then has
+    // already called clientInformation()/tokens() in the same flow — so a
+    // mismatched record would already be self-evicted by loadBound before
+    // getting here. That ordering lives in a dependency we don't control
+    // (@modelcontextprotocol/sdk), and an upgrade could change it silently —
+    // so this enforces the same boundary directly rather than relying on it.
+    const { auth: current, locked } = await loadBound(this.server, this.resourceUrl)
     // A single-scope delete has to merge onto the REST of the record. While
     // locked we can't see the rest (it's still sealed, unreadable right now),
     // so `current` would come back `{}` and persisting it would wipe every
     // field, not just this scope's — the sharper variant of the save() bug
     // above. Refuse instead of guessing.
     if (locked) throw new Error('MCP auth vault is temporarily unavailable — try again shortly.')
+    // Nothing bound to this url — either genuinely never authorized, or a
+    // mismatched record loadBound just evicted — either way there is nothing
+    // of THIS provider's to invalidate.
+    if (!current.boundUrl) return
     if (scope === 'client') delete current.clientInformation
     if (scope === 'tokens') delete current.tokens
     if (scope === 'verifier') delete current.codeVerifier
