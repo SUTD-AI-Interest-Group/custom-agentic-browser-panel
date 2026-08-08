@@ -5,15 +5,73 @@ import {
   hasToolCall,
   tool,
   NoSuchToolError,
+  type Instructions,
   type LanguageModel,
+  type LanguageModelUsage,
   type ModelMessage,
   type ToolSet,
 } from 'ai'
 import { z } from 'zod'
 import { resolveActiveTools } from '../tools/toolDiscovery'
+import { toModelUsage } from './usage'
 import type { ModelUsage, Trace } from './observability'
 import type { ResearchVerification } from '../data/researchTasks'
 import type { AttachmentMeta } from '../data/attachments'
+
+/**
+ * providerOptions namespace for app-internal hints no provider adapter reads
+ * (same pattern as `attachmentRefs.ts`'s `providerOptions.lychee` tags).
+ * `volatileSystemLength` marks how many trailing characters of a combined
+ * system message are the VOLATILE suffix (recomputed every turn) as opposed
+ * to the STABLE prefix (near-identical across turns/conversations) — see
+ * `AgentSystemPrompt` and `provider.ts`'s `withCacheControl`, the only reader.
+ */
+export const LYCHEE_PROVIDER_OPTIONS_NS = 'lychee'
+
+/**
+ * A turn's system prompt. Most callers (research.ts's fixed phase prompts,
+ * title-gen, dream) pass a plain string — unchanged behavior: one system
+ * message, and (for Anthropic) the whole thing is one cache breakpoint.
+ *
+ * The foreground chat (Chat.tsx) instead passes the STABLE/VOLATILE split:
+ * `stable` is near-identical across turns and even across conversations (the
+ * user's own systemPrompt, the disclosure/access/math notes, the skills
+ * catalog); `volatile` is recomputed every turn (recalled memories, an
+ * invoked skill's body, a retry note). Anthropic's cache is a byte-for-byte
+ * PREFIX match with no partial credit inside a marked block — concatenating
+ * both into ONE string and marking it (the pre-split behavior) meant ANY
+ * change anywhere, including in `volatile`, missed the whole cached unit and
+ * paid a fresh write. Splitting them into two system messages, with the
+ * marker on `stable` only, is what makes `volatile` changing every turn
+ * harmless: the marked prefix — everything up to and including `stable` —
+ * still matches, so it still reads from cache regardless of what `volatile`
+ * says this time.
+ *
+ * `runAgentTurn` does NOT emit two separate `SystemModelMessage`s itself —
+ * that would change the wire shape for every provider, not just Anthropic.
+ * Instead it emits ONE combined message (`stable + volatile`, byte-identical
+ * to the old concatenation) tagged with a length hint in
+ * `providerOptions.lychee.volatileSystemLength`. Only `provider.ts`'s
+ * Anthropic-only `withCacheControl` middleware reads that hint and actually
+ * splits the wire prompt into two blocks; every other adapter never even
+ * looks at the `lychee` namespace, so it sees exactly the same single
+ * concatenated system string as before this existed.
+ */
+export type AgentSystemPrompt = string | { stable: string; volatile: string }
+
+/** Builds the `instructions` `streamText`/`generateText` param from an
+ *  `AgentSystemPrompt` — see its docstring for why this stays a single
+ *  message with a length hint rather than two separate messages. */
+function toInstructions(system: AgentSystemPrompt): Instructions {
+  if (typeof system === 'string') return system
+  return {
+    role: 'system',
+    content: system.stable + system.volatile,
+    providerOptions: system.volatile
+      ? { [LYCHEE_PROVIDER_OPTIONS_NS]: { volatileSystemLength: system.volatile.length } }
+      : undefined,
+  }
+}
 
 // UI-facing representation of one assistant turn. A turn is an ordered list
 // of parts: streamed text interleaved with tool invocations.
@@ -250,7 +308,8 @@ export function toValidModelMessages(messages: ModelMessage[]): ModelMessage[] {
 
 export async function runAgentTurn(options: {
   model: LanguageModel
-  system: string
+  /** See `AgentSystemPrompt`'s docstring. */
+  system: AgentSystemPrompt
   history: ModelMessage[]
   tools: ToolSet
   abortSignal: AbortSignal
@@ -336,8 +395,9 @@ export async function runAgentTurn(options: {
     model,
     // v7 renamed the top-level `system` option to `instructions` (`system`
     // still works as a deprecated fallback). The app keeps its own `system`
-    // field on runAgentTurn's options and maps it here.
-    instructions: system,
+    // field on runAgentTurn's options and maps it here — see toInstructions
+    // and AgentSystemPrompt's docstring for the stable/volatile split.
+    instructions: toInstructions(system),
     // Sanitize incoming history so a conversation already persisted with a
     // nested-undefined tool result (see toValidModelMessages) still runs.
     messages: toValidModelMessages(history),
@@ -359,32 +419,55 @@ export async function runAgentTurn(options: {
     // Observability: record one Langfuse generation per model step (tokens,
     // finish reason, tool calls) and roll the turn totals onto the trace. All
     // reads are defensive — a shape change or Langfuse hiccup never breaks a turn.
-    onStepFinish: trace
-      ? (step: any) => {
-          const start = stepStart
-          stepStart = new Date().toISOString()
-          const idx = stepIndex++
-          try {
-            const toolNames = Array.isArray(step?.toolCalls)
-              ? step.toolCalls.map((t: any) => t?.toolName).filter(Boolean)
-              : undefined
-            const gen = trace.generation({
-              name: `step-${idx + 1}`,
-              model: (step?.response?.modelId as string) || modelId,
-              input: step?.request?.body,
-              startTime: start,
-              metadata: toolNames?.length ? { toolCalls: toolNames } : undefined,
-            })
-            gen.end({
-              output: step?.content ?? { text: step?.text, toolCalls: step?.toolCalls },
-              usage: step?.usage,
-              finishReason: step?.finishReason,
-            })
-          } catch {
-            /* best-effort */
-          }
+    //
+    // Unconditional (not gated on `trace`) because of the cache-debug log
+    // below: prompt caching (provider.ts's withCacheControl) needs to be
+    // observable even when Langfuse isn't configured — otherwise the ONLY way
+    // to tell whether an Anthropic system-prompt breakpoint is actually being
+    // hit is to have observability on, which most installs won't.
+    onStepFinish: (step: any) => {
+      const start = stepStart
+      stepStart = new Date().toISOString()
+      const idx = stepIndex++
+      // Prompt-cache observability: log read/write token counts whenever the
+      // provider reports any cache activity at all — on every other provider
+      // (and on an Anthropic call too short to clear the cache minimum) these
+      // are always undefined, so this never fires there. `step.usage` is the
+      // raw AI SDK shape (LanguageModelUsage), read directly rather than via
+      // toModelUsage: `cacheWriteTokens` has no home on ModelUsage.
+      try {
+        const raw = step?.usage as LanguageModelUsage | undefined
+        const cacheRead = raw?.inputTokenDetails?.cacheReadTokens
+        const cacheWrite = raw?.inputTokenDetails?.cacheWriteTokens
+        if (cacheRead || cacheWrite) {
+          console.debug(
+            `[lychee] prompt cache — step ${idx + 1}: read ${cacheRead ?? 0} tokens, wrote ${cacheWrite ?? 0} tokens`,
+          )
         }
-      : undefined,
+      } catch {
+        /* best-effort */
+      }
+      if (!trace) return
+      try {
+        const toolNames = Array.isArray(step?.toolCalls)
+          ? step.toolCalls.map((t: any) => t?.toolName).filter(Boolean)
+          : undefined
+        const gen = trace.generation({
+          name: `step-${idx + 1}`,
+          model: (step?.response?.modelId as string) || modelId,
+          input: step?.request?.body,
+          startTime: start,
+          metadata: toolNames?.length ? { toolCalls: toolNames } : undefined,
+        })
+        gen.end({
+          output: step?.content ?? { text: step?.text, toolCalls: step?.toolCalls },
+          usage: toModelUsage(step?.usage),
+          finishReason: step?.finishReason,
+        })
+      } catch {
+        /* best-effort */
+      }
+    },
     onFinish: trace
       ? (final: any) => {
           try {
@@ -547,23 +630,44 @@ export async function runAgentTurn(options: {
       // model has loaded (GetTool) or the app seeded this turn, intersected with
       // the turn's real tools. Absent activeNames = legacy "every tool active".
       //
-      // CHECKPOINT_TOOL is force-included here rather than folded into
-      // resolveActiveTools's ALWAYS_ON set: it is not a member of `tools` (the
-      // real, createAgentTools-derived toolset) at all — it's merged into
-      // streamText's toolset separately, above — so resolveActiveTools's
-      // `∩ existing` intersection against Object.keys(tools) would always drop it.
-      // Without this, activeTools never contains 'Checkpoint', the model is never
-      // offered it, hasToolCall(CHECKPOINT_TOOL) never fires, and the whole
-      // step-budget hand-off (see DEFAULT_WRAP_UP_NUDGE) is dead whenever
-      // activeNames is set (i.e. always, in the foreground UI). It must NOT be
-      // added to resolveActiveTools's catalog/ALWAYS_ON — Checkpoint stays out of
-      // the ToolSearch/GetTool disclosure catalog; it is injected here, not
-      // declared in createAgentTools.
+      // CHECKPOINT_TOOL is force-included FIRST, not appended after the dynamic
+      // list — it is not a member of `tools` (the real, createAgentTools-derived
+      // toolset) at all — it's merged into streamText's toolset separately,
+      // above — so resolveActiveTools's `∩ existing` intersection against
+      // Object.keys(tools) would always drop it. Without this, activeTools never
+      // contains 'Checkpoint', the model is never offered it,
+      // hasToolCall(CHECKPOINT_TOOL) never fires, and the whole step-budget
+      // hand-off (see DEFAULT_WRAP_UP_NUDGE) is dead whenever activeNames is set
+      // (i.e. always, in the foreground UI). It must NOT be added to
+      // resolveActiveTools's catalog/ALWAYS_ON — Checkpoint stays out of the
+      // ToolSearch/GetTool disclosure catalog; it is injected here, not declared
+      // in createAgentTools. It goes FIRST, not last, because it is active from
+      // step 1 onward and never removed: for the wire tool order to stay a
+      // strict append as activeNames grows — Anthropic invalidates the tools,
+      // system AND messages cache tiers on ANY change to the tools array, add,
+      // remove, OR pure reorder alike — a permanently-active tool needs a FIXED
+      // early slot alongside ALWAYS_ON. Appending it after the (growing) dynamic
+      // list would instead push it one slot further back every time a new tool
+      // loads, reordering an already-active tool rather than only ever adding
+      // one at the end.
       const activeTools = options.activeNames
-        ? [...new Set([...resolveActiveTools(options.activeNames, Object.keys(tools)), CHECKPOINT_TOOL])]
+        ? [CHECKPOINT_TOOL, ...resolveActiveTools(options.activeNames, Object.keys(tools))]
         : undefined
       const messages = [...base, ...injected]
-      return activeTools ? { messages, activeTools } : { messages }
+      // toolOrder mirrors activeTools verbatim. The AI SDK's own activeTools
+      // membership filter (`filterActiveTools`/`orderToolEntries` in the `ai`
+      // package) walks the FULL toolset's fixed object-key order — the order
+      // `createAgentTools()` happened to list its tools in — and just checks
+      // `activeTools.includes(name)`; it does NOT use activeTools' own order.
+      // So a tool loaded chronologically SECOND but sorting BEFORE a
+      // chronologically-FIRST tool in createAgentTools' key order would render
+      // ahead of it on the wire — a silent reorder, not an append. `toolOrder`
+      // is the one AI SDK v7 hook that actually controls wire order; passing
+      // resolveActiveTools' append-ordered array through it is what makes a
+      // growing activeNames a byte-for-byte-prefix-preserving append instead.
+      // See agent.test.ts's append-order lock (mutation-tested: reverting either
+      // this line or the CHECKPOINT_TOOL position above breaks it).
+      return activeTools ? { messages, activeTools, toolOrder: activeTools } : { messages }
     },
   })
 
@@ -687,7 +791,7 @@ export async function runAgentTurn(options: {
   // `totalUsage` is a PromiseLike (no .catch), so guard it the long way.
   let usage: ModelUsage | undefined
   try {
-    usage = await result.totalUsage
+    usage = toModelUsage(await result.totalUsage)
   } catch {
     usage = undefined
   }

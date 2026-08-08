@@ -1,9 +1,16 @@
 import { createOpenAICompatible } from '@ai-sdk/openai-compatible'
 import { createOpenAI } from '@ai-sdk/openai'
 import { createAnthropic } from '@ai-sdk/anthropic'
-import { defaultSettingsMiddleware, generateText, wrapLanguageModel, type LanguageModel } from 'ai'
+import {
+  defaultSettingsMiddleware,
+  generateText,
+  wrapLanguageModel,
+  type LanguageModel,
+  type LanguageModelMiddleware,
+} from 'ai'
 import { getObserver } from './observability'
 import { sanitizeTitle } from './title'
+import { LYCHEE_PROVIDER_OPTIONS_NS } from './agent'
 import {
   providerKind,
   resolveReasoningEffort,
@@ -49,16 +56,24 @@ export function reasoningBodyTransform(
   }
 }
 
+/** The narrower model type `wrapLanguageModel` actually accepts/returns — as
+ *  opposed to `LanguageModel`, the broad exported union that also allows a
+ *  bare model-id string (for registry-based lookups elsewhere in the SDK).
+ *  `createModel` never deals in that string form, so functions that may need
+ *  to re-wrap their own output (chaining `withReasoningOptions` into
+ *  `withCacheControl`) are typed on this instead. */
+type ModelInput = Parameters<typeof wrapLanguageModel>[0]['model']
+
 /**
  * Bake a native provider's reasoning options onto the model via middleware, so
  * every call carries them without threading `providerOptions` through call sites.
  * A no-op when there is nothing to inject (unset effort → the endpoint's default).
  */
 function withReasoningOptions(
-  model: Parameters<typeof wrapLanguageModel>[0]['model'],
+  model: ModelInput,
   providerName: 'openai' | 'anthropic',
   options: Record<string, unknown>,
-): LanguageModel {
+): ModelInput {
   if (Object.keys(options).length === 0) return model
   return wrapLanguageModel({
     model,
@@ -68,6 +83,94 @@ function withReasoningOptions(
       settings: { providerOptions: { [providerName]: options } },
     } as Parameters<typeof defaultSettingsMiddleware>[0]),
   })
+}
+
+/**
+ * Anthropic-only: mark the turn's system prompt as an ephemeral prompt-cache
+ * breakpoint. A no-op call site: `createModel` only ever invokes this from the
+ * `adapter === 'anthropic'` branch (gated additionally on
+ * `profile.supportsPromptCaching`), so it never reaches the native OpenAI or
+ * OpenAI-compatible paths — no risk of leaking an Anthropic-only field into a
+ * request an arbitrary compatible endpoint would 400 on.
+ *
+ * Placement: the (single) system-role message in the call's prompt array, not
+ * the Anthropic API's call-level "top-level auto-cache" convenience
+ * (`providerOptions.anthropic.cacheControl` set at the CALL level rather than
+ * per-message, which the `@ai-sdk/anthropic` adapter forwards as a bare
+ * top-level `cache_control` field on the request body). That convenience
+ * auto-places its ONE breakpoint on the last cacheable block of the WHOLE
+ * request — tools, then system, then messages — so on a turn whose message
+ * history keeps growing (every step of a 24-step turn, every round of a
+ * research task) the marker would land on the volatile tail and re-write
+ * instead of read on every single call. Marking the system block explicitly
+ * matches the documented placement pattern for "large system prompt shared
+ * across many requests" (tools render before system, so caching a system
+ * block caches both together).
+ *
+ * A marked block is a byte-for-byte match with NO partial credit inside it —
+ * so if `runAgentTurn` ever handed this model ONE system message combining
+ * genuinely volatile content (recalled memories, an invoked skill's body, a
+ * retry note) with stable content, marking that whole message would miss the
+ * cache on every turn the volatile part changed, i.e. every turn, for a
+ * 1.25x write premium each time with no offsetting read. `runAgentTurn`
+ * (`agent.ts`) therefore tags a combined message with
+ * `providerOptions.lychee.volatileSystemLength` — how many trailing
+ * characters are the volatile suffix — whenever it has one. This middleware
+ * reads that hint and, when present, SPLITS the one incoming message into
+ * two wire blocks: `stable` (marked, cacheable) and `volatile` (unmarked, a
+ * fresh uncached read every time). The stable prefix then stays cache-live
+ * across every turn AND across different conversations on the same install
+ * that share the same stable prompt — even a single-step "just chat" turn
+ * now gets read-priced (~0.1x) against whatever the LAST turn (any
+ * conversation) wrote, rather than always paying the write premium alone.
+ * Callers with no hint (a plain string `system` — research.ts's fixed phase
+ * prompts, title-gen, dream) fall through to marking the whole (only) system
+ * message, unchanged from before this split existed.
+ */
+const withCacheControl: LanguageModelMiddleware = {
+  transformParams: async ({ params }) => {
+    const prompt = params.prompt
+    for (let i = 0; i < prompt.length; i++) {
+      const msg = prompt[i]
+      if (msg.role !== 'system') continue
+      const hint = msg.providerOptions?.[LYCHEE_PROVIDER_OPTIONS_NS] as
+        | { volatileSystemLength?: number }
+        | undefined
+      const volatileLength = hint?.volatileSystemLength ?? 0
+      // Drop the app-internal hint either way — its job is done once read
+      // here, and no provider adapter should see an unrecognized namespace
+      // key rely on it (harmless either way, since adapters only read their
+      // own namespace, but there's nothing to gain by forwarding it).
+      const { [LYCHEE_PROVIDER_OPTIONS_NS]: _hint, ...restProviderOptions } = msg.providerOptions ?? {}
+      const nextPrompt = [...prompt]
+      if (volatileLength > 0 && volatileLength < msg.content.length) {
+        const stable = msg.content.slice(0, msg.content.length - volatileLength)
+        const volatile = msg.content.slice(msg.content.length - volatileLength)
+        nextPrompt.splice(
+          i,
+          1,
+          {
+            ...msg,
+            content: stable,
+            providerOptions: { ...restProviderOptions, anthropic: { cacheControl: { type: 'ephemeral' } } },
+          },
+          { role: 'system', content: volatile },
+        )
+      } else {
+        nextPrompt[i] = {
+          ...msg,
+          providerOptions: {
+            ...restProviderOptions,
+            anthropic: { ...msg.providerOptions?.anthropic, cacheControl: { type: 'ephemeral' } },
+          },
+        }
+      }
+      return { ...params, prompt: nextPrompt }
+    }
+    // No system message this call (e.g. generateChatTitle/testModel, which pass
+    // only `prompt`) — nothing to mark, leave the call untouched.
+    return params
+  },
 }
 
 /**
@@ -82,6 +185,12 @@ function withReasoningOptions(
  * per profile — native via `providerOptions` middleware, compatible via a body
  * transform. Extension host_permissions bypass CORS, so every call goes straight
  * from the side panel — no proxy, keys never leave the browser.
+ *
+ * Anthropic models additionally get an ephemeral cache_control breakpoint on
+ * their system prompt (`withCacheControl`, gated on `profile.supportsPromptCaching`)
+ * — every caller of this function shares one model per (provider, model) build,
+ * so a turn's up-to-24 steps, a research task's phases, and the browse
+ * sub-agent's steps all reuse the same wrapped model and all benefit.
  */
 export function createModel(config: ProviderConfig, modelId: string): LanguageModel {
   const profile = profileFor(providerKind(config))
@@ -103,7 +212,10 @@ export function createModel(config: ProviderConfig, modelId: string): LanguageMo
       apiKey,
       headers: { 'anthropic-dangerous-direct-browser-access': 'true' },
     })(modelId)
-    return withReasoningOptions(model, 'anthropic', reasoning ? profile.reasoningOptions!(effort) : {})
+    const withReasoning = withReasoningOptions(model, 'anthropic', reasoning ? profile.reasoningOptions!(effort) : {})
+    return profile.supportsPromptCaching
+      ? wrapLanguageModel({ model: withReasoning, middleware: withCacheControl })
+      : withReasoning
   }
 
   const provider = createOpenAICompatible({

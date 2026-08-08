@@ -6,7 +6,38 @@
 // table, so the extension's job is to report accurate tokens and let Langfuse do
 // the pricing (register custom/local model prices there if you want a figure).
 
+import type { LanguageModelUsage } from 'ai'
 import type { ModelUsage } from './observability'
+
+/**
+ * Converts the AI SDK's raw per-call usage (`LanguageModelUsage`) into this
+ * app's flat `ModelUsage`. Not a no-op cast: the raw shape nests its cache
+ * figures under `inputTokenDetails.cacheReadTokens`/`cacheWriteTokens` and its
+ * reasoning figure under `outputTokenDetails.reasoningTokens` — every field on
+ * `ModelUsage` is optional, so assigning a `LanguageModelUsage` straight into a
+ * `ModelUsage`-typed variable (what `runAgentTurn` used to do) type-checks fine
+ * while silently leaving `cachedInputTokens`/`reasoningTokens` `undefined`
+ * forever, since the source object has no top-level field by either name. That
+ * meant the prompt-cache breakpoint in `provider.ts`'s `withCacheControl`
+ * could be genuinely hit and nothing downstream would ever show a nonzero
+ * figure — not the Langfuse `cache_read` mapping in `observer.ts` (which
+ * already reads `u.cachedInputTokens`), not any future UI surface. This is the
+ * one conversion point both `runAgentTurn`'s per-step and turn-total usage
+ * go through, so fixing it here lights up every existing consumer at once.
+ * `cacheWriteTokens` has no home on `ModelUsage` (types.ts is not owned by
+ * this file) — `runAgentTurn`'s per-step debug log reads it directly off the
+ * raw usage instead of through this conversion.
+ */
+export function toModelUsage(u?: LanguageModelUsage): ModelUsage | undefined {
+  if (!u) return undefined
+  return {
+    inputTokens: u.inputTokens,
+    outputTokens: u.outputTokens,
+    totalTokens: u.totalTokens,
+    reasoningTokens: u.outputTokenDetails?.reasoningTokens,
+    cachedInputTokens: u.inputTokenDetails?.cacheReadTokens,
+  }
+}
 
 /**
  * Add two usages. Used to roll a continuation chain's cycles into one turn total,

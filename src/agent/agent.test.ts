@@ -1,8 +1,32 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import { tool, type ModelMessage } from 'ai'
 import { MockLanguageModelV3 } from 'ai/test'
 import { z } from 'zod'
-import { runAgentTurn, toValidModelMessages, type UIPart } from './agent'
+import { LYCHEE_PROVIDER_OPTIONS_NS, runAgentTurn, toValidModelMessages, type UIPart } from './agent'
+
+/** A single-step mock that finishes immediately with plain text — enough to
+ *  exercise runAgentTurn's `instructions` construction without scripting a
+ *  tool call. */
+function textOnlyModel() {
+  return new MockLanguageModelV3({
+    doStream: async () => ({
+      stream: new ReadableStream({
+        start(controller: any) {
+          controller.enqueue({ type: 'stream-start', warnings: [] })
+          controller.enqueue({ type: 'text-start', id: 't1' })
+          controller.enqueue({ type: 'text-delta', id: 't1', delta: 'ok' })
+          controller.enqueue({ type: 'text-end', id: 't1' })
+          controller.enqueue({
+            type: 'finish',
+            finishReason: 'stop',
+            usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+          })
+          controller.close()
+        },
+      }),
+    }),
+  })
+}
 
 // Progressive disclosure means most tools are NOT in `activeTools` until the
 // model loads them with GetTool. If the model instead calls such a tool
@@ -286,6 +310,245 @@ describe('Checkpoint is always reachable under progressive disclosure', () => {
     expect(toolNames).toContain('ReadPage')
     // A gated tool that was never loaded (RequestPageControl) must still be absent.
     expect(toolNames).not.toContain('RequestPageControl')
+  })
+})
+
+// Anthropic invalidates ALL THREE prompt-cache tiers (tools/system/messages)
+// on ANY change to the tools array reaching the model — including a pure
+// reorder with no add or remove (see src/agent/provider.ts's withCacheControl
+// and the prompt-caching design notes). A mid-turn GetTool load necessarily
+// grows the array — that step's cache write is unavoidable — but every step
+// AFTER it must still see the exact same array the loading step produced, or
+// the cache never gets a chance to be read for the rest of the turn. That
+// only holds if newly loaded tools are strictly APPENDED, never inserted
+// ahead of what was already active.
+//
+// This is NOT free from resolveActiveTools alone: the AI SDK's own
+// `activeTools` filter (see `orderToolEntries`/`filterActiveTools` in the
+// `ai` package) walks the FULL toolset's fixed object-key order — the order
+// createAgentTools() happens to list its tools in — and only uses
+// `activeTools` as a membership test, ignoring its given order entirely. A
+// tool loaded chronologically SECOND but sorting BEFORE a chronologically-
+// FIRST tool in that fixed key order would render ahead of it on the wire: a
+// silent reorder. `toolOrder` (an AI SDK v7 `prepareStep` field) is the one
+// hook that actually controls wire order — prepareStep must pass it.
+describe('active tool order is a strict append as activeNames grows', () => {
+  it('never reorders an already-active tool when a later GetTool call loads another one', async () => {
+    const activeNames = new Set<string>()
+    // Key order deliberately adversarial vs. load order: 'Beta' sorts BEFORE
+    // 'Zebra' in this object, but the script below loads Zebra FIRST and Beta
+    // SECOND — the trap case for a fix that relied on object key order.
+    const tools = {
+      Beta: tool({ description: 'b', inputSchema: z.object({}), execute: async () => 'b' }),
+      Zebra: tool({ description: 'z', inputSchema: z.object({}), execute: async () => 'z' }),
+      ReadPage: tool({ description: 'read', inputSchema: z.object({}), execute: async () => ({}) }),
+      ToolSearch: tool({
+        description: 'list',
+        inputSchema: z.object({ query: z.string().optional() }),
+        execute: async () => ({ tools: [] }),
+      }),
+      GetTool: tool({
+        description: 'load tools by name',
+        inputSchema: z.object({ names: z.array(z.string()).min(1) }),
+        execute: async ({ names }: { names: string[] }) => {
+          names.forEach((n) => activeNames.add(n))
+          return { loaded: names }
+        },
+      }),
+    }
+
+    let call = 0
+    const model = new MockLanguageModelV3({
+      doStream: async () => {
+        call += 1
+        const step = call
+        return {
+          stream: new ReadableStream({
+            start(controller: any) {
+              controller.enqueue({ type: 'stream-start', warnings: [] })
+              if (step === 1) {
+                controller.enqueue({
+                  type: 'tool-call',
+                  toolCallId: 'c1',
+                  toolName: 'GetTool',
+                  input: JSON.stringify({ names: ['Zebra'] }),
+                })
+                controller.enqueue({ type: 'finish', finishReason: 'tool-calls', usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 } })
+              } else if (step === 2) {
+                controller.enqueue({
+                  type: 'tool-call',
+                  toolCallId: 'c2',
+                  toolName: 'GetTool',
+                  input: JSON.stringify({ names: ['Beta'] }),
+                })
+                controller.enqueue({ type: 'finish', finishReason: 'tool-calls', usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 } })
+              } else {
+                controller.enqueue({ type: 'text-start', id: 't1' })
+                controller.enqueue({ type: 'text-delta', id: 't1', delta: 'done' })
+                controller.enqueue({ type: 'text-end', id: 't1' })
+                controller.enqueue({ type: 'finish', finishReason: 'stop', usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 } })
+              }
+              controller.close()
+            },
+          }),
+        }
+      },
+    })
+
+    await runAgentTurn({
+      model,
+      system: 's',
+      history: [{ role: 'user', content: 'go' }],
+      tools,
+      abortSignal: new AbortController().signal,
+      onUpdate: () => {},
+      activeNames,
+    })
+
+    expect(model.doStreamCalls.length).toBe(3)
+    const namesAt = (i: number) => (model.doStreamCalls[i].tools ?? []).map((t: any) => t.name)
+    const step1 = namesAt(0) // before either GetTool call resolves
+    const step2 = namesAt(1) // after Zebra loaded
+    const step3 = namesAt(2) // after Zebra AND Beta loaded
+
+    // The core assertion: strict append. Each step's tool array is a
+    // byte-for-byte PREFIX of the next — nothing already active ever moves.
+    expect(step2.slice(0, step1.length)).toEqual(step1)
+    expect(step3.slice(0, step2.length)).toEqual(step2)
+    // Sanity: the set actually grew as scripted, and the newest load lands
+    // LAST — not spliced in ahead of Zebra by Beta's earlier object-key position.
+    expect(step2).toContain('Zebra')
+    expect(step3).toContain('Beta')
+    expect(step3[step3.length - 1]).toBe('Beta')
+  })
+})
+
+// runAgentTurn's `system` option (AgentSystemPrompt) accepts a plain string
+// (unchanged legacy behavior — one system message, no provider hint) or a
+// {stable, volatile} split. The split must still reach the model as ONE
+// combined system message (stable + volatile concatenated) carrying a
+// providerOptions.lychee.volatileSystemLength hint — NOT as two separate
+// system messages — because runAgentTurn has no idea which provider it's
+// talking to, and emitting two messages unconditionally would change the
+// wire shape for every provider, not just the Anthropic-only middleware
+// (provider.ts's withCacheControl) that actually needs the split. See
+// provider.test.ts for the middleware turning this ONE tagged message into
+// two Anthropic wire blocks.
+describe('structured system prompt (AgentSystemPrompt)', () => {
+  async function run(system: Parameters<typeof runAgentTurn>[0]['system']) {
+    const model = textOnlyModel()
+    await runAgentTurn({
+      model,
+      system,
+      history: [{ role: 'user', content: 'go' }],
+      tools: {},
+      abortSignal: new AbortController().signal,
+      onUpdate: () => {},
+    })
+    const prompt = model.doStreamCalls[0].prompt as Array<{
+      role: string
+      content: unknown
+      providerOptions?: Record<string, unknown>
+    }>
+    return prompt.filter((m) => m.role === 'system')
+  }
+
+  it('a plain string produces exactly one system message with no lychee hint', async () => {
+    const systemMsgs = await run('a plain system string')
+    expect(systemMsgs).toHaveLength(1)
+    expect(systemMsgs[0].content).toBe('a plain system string')
+    expect(systemMsgs[0].providerOptions?.[LYCHEE_PROVIDER_OPTIONS_NS]).toBeUndefined()
+  })
+
+  it('a {stable, volatile} split produces ONE combined system message tagged with the volatile length', async () => {
+    const systemMsgs = await run({ stable: 'STABLE PART', volatile: 'VOLATILE PART' })
+    expect(systemMsgs).toHaveLength(1)
+    expect(systemMsgs[0].content).toBe('STABLE PARTVOLATILE PART')
+    expect(systemMsgs[0].providerOptions?.[LYCHEE_PROVIDER_OPTIONS_NS]).toEqual({
+      volatileSystemLength: 'VOLATILE PART'.length,
+    })
+  })
+
+  it('a split with an empty volatile half carries no hint (nothing to cut)', async () => {
+    const systemMsgs = await run({ stable: 'STABLE ONLY', volatile: '' })
+    expect(systemMsgs).toHaveLength(1)
+    expect(systemMsgs[0].content).toBe('STABLE ONLY')
+    expect(systemMsgs[0].providerOptions?.[LYCHEE_PROVIDER_OPTIONS_NS]).toBeUndefined()
+  })
+})
+
+// provider.test.ts proves the Anthropic-only cache marker on the wire; this
+// proves the OTHER half of "make it measurable" — that runAgentTurn actually
+// surfaces real cache-read/write token counts (when the provider reports
+// them) somewhere observable even without Langfuse configured, since most
+// installs won't have it on. See usage.ts's toModelUsage for why this needs
+// its own conversion rather than trusting the raw AI SDK usage shape.
+describe('prompt-cache observability (console.debug)', () => {
+  // MockLanguageModelV3's 'finish' chunk carries the RAW LanguageModelV3Usage
+  // shape — inputTokens/outputTokens are nested objects ({total, noCache,
+  // cacheRead, cacheWrite} / {total, text, reasoning}), NOT the flat numbers
+  // + separate inputTokenDetails/outputTokenDetails that `ai`'s own
+  // normalized LanguageModelUsage (what result.totalUsage/step.usage
+  // resolve to) uses. Get this wrong and every field — not just the cache
+  // ones — silently comes back undefined, which is exactly the class of bug
+  // toModelUsage exists to catch downstream (see usage.ts).
+  function modelWithCacheUsage(cacheRead: number, cacheWrite: number) {
+    return new MockLanguageModelV3({
+      doStream: async () => ({
+        stream: new ReadableStream({
+          start(controller: any) {
+            controller.enqueue({ type: 'stream-start', warnings: [] })
+            controller.enqueue({ type: 'text-start', id: 't1' })
+            controller.enqueue({ type: 'text-delta', id: 't1', delta: 'ok' })
+            controller.enqueue({ type: 'text-end', id: 't1' })
+            controller.enqueue({
+              type: 'finish',
+              finishReason: 'stop',
+              usage: {
+                inputTokens: { total: 100, noCache: 20, cacheRead, cacheWrite },
+                outputTokens: { total: 10, text: 10, reasoning: 0 },
+              },
+            })
+            controller.close()
+          },
+        }),
+      }),
+    })
+  }
+
+  it('logs read/write token counts when the provider reports cache activity', async () => {
+    const spy = vi.spyOn(console, 'debug').mockImplementation(() => {})
+    try {
+      await runAgentTurn({
+        model: modelWithCacheUsage(80, 0),
+        system: 's',
+        history: [{ role: 'user', content: 'go' }],
+        tools: {},
+        abortSignal: new AbortController().signal,
+        onUpdate: () => {},
+      })
+      const calls = spy.mock.calls.map((c) => String(c[0]))
+      expect(calls.some((line) => line.includes('read 80') && line.includes('wrote 0'))).toBe(true)
+    } finally {
+      spy.mockRestore()
+    }
+  })
+
+  it('stays silent when the provider reports no cache activity at all (every non-Anthropic call)', async () => {
+    const spy = vi.spyOn(console, 'debug').mockImplementation(() => {})
+    try {
+      await runAgentTurn({
+        model: textOnlyModel(), // usage has no inputTokenDetails at all
+        system: 's',
+        history: [{ role: 'user', content: 'go' }],
+        tools: {},
+        abortSignal: new AbortController().signal,
+        onUpdate: () => {},
+      })
+      expect(spy).not.toHaveBeenCalled()
+    } finally {
+      spy.mockRestore()
+    }
   })
 })
 

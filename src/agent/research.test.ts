@@ -309,3 +309,47 @@ describe('phase-order / deadline / abort behavior (general coverage)', () => {
     expect(mockedGenerateText).not.toHaveBeenCalled() // never reached Synthesize
   })
 })
+
+// Prompt-caching payoff (see src/agent/provider.ts's withCacheControl): the
+// gather round is the cleanest caching shape in the codebase — a FIXED
+// system prompt (GATHER_SYSTEM) and a stable toolset, resent to the model up
+// to MAX_GATHER_ROUNDS times per task with only the notebook-summary user
+// message varying. That only pays off if every phase (Plan, each Gather
+// round, Synthesize, Verify) shares the SAME model build `createModel`
+// produced at the top of runResearch — createModel is where the Anthropic
+// cache_control breakpoint gets attached (once, at model-construction time),
+// so a fresh build per call would mean a fresh, uncached negotiation every
+// time instead.
+describe('caching: one model build is reused across the whole task', () => {
+  it('calls createModel exactly once even when the gather loop runs multiple rounds', async () => {
+    const mockedCreateModel = vi.mocked(createModel)
+    let reflectCalls = 0
+    scriptExtract({
+      plan: () => ({ subQuestions: ['q1'], outline: [] }),
+      // Report the sub-question as still open for the first two rounds, closed
+      // on the third — so the gather loop genuinely runs multiple rounds
+      // within this one runResearch call, not just one.
+      reflect: () => {
+        reflectCalls += 1
+        const supported = reflectCalls >= 3
+        return { assessments: [{ subQuestion: 'q1', supported }], done: supported }
+      },
+    })
+    mockedRunAgentTurn.mockResolvedValue(EMPTY_TURN)
+
+    await runResearch({
+      taskId: 't1',
+      question: 'Q',
+      provider: fakeProvider,
+      modelId: 'm',
+      onUpdate: vi.fn(),
+      signal: new AbortController().signal,
+    })
+
+    // Sanity: multiple gather rounds actually ran (else the createModel
+    // assertion below would be vacuously satisfied by a single-round task).
+    expect(reflectCalls).toBeGreaterThanOrEqual(3)
+    expect(mockedRunAgentTurn.mock.calls.length).toBeGreaterThan(1)
+    expect(mockedCreateModel).toHaveBeenCalledTimes(1)
+  })
+})

@@ -131,6 +131,16 @@ describe('native document support', () => {
   })
 })
 
+describe('prompt-cache capability', () => {
+  it('only Anthropic marks a cache_control breakpoint — every compat/OpenAI kind is a declared no-op', () => {
+    expect(profileFor('anthropic').supportsPromptCaching).toBe(true)
+    expect(profileFor('openai').supportsPromptCaching).toBe(false)
+    for (const kind of ['openrouter', 'groq', 'ollama', 'lmstudio', 'custom'] as const) {
+      expect(profileFor(kind).supportsPromptCaching).toBe(false)
+    }
+  })
+})
+
 describe('isReasoningModel / reasoningLevelsFor', () => {
   it('honors a manual override over auto-detection', () => {
     // gpt-4o is not auto-detected, but a forced-on override shows the slider

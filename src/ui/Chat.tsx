@@ -33,6 +33,7 @@ import { createAttachReservation } from './attachReservation'
 import { recallableUserTexts, shouldIgnoreComposerKeydown } from './composerKeys'
 import { shouldAttemptNaming } from './chatNaming'
 import { buildSteerFallback, freshTurnGatherErrorText } from './steerFallback'
+import { splitSystemPrompt } from './systemPrompt'
 import { getShot, getShotThumb, type ShotThumb, type StoredShot } from '../data/screenshots'
 import { downloadImage } from '../platform/download'
 import { appendToEpisode, getMemoryContext } from '../data/memory'
@@ -2229,7 +2230,25 @@ export default function Chat({
     const activeSkills = ctx.activeSkill
       ? `\n\n## Active skill: ${ctx.activeSkill.name}\nThe user invoked this skill. Follow these instructions for this task:\n\n${ctx.activeSkill.body}`
       : ''
-    const system = `${settings.systemPrompt}${TOOL_DISCLOSURE_NOTE}${accessNote}${browsingInsightsNote(granted)}${MATH_FORMATTING_NOTE}${memoryContext ? `\n\n${memoryContext}` : ''}${skillsCatalog}${activeSkills}${ctx.retryNote ?? ''}`
+    // Split into a stable prefix (systemPrompt..skillsCatalog) and a volatile
+    // suffix (memoryContext, activeSkills, retryNote) — runAgentTurn's
+    // AgentSystemPrompt carries both through to provider.ts's Anthropic-only
+    // withCacheControl middleware, which marks ONLY the stable half as a
+    // cache breakpoint. See systemPrompt.ts's module doc for why a plain
+    // reorder into one string (the pre-split version of this code) doesn't
+    // actually buy anything — Anthropic's cache has no partial credit inside
+    // a marked block, so the split is what makes it pay off.
+    const system = splitSystemPrompt({
+      systemPrompt: settings.systemPrompt,
+      toolDisclosureNote: TOOL_DISCLOSURE_NOTE,
+      accessNote,
+      browsingInsightsNote: browsingInsightsNote(granted),
+      mathFormattingNote: MATH_FORMATTING_NOTE,
+      skillsCatalog,
+      memoryContext,
+      activeSkills,
+      retryNote: ctx.retryNote ?? '',
+    })
 
     // Progressive disclosure: the tools the model may call beyond the always-on
     // core (ToolSearch, GetTool, ReadPage). Built once for the chain and shared

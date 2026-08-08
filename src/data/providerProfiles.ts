@@ -56,6 +56,19 @@ export interface ProviderProfile {
   supportsNativeDocuments: boolean
   /** Raw-byte ceiling for a native PDF part (base64 inflates ~4/3 toward the provider's request cap). 0 when unsupported. */
   nativeDocMaxBytes: number
+  /**
+   * Whether this kind's native adapter should mark an ephemeral `cache_control`
+   * breakpoint on the turn's system prompt (Anthropic-only). OpenAI's own
+   * caching is automatic on a byte-identical prefix — no code marker needed,
+   * and the Responses adapter has no such marker at all — and the generic
+   * OpenAI-compatible adapter has no cache_control mechanism either; sending
+   * an unrecognized field there risks 400ing an arbitrary compatible
+   * endpoint's whole request. So this is Anthropic-only, and `createModel`
+   * only ever calls the injection code from the `adapter === 'anthropic'`
+   * branch — this flag exists so the capability is declared here (like
+   * `supportsNativeDocuments`) rather than inlined as a bare kind check.
+   */
+  supportsPromptCaching: boolean
 }
 
 const trimSlash = (s: string): string => s.replace(/\/+$/, '')
@@ -94,6 +107,7 @@ const PROFILES: Record<ProviderKind, ProviderProfile> = {
     supportsNativeDocuments: true,
     // 50MB per-request cap on input_file → 35MB raw is ~47MB as base64.
     nativeDocMaxBytes: 35 * 1024 * 1024,
+    supportsPromptCaching: false,
   },
 
   // Anthropic — native Messages API. This SDK models thinking as `adaptive`
@@ -114,6 +128,23 @@ const PROFILES: Record<ProviderKind, ProviderProfile> = {
     supportsNativeDocuments: true,
     // 32MB request cap on document blocks → 20MB raw is ~27MB as base64, with prompt headroom.
     nativeDocMaxBytes: 20 * 1024 * 1024,
+    // NOT gated per model id, even though the minimum cacheable prefix is NOT
+    // uniform across the Anthropic line — 512 tokens on Opus 5/Fable 5/Mythos
+    // 5, 1024 on Opus 4.8/Sonnet 5/4.6/4.5/Opus 4.1/4/Sonnet 4, 2048 on Opus
+    // 4.7/Mythos Preview/Haiku 3.5, and 4096 on Opus 4.6/4.5/Haiku 4.5 (see
+    // the claude-api skill for the current table — it is not monotonic across
+    // generations, so don't assume newer = lower). Below the minimum, the
+    // `cache_control` marker in provider.ts's `withCacheControl` is a
+    // documented, silent, free no-op server-side — NOT a cost bug, just no
+    // benefit — so setting this `true` uniformly is always safe, only
+    // sometimes ineffective. A per-model-id threshold table would need the
+    // same upkeep as `detectReasoning`'s regexes but for a number that moves
+    // with every model generation, which this codebase has no other
+    // precedent for tracking that granularly. Instead, `runAgentTurn`
+    // (agent.ts) logs actual cache_read/cache_write token counts whenever the
+    // provider reports any — that's how to tell, per install and per model,
+    // whether the marker is doing anything, rather than trying to predict it.
+    supportsPromptCaching: true,
   },
 
   // OpenRouter — compatible, but reasoning is one unified `reasoning` object;
@@ -133,6 +164,7 @@ const PROFILES: Record<ProviderKind, ProviderProfile> = {
     // generic compat adapter can't construct — deliberately not used (see spec).
     supportsNativeDocuments: false,
     nativeDocMaxBytes: 0,
+    supportsPromptCaching: false,
   },
 
   // Groq — compatible. reasoning_effort controls depth; reasoning_format MUST be
@@ -149,6 +181,7 @@ const PROFILES: Record<ProviderKind, ProviderProfile> = {
     modelsEndpoint: modelsPath(),
     supportsNativeDocuments: false,
     nativeDocMaxBytes: 0,
+    supportsPromptCaching: false,
   },
 
   // Ollama — compatible. Its /v1 endpoint ignores the native `think` field but
@@ -162,6 +195,7 @@ const PROFILES: Record<ProviderKind, ProviderProfile> = {
     modelsEndpoint: modelsPath(),
     supportsNativeDocuments: false,
     nativeDocMaxBytes: 0,
+    supportsPromptCaching: false,
   },
 
   // LM Studio — compatible chat over /v1; reasoning_effort passthrough is
@@ -175,6 +209,7 @@ const PROFILES: Record<ProviderKind, ProviderProfile> = {
     modelsEndpoint: { url: (b) => `${originOf(b)}/api/v0/models`, auth: 'bearer' },
     supportsNativeDocuments: false,
     nativeDocMaxBytes: 0,
+    supportsPromptCaching: false,
   },
 
   // Custom / unknown OpenAI-compatible endpoint: the generic behaviour that
@@ -190,6 +225,7 @@ const PROFILES: Record<ProviderKind, ProviderProfile> = {
     // Unknowable in general — assume the compat lowest common denominator.
     supportsNativeDocuments: false,
     nativeDocMaxBytes: 0,
+    supportsPromptCaching: false,
   },
 }
 
