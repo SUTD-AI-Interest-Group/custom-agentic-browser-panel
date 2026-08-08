@@ -5,6 +5,7 @@ import {
   looksBinary,
   pageCaption,
   planAttachmentDelivery,
+  DOCUMENT_TEXT_BUDGET,
   IMAGE_MAX_BYTES,
   PAGE_BUDGET,
   PDF_MAX_BYTES,
@@ -28,8 +29,11 @@ describe('classifyIncomingFile', () => {
   })
 
   it('rejects unsupported types with the filename in the error', () => {
-    const r = classifyIncomingFile('deck.pptx', 'application/vnd.ms-powerpoint', 10)
-    expect('error' in r && r.error).toContain('deck.pptx')
+    // deck.pptx used to sit here, but a .pptx is a supported office document
+    // now (see the office-documents describe block below) — an .exe keeps
+    // this test actually testing the "no supported type matched" fallback.
+    const r = classifyIncomingFile('installer.exe', 'application/x-msdownload', 10)
+    expect('error' in r && r.error).toContain('installer.exe')
   })
 
   it('rejects oversize per kind', () => {
@@ -143,5 +147,74 @@ describe('formatInlineTextBlock', () => {
 describe('pageCaption', () => {
   it('names the file and page', () => {
     expect(pageCaption('r.pdf', 3, 42)).toBe('r.pdf — page 3 of 42')
+  })
+})
+
+describe('classifyIncomingFile — office documents', () => {
+  it('classifies each office format as a document', () => {
+    for (const name of ['a.docx', 'a.pptx', 'a.xlsx', 'a.odt', 'a.odp', 'a.ods', 'a.rtf', 'a.epub']) {
+      expect(classifyIncomingFile(name, '', 1000)).toEqual({ kind: 'document' })
+    }
+  })
+
+  it('rejects an oversized document by name', () => {
+    const result = classifyIncomingFile('big.docx', '', 26 * 1024 * 1024)
+    expect(result).toHaveProperty('error')
+    expect((result as { error: string }).error).toMatch(/25 MB/)
+  })
+
+  it('gives legacy binary formats their own message, naming the right modern extension', () => {
+    // Blank MIME is the common case for legacy .doc/.xls uploads (Linux, older
+    // Windows without a registered association) — this is what the joined
+    // `${name} ${mimeType}` regex used to get wrong, since it could only ever
+    // match at the tail of mimeType, never of name.
+    const cases: [string, string, string][] = [
+      ['old.doc', '', '.docx'],
+      ['old.xls', '', '.xlsx'],
+      ['old.ppt', '', '.pptx'],
+      ['old.doc', 'application/msword', '.docx'],
+      ['old.xls', 'application/vnd.ms-excel', '.xlsx'],
+      ['old.ppt', 'application/vnd.ms-powerpoint', '.pptx'],
+    ]
+    for (const [name, mimeType, expectedExt] of cases) {
+      const result = classifyIncomingFile(name, mimeType, 1000)
+      expect(result).toHaveProperty('error')
+      const message = (result as { error: string }).error
+      expect(message).toMatch(/re-save as/i)
+      expect(message).toContain(`re-save as ${expectedExt}`)
+    }
+  })
+
+  it('does not reject a modern-extension file carrying a legacy MIME type', () => {
+    // A .pptx/.docx served with its Office-97 MIME (some browsers, older Linux
+    // MIME databases, or download pipelines that stamp Content-Type from a
+    // lookup table) is still a modern, parseable file — the extension is the
+    // stronger signal and must win over a stale/incorrect MIME.
+    expect(classifyIncomingFile('deck.pptx', 'application/vnd.ms-powerpoint', 1000)).toEqual({ kind: 'document' })
+    expect(classifyIncomingFile('report.docx', 'application/msword', 1000)).toEqual({ kind: 'document' })
+  })
+
+  it('still routes text-like files to text, unchanged', () => {
+    // Regression guard: officeParser also parses these, but they already work
+    // through the inline-text path and must not be rerouted.
+    expect(classifyIncomingFile('a.csv', 'text/csv', 1000)).toEqual({ kind: 'text' })
+    expect(classifyIncomingFile('a.md', '', 1000)).toEqual({ kind: 'text' })
+    expect(classifyIncomingFile('a.html', 'text/html', 1000)).toEqual({ kind: 'text' })
+    expect(classifyIncomingFile('a.txt', 'text/plain', 1000)).toEqual({ kind: 'text' })
+  })
+
+  it('still routes PDFs to pdf, unchanged', () => {
+    expect(classifyIncomingFile('a.pdf', 'application/pdf', 1000)).toEqual({ kind: 'pdf' })
+  })
+})
+
+describe('planAttachmentDelivery — documents', () => {
+  const ctx = { supportsNativeDocuments: true, nativeDocMaxBytes: 32 * 1024 * 1024, visionCapable: true }
+
+  it('routes a document to budgeted text on every provider', () => {
+    const doc = { kind: 'document' as const, name: 'a.docx', byteSize: 1000 }
+    expect(planAttachmentDelivery(doc, ctx)).toEqual({ route: 'document-text', budget: DOCUMENT_TEXT_BUDGET })
+    expect(planAttachmentDelivery(doc, { ...ctx, supportsNativeDocuments: false, visionCapable: false }))
+      .toEqual({ route: 'document-text', budget: DOCUMENT_TEXT_BUDGET })
   })
 })
