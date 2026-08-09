@@ -156,6 +156,35 @@ function fire(bucket: string, ...args: unknown[]): void {
 }
 
 // ---------------------------------------------------------------------------
+// background.ts IS the MV3 service worker's entry point: if MODULE EVALUATION
+// itself throws — not a listener misbehaving once called, but the top-level
+// code that runs synchronously during `import` — the whole worker dies on
+// load and every listener this file registers is dead with it, along with
+// dreaming, the research watchdog, and every chrome.runtime message route.
+// That happened for real: a `let resumeChain` binding was referenced (inside
+// resumeStrandedResearch(), called unconditionally at module scope) before
+// the `let` statement that initializes it had executed, throwing
+// "ReferenceError: Cannot access 'resumeChain' before initialization" — a
+// classic temporal-dead-zone bug. `beforeAll`'s `await import('./background')`
+// above already propagates that as a hook failure (every test in this file
+// reports "skipped" rather than running), which IS a real, unambiguous
+// signal — but it reads as "something is wrong with the test file", not "the
+// service worker cannot start". This test exists to give that failure mode
+// its own name in the test list: if it ever goes red, module evaluation threw.
+// ---------------------------------------------------------------------------
+
+test('background.ts module evaluation completes without throwing (the module actually loaded)', () => {
+  // If beforeAll's import had thrown, THIS test would show as skipped too —
+  // there is no way to assert "import succeeded" from inside a test that only
+  // runs once it already has. What this buys is a dedicated, clearly-named
+  // entry in the test list rather than relying on a reader noticing that
+  // every OTHER test in the file also went missing.
+  expect(bg).toBeDefined()
+  expect(typeof bg.notifyDone).toBe('function')
+  expect(typeof bg.dreamAlarmPeriodMinutes).toBe('function')
+})
+
+// ---------------------------------------------------------------------------
 // research.clearTasks message routing (the carry-over clearTasks() race fix).
 // ---------------------------------------------------------------------------
 
