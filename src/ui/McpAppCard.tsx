@@ -143,7 +143,13 @@ export default function McpAppCard({
         <iframe
           className="mcp-app-frame"
           src={app.externalUrl}
-          sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
+          // allow-same-origin deliberately omitted, same rule as sandbox.html's
+          // own app-mount iframe: the URL is entirely server-chosen, so the
+          // framed page must not get the real origin's cookies/storage. It only
+          // costs inline session persistence — a page that needs a real login
+          // still works via allow-popups (a normal, non-sandboxed top-level
+          // window) or the "Open in a tab" fallback below.
+          sandbox="allow-scripts allow-forms allow-popups"
           title={`${app.server} app`}
         />
         <figcaption className="mcp-content-meta">

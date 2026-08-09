@@ -1372,6 +1372,12 @@ export function createAgentTools(
             once: true,
           })
           if (!approved) return DENIED
+          // The card sat on screen for however long the human took to react —
+          // entirely under their control. If they switched tabs while it was
+          // up, this committing action must not fire against a tab they've
+          // stopped watching: same rule as the entry-point check above, and
+          // the session survives so the plan resumes when they come back.
+          if (!(await isForeground(tab))) return parkFor(tab, 'act on this page')
           // The card's summary was built from `el` as it stood BEFORE the
           // human reaction-time wait inside requestApproval. Re-read the page
           // now and re-check that the same element is still at this index —
@@ -1463,8 +1469,15 @@ export function createAgentTools(
         const filled: number[] = []
         const staleSkipped: number[] = []
         for (const f of fields) {
+          // Re-checked every field, not just at entry: this loop can run
+          // long enough for the user to tab away partway through, and the
+          // remaining fields would otherwise keep typing into a page nobody
+          // is watching. Stop the whole batch (not just this field) — same
+          // outcome as the entry-point check, with whatever was already
+          // filled reported back.
+          if (!(await isForeground(tab))) return { filled, ...parkFor(tab, 'fill in this form') }
           let snap
-          try { snap = await snapshotPage(tab.id) } catch { return { error: 'Cannot read this page.' } }
+          try { snap = await snapshotPage(tab.id) } catch { return { filled, error: 'Cannot read this page.' } }
           if (snap.origin !== session.origin) {
             pageControl.endSession()
             return { filled, error: 'The page is now on a different site; autofill stopped and page control ended for safety.' }
@@ -1474,6 +1487,11 @@ export function createAgentTools(
           if (isPointOfNoReturn(spec, el, session.origin)) {
             const approved = await requestApproval({ toolName: 'AutofillForm', summary: `Fill a sensitive field (${el?.name ?? f.index})`, reason: 'This field is sensitive.', once: true })
             if (!approved) continue
+            // The user may have switched tabs while this card was on screen.
+            // Typing a sensitive value into a page they can't see is the
+            // least watchable thing this tool does — stop the whole batch
+            // rather than resume blind, same as ControlPage's own recheck.
+            if (!(await isForeground(tab))) return { filled, ...parkFor(tab, 'fill in this form') }
             // Same re-check as ControlPage (see its comment): the card's
             // summary was built from `el` as it stood before this wait, so
             // re-verify the field is still the same one before typing into it.
