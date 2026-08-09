@@ -21,3 +21,6 @@ dist/
 
 # Playwright MCP scratch traces (browser verification runs)
 .playwright-mcp/
+
+# Superpowers brainstorming companion (local mockups)
+.superpowers/
