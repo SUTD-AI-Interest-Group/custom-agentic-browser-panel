@@ -13,6 +13,7 @@
 // the agent from *creating* state (submitting, buying, registering) on the open web.
 
 import { isFetchableUrl } from '../platform/webFetch'
+import { normalizeHost } from '../agent/researchFraming'
 import type { IndexedElement } from '../platform/domIndex'
 import {
   isBlindClick,
@@ -185,4 +186,22 @@ export function isSafeResearchAction(action: BrowseAction, el?: IndexedElement):
       return ALLOW
     }
   }
+}
+
+/**
+ * True when `url`'s host is within `scope`. An empty scope allows everything,
+ * which is the unrestricted default and today's behavior.
+ *
+ * Matching is registrable-host based: a scope of `aftershockpc.com` admits
+ * `www.` and `sg.` subdomains but NOT `aftershockpc.com.evil.net` — the dot in
+ * the suffix check is what makes that collision fail rather than pass.
+ */
+export function scopeAllows(url: string, scope: string[]): boolean {
+  if (scope.length === 0) return true
+  const host = normalizeHost(url)
+  if (!host) return false
+  return scope.some((entry) => {
+    const s = normalizeHost(entry)
+    return s !== null && (host === s || host.endsWith(`.${s}`))
+  })
 }

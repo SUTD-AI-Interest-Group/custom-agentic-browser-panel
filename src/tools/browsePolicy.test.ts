@@ -1,5 +1,5 @@
-import { describe, it, expect } from 'vitest'
-import { isSafeResearchAction, isSearchInput } from './browsePolicy'
+import { describe, it, expect, test } from 'vitest'
+import { isSafeResearchAction, isSearchInput, scopeAllows } from './browsePolicy'
 import type { IndexedElement } from '../platform/domIndex'
 
 /** Minimal IndexedElement factory — only the fields the policy reads matter. */
@@ -410,4 +410,27 @@ describe('isSafeResearchAction — navigate / scroll / back', () => {
     expect(isSafeResearchAction({ kind: 'scroll', direction: 'down' }).ok).toBe(true)
     expect(isSafeResearchAction({ kind: 'back' }).ok).toBe(true)
   })
+})
+
+test('an empty scope allows everything', () => {
+  expect(scopeAllows('https://anything.example/x', [])).toBe(true)
+})
+
+test('a scoped host admits itself and its subdomains', () => {
+  expect(scopeAllows('https://aftershockpc.com/pc', ['aftershockpc.com'])).toBe(true)
+  expect(scopeAllows('https://www.aftershockpc.com/pc', ['aftershockpc.com'])).toBe(true)
+  expect(scopeAllows('https://sg.aftershockpc.com/pc', ['aftershockpc.com'])).toBe(true)
+})
+
+test('a suffix-collision host is rejected', () => {
+  expect(scopeAllows('https://aftershockpc.com.evil.net/x', ['aftershockpc.com'])).toBe(false)
+  expect(scopeAllows('https://notaftershockpc.com/x', ['aftershockpc.com'])).toBe(false)
+})
+
+test('scheme and port are ignored, and any one scope entry suffices', () => {
+  expect(scopeAllows('http://lenovo.com:8080/x', ['aftershockpc.com', 'lenovo.com'])).toBe(true)
+})
+
+test('an unparseable url is rejected under a non-empty scope', () => {
+  expect(scopeAllows('not a url', ['aftershockpc.com'])).toBe(false)
 })
