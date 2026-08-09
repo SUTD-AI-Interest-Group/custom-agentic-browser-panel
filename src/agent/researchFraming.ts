@@ -1,6 +1,9 @@
-// Pure parsing/normalization for the research framing call. Kept free of any
-// Chrome or AI-SDK import so it can be unit-tested directly — same split as
-// title.ts (pure) vs provider.ts (the call).
+// Parsing/normalization for the research framing call, plus the call itself.
+// The parser (parseFraming/normalizeHost) is pure and Chrome/AI-SDK-free so it
+// stays unit-testable directly — same split as title.ts (pure) vs provider.ts
+// (the call).
+
+import { generateObject, generateText, jsonSchema, type LanguageModel } from 'ai'
 
 /** The framing call's normalized output, and the body of a `ResearchProposal`. */
 export interface ResearchFramingResult {
@@ -42,6 +45,17 @@ const strings = (v: unknown): string[] =>
   Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string' && x.trim() !== '') : []
 
 /**
+ * True for a normalized host with at least one dot — i.e. not a bare public
+ * suffix like `com` or `net`. `scopeAllows` (browsePolicy.ts) matches by dotted
+ * suffix (`host === s || host.endsWith('.' + s)`), so a dotless scope entry
+ * would suffix-match every host on the internet under that TLD — a launch-card
+ * chip the user reads as "pinned to one site" that in fact restricts nothing.
+ * That is worse than no scope at all, because it misleads, so such entries are
+ * dropped here rather than let through to become a scope entry.
+ */
+const isScopableHost = (host: string | null): host is string => host !== null && host.includes('.')
+
+/**
  * Normalize the framing call's output into a `ResearchFramingResult`.
  *
  * Accepts either the object `generateObject` returns or the raw text of the
@@ -81,7 +95,7 @@ export function parseFraming(raw: string | object, fallbackQuestion: string): Re
   const out: ResearchFramingResult = {
     question,
     subQuestions: strings(obj.subQuestions),
-    sites: [...new Set(strings(obj.sites).map(normalizeHost).filter((h): h is string => h !== null))],
+    sites: [...new Set(strings(obj.sites).map(normalizeHost).filter(isScopableHost))],
   }
   const brief = typeof obj.brief === 'string' ? obj.brief.trim() : ''
   if (brief) out.brief = brief
@@ -94,4 +108,86 @@ export function parseFraming(raw: string | object, fallbackQuestion: string): Re
   const clarifications = strings(obj.clarifications).slice(0, 2)
   if (clarifications.length) out.clarifications = clarifications
   return out
+}
+
+const FRAMING_TIMEOUT_MS = 20_000
+
+const FRAMING_SCHEMA = {
+  type: 'object',
+  properties: {
+    question: { type: 'string', description: 'The question to research, self-contained and specific.' },
+    brief: { type: 'string', description: 'What the conversation already established that research should not re-derive.' },
+    subQuestions: { type: 'array', items: { type: 'string' }, description: '2-5 sub-questions to cover.' },
+    sites: { type: 'array', items: { type: 'string' }, description: 'Hosts to restrict sources to, when the conversation clearly implies them. Empty if not.' },
+    premise: {
+      type: 'object',
+      properties: { asserted: { type: 'string' }, corrected: { type: 'string' } },
+      description: 'ONLY when the user asserted something the context contradicts.',
+    },
+    clarifications: { type: 'array', items: { type: 'string' }, description: 'At most 2, only when genuinely ambiguous.' },
+  },
+  required: ['question'],
+} as const
+
+export interface FrameResearchOpts {
+  model: LanguageModel
+  /** The armed message verbatim — also the fallback question. */
+  message: string
+  /** Recent conversation, newest last, already trimmed by the caller. */
+  context: string
+  signal?: AbortSignal
+}
+
+const PROMPT = (message: string, context: string) =>
+  `Turn the user's request into a background research brief.\n\n` +
+  `CRITICAL: if the request asserts a fact the conversation contradicts (a count, a name, a date), ` +
+  `use the CORRECTED fact in "question" AND report both halves in "premise". Never silently correct ` +
+  `and never research a premise you know to be wrong.\n\n` +
+  `Set "sites" only when the conversation clearly points at specific hosts. Ask a clarification only ` +
+  `when you genuinely cannot proceed — at most two.\n\n` +
+  `Conversation so far:\n${context}\n\nThe request: ${message}`
+
+/**
+ * One cheap call that turns an armed message into an editable proposal.
+ * Deliberately NOT a runAgentTurn: no tool loop, no step budget, no way for it
+ * to wander into the browser. Same shape as the chat-title call.
+ *
+ * Falls back generateObject → generateText → raw message, because structured
+ * output is unreliable on some OpenAI-compatible endpoints and a failed framing
+ * must degrade the card, never block the launch.
+ *
+ * NOTE on `signal`: when the caller doesn't supply one, the SAME AbortSignal.timeout
+ * instance backs both the generateObject attempt and the generateText fallback below.
+ * AbortSignal.timeout() fires (and latches aborted, permanently) at most once; if
+ * that firing is *why* generateObject failed, the fallback's fetch sees an
+ * already-aborted signal and rejects immediately without reaching the network —
+ * so the fallback cannot help recover from a timeout specifically, only from a
+ * fast non-timeout failure (e.g. a 400 for missing structured-output support,
+ * this tier's primary reason for existing) that leaves time on the shared clock.
+ * The three-tier degrade to the raw message still holds either way — see the
+ * task report for the full analysis and why this wasn't restructured here.
+ */
+export async function frameResearch(opts: FrameResearchOpts): Promise<ResearchFramingResult> {
+  const prompt = PROMPT(opts.message, opts.context)
+  const signal = opts.signal ?? AbortSignal.timeout(FRAMING_TIMEOUT_MS)
+  try {
+    const { object } = await generateObject({
+      model: opts.model,
+      schema: jsonSchema(FRAMING_SCHEMA as any),
+      prompt,
+      abortSignal: signal,
+    })
+    return parseFraming(object as object, opts.message)
+  } catch {
+    try {
+      const { text } = await generateText({
+        model: opts.model,
+        prompt: `${prompt}\n\nReply with JSON only.`,
+        abortSignal: signal,
+      })
+      return parseFraming(text, opts.message)
+    } catch {
+      return { question: opts.message, subQuestions: [], sites: [] }
+    }
+  }
 }

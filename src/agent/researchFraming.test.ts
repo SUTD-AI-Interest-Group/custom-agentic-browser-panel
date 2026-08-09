@@ -45,3 +45,18 @@ test('normalizeHost strips scheme, path, port and a leading www', () => {
   expect(normalizeHost('aftershockpc.com')).toBe('aftershockpc.com')
   expect(normalizeHost('   ')).toBeNull()
 })
+
+test('the schema requires only a question', () => {
+  // Guards the contract frameResearch's fallbacks rely on: anything past
+  // `question` is optional, so a partial model response still yields a proposal.
+  expect(parseFraming({ question: 'q' }, 'fb')).toEqual({ question: 'q', subQuestions: [], sites: [] })
+})
+
+test('drops a dotless scope entry — a bare public suffix would restrict nothing', () => {
+  // scopeAllows (browsePolicy.ts) suffix-matches a scope entry, so an entry with
+  // no dot (e.g. the TLD 'com') would admit every host on the internet under it —
+  // a launch-card chip that reads as "pinned to one site" while pinning nothing.
+  expect(parseFraming({ question: 'q', sites: ['com', 'aftershockpc.com'] }, 'fb').sites).toEqual([
+    'aftershockpc.com',
+  ])
+})
