@@ -10,14 +10,24 @@ import { isSealed } from './vaultFormat'
 
 /**
  * Every secret-bearing field value in stable order: provider apiKeys,
- * observability keys, MCP header values. Empty strings included, so indexes
- * line up with the mapped object for verification.
+ * observability keys, MCP header values, MCP stdio `env` values. Empty
+ * strings included, so indexes line up with the mapped object for
+ * verification.
+ *
+ * `env` is swept uniformly (every value, not just names that look sensitive)
+ * for the same reason `headers` already is: a name-based heuristic
+ * (`PATH`/`NODE_ENV`/`HOME` vs. `GITHUB_PERSONAL_ACCESS_TOKEN`) is guessable
+ * and any miss leaves a real credential in plaintext, whereas sealing a
+ * non-secret value like `PATH` just costs a few bytes of ciphertext with no
+ * behavioral difference — `openSettings` decrypts it back before anything
+ * reads it. Fail-safe beats fail-guessable.
  */
 export function secretValues(settings: Settings): string[] {
   const values = settings.providers.map((p) => p.apiKey)
   if (settings.observability) values.push(settings.observability.publicKey, settings.observability.secretKey)
   for (const entry of Object.values(settings.mcp?.servers ?? {})) {
     for (const v of Object.values(entry.headers ?? {})) values.push(v)
+    for (const v of Object.values(entry.env ?? {})) values.push(v)
   }
   return values
 }
@@ -79,13 +89,18 @@ async function mapSecrets(settings: Settings, fn: (value: string) => Promise<str
   if (settings.mcp?.servers) {
     const servers: typeof settings.mcp.servers = {}
     for (const [name, entry] of Object.entries(settings.mcp.servers)) {
+      let mapped = entry
       if (entry.headers) {
         const headers: Record<string, string> = {}
         for (const [k, v] of Object.entries(entry.headers)) headers[k] = await fn(v)
-        servers[name] = { ...entry, headers }
-      } else {
-        servers[name] = entry
+        mapped = { ...mapped, headers }
       }
+      if (entry.env) {
+        const env: Record<string, string> = {}
+        for (const [k, v] of Object.entries(entry.env)) env[k] = await fn(v)
+        mapped = { ...mapped, env }
+      }
+      servers[name] = mapped
     }
     out.mcp = { ...settings.mcp, servers }
   }
