@@ -44,6 +44,16 @@ function scheduleWatchdog(): void {
   chrome.alarms.create(RESEARCH_WATCHDOG_ALARM, { delayInMinutes: 1, periodInMinutes: 1 })
 }
 
+// Backs resumeStrandedResearch()'s self-serialization (defined further down,
+// alongside its full reasoning). Declared here, ahead of every module-scope
+// call site below (onInstalled/onStartup register listeners that fire later,
+// but the unconditional call near the bottom of this file's setup runs
+// synchronously at import time) — a `let` is in its temporal dead zone until
+// the line that initializes it actually executes, so this must be assigned
+// before resumeStrandedResearch() can ever be called, not merely before it is
+// defined (function declarations are hoisted whole; this binding is not).
+let resumeChain: Promise<void> = Promise.resolve()
+
 /**
  * How often the dream alarm fires, in minutes: the user's chosen interval, but
  * capped at 60 (a 24h interval doesn't need 24h between checks — the alarm just
@@ -350,10 +360,28 @@ async function startResearchTask(taskId: string, opts: { resume?: boolean } = {}
  * Find tasks whose worker looks dead (stale heartbeat) and re-dispatch them. Within
  * the 24h cap they resume from the notebook; past it, runResearch finalizes a partial
  * report. Each is "claimed" (updatedAt bumped) before dispatch so a racing watchdog
- * tick or the startup scan doesn't double-dispatch it — with the offscreen guard as
- * the ultimate backstop.
+ * tick or the startup scan doesn't double-dispatch it.
+ *
+ * The claim itself (applyUpdate) is serialized against other researchTasks.ts
+ * writers by that module's own writeChain — but the listTasks() READ just above
+ * it is not a write, so two overlapping calls to THIS function (the unconditional
+ * module-load call below racing the first watchdog tick, or two watchdog ticks)
+ * could both snapshot the same task as stale before either's claim had committed,
+ * producing a redundant research.start dispatch. `resumeChain` (declared near
+ * the top of this file, ahead of every call site) serializes calls to
+ * resumeStrandedResearch against each other — mirroring the shape of
+ * researchTasks.ts's own `serialize()` — so a call's read-claim-dispatch only
+ * starts once every earlier call's has fully finished, closing that race here
+ * rather than relying solely on the offscreen host's `running`-map guard
+ * (offscreen.ts) as the only thing making a redundant dispatch harmless.
  */
-async function resumeStrandedResearch(): Promise<void> {
+function resumeStrandedResearch(): Promise<void> {
+  const run = resumeChain.then(doResumeStrandedResearch, doResumeStrandedResearch)
+  resumeChain = run.catch(() => {})
+  return run
+}
+
+async function doResumeStrandedResearch(): Promise<void> {
   try {
     const tasks = await listTasks()
     const map = Object.fromEntries(tasks.map((t) => [t.id, t]))
@@ -485,7 +513,7 @@ chrome.runtime.onMessage.addListener((msg: ResearchMsg, _sender, sendResponse) =
         // Hybrid-escalation broker: the offscreen agent can't touch tabs, so it asks
         // the SW to render a hard URL in an isolated tab and return the text/shot.
         const guard = isFetchableUrl(msg.url)
-        const outcome = guard.ok ? await renderPage(msg.url, msg.want) : { error: `refused (${guard.reason})` }
+        const outcome = guard.ok ? await renderPage(msg.url) : { error: `refused (${guard.reason})` }
         postResearchMsg({
           type: 'research.renderResult',
           taskId: msg.taskId,

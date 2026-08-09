@@ -107,7 +107,10 @@ function findRun(sandbox: Sandbox, code: string): Extract<ExecHostMsg, { type: '
 }
 
 beforeEach(() => {
-  vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ arrayBuffer: () => Promise.resolve(new ArrayBuffer(4)) }))
+  vi.stubGlobal(
+    'fetch',
+    vi.fn().mockResolvedValue({ ok: true, status: 200, statusText: 'OK', arrayBuffer: () => Promise.resolve(new ArrayBuffer(4)) }),
+  )
   vi.stubGlobal('chrome', { runtime: { getURL: (p: string) => `chrome-extension://fake/${p}` } })
 })
 
@@ -192,6 +195,37 @@ describe('ExecHost', () => {
     } finally {
       sandbox.restore()
       vi.useRealTimers()
+    }
+  })
+
+  // A non-2xx wasm fetch (corrupted/partial extension install) still resolves
+  // .arrayBuffer() fine, so pre-fix this would sail past the fetch entirely
+  // and only fail later as an opaque exec:init rejection from inside the
+  // sandbox. boot() must reject right at the fetch, with a message naming the
+  // real cause, and never post exec:init at all.
+  it('rejects with a clear error when the wasm fetch is not ok, and never posts exec:init', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: false,
+        status: 404,
+        statusText: 'Not Found',
+        arrayBuffer: () => Promise.resolve(new ArrayBuffer(4)),
+      }),
+    )
+    const sandbox = fakeSandbox()
+    try {
+      const host = new ExecHost()
+      const runPromise = host.run('1', { timeoutMs: 5000, memoryBytes: 1000 })
+      runPromise.catch(() => {}) // see note above — avoids a spurious unhandled-rejection warning
+      await flushMicrotasks()
+      sandbox.ready()
+      await flushMicrotasks()
+
+      await expect(runPromise).rejects.toThrow(/404/)
+      expect(sandbox.posted.some((m) => m.type === 'exec:init')).toBe(false)
+    } finally {
+      sandbox.restore()
     }
   })
 

@@ -63,20 +63,20 @@ function roundTrip<T>(
 
 function makeRenderBroker(taskId: string, signal: AbortSignal): RenderBroker {
   return {
-    render(url, want) {
+    render(url) {
       return roundTrip(
         pendingRenders,
         taskId,
         signal,
         RENDER_TIMEOUT_MS,
         (requestId) =>
-          postResearchMsg({ type: 'research.renderPage', taskId, requestId, url, want }),
+          postResearchMsg({ type: 'research.renderPage', taskId, requestId, url }),
         { error: 'render timed out' },
         { error: 'aborted' },
       ).then((r: any) =>
         r.error !== undefined && r.text === undefined
           ? { error: r.error }
-          : { text: r.text, title: r.title, finalUrl: r.finalUrl, screenshotDataUrl: r.screenshotDataUrl, error: r.error },
+          : { text: r.text, title: r.title, finalUrl: r.finalUrl, error: r.error },
       )
     },
   }

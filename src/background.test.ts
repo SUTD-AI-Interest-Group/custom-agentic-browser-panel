@@ -132,12 +132,14 @@ function fakeChrome() {
 let env: ReturnType<typeof fakeChrome>
 let bg: typeof import('./background')
 let researchTasks: typeof import('./data/researchTasks')
+let settingsMod: typeof import('./data/settings')
 
 beforeAll(async () => {
   env = fakeChrome()
   vi.stubGlobal('chrome', env.chrome)
   bg = await import('./background')
   researchTasks = await import('./data/researchTasks')
+  settingsMod = await import('./data/settings')
 })
 
 afterEach(() => {
@@ -280,4 +282,59 @@ test('dreamAlarmPeriodMinutes floors at 1 and caps at 60', () => {
   expect(bg.dreamAlarmPeriodMinutes({ dreamIntervalMs: 10_000 } as any)).toBe(1) // < 1 minute floors to 1
   expect(bg.dreamAlarmPeriodMinutes({ dreamIntervalMs: 24 * 60 * 60 * 1000 } as any)).toBe(60) // 24h caps at 60
   expect(bg.dreamAlarmPeriodMinutes({ dreamIntervalMs: 30 * 60 * 1000 } as any)).toBe(30) // 30 min passes through
+})
+
+// ---------------------------------------------------------------------------
+// resumeStrandedResearch's select-then-claim race: two overlapping invocations
+// (e.g. two watchdog ticks, or the module-load call racing the first tick)
+// used to both read listTasks() and see the same task as stale before either's
+// claim (applyUpdate) had committed, producing a redundant research.start
+// dispatch. resumeStrandedResearch is now serialized against itself.
+// ---------------------------------------------------------------------------
+
+test('two racing watchdog ticks claim and dispatch a stranded task only once', async () => {
+  const now = Date.now()
+  const task = {
+    id: 'strand-1',
+    question: 'q',
+    status: 'running' as const,
+    steps: [],
+    startedAt: now - 10 * 60_000,
+    updatedAt: now - 10 * 60_000, // well past STALE_MS (3 min)
+  }
+  let claimed = false
+
+  vi.mocked(researchTasks.listTasks).mockImplementation(async () => (claimed ? [] : [task as any]))
+  vi.mocked(researchTasks.applyUpdate).mockImplementation(async () => {
+    claimed = true
+    return { ...task, updatedAt: Date.now() } as any
+  })
+  vi.mocked(researchTasks.getTask).mockImplementation(async () => ({ ...task, updatedAt: Date.now() }) as any)
+  vi.mocked(settingsMod.getSelectedProvider).mockReturnValue({ provider: {}, modelId: 'm' } as any)
+
+  try {
+    // Two racing ticks, fired back-to-back with no await between them — the
+    // exact shape of two watchdog alarms (or the module-load call and the
+    // first tick) landing close together.
+    fire('onAlarm', { name: 'research-watchdog' })
+    fire('onAlarm', { name: 'research-watchdog' })
+
+    await vi.waitFor(() => {
+      const starts = vi.mocked(researchTasks.postResearchMsg).mock.calls.filter(([m]) => (m as any).type === 'research.start')
+      if (starts.length === 0) throw new Error('not dispatched yet')
+    })
+    // Give the second (now-serialized) call a chance to run its own
+    // read-claim-dispatch, if it were going to — it should see the task
+    // already claimed and dispatch nothing.
+    await new Promise((r) => setTimeout(r, 0))
+
+    const starts = vi.mocked(researchTasks.postResearchMsg).mock.calls.filter(([m]) => (m as any).type === 'research.start')
+    expect(starts).toHaveLength(1)
+    expect(researchTasks.applyUpdate).toHaveBeenCalledTimes(1)
+  } finally {
+    vi.mocked(researchTasks.listTasks).mockImplementation(async () => [])
+    vi.mocked(researchTasks.applyUpdate).mockImplementation(async () => undefined)
+    vi.mocked(researchTasks.getTask).mockImplementation(async () => undefined)
+    vi.mocked(settingsMod.getSelectedProvider).mockReturnValue(undefined as any)
+  }
 })

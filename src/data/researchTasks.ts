@@ -196,8 +196,10 @@ export type ResearchMsg =
   // the ONE writeChain below instead of racing it from a second context.
   | { type: 'research.clearTasks' }
   // Hybrid-escalation broker (offscreen → SW → offscreen): render a hard page in
-  // an isolated controlled tab and return its text/screenshot. See background.ts.
-  | { type: 'research.renderPage'; taskId: string; requestId: string; url: string; want: 'text' | 'screenshot' | 'both' }
+  // an isolated controlled tab and return its text. See background.ts. Text
+  // only — see researchRender.ts's module header for why a screenshot mode
+  // was removed rather than wired up.
+  | { type: 'research.renderPage'; taskId: string; requestId: string; url: string }
   | {
       type: 'research.renderResult'
       taskId: string
@@ -205,7 +207,6 @@ export type ResearchMsg =
       text?: string
       title?: string
       finalUrl?: string
-      screenshotDataUrl?: string
       error?: string
     }
   // Interactive browse session (offscreen → SW → offscreen): drive the isolated

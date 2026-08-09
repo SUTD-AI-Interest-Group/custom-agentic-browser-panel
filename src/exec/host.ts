@@ -109,7 +109,14 @@ export class ExecHost {
       document.body.appendChild(frame)
       this.frame = frame
       await readyGate
-      const wasm = await fetch(wasmUrl).then((r) => r.arrayBuffer())
+      // Check .ok explicitly: a non-2xx response (corrupted/partial extension
+      // install, or a dev server 404 on the wasm asset) still resolves
+      // .arrayBuffer() fine — often on an HTML error page's bytes — so without
+      // this the failure would only surface later as an opaque exec:init
+      // rejection from inside the sandbox instead of a clear error right here.
+      const wasmRes = await fetch(wasmUrl)
+      if (!wasmRes.ok) throw new Error(`failed to fetch sandbox wasm: ${wasmRes.status} ${wasmRes.statusText}`)
+      const wasm = await wasmRes.arrayBuffer()
       const reply = await this.roundTrip(
         { type: 'exec:init', requestId: crypto.randomUUID(), wasm },
         INIT_TIMEOUT_MS,

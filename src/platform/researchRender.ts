@@ -33,13 +33,12 @@
 // so a rendered read could never help there.
 
 import { isFetchableUrl } from './webFetch'
-import { acquireTab, captureBestEffort, exec, navigateAndWait, sleep, type TabLease } from './researchTab'
+import { acquireTab, exec, navigateAndWait, sleep, type TabLease } from './researchTab'
 
 export interface RenderOutcome {
   text?: string
   title?: string
   finalUrl?: string
-  screenshotDataUrl?: string
   error?: string
 }
 
@@ -47,29 +46,25 @@ const SETTLE_MS = 900
 const MAX_TEXT = 20_000
 
 /**
- * Render one URL in the isolated tab and return its readable text (+ shot).
+ * Render one URL in the isolated tab and return its readable text.
  *
- * ⚠️ SCREENSHOT MODE (`want: 'screenshot' | 'both'`) IS CURRENTLY UNREACHABLE
- * DEAD CODE — both callers of the research.renderPage broker (src/tools/
- * research.ts) hardcode `want: 'text'` — and it must STAY that way until the
- * blocker below is fixed. DO NOT wire up a caller that passes 'screenshot' or
- * 'both' without first addressing this:
- *
- * `captureBestEffort` (researchTab.ts) uses `chrome.tabs.captureVisibleTab`,
- * which captures whatever is visually COMPOSITED on screen — same-origin AND
- * cross-origin iframes alike, since the Same-Origin Policy governs DOM/JS
- * access, not painting. Every url guard in this file (navigateAndWait, the
- * post-capture re-check just above) only ever inspects the TOP frame's
- * `location.href`. A page can sit on a permanently-safe, never-redirecting
- * url while embedding `<iframe src="http://169.254.169.254/latest/meta-data/
- * iam/security-credentials/">` — many internal services send no
- * X-Frame-Options — and that iframe's content is rendered straight into the
- * screenshot with NOTHING here ever checking its src. No race, no redirect,
- * no TOCTOU needed — a static embed does it on the very first capture. The
- * text path is unaffected (ordinary SOP already blocks cross-origin iframe
- * DOM/text access), which is why this is a screenshot-only blocker.
+ * Text only, deliberately — a screenshot mode was removed rather than fixed:
+ * `chrome.tabs.captureVisibleTab` captures whatever is visually COMPOSITED on
+ * screen, same-origin AND cross-origin iframes alike (the Same-Origin Policy
+ * governs DOM/JS access, not painting), while every url guard in this file
+ * only ever inspects the TOP frame's `location.href`. A page can sit on a
+ * permanently-safe, never-redirecting url while embedding
+ * `<iframe src="http://169.254.169.254/latest/meta-data/iam/security-credentials/">`
+ * — many internal services send no X-Frame-Options — and that iframe's
+ * content would render straight into the screenshot with nothing here ever
+ * checking its src. No race, no redirect, no TOCTOU needed. The text path is
+ * unaffected (ordinary SOP already blocks cross-origin iframe DOM/text
+ * access), which is why this was a screenshot-only blocker — but since
+ * nothing in this codebase ever called for a screenshot (both FetchUrl call
+ * sites in src/tools/research.ts only ever asked for text), deleting the
+ * capability beat leaving a warning comment someone could skip past.
  */
-export async function renderPage(url: string, want: 'text' | 'screenshot' | 'both'): Promise<RenderOutcome> {
+export async function renderPage(url: string): Promise<RenderOutcome> {
   // Defense in depth — the SW message handler already guards, re-check here.
   const guard = isFetchableUrl(url)
   if (!guard.ok) return { error: `refused to render (${guard.reason})` }
@@ -95,24 +90,7 @@ export async function renderPage(url: string, want: 'text' | 'screenshot' | 'bot
     // before or after the fact.
     const read = await readReadableText(lease.tabId)
     if (read.blockedReason) return { error: `refused: redirected to a blocked target (${read.blockedReason})` }
-    let screenshotDataUrl = want === 'text' ? undefined : await captureBestEffort()
-    if (screenshotDataUrl) {
-      // captureBestEffort has its own small window AFTER the validated read
-      // above (un-minimize, settle, capture) — re-check immediately adjacent
-      // to the actual pixel capture so a redirect landing exactly there can't
-      // hand back a screenshot of a different, blocked page under an
-      // otherwise-safe finalUrl/text pair. Same bug class as the text TOCTOU,
-      // in the same function — closed here too rather than left open.
-      // Fail CLOSED on "couldn't determine": if chrome.tabs.get throws or the
-      // tab has no url, that is NOT evidence the page is safe — treat it the
-      // same as a positively-blocked landing and drop the screenshot. The
-      // inverse (`post?.url && !isFetchableUrl(...).ok`) is the exact
-      // fail-open shape review round 1 found in checkLandedUrl and deleted —
-      // it silently KEEPS the screenshot whenever the url can't be read.
-      const post = await chrome.tabs.get(lease.tabId).catch(() => undefined)
-      if (!post?.url || !isFetchableUrl(post.url).ok) screenshotDataUrl = undefined
-    }
-    return { text: read.text, title: read.title, finalUrl: read.url, screenshotDataUrl }
+    return { text: read.text, title: read.title, finalUrl: read.url }
   } catch (err) {
     return { error: `render failed: ${err instanceof Error ? err.message : String(err)}` }
   } finally {

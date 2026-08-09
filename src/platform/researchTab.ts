@@ -195,24 +195,6 @@ export async function navigateAndWait(tabId: number, url: string): Promise<Navig
   return guard.ok ? { url: landed } : { url: landed, blockedReason: guard.reason }
 }
 
-/**
- * captureVisibleTab needs the window un-minimized, so briefly normalize it (still
- * unfocused) and re-minimize after. Best-effort by nature — returns undefined
- * rather than failing the caller.
- */
-export async function captureBestEffort(): Promise<string | undefined> {
-  if (renderWindowId === undefined) return undefined
-  try {
-    await chrome.windows.update(renderWindowId, { state: 'normal', focused: false })
-    await sleep(150)
-    const shot = await chrome.tabs.captureVisibleTab(renderWindowId, { format: 'png' })
-    await chrome.windows.update(renderWindowId, { state: 'minimized' }).catch(() => {})
-    return shot
-  } catch {
-    return undefined
-  }
-}
-
 /** Run a self-contained function inside the research tab's page world. */
 export function exec<T>(tabId: number, func: () => T) {
   return chrome.scripting.executeScript({ target: { tabId }, func })

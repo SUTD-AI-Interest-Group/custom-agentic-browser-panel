@@ -89,6 +89,39 @@ function requestOf<T>(mode: IDBTransactionMode, fn: (s: IDBObjectStore) => IDBRe
   )
 }
 
+/**
+ * Run `fn` once per id against a SINGLE shared transaction, instead of
+ * opening one transaction per id. IndexedDB serializes overlapping
+ * transactions against the same store regardless (see memory.ts's
+ * `batchTransaction`, the sibling this mirrors — that file gained this
+ * exact shape for its own per-id delete loops first), so N parallel per-id
+ * transactions here would just queue up behind each other at the engine
+ * level while each still pays its own open/commit overhead — a store that
+ * can accumulate many small records under the 100MB/30-day caps is exactly
+ * the case where that overhead adds up. One transaction lets every delete
+ * pipeline without a JS-side round trip between requests, and commits — or
+ * aborts — the whole batch together.
+ *
+ * Kept local rather than imported from memory.ts: each store module here
+ * owns its own `openDb`/`requestOf` against its own database (see this
+ * file's header comment — "no module coordinates schema versions with
+ * another"), and memory.ts's version is closed over ITS OpenDb/store names.
+ */
+function batchTransaction(mode: IDBTransactionMode, ids: string[], fn: (s: IDBObjectStore, id: string) => void): Promise<void> {
+  if (ids.length === 0) return Promise.resolve()
+  return openDb().then(
+    (db) =>
+      new Promise<void>((resolve, reject) => {
+        const tx = db.transaction(STORE, mode)
+        const s = tx.objectStore(STORE)
+        tx.oncomplete = () => resolve()
+        tx.onerror = () => reject(tx.error)
+        tx.onabort = () => reject(tx.error ?? new Error('transaction aborted'))
+        for (const id of ids) fn(s, id)
+      }),
+  )
+}
+
 /** A data URL's payload is base64: 4 chars per 3 bytes. Close enough to prune on. */
 export function approxBytes(dataUrl: string): number {
   const comma = dataUrl.indexOf(',')
@@ -128,7 +161,7 @@ export async function getAttachment(id: string): Promise<StoredAttachment | null
 export async function deleteAttachmentsForConversation(conversationId: string): Promise<void> {
   const all = await requestOf<StoredAttachment[]>('readonly', (s) => s.getAll())
   const doomed = all.filter((a) => a.conversationId === conversationId)
-  await Promise.all(doomed.map((a) => requestOf('readwrite', (s) => s.delete(a.id))))
+  await batchTransaction('readwrite', doomed.map((a) => a.id), (s, id) => s.delete(id))
 }
 
 /**
@@ -149,7 +182,7 @@ export async function pruneAttachments(): Promise<{ deleted: number }> {
     if (running > MAX_TOTAL_BYTES) doomed.add(a.id)
   }
 
-  await Promise.all([...doomed].map((id) => requestOf('readwrite', (s) => s.delete(id))))
+  await batchTransaction('readwrite', [...doomed], (s, id) => s.delete(id))
   return { deleted: doomed.size }
 }
 
@@ -166,4 +199,27 @@ export async function attachmentsUsage(): Promise<StoreUsage> {
     count: all.length,
     detail: all.length === 1 ? '1 file' : `${all.length} files`,
   }
+}
+
+/** Test-only: write a raw record without going through saveAttachment() (and
+ *  its fire-and-forget pruneAttachments() side effect) — mirrors screenshots.ts's
+ *  `_putShotForTests`. */
+export async function _putAttachmentForTests(a: StoredAttachment): Promise<void> {
+  await requestOf('readwrite', (s) => s.put(a))
+}
+
+/** Test-only: close and delete the underlying database so the next call opens
+ *  a fresh, empty one. Mirrors screenshots.ts's `_resetDbForTests`. */
+export async function _resetDbForTests(): Promise<void> {
+  if (dbPromise) {
+    const db = await dbPromise.catch(() => null)
+    db?.close()
+  }
+  dbPromise = null
+  await new Promise<void>((resolve) => {
+    const req = indexedDB.deleteDatabase(DB_NAME)
+    req.onsuccess = () => resolve()
+    req.onerror = () => resolve()
+    req.onblocked = () => resolve()
+  })
 }

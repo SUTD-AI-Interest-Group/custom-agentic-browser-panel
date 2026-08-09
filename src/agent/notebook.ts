@@ -7,6 +7,19 @@
 // Everything here is pure/Chrome-independent (unit-tested in notebook.test.ts):
 // ids come from an internal counter, hashing is a small non-crypto djb2 so it
 // stays synchronous, and dedup is by URL / content hash.
+//
+// addImage is also the SSRF/auto-fetch choke point for report images: the
+// Synthesize phase (research.ts) embeds recorded images verbatim as
+// `![caption](url)`, which the panel renders as a plain `<img src>` with no
+// approval gate — an image URL harvested from attacker-influenced page content
+// (SearchImages/HarvestImages) is not something a human ever reviews before it
+// auto-loads in the user's browser. addImage screens `url` with the same
+// isSafeRenderUrl guard the UI's own render surfaces use, so a private/
+// internal/link-local target is refused before it ever enters the notebook —
+// one guard here covers every present and future consumer of nb.images,
+// rather than relying on each render surface to re-derive its own check.
+
+import { isSafeRenderUrl } from '../platform/safeRenderUrl'
 
 /** Confidence a finding's source actually supports its claim. */
 export type Confidence = 'high' | 'med' | 'low'
@@ -134,6 +147,8 @@ export interface NotebookHandle {
   /** Add or return the existing source for this URL; returns its citation index. */
   addSource(input: { url: string; title?: string; fetchedVia?: 'headless' | 'tab' }): ResearchSourceRec
   addFinding(input: { claim: string; sourceUrl?: string; quote?: string; confidence?: Confidence }): Finding
+  /** Add an image, or return undefined (recording nothing) for a duplicate URL
+   *  OR one that fails isSafeRenderUrl — see the module header. */
   addImage(input: {
     url: string
     sourceUrl?: string
@@ -194,6 +209,16 @@ export function createNotebook(initial?: ResearchNotebook, onChange?: () => void
       return f
     },
     addImage({ url, sourceUrl, caption, license, author, dims, relevanceNote }) {
+      // Refuse BEFORE dedup so an unsafe URL is never recorded even once — the
+      // synthesize prompt (research.ts) later embeds every recorded image
+      // as a bare `![]()` the panel auto-renders with no approval gate. Same
+      // treatment as a dedup miss (return undefined, record nothing, fire
+      // nothing) rather than a distinct error channel: the model didn't type
+      // this URL itself (it came from SearchImages/HarvestImages results), so
+      // there is nothing for it to retry or fix, and surfacing a per-URL
+      // "blocked because X" reason back into the transcript would add an
+      // oracle with no offsetting benefit.
+      if (!isSafeRenderUrl(url)) return undefined
       const hash = djb2(normalizeUrl(url))
       if (nb.images.some((i) => i.contentHash === hash)) return undefined // dedup
       const src = sourceUrl ? findSourceByUrl(sourceUrl) : undefined

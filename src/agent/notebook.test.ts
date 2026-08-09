@@ -69,6 +69,31 @@ test('addImage dedupes by URL and returns undefined on a repeat', () => {
   expect(nb.get().images).toHaveLength(1)
 })
 
+test('addImage refuses a URL that fails the safe-render check and records nothing', () => {
+  const nb = createNotebook()
+  // A SearchImages/HarvestImages result pointing at a cloud metadata endpoint —
+  // harvested from attacker-influenced page content, never reviewed by a human
+  // before the report would otherwise embed it as an auto-fetching <img src>.
+  const blocked = nb.addImage({ url: 'http://169.254.169.254/latest/meta-data/', caption: 'x' })
+  expect(blocked).toBeUndefined()
+  expect(nb.get().images).toHaveLength(0)
+})
+
+test('addImage still records an ordinary public image URL', () => {
+  const nb = createNotebook()
+  const img = nb.addImage({ url: 'https://example.com/photo.jpg', caption: 'a photo', license: 'CC-BY' })
+  expect(img).toBeDefined()
+  expect(img?.url).toBe('https://example.com/photo.jpg')
+  expect(nb.get().images).toHaveLength(1)
+})
+
+test('addImage rejecting an unsafe URL does not fire onChange (no state actually changed)', () => {
+  let n = 0
+  const nb = createNotebook(emptyNotebook(), () => n++)
+  nb.addImage({ url: 'http://127.0.0.1/x.png' })
+  expect(n).toBe(0)
+})
+
 test('setCoverage drives isFullyCovered and openGaps', () => {
   const nb = createNotebook()
   nb.setPlan({ subQuestions: ['q1', 'q2'], outline: ['intro'] })

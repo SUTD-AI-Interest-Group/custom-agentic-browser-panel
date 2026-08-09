@@ -17,16 +17,15 @@ import type { ApprovalGate } from './tools'
 export type { BrowseBroker } from '../agent/browseAgent'
 
 /**
- * Escalation broker: render a hard URL (JS-heavy / paywalled / PDF / needs a
- * screenshot) in a real controlled tab via the service worker, since the
- * offscreen research host cannot touch tabs itself. Injected by the controller;
- * absent = headless-only (the fast path still works, hard pages just fail).
+ * Escalation broker: render a hard URL (JS-heavy / paywalled) in a real
+ * controlled tab via the service worker, since the offscreen research host
+ * cannot touch tabs itself. Injected by the controller; absent = headless-only
+ * (the fast path still works, hard pages just fail). Text only — see
+ * researchRender.ts's module header for why a screenshot mode was removed
+ * rather than fixed.
  */
 export interface RenderBroker {
-  render(
-    url: string,
-    want: 'text' | 'screenshot' | 'both',
-  ): Promise<{ text?: string; title?: string; finalUrl?: string; screenshotDataUrl?: string; error?: string }>
+  render(url: string): Promise<{ text?: string; title?: string; finalUrl?: string; error?: string }>
 }
 
 /**
@@ -197,7 +196,7 @@ export function createResearchTools(deps: {
         if (looksLikePdfUrl(url)) return await fetchPdfReadable(url, notebook, abortSignal)
         // Forced render (a SPA the model already knows about).
         if (render && renderBroker) {
-          const rr = await renderBroker.render(url, 'text')
+          const rr = await renderBroker.render(url)
           if (!rr.error && rr.text) {
             const finalUrl = rr.finalUrl || url
             notebook.addSource({ url: finalUrl, title: rr.title, fetchedVia: 'tab' })
@@ -211,7 +210,7 @@ export function createResearchTools(deps: {
         if ('error' in r && r.error === PDF_CONTENT) return await fetchPdfReadable(url, notebook, abortSignal)
         const thin = !('error' in r) && r.text.trim().length < THIN_TEXT
         if (renderBroker && ('error' in r || thin)) {
-          const rr = await renderBroker.render(url, 'text')
+          const rr = await renderBroker.render(url)
           const min = 'error' in r ? 1 : r.text.trim().length
           if (!rr.error && rr.text && rr.text.trim().length >= min) {
             const finalUrl = rr.finalUrl || url

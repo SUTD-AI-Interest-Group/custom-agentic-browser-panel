@@ -271,12 +271,6 @@ export function closeSession(sessionId: string): void {
   session.lease.release()
 }
 
-/** Close every open session — for genuine global teardown (no per-task callers left,
- *  kept for SW-restart-style sweeps). */
-export function closeAllSessions(): void {
-  for (const id of [...sessions.keys()]) closeSession(id)
-}
-
 /** Close only the sessions belonging to one task — used when THAT task is cancelled.
  *  Sessions are keyed `${taskId}:browse:${n}` (see src/tools/research.ts), so a prefix
  *  match scopes the teardown to the cancelled task and leaves any other task's

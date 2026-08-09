@@ -93,6 +93,20 @@ const REQUEST_TIMEOUT_MS = 60_000
 /** Reconnect backoff: 1s·2ⁿ capped at 60s; only while the server stays enabled. */
 const BACKOFF_BASE_MS = 1_000
 const BACKOFF_CAP_MS = 60_000
+/**
+ * How long persistCatalogCache() writes are held before actually landing. Each
+ * write re-serializes and stores EVERY connected server's catalog (a single
+ * `mcpCatalog` key holds the whole map — chrome.storage.local has no partial
+ * update for one nested field), so a refresh() that connects several servers
+ * at once, or a burst of listChanged notifications from one chatty server,
+ * would otherwise pay one full O(all servers) write per server instead of one
+ * for the whole batch. 250ms is comfortably longer than the handful of
+ * microtask ticks between near-simultaneous catalog fetches settling, and
+ * comfortably shorter than anything a human would notice as "the cache is
+ * stale" — this is a display cache (see the header comment), never the source
+ * of truth for a live connection's catalog.
+ */
+const PERSIST_DEBOUNCE_MS = 250
 
 interface PersistedCatalog {
   [server: string]: { tools: McpToolInfo[]; resources: McpResourceInfo[]; prompts: McpPromptInfo[] }
@@ -118,6 +132,8 @@ export class McpManager {
   private slots = new Map<string, ServerSlot>()
   private listeners = new Set<() => void>()
   private cacheLoaded = false
+  /** Pending debounced persistCatalogCache() write, if any — see schedulePersistCatalogCache(). */
+  private persistTimer?: ReturnType<typeof setTimeout>
 
   /** Live snapshot for the UI and the tool layer, config order preserved. */
   runtime(): McpServerRuntime[] {
@@ -397,7 +413,32 @@ export class McpManager {
     slot.resources = resources
     slot.prompts = prompts
     this.notify()
-    void this.persistCatalogCache().catch(() => {})
+    this.schedulePersistCatalogCache()
+  }
+
+  /**
+   * Debounce persistCatalogCache(): a refresh() that connects several servers
+   * at once, or a burst of listChanged notifications, calls this once per
+   * server whose catalog just changed — without coalescing, each of those
+   * would independently re-serialize and write EVERY server's catalog (see
+   * PERSIST_DEBOUNCE_MS). A pending timer means a write is already queued, so
+   * later calls in the same window just ride it; persistCatalogCache() always
+   * snapshots the CURRENT state of every slot when it actually runs, so the
+   * eventual single write still reflects every change that piled up, not just
+   * the first or last one.
+   *
+   * Best-effort like the write it schedules: a timer still pending when the
+   * panel itself closes is lost along with the rest of that JS context — no
+   * worse than the previous fire-and-forget write, which could equally be
+   * interrupted mid-flight by the same event, since this is a display cache
+   * (see the header comment), never the source of truth for a live catalog.
+   */
+  private schedulePersistCatalogCache(): void {
+    if (this.persistTimer) return
+    this.persistTimer = setTimeout(() => {
+      this.persistTimer = undefined
+      void this.persistCatalogCache().catch(() => {})
+    }, PERSIST_DEBOUNCE_MS)
   }
 
   /** Call one tool. The AbortSignal comes from the turn (Stop cancels mid-flight). */

@@ -219,3 +219,65 @@ describe('McpManager — MCP OAuth token scoping', () => {
     manager.disconnectAll()
   })
 })
+
+// persistCatalogCache() re-serializes and writes EVERY connected server's
+// catalog on every single listCatalog() completion — a refresh() that
+// connects several servers at once (or a burst of listChanged notifications)
+// used to pay one full O(all servers) write per server instead of one for the
+// whole batch. The manager now debounces these writes; assert the write COUNT
+// (structural), never anything wall-clock — fake timers advanced deterministically.
+describe('McpManager — catalog cache write coalescing (F4)', () => {
+  it('coalesces two servers connecting close together into a single persisted write', async () => {
+    vi.useFakeTimers()
+    const store: Record<string, unknown> = {}
+    const setSpy = vi.fn(async (items: Record<string, unknown>) => {
+      Object.assign(store, items)
+    })
+    vi.stubGlobal('chrome', {
+      storage: {
+        local: {
+          get: vi.fn(async (key: string) => (key in store ? { [key]: store[key] } : {})),
+          set: setSpy,
+          remove: vi.fn(async (key: string) => {
+            delete store[key]
+          }),
+        },
+      },
+    })
+
+    try {
+      state.listToolsImpl = async () => ({ tools: [{ name: 'do_thing', description: '', inputSchema: {} }] })
+      const twoServers = {
+        mcp: {
+          servers: {
+            srv1: { url: 'https://a.example.com/mcp' },
+            srv2: { url: 'https://b.example.com/mcp' },
+          },
+        },
+      } as unknown as Settings
+
+      const manager = new McpManager()
+      await manager.refresh(twoServers)
+      // Both servers' connect()+listCatalog() chains settle within a handful
+      // of microtask ticks (the fake Client never touches a real timer) — flush
+      // those WITHOUT yet advancing past the debounce window, so both catalog
+      // completions land inside the same coalescing window this test exists to
+      // prove.
+      await vi.advanceTimersByTimeAsync(0)
+
+      // Now let the one scheduled write actually fire.
+      await vi.advanceTimersByTimeAsync(1000)
+
+      const catalogWrites = setSpy.mock.calls.filter(([items]) => 'mcpCatalog' in items)
+      expect(catalogWrites).toHaveLength(1) // ONE write for both servers, not two
+      const written = catalogWrites[0][0] as { mcpCatalog: Record<string, { tools: unknown[] }> }
+      expect(written.mcpCatalog.srv1.tools).toHaveLength(1)
+      expect(written.mcpCatalog.srv2.tools).toHaveLength(1)
+
+      manager.disconnectAll()
+    } finally {
+      vi.useRealTimers()
+      vi.unstubAllGlobals()
+    }
+  })
+})
