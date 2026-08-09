@@ -1,10 +1,21 @@
-// Offscreen document: the headless research host. Only chrome.runtime messaging
-// + Web APIs are available here — NO chrome.storage/tabs/notifications.
+// Offscreen document: the headless host for work that outlives — or simply
+// cannot run in — the service worker. Two tenants today: the research pipeline
+// and the dream cycle's generation. Only chrome.runtime messaging + Web APIs are
+// available here — NO chrome.storage/tabs/notifications.
 import { postResearchMsg, type BrowseOp, type BrowseResult, type ResearchMsg } from '../data/researchTasks'
+import { postDreamMsg, type DreamMsg } from '../data/dreamMessages'
 import { runResearch } from '../agent/research'
+import { runDreamCycle } from '../agent/dream'
 import type { BrowseBroker, RenderBroker, SearchBroker } from '../tools/research'
 
 const running = new Map<string, AbortController>()
+
+// Whether a dream cycle is running here right now. Unlike research's map there
+// is no id to key on — the dream lock already makes a cycle globally exclusive,
+// so this only guards the pathological case that lock cannot: a cycle so slow
+// that its lock went stale and the worker dispatched a second one on top of it.
+// Running both would consolidate the same episodes twice.
+let dreaming = false
 
 // While a task runs, bump its `updatedAt` on this cadence so the SW watchdog can
 // distinguish a live worker from a dead one even across a long, quiet model call.
@@ -116,7 +127,32 @@ function makeSearchBroker(taskId: string, signal: AbortSignal): SearchBroker {
   }
 }
 
-chrome.runtime.onMessage.addListener((msg: ResearchMsg) => {
+chrome.runtime.onMessage.addListener((msg: ResearchMsg | DreamMsg) => {
+  if (msg?.type === 'dream.run') {
+    if (dreaming) {
+      // Decline rather than double-consolidate — and say so, so the worker drops
+      // the lock it took for this cycle instead of waiting out its whole TTL.
+      postDreamMsg({ type: 'dream.failed', token: msg.token, error: 'a dream cycle is already running' })
+      return
+    }
+    dreaming = true
+    // The worker holds the lock for this cycle and settles whichever message
+    // comes back, so both paths must post exactly one — a silent throw here
+    // would strand that lock until it expired.
+    runDreamCycle(msg.job)
+      .then((result) => postDreamMsg({ type: 'dream.result', token: msg.token, result }))
+      .catch((err) =>
+        postDreamMsg({
+          type: 'dream.failed',
+          token: msg.token,
+          error: err instanceof Error ? err.message : String(err),
+        }),
+      )
+      .finally(() => {
+        dreaming = false
+      })
+    return
+  }
   if (msg?.type === 'research.start') {
     // Double-run guard: the SW watchdog re-dispatches stranded tasks, but a task
     // already running here (including one merely paused-and-sleeping between retries,
@@ -183,4 +219,4 @@ chrome.runtime.onMessage.addListener((msg: ResearchMsg) => {
     pendingSearches.get(msg.requestId)?.(msg)
   }
 })
-console.info('[offscreen] research host loaded')
+console.info('[offscreen] research + dream host loaded')

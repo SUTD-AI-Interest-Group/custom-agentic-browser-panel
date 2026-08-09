@@ -5,6 +5,7 @@ import { createModel } from './provider'
 import {
   appendToEpisode,
   clearMemory,
+  getDreamLock,
   getDreamState,
   listMemories,
   listUnconsolidatedEpisodes,
@@ -37,6 +38,7 @@ vi.mock('../data/settings', async (importOriginal) => {
 import {
   acquireDreamLock,
   buildDreamPrompt,
+  completeDispatchedDream,
   DREAM_LOCK_TTL_MS,
   dreamIfDue,
   evaluateDreamDue,
@@ -45,6 +47,8 @@ import {
   parseDreamOps,
   releaseDreamLock,
   runDream,
+  runDreamCycle,
+  type DreamJob,
 } from './dream'
 
 const mockedGenerateText = vi.mocked(generateText)
@@ -417,6 +421,148 @@ describe('dreamIfDue wiring', () => {
     mockedLoadSettings.mockResolvedValue(defaultSettings())
     const result = await dreamIfDue()
     expect(result).toEqual({ status: 'skipped', reason: 'Nothing new to consolidate.' })
+    expect(mockedGenerateText).not.toHaveBeenCalled()
+  })
+})
+
+// Chrome terminates an MV3 service worker once "a single request, such as an
+// event or API call, takes longer than 5 minutes to process". A dream is one
+// non-streaming generation over up to MAX_TRANSCRIPT_CHARS of transcript, which
+// a local or loaded model can exceed — and when the alarm handler awaited it,
+// crossing that line threw away the finished answer AND left the dream lock
+// held (verified in a real browser: 6-minute generation, nothing recorded, lock
+// stranded). The generation therefore happens in a realm with no such ceiling —
+// the offscreen document — leaving the worker only the short chrome.storage
+// bookkeeping at each end.
+describe('the dream generation is dispatched out of the service worker', () => {
+  /** An episode written 31 minutes ago, so evaluateDreamDue's idle guard passes. */
+  async function idleEpisode(id = 'ep1'): Promise<void> {
+    vi.setSystemTime(0)
+    await appendToEpisode(id, [msg('hi')])
+    vi.setSystemTime(31 * 60 * 1000)
+  }
+
+  it('hands the job to the dispatcher instead of running the model in the calling realm', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    try {
+      await idleEpisode()
+      mockedLoadSettings.mockResolvedValue(withProvider())
+      const dispatched: Array<{ job: DreamJob; token: string }> = []
+
+      const outcome = await dreamIfDue(async (job, token) => {
+        dispatched.push({ job, token })
+      })
+
+      expect(outcome).toEqual({ status: 'dispatched' })
+      // The whole point: no fetch is ever started here.
+      expect(mockedGenerateText).not.toHaveBeenCalled()
+      expect(dispatched).toHaveLength(1)
+      expect(dispatched[0].job).toMatchObject({ modelId: 'm1' })
+      expect(dispatched[0].job.provider.baseURL).toBe('https://api.test.invalid/v1')
+      // Nothing is consolidated yet — the host that runs the cycle does that.
+      expect(await listUnconsolidatedEpisodes()).toHaveLength(1)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('keeps the reentrancy lock held across the hand-off, so a second cycle cannot start meanwhile', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    try {
+      await idleEpisode()
+      mockedLoadSettings.mockResolvedValue(withProvider())
+
+      await dreamIfDue(async () => {})
+
+      expect(await getDreamLock()).not.toBeNull()
+      // A concurrent "Dream now" must bounce off the dispatched cycle's lock.
+      expect(await runDream(withProvider())).toEqual({
+        status: 'skipped',
+        reason: 'Another dream cycle is already in progress.',
+      })
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('releases the lock when the hand-off itself fails, so the next tick can retry immediately', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    try {
+      await idleEpisode()
+      mockedLoadSettings.mockResolvedValue(withProvider())
+
+      const outcome = await dreamIfDue(async () => {
+        throw new Error('no offscreen document')
+      })
+
+      expect(outcome.status).toBe('skipped')
+      // Without this the lock would sit there for the whole DREAM_LOCK_TTL_MS,
+      // blocking every retry for ~16 minutes over a failure that took 1ms.
+      expect(await getDreamLock()).toBeNull()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('settles a completed cycle: dream state is written and the lock released', async () => {
+    const token = (await acquireDreamLock()) as string
+
+    const outcome = await completeDispatchedDream(
+      { kind: 'consolidated', added: 2, updated: 1, deleted: 0, episodes: 3, summary: 'a quiet day' },
+      token,
+    )
+
+    expect(outcome).toEqual({ status: 'dreamed', added: 2, updated: 1, deleted: 0, episodes: 3, summary: 'a quiet day' })
+    const state = await getDreamState()
+    expect(state.lastDreamAt).not.toBeNull()
+    expect(state.lastSummary).toBe('a quiet day')
+    expect(state.consecutiveParseFailures).toBe(0)
+    expect(await getDreamLock()).toBeNull()
+  })
+
+  it('counts consecutive unparseable cycles across the hand-off and resets on the next good one', async () => {
+    for (let i = 1; i <= 3; i++) {
+      const token = (await acquireDreamLock()) as string
+      const outcome = await completeDispatchedDream({ kind: 'unparseable', episodes: 4 }, token)
+      expect((await getDreamState()).consecutiveParseFailures).toBe(i)
+      // PARSE_FAILURE_WARNING_THRESHOLD is 3: the third failure says so out loud.
+      if (outcome.status === 'skipped' && i === 3) expect(outcome.reason).toContain('3 times in a row')
+    }
+
+    const token = (await acquireDreamLock()) as string
+    await completeDispatchedDream(
+      { kind: 'consolidated', added: 1, updated: 0, deleted: 0, episodes: 4, summary: null },
+      token,
+    )
+    expect((await getDreamState()).consecutiveParseFailures).toBe(0)
+  })
+
+  it('runs a whole cycle with NO chrome.storage access at all — offscreen documents only get chrome.runtime', async () => {
+    await appendToEpisode('ep1', [msg('remember the deadline')])
+    mockedGenerateText.mockResolvedValueOnce({
+      text: opsJson({ add: [{ kind: 'fact', content: 'the deadline is Friday', tags: [] }], daySummary: 'planning' }),
+      usage: {},
+    } as never)
+    // "The `runtime` API is the only extensions API supported by offscreen
+    // documents" — so any chrome.storage call in this path is a crash there.
+    const denied = () => {
+      throw new Error('chrome.storage is not available in an offscreen document')
+    }
+    vi.stubGlobal('chrome', { storage: { local: { get: denied, set: denied, remove: denied } } })
+
+    const result = await runDreamCycle({
+      provider: withProvider().providers[0],
+      modelId: 'm1',
+    })
+
+    expect(result).toEqual({ kind: 'consolidated', added: 2, updated: 0, deleted: 0, episodes: 1, summary: 'planning' })
+    expect((await listMemories()).map((m) => m.content)).toContain('the deadline is Friday')
+    expect(await listUnconsolidatedEpisodes()).toEqual([])
+  })
+
+  it('reports an empty cycle rather than dreaming when the episodes were consolidated by someone else first', async () => {
+    const result = await runDreamCycle({ provider: withProvider().providers[0], modelId: 'm1' })
+    expect(result).toEqual({ kind: 'nothing' })
     expect(mockedGenerateText).not.toHaveBeenCalled()
   })
 })

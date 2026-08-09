@@ -4,15 +4,42 @@
 // memories, and rewrites the memory store — adding durable facts, merging
 // duplicates, forgetting stale entries, and writing a compact day summary.
 //
-// Runs in two places: the background service worker on a recurring alarm whose
-// period tracks the user's chosen interval (dreamIfDue), and on demand from the
-// Memory panel ("Dream now" → runDream). It is a single non-streaming
-// generateText call, so it works fine in a service worker with no DOM.
+// A cycle is split across two halves, because no single realm can host both:
 //
-// Both entry points ultimately call runDream — dreamIfDue delegates to it once
-// due, and "Dream now" calls it directly — so the reentrancy guard lives
-// there (see acquireDreamLock below), not in dreamIfDue. A guard placed only
-// in dreamIfDue would never see "Dream now"'s direct calls.
+//  - runDreamCycle — the model call plus the IndexedDB reads/writes it feeds.
+//    Deliberately free of chrome.storage, so it can run in the offscreen
+//    document, where "the `runtime` API is the only extensions API supported".
+//  - the settle half (settleDreamCycle / completeDispatchedDream) — the
+//    chrome.storage bookkeeping: dream state and the reentrancy lock.
+//
+// The split exists because the MV3 service worker cannot be trusted to host the
+// generation: Chrome terminates a service worker "when a single request, such as
+// an event or API call, takes longer than 5 minutes to process", and one
+// non-streaming generation over MAX_TRANSCRIPT_CHARS of transcript can take that
+// long against a local or heavily-loaded model.
+//
+// Measured, not assumed (Chrome for Testing 141): with the whole cycle awaited
+// inside the alarm handler, a 6-minute generation was killed mid-flight — the
+// finished response was thrown away, the episodes stayed unconsolidated, and the
+// dream lock was left HELD, blocking every retry (and the user's own "Dream
+// now") until its TTL expired. A 45-second one survived, so Chrome's other
+// documented bullet — "when a `fetch()` response takes more than 30 seconds to
+// arrive" — did not bite in that build. The 5-minute one is the real ceiling.
+//
+// The alarm therefore evaluates the gates, takes the lock, and hands the job to
+// the offscreen host (dreamIfDue's `dispatch`), whose later result message
+// revives the worker to settle it. The worker never awaits the generation, so it
+// can no longer be killed in the middle of one.
+//
+// Three entry points, two paths:
+//  - the alarm (background.ts) → dreamIfDue(dispatch) → offscreen → settle;
+//  - "Dream now" (Memory panel) → runDream → both halves in the panel, which
+//    has chrome.storage AND no fetch ceiling;
+//  - the alarm with no dispatcher → runDream, the pre-split behavior, kept so
+//    the function is still usable from any chrome.storage-capable realm.
+//
+// Every path takes the lock before either half runs (see acquireDreamLock
+// below), so a dispatched cycle and a "Dream now" can never interleave.
 
 import { generateText } from 'ai'
 import { createModel } from './provider'
@@ -23,6 +50,8 @@ import {
   loadSettings,
   observabilityConfig,
   resolveDreamIntervalMs,
+  type ObservabilityConfig,
+  type ProviderConfig,
   type Settings,
 } from '../data/settings'
 import {
@@ -49,6 +78,38 @@ import {
 export type DreamOutcome =
   | { status: 'dreamed'; added: number; updated: number; deleted: number; episodes: number; summary: string | null }
   | { status: 'skipped'; reason: string }
+  /** Handed to the offscreen host; its outcome lands later, via completeDispatchedDream. */
+  | { status: 'dispatched' }
+
+/**
+ * Everything runDreamCycle needs that only a chrome.storage-capable realm can
+ * resolve. Crosses a chrome.runtime message to the offscreen host, so it must
+ * stay JSON-safe — and, like research's own hand-off, it carries the provider
+ * config (API key included) in a runtime message rather than expecting the
+ * receiving realm to read storage, which it cannot.
+ */
+export interface DreamJob {
+  provider: ProviderConfig
+  modelId: string
+  /** Passed explicitly: the offscreen host cannot read its own config from storage. */
+  observability?: ObservabilityConfig
+}
+
+/**
+ * What one cycle did, in JSON-safe form so it can travel back from the offscreen
+ * host. Deliberately NOT a DreamOutcome: the user-facing wording (and the
+ * consecutive-parse-failure counter behind it) needs chrome.storage, which only
+ * the settle half has.
+ */
+export type DreamCycleResult =
+  | { kind: 'consolidated'; added: number; updated: number; deleted: number; episodes: number; summary: string | null }
+  /** Nothing pending by the time the cycle actually started. */
+  | { kind: 'nothing' }
+  /** The model answered, but not with parseable ops. `episodes` is what stayed pending. */
+  | { kind: 'unparseable'; episodes: number }
+
+/** Hands a job to a realm that can run it, holding the lock `token` for the caller. */
+export type DreamDispatch = (job: DreamJob, token: string) => Promise<void>
 
 // Never dream mid-conversation — only after the user has gone quiet. The gap
 // *between* dreams is user-configurable (resolveDreamIntervalMs); this idle
@@ -107,8 +168,20 @@ const MAX_EPISODES_PER_DREAM = 500
 // silently-stuck dreaming model deserves a louder signal in the Memory panel.
 const PARSE_FAILURE_WARNING_THRESHOLD = 3
 
-/** Alarm entry point: dream only when due and the user has gone quiet. */
-export async function dreamIfDue(): Promise<DreamOutcome> {
+/**
+ * Alarm entry point: dream only when due and the user has gone quiet.
+ *
+ * With a `dispatch`, this is everything the service worker does at the start of
+ * a cycle — read the gates, take the lock, hand the job off — and it returns the
+ * moment the hand-off is accepted. It deliberately does NOT await the cycle:
+ * awaiting would keep the worker's alarm handler open across a whole generation,
+ * which is precisely what Chrome kills (see the header). The result comes back
+ * as its own message, and completeDispatchedDream finishes the job.
+ *
+ * Without one, it runs both halves here, which is only correct in a realm that
+ * can afford a slow fetch (the panel, or a test).
+ */
+export async function dreamIfDue(dispatch?: DreamDispatch): Promise<DreamOutcome> {
   const settings = await loadSettings()
   const state = await getDreamState()
   const episodes = await listUnconsolidatedEpisodes()
@@ -119,7 +192,33 @@ export async function dreamIfDue(): Promise<DreamOutcome> {
     now: Date.now(),
   })
   if (!due.due) return { status: 'skipped', reason: due.reason }
-  return runDream(settings)
+  if (!dispatch) return runDream(settings)
+
+  const selected = getDreamProvider(settings)
+  if (!selected) return { status: 'skipped', reason: 'No model configured.' }
+  const token = await acquireDreamLock()
+  if (!token) return { status: 'skipped', reason: 'Another dream cycle is already in progress.' }
+  try {
+    await dispatch(jobFor(settings, selected), token)
+    return { status: 'dispatched' }
+  } catch (err) {
+    // The lock is released HERE and not left to expire: a hand-off that failed
+    // in a millisecond (no offscreen document, a torn-down worker) would
+    // otherwise hold the lock for the whole DREAM_LOCK_TTL_MS and block every
+    // retry — including the user's own "Dream now" — for ~16 minutes.
+    await releaseDreamLock(token)
+    const reason = err instanceof Error ? err.message : String(err)
+    return { status: 'skipped', reason: `Could not start the dream host (${reason}); will retry next cycle.` }
+  }
+}
+
+/** The job a resolved provider + settings imply. */
+function jobFor(settings: Settings, selected: { provider: ProviderConfig; modelId: string }): DreamJob {
+  return {
+    provider: selected.provider,
+    modelId: selected.modelId,
+    observability: observabilityConfig(settings),
+  }
 }
 
 export interface DreamDueInput {
@@ -182,96 +281,163 @@ export async function runDream(preloaded?: Settings): Promise<DreamOutcome> {
   if (!token) return { status: 'skipped', reason: 'Another dream cycle is already in progress.' }
 
   try {
-    // Listed only AFTER the lock is held, not before: a concurrent cycle that
-    // started first may have already consolidated everything by the time
-    // this one gets in, and re-checking here (rather than trusting a
-    // pre-lock read) is what makes the "no lost/duplicated memories"
-    // guarantee real instead of merely probable.
-    const pending = await listUnconsolidatedEpisodes()
-    if (pending.length === 0) return { status: 'skipped', reason: 'Nothing new to consolidate.' }
-    const episodes = pending.slice(0, MAX_EPISODES_PER_DREAM)
-    const memories = await listMemories()
-
-    // Observability: the dream is a single generation, in its own trace (no chat
-    // session — it runs in the background service worker).
-    const observer = getObserver(observabilityConfig(settings))
-    const trace = observer.enabled
-      ? observer.startTrace({ name: 'dream', tags: ['dreaming'] })
-      : undefined
-    const prompt = buildDreamPrompt(memories, episodes)
-    const gen = trace?.generation({ name: 'dream', model: selected.modelId, input: prompt })
-
-    let text: string
-    try {
-      const res = await generateText({
-        model: createModel(selected.provider, selected.modelId),
-        // v7 renamed `system` to `instructions` (`system` still works, deprecated).
-        instructions: DREAM_SYSTEM_PROMPT,
-        prompt,
-        // See DREAM_MODEL_TIMEOUT_MS: without this, a hung socket keeps the
-        // lock held indefinitely (no error ever reaches the finally below to
-        // release it), and nothing but the TTL fallback could ever reclaim it.
-        abortSignal: AbortSignal.timeout(DREAM_MODEL_TIMEOUT_MS),
-      })
-      text = res.text
-      gen?.end({ output: text, usage: res.usage })
-    } catch (err) {
-      gen?.end({ level: 'ERROR', statusMessage: err instanceof Error ? err.message : String(err) })
-      trace?.end()
-      await observer.flush()
-      throw err
-    }
-
-    const ops = parseDreamOps(text)
-    if (!ops) {
-      trace?.end({ metadata: { parseError: true } })
-      await observer.flush()
-      const state = await getDreamState()
-      const failures = (state.consecutiveParseFailures ?? 0) + 1
-      await setDreamState({ ...state, consecutiveParseFailures: failures })
-      const reason =
-        failures >= PARSE_FAILURE_WARNING_THRESHOLD
-          ? `Model returned unparseable output ${failures} times in a row — check your dreaming model. Still retrying (oldest ${episodes.length} conversation${episodes.length === 1 ? '' : 's'} pending).`
-          : 'Model returned unparseable output; will retry next cycle.'
-      return { status: 'skipped', reason }
-    }
-
-    let added = 0
-    let updated = 0
-    let deleted = 0
-
-    for (const op of ops.add.slice(0, MAX_ADDS_PER_DREAM)) {
-      await saveMemory({ ...op, source: 'dream' })
-      added++
-    }
-    for (const op of ops.update) {
-      if (await updateMemory(op.id, op.patch)) updated++
-    }
-    for (const id of ops.delete) {
-      if (memories.some((m) => m.id === id)) {
-        await deleteMemory(id)
-        deleted++
-      }
-    }
-    if (ops.daySummary) {
-      await saveMemory({ kind: 'summary', content: ops.daySummary, tags: ['day-summary'], source: 'dream' })
-      added++
-    }
-
-    await markEpisodesConsolidated(episodes.map((e) => e.id))
-    await pruneConsolidatedEpisodes()
-    await setDreamState({ lastDreamAt: Date.now(), lastSummary: ops.daySummary, consecutiveParseFailures: 0 })
-
-    trace?.end({
-      output: ops.daySummary ?? undefined,
-      metadata: { added, updated, deleted, episodes: episodes.length },
-    })
-    await observer.flush()
-
-    return { status: 'dreamed', added, updated, deleted, episodes: episodes.length, summary: ops.daySummary }
+    return await settleDreamCycle(await runDreamCycle(jobFor(settings, selected)))
   } finally {
     await releaseDreamLock(token)
   }
+}
+
+/**
+ * The half that does the work: one model call plus the IndexedDB reads and
+ * writes around it. Runs wherever the caller says — the offscreen host for the
+ * alarm's cycle, the side panel for "Dream now".
+ *
+ * **Touches no `chrome.*` API.** That is a requirement, not an observation: an
+ * offscreen document only gets `chrome.runtime`, so a stray chrome.storage read
+ * on this path is a crash there and nowhere else. Everything storage-shaped
+ * (settings, dream state, the lock) is resolved by the caller and arrives in the
+ * `job`; everything this learns leaves as a return value for the caller to
+ * persist. IndexedDB is a Web API available in every realm, so the memory and
+ * episode stores are read and written here directly.
+ *
+ * Assumes the caller already holds the dream lock.
+ */
+export async function runDreamCycle(job: DreamJob): Promise<DreamCycleResult> {
+  // Listed only AFTER the lock is held (the caller's job), not before: a
+  // concurrent cycle that started first may have already consolidated
+  // everything by the time this one gets in, and re-checking here (rather than
+  // trusting a pre-lock read) is what makes the "no lost/duplicated memories"
+  // guarantee real instead of merely probable.
+  const pending = await listUnconsolidatedEpisodes()
+  if (pending.length === 0) return { kind: 'nothing' }
+  const episodes = pending.slice(0, MAX_EPISODES_PER_DREAM)
+  const memories = await listMemories()
+
+  // Observability: the dream is a single generation, in its own trace (no chat
+  // session — nobody is watching this happen).
+  const observer = getObserver(job.observability)
+  const trace = observer.enabled ? observer.startTrace({ name: 'dream', tags: ['dreaming'] }) : undefined
+  const prompt = buildDreamPrompt(memories, episodes)
+  const gen = trace?.generation({ name: 'dream', model: job.modelId, input: prompt })
+
+  let text: string
+  try {
+    const res = await generateText({
+      model: createModel(job.provider, job.modelId),
+      // v7 renamed `system` to `instructions` (`system` still works, deprecated).
+      instructions: DREAM_SYSTEM_PROMPT,
+      prompt,
+      // See DREAM_MODEL_TIMEOUT_MS: without this, a hung socket keeps the
+      // caller's lock held indefinitely (no error ever reaches its finally to
+      // release it), and nothing but the TTL fallback could ever reclaim it.
+      // Only here is that 15-minute ceiling reachable at all — in the service
+      // worker Chrome ended the whole cycle at ~5 minutes regardless.
+      abortSignal: AbortSignal.timeout(DREAM_MODEL_TIMEOUT_MS),
+    })
+    text = res.text
+    gen?.end({ output: text, usage: res.usage })
+  } catch (err) {
+    gen?.end({ level: 'ERROR', statusMessage: err instanceof Error ? err.message : String(err) })
+    trace?.end()
+    await observer.flush()
+    throw err
+  }
+
+  const ops = parseDreamOps(text)
+  if (!ops) {
+    trace?.end({ metadata: { parseError: true } })
+    await observer.flush()
+    return { kind: 'unparseable', episodes: episodes.length }
+  }
+
+  let added = 0
+  let updated = 0
+  let deleted = 0
+
+  for (const op of ops.add.slice(0, MAX_ADDS_PER_DREAM)) {
+    await saveMemory({ ...op, source: 'dream' })
+    added++
+  }
+  for (const op of ops.update) {
+    if (await updateMemory(op.id, op.patch)) updated++
+  }
+  for (const id of ops.delete) {
+    if (memories.some((m) => m.id === id)) {
+      await deleteMemory(id)
+      deleted++
+    }
+  }
+  if (ops.daySummary) {
+    await saveMemory({ kind: 'summary', content: ops.daySummary, tags: ['day-summary'], source: 'dream' })
+    added++
+  }
+
+  await markEpisodesConsolidated(episodes.map((e) => e.id))
+  await pruneConsolidatedEpisodes()
+
+  trace?.end({
+    output: ops.daySummary ?? undefined,
+    metadata: { added, updated, deleted, episodes: episodes.length },
+  })
+  await observer.flush()
+
+  return { kind: 'consolidated', added, updated, deleted, episodes: episodes.length, summary: ops.daySummary }
+}
+
+/**
+ * The half that records what happened: dream state (chrome.storage) and the
+ * user-facing wording. Split out of the cycle so the counter behind
+ * PARSE_FAILURE_WARNING_THRESHOLD still exists for a cycle that ran in a realm
+ * with no storage to count in.
+ */
+async function settleDreamCycle(result: DreamCycleResult): Promise<DreamOutcome> {
+  if (result.kind === 'nothing') return { status: 'skipped', reason: 'Nothing new to consolidate.' }
+  if (result.kind === 'unparseable') {
+    const state = await getDreamState()
+    const failures = (state.consecutiveParseFailures ?? 0) + 1
+    await setDreamState({ ...state, consecutiveParseFailures: failures })
+    const reason =
+      failures >= PARSE_FAILURE_WARNING_THRESHOLD
+        ? `Model returned unparseable output ${failures} times in a row — check your dreaming model. Still retrying (oldest ${result.episodes} conversation${result.episodes === 1 ? '' : 's'} pending).`
+        : 'Model returned unparseable output; will retry next cycle.'
+    return { status: 'skipped', reason }
+  }
+  await setDreamState({ lastDreamAt: Date.now(), lastSummary: result.summary, consecutiveParseFailures: 0 })
+  return {
+    status: 'dreamed',
+    added: result.added,
+    updated: result.updated,
+    deleted: result.deleted,
+    episodes: result.episodes,
+    summary: result.summary,
+  }
+}
+
+/**
+ * Finish a cycle that ran somewhere else: record it, then release the lock the
+ * dispatching realm took on its behalf. Called from the service worker when the
+ * offscreen host's result arrives — possibly the very event that revived the
+ * worker, since it was free to be killed while the host worked.
+ *
+ * The release sits in a `finally` for the same reason runDream's does: a storage
+ * hiccup while recording must not strand the lock, or dreaming stops for the
+ * rest of the TTL over something that changed nothing.
+ */
+export async function completeDispatchedDream(result: DreamCycleResult, token: string): Promise<DreamOutcome> {
+  try {
+    return await settleDreamCycle(result)
+  } finally {
+    await releaseDreamLock(token)
+  }
+}
+
+/**
+ * A dispatched cycle that will never produce a result (the host reported a
+ * failed generation): drop its lock so the next tick can retry at once instead
+ * of waiting out DREAM_LOCK_TTL_MS.
+ */
+export async function abandonDispatchedDream(token: string): Promise<void> {
+  await releaseDreamLock(token)
 }
 
 // ---------------------------------------------------------------------------
