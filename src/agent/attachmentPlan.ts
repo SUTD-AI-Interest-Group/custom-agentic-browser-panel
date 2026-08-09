@@ -18,7 +18,8 @@
 // unit-testable — same species as planShotDelivery / planTabProbe. The impure
 // executor that turns routes into message parts lives in src/ui/attachments.ts.
 
-import { officeFormatFor, isLegacyOfficeName } from '../platform/officeText'
+import { officeFormatFor, isLegacyOfficeName, OFFICE_BYTE_LIMIT } from '../platform/officeText'
+import { PDF_BYTE_LIMIT } from '../platform/pdfText'
 
 /** What a dropped/picked file was classified as. */
 export type AttachmentKind = 'image' | 'pdf' | 'text' | 'document'
@@ -28,15 +29,24 @@ export const MAX_ATTACHMENTS = 10
 /** Most PDF pages rendered as images on the fallback path (~1-2k tokens each). */
 export const PAGE_BUDGET = 20
 export const IMAGE_MAX_BYTES = 20 * 1024 * 1024
-/** Matches pdf.ts's MAX_PDF_BYTES — the parse ceiling. */
-export const PDF_MAX_BYTES = 50 * 1024 * 1024
+/**
+ * The ingestion-time gate; single-sourced with pdf.ts's parse-time gate as
+ * PDF_BYTE_LIMIT in pdfText.ts (pure — safe to import into this pure
+ * module), so the two can never drift into a confusing partial-failure state
+ * where a file ingests but then fails to parse, or vice versa.
+ */
+export const PDF_MAX_BYTES = PDF_BYTE_LIMIT
 export const TEXT_FILE_MAX_BYTES = 2 * 1024 * 1024
 /** Char budget for an inlined text file. */
 export const INLINE_TEXT_BUDGET = 48_000
 /** Char budget for blind-model PDF text extraction. */
 export const PDF_TEXT_BUDGET = 48_000
-/** Office documents are zip-compressed; 25 MB is already an enormous one. */
-export const DOCUMENT_MAX_BYTES = 25 * 1024 * 1024
+/**
+ * The ingestion-time gate; single-sourced with office.ts's parse-time gate
+ * as OFFICE_BYTE_LIMIT in officeText.ts, for the same reason as PDF_MAX_BYTES
+ * above. Office documents are zip-compressed; 25 MB is already an enormous one.
+ */
+export const DOCUMENT_MAX_BYTES = OFFICE_BYTE_LIMIT
 /** Char budget for an extracted office document. */
 export const DOCUMENT_TEXT_BUDGET = 48_000
 

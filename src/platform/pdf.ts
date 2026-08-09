@@ -29,7 +29,14 @@
 // and budgeting in pdfText.ts, the Markdown→PageText translation in
 // pdfExtract.ts. Keep it that way.
 import type { PDFDocumentLoadingTask, PDFDocumentProxy } from 'pdfjs-dist'
-import { sniffPdf, flattenOutline, type PageText, type OutlineEntry, type OutlineNode } from './pdfText'
+import {
+  sniffPdf,
+  flattenOutline,
+  PDF_BYTE_LIMIT as MAX_PDF_BYTES,
+  type PageText,
+  type OutlineEntry,
+  type OutlineNode,
+} from './pdfText'
 import { toPageTexts, stripMarkdown, type PdfType } from './pdfExtract'
 import { getPdfEngine } from './pdfEngine'
 import { findTextInChunks } from './highlightText'
@@ -65,7 +72,6 @@ export interface PdfMeta {
   outline: OutlineEntry[]
 }
 
-const MAX_PDF_BYTES = 50 * 1024 * 1024
 const MAX_EXTRACT_PAGES = 500
 const FETCH_TIMEOUT_MS = 30_000
 // A loaded PDF is expensive (fetch + extract), and a Q&A session hammers the

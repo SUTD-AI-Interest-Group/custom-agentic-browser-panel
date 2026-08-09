@@ -12,6 +12,18 @@
 // separate concern and lives in src/agent/attachmentPlan.ts.
 
 /**
+ * The office-document byte-size ceiling, single-sourced here so office.ts's
+ * parse gate and attachmentPlan.ts's ingestion gate (DOCUMENT_MAX_BYTES) can
+ * never drift apart — they used to be two 25 MB literals kept in sync only
+ * by a comment, and a mismatch there fails as a confusing partial failure
+ * rather than a clean rejection. Lives in this pure module (not office.ts,
+ * which is Chrome-coupled) so attachmentPlan.ts — deliberately Chrome-free —
+ * can import it directly. Office documents are zip-compressed; 25 MB is
+ * already an enormous one.
+ */
+export const OFFICE_BYTE_LIMIT = 25 * 1024 * 1024
+
+/**
  * Parse failures the UI shows verbatim — mirrors PdfError. Lives here (not
  * office.ts) so officeParse.ts's worker-side parse can construct one directly,
  * and office.ts can re-throw a fresh instance at the engine-call boundary: a

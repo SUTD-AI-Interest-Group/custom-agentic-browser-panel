@@ -73,6 +73,14 @@ describe('isSafeResearchAction — click', () => {
       'Delete account',
       'Remove item',
       'Pay $40',
+      // Regression: these two were present in pageControl.ts's committing
+      // vocabulary from its very first commit but missing from this file's
+      // copy since browsePolicy.ts was introduced — a real, not merely
+      // hypothetical, gap in the ONLY gate the unattended research browser
+      // has. Closed by sharing committingVocabulary.ts between both files;
+      // see committingVocabulary.test.ts for the direct cross-gate check.
+      'Place order',
+      'Continue',
     ]
     for (const name of names) {
       const v = isSafeResearchAction({ kind: 'click', index: 1 }, el({ tag: 'button', name }))

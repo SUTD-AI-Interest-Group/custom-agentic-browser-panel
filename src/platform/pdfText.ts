@@ -3,6 +3,17 @@
 // everything here is unit-testable (pdfText.test.ts). The Chrome/pdf.js-coupled
 // side (fetching, parsing, rendering) lives in pdf.ts and calls into this.
 
+/**
+ * The PDF byte-size ceiling, single-sourced here so pdf.ts's parse gate and
+ * attachmentPlan.ts's ingestion gate (PDF_MAX_BYTES) can never drift apart —
+ * they used to be two 50 MB literals kept in sync only by a comment, and a
+ * mismatch there fails as a confusing partial failure (ingested, then
+ * rejected at parse time, or vice versa) rather than a clean rejection.
+ * Lives in this pure module (not pdf.ts, which is Chrome-coupled) so
+ * attachmentPlan.ts — deliberately Chrome-free — can import it directly.
+ */
+export const PDF_BYTE_LIMIT = 50 * 1024 * 1024
+
 /** One page's extracted text, 1-based. */
 export interface PageText {
   page: number

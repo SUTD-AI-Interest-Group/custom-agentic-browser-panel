@@ -8,7 +8,7 @@
 // Runs in page-like contexts (side panel, offscreen host) — never the service
 // worker, matching pdf.ts.
 
-import { OfficeError, type OfficeDoc } from './officeText'
+import { OfficeError, OFFICE_BYTE_LIMIT, type OfficeDoc } from './officeText'
 import { getOfficeEngine } from './officeEngine'
 
 // Re-exported for backward compatibility: attachments.ts imports both
@@ -18,8 +18,11 @@ import { getOfficeEngine } from './officeEngine'
 export { OfficeError }
 export { countImageNodes } from './officeText'
 
-/** Matches DOCUMENT_MAX_BYTES in attachmentPlan.ts — the parse ceiling. */
-export const MAX_OFFICE_BYTES = 25 * 1024 * 1024
+/**
+ * The parse-time gate; single-sourced with attachmentPlan.ts's ingestion-time
+ * gate as OFFICE_BYTE_LIMIT in officeText.ts. See that constant's comment.
+ */
+export const MAX_OFFICE_BYTES = OFFICE_BYTE_LIMIT
 
 // A parsed document is reused between attach time (validation) and send time
 // (formatting), and a chat may revisit the same attachment across turns. Small,
