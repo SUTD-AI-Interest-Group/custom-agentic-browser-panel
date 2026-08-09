@@ -2,6 +2,62 @@
 <html>
   <head>
     <meta charset="utf-8" />
+    <!--
+      The MCP Apps sandbox host. This page is manifest-sandboxed ("sandbox" key):
+      unique origin, no chrome.* APIs. manifest.json declares no
+      content_security_policy.sandbox override, so absent the meta tag below
+      this page would run under Chrome's MV3 default sandbox CSP — which sets
+      only script-src/child-src, leaving connect-src and img-src completely
+      UNRESTRICTED (unlike an explicit default-src). Confirmed via a real-
+      Chromium Playwright repro: app HTML in the nested iframe below could
+      fetch()/XHR to an arbitrary origin and load a remote <img>, all
+      reaching the network (a local listener logged the real requests) —
+      only a same-site <form> submission was incidentally blocked, by the
+      default policy's child-src 'self' fallback, not by anything protecting
+      connect-src/img-src. That's a tracking/fingerprinting-shaped gap (an
+      app already knows its own toolInput/toolResult; nothing secret crosses
+      it) but it's inconsistent with CreateArtifact's equivalent surface
+      (sandbox-exec.html), which is explicit img-src data:/no network. The
+      meta CSP below closes it the same way, narrowed only for what this
+      page and the app HTML it hosts actually need:
+        - script-src 'unsafe-inline'  this page's own inline <script> below,
+                                       AND (inherited by the nested srcdoc
+                                       iframe — srcdoc documents inherit
+                                       their creator's CSP) inline <script>
+                                       in app-supplied HTML, the whole point
+                                       of this relay
+        - style-src 'unsafe-inline'   this page's own inline <style>, and
+                                       inline <style>/style="" in app HTML
+        - img-src data:                data: URI images only — no remote host
+        - form-action 'none'           belt-and-suspenders alongside the
+                                       default policy's incidental child-src
+                                       block above — explicit rather than
+                                       relying on a fallback that isn't this
+                                       page's own stated policy
+      Everything else (connect-src, frame-src/child-src, media-src, font-src,
+      object-src, worker-src, …) falls back to default-src 'none' and stays
+      closed — this is what actually stops the fetch/XHR/remote-<img> reach
+      confirmed above. Re-verified against a real Chromium instance after
+      adding this tag: the same probes now report zero network reach.
+
+      The script is INLINE and classic on purpose: a sandboxed page has an
+      opaque origin, so a module script fetched from chrome-extension:// fails
+      its CORS check. It lives in public/ (copied verbatim to dist/), not as a
+      Vite entry.
+
+      It is a dumb relay with one job each way:
+        panel → here: 'mcp-app:load' mounts the app HTML in a nested srcdoc
+                      iframe (allow-scripts only — never allow-same-origin);
+                      'mcp-app:rpc-response' forwards a JSON-RPC reply down.
+        app → here:   every message is forwarded up wrapped in 'mcp-app:rpc'.
+                      ALL protocol decisions (which methods exist, which tools
+                      may be called, approval) belong to the panel's bridge
+                      (src/mcp/appBridge.ts), never to this page.
+    -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; form-action 'none'"
+    />
     <style>
       html,
       body {
@@ -18,25 +74,6 @@
         border: 0;
       }
     </style>
-    <!--
-      The MCP Apps sandbox host. This page is manifest-sandboxed ("sandbox" key):
-      unique origin, no chrome.* APIs, and a CSP that permits the inline/eval
-      scripts app HTML needs — the one place MV3 lets app-supplied scripts run.
-
-      The script is INLINE and classic on purpose: a sandboxed page has an
-      opaque origin, so a module script fetched from chrome-extension:// fails
-      its CORS check. It lives in public/ (copied verbatim to dist/), not as a
-      Vite entry.
-
-      It is a dumb relay with one job each way:
-        panel → here: 'mcp-app:load' mounts the app HTML in a nested srcdoc
-                      iframe (allow-scripts only — never allow-same-origin);
-                      'mcp-app:rpc-response' forwards a JSON-RPC reply down.
-        app → here:   every message is forwarded up wrapped in 'mcp-app:rpc'.
-                      ALL protocol decisions (which methods exist, which tools
-                      may be called, approval) belong to the panel's bridge
-                      (src/mcp/appBridge.ts), never to this page.
-    -->
     <script>
       var appFrame = null
       window.addEventListener('message', function (e) {

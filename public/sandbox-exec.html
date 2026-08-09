@@ -25,6 +25,19 @@
         - script-src 'unsafe-inline'  inline <script> in model-authored
                                        artifact HTML — the whole point of
                                        CreateArtifact/UpdateArtifact
+        - script-src 'wasm-unsafe-eval'  REQUIRED for QuickJS itself: without
+                                       this token, WebAssembly.instantiate()
+                                       throws a CSP CompileError and RunCode
+                                       is dead on arrival — confirmed via a
+                                       real-Chromium Playwright repro that
+                                       posted the actual bundled wasm bytes
+                                       through the real exec:init/exec:run
+                                       protocol: it failed with "neither
+                                       'wasm-eval' nor 'unsafe-eval' is an
+                                       allowed source of script" until this
+                                       token was added, then succeeded. This
+                                       is narrower than 'unsafe-eval' — it
+                                       does not grant eval()/Function().
         - style-src 'unsafe-inline'   inline <style>/style="" in artifact HTML
         - img-src data:               data: URI images only — no remote host
         - form-action 'none'          forms in artifact HTML render but can
@@ -38,7 +51,7 @@
     -->
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; form-action 'none'"
+      content="default-src 'none'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; style-src 'unsafe-inline'; img-src data:; form-action 'none'"
     />
     <style>
       html,
