@@ -10,9 +10,7 @@ import { loadPdf } from '../platform/pdf'
 import { searchAcademic, searchImages, harvestImages, type ImageResult } from '../platform/researchSources'
 import { summarizeNotebook, type NotebookHandle } from '../agent/notebook'
 import { runBrowseSession, type BrowseBroker } from '../agent/browseAgent'
-import { postResearchMsg } from '../data/researchTasks'
 import type { UIPart } from '../agent/agent'
-import type { ApprovalGate } from './tools'
 
 export type { BrowseBroker } from '../agent/browseAgent'
 
@@ -412,30 +410,28 @@ export function createResearchTools(deps: {
 }
 
 /**
- * Gated, foreground-only tool: asks the user for permission, then hands the
- * question to the background (offscreen) research host via `research.
- * ensureAndStart`. The task runs to completion even if the panel closes; the
- * result lands in `researchTasks` storage and a system notification fires.
+ * Ungated, foreground-only tool: the model can PROPOSE research but can no
+ * longer start it. It returns a proposal that the panel renders as a chip; the
+ * human gate is the launch card the chip opens, which shows the question, allows
+ * editing it, and scopes its sources.
+ *
+ * Deliberately ungated (like ToolSearch/GetTool): proposing touches no page, no
+ * network and no data. This strengthens rather than erodes the approval
+ * invariant — the old card was a yes/no on a question the user never saw.
  */
-export function createStartResearchTool(requestApproval: ApprovalGate, conversationId: string): ToolSet {
+export function createProposeResearchTool(): ToolSet {
   return {
-    StartResearch: tool({
+    ProposeResearch: tool({
       description:
-        'Launch a background research task (web search + read + synthesize a cited report). It runs even if the side panel is closed and notifies on completion. Asks permission first.',
-      inputSchema: z.object({ question: z.string().describe('The research question to investigate.') }),
-      execute: async ({ question }) => {
-        const approved = await requestApproval({ toolName: 'StartResearch', summary: 'Run background research', reason: question })
-        if (!approved) return { denied: true, message: 'The user denied permission for this tool call.' }
-        const taskId = `r-${Date.now()}-${Math.floor(performance.now())}`
-        // Tag the task with the launching conversation so its dock bar / report
-        // card surface only in that chat (not globally in every conversation).
-        postResearchMsg({ type: 'research.ensureAndStart', taskId, question, conversationId })
-        return {
-          started: true,
-          taskId,
-          note: 'Research is now running in the background and will appear in the panel with a notification when done. Do NOT research or answer the question yourself — reply with one short sentence telling the user it is underway, then end your turn.',
-        }
-      },
+        'Propose a background research task to the user. This does NOT start anything — the user ' +
+        'sees an editable launch card and decides. Use it when a question needs far more reading ' +
+        'than this turn can do. Say one short sentence about why, then end your turn.',
+      inputSchema: z.object({ question: z.string().describe('The research question to propose.') }),
+      execute: async ({ question }) => ({
+        proposed: true,
+        question,
+        note: 'Shown to the user as a proposal chip. It has NOT started. Do not claim it is running, and do not research the question yourself.',
+      }),
     }),
   }
 }
