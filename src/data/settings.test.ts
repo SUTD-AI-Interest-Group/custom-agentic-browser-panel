@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest'
+import { describe, expect, it, test, vi } from 'vitest'
 import {
   DEFAULT_DREAM_INTERVAL_MS,
   DEFAULT_SYSTEM_PROMPT,
@@ -6,6 +6,7 @@ import {
   getDreamProvider,
   groupPolicy,
   inferKind,
+  migrateResearchToolPolicy,
   resetSettingsKeepingProviders,
   resolveDreamIntervalMs,
   resolveReasoningEffort,
@@ -36,7 +37,7 @@ function base(overrides: Partial<Settings> = {}): Settings {
 
 describe('groupPolicy', () => {
   it('returns the shared policy when every tool in the group agrees', () => {
-    // 'reading' holds ReadPage, ReadTabs, ExtractData, StartResearch — all default 'ask'.
+    // 'reading' holds ReadPage, ReadTabs, ExtractData, ProposeResearch — all default 'ask'.
     expect(groupPolicy(base(), 'reading')).toBe('ask')
   })
 
@@ -62,7 +63,7 @@ describe('setGroupPolicy', () => {
     expect(toolPolicy(next, 'ReadPage')).toBe('never')
     expect(toolPolicy(next, 'ReadTabs')).toBe('never')
     expect(toolPolicy(next, 'ExtractData')).toBe('never')
-    expect(toolPolicy(next, 'StartResearch')).toBe('never')
+    expect(toolPolicy(next, 'ProposeResearch')).toBe('never')
     expect(toolPolicy(next, 'NavigateTab')).toBe('ask')
     expect(groupPolicy(next, 'reading')).toBe('never')
   })
@@ -222,4 +223,19 @@ describe('getDreamProvider', () => {
   it('is null when nothing is configured', () => {
     expect(getDreamProvider(base())).toBeNull()
   })
+})
+
+test('carries a StartResearch policy over to ProposeResearch', () => {
+  const out = migrateResearchToolPolicy({ StartResearch: 'never', ReadPage: 'always' })
+  expect(out).toEqual({ ProposeResearch: 'never', ReadPage: 'always' })
+})
+
+test('an existing ProposeResearch policy wins over the legacy key', () => {
+  const out = migrateResearchToolPolicy({ StartResearch: 'never', ProposeResearch: 'ask' })
+  expect(out).toEqual({ ProposeResearch: 'ask' })
+})
+
+test('is a no-op when the legacy key is absent', () => {
+  expect(migrateResearchToolPolicy({ ReadPage: 'ask' })).toEqual({ ReadPage: 'ask' })
+  expect(migrateResearchToolPolicy(undefined)).toBeUndefined()
 })
