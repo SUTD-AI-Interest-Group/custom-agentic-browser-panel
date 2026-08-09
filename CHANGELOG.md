@@ -17,6 +17,155 @@ for that history.
 
 ---
 
+## [2026-08-10] — Second adversarial audit: four criticals, and a feature that had never run
+
+A nine-way audit of the whole codebase, then a fix wave in which every fix was re-reviewed by
+someone who had not written it. That second pass mattered: **no fix survived review unchanged**,
+two were sent back as "do not ship," and the reviews that found real defects were the ones that
+*executed something* — a jsdom re-run of an extracted injected function, a constructed malicious
+`.xlsx`, a Playwright session against real Chromium. The reviews that only read the diff found
+nothing.
+
+The audit's own severity ranking was wrong twice, both times downward: an item filed as
+"duplicated constants, drift risk" turned out to have already drifted into a live gap, and an
+item filed as "verify this CSP token" turned out to mean a shipped feature had never worked.
+
+### Fixed
+
+- **MCP OAuth tokens could be replayed to a different host** (`a701255`) — credentials were keyed
+  by a server's mutable display name and never purged, while the SDK attaches
+  `Authorization: Bearer` before any handshake or audience check. Editing an entry's `url`, or
+  importing a shared `mcpServers.json` that reused a familiar name, sent a live token to a new
+  host as its very first request. Records are now stamped with the URL they were issued for and
+  refuse — and self-evict — on mismatch, which also covers configs repointed before this shipped.
+- **Two SSRF holes in the unattended research browser** (`19412c7`) — `harvestImages` had no URL
+  guard at all, and tab navigation validated only the *requested* URL, so a public page could 302
+  to cloud metadata or a LAN service and have the landed page scraped into the notebook, then
+  cited under the original safe-looking URL. Fixed structurally: the injected reader now returns
+  `location.href` in the same synchronous execution as the content it extracts, so there is no
+  window between checking and reading. The intermediate fix, which checked after navigating and
+  then slept 900 ms to settle, was itself defeated by a page that redirected inside that sleep.
+- **Sensitive-field detection was half-blind** (`3bdd228`) — the flag that forces a confirmation
+  card for a payment or password field tested only `name` and `id`, so a React/MUI field labelled
+  by `placeholder` or `aria-label` was never flagged and `AutofillForm` would type into it with no
+  card at all. The pattern also required spaces between words, missing `account_number`,
+  `sort_code` and `socialSecurityNumber`. Every label source now feeds the check, additively, so a
+  hostile page's label can only add a detection and never suppress one.
+- **A spreadsheet could exhaust memory at attach time** (`3c438fe`) — officeparser deep-copies a
+  shared string once per referencing cell, and the existing limits bound inflated bytes, not cell
+  count, so a sub-1 MB `.xlsx` could force multi-GB allocation on the panel's main thread before
+  any approval gate. Bounded by the actual cost (cells × string size, since a cell cap alone is
+  tradeable against it) and moved into a worker with a timeout. The first guard was bypassable
+  with one unusual-but-legal zip path, because it re-derived an anchored path pattern where the
+  library matches unanchored; selection is now by file *content*, so a part cannot hide behind its
+  name.
+- **`RunCode` had never worked in the browser** (`23563b6`) — `sandbox-exec.html`'s CSP was missing
+  `wasm-unsafe-eval`, so QuickJS never instantiated: `exec:init` always failed and every call
+  returned "engine not initialized". The whole test suite passed throughout, because tests drive
+  the engine in Node where no CSP applies. Found only by driving the built extension in real
+  Chromium. The MCP Apps sandbox page, which had no CSP at all and could reach the network, is now
+  default-deny as well.
+- **The committing-verb vocabulary had drifted between its two copies** (`e402af1`) — the
+  unattended research policy never matched `place order` or `continue`, so those controls passed
+  its only vocabulary check. A test named for that very parity had been passing the whole time,
+  because it exercised one side of it. Both gates now share one list, converged on the stricter
+  variant.
+- **The foreground check ran before the approval card and never after** (`c2edc53`) — the card
+  stays open as long as the user likes, so tabbing away and then clicking Allow fired the action
+  against an unwatched tab; `AutofillForm` compounded it across a whole batch. Also dropped
+  `allow-same-origin` from the iframe hosting an external-URL MCP app.
+- **Attachments were frozen to the provider that was active when they were attached**
+  (`371b2a1`) — attaching a PDF and then switching models mid-conversation broke every subsequent
+  send, with no way to remove the attachment short of starting over. Stored attachments are now
+  re-planned against the provider in use, both on load and at the start of each turn.
+- **Research retried an impossible request for 24 hours** (`ede0fff`) — a model that cannot emit
+  schema-conforming JSON produced a status-less error, which the classifier treated as transient,
+  so each planning round backed off and retried to the task deadline instead of taking the
+  fallback the code already had. Common on small local models.
+- **MCP stdio `env` values were stored in plaintext** (`21eec68`) — the one secret surface the
+  vault never swept. Sealed uniformly rather than by name heuristic.
+- **Report images were never URL-screened at write time** (`469e6e0`) — an internal-network URL
+  harvested from a page could end up embedded in the user's own report. Screened where images are
+  recorded, which covers every render path at once.
+- Smaller: a failed wasm fetch no longer surfaces as an opaque engine error (`469e6e0`); stranded
+  research tasks are claimed under serialization so two ticks cannot dispatch the same task; the
+  documented behaviour of the OpenAI-compatible adapter on PDF parts was corrected — it silently
+  converts rather than throwing, so the failure lands as a remote 400 (`695b504`).
+
+### Changed
+
+- **Prompt caching on Anthropic** (`c549e07`) — the system prompt is split into a stable block
+  carrying the cache marker and a volatile block after it, so the stable prefix is reused across
+  conversations rather than only across steps within one turn. Tool order is pinned at the wire
+  level, because the SDK renders tools in the full toolset's declaration order and a
+  progressively-disclosed tool could otherwise appear *ahead* of an already-active one, which
+  invalidates the prefix. A first version of this change was inert and would have cost money on
+  short turns: one concatenated string becomes one cache block, and a marked block matches
+  byte-for-byte, so reordering its contents achieved nothing.
+- **Cache usage is now reported** (`c549e07`) — `cachedInputTokens` had been plumbed to Langfuse
+  as `cache_read` and had never received data, because raw SDK usage was assigned into an
+  all-optional type and the nested figures were dropped silently.
+- **Pruning no longer reads what it is pruning** (`5e9d7a9`) — screenshots, MCP artifacts and code
+  artifacts each re-read every full record (base64 images, whole HTML documents) on every save
+  just to compute eviction. Each store now keeps a lightweight index written in the same
+  transaction as the record.
+- **Bounded DOM walks and batched bookkeeping** (`668f8c5`) — both perception registries
+  materialized the entire document before their element cap applied. The label pass stays
+  exhaustive on purpose: a `<label for>` often follows its input, and truncating that pass would
+  silently lose sensitive-field detections. Dream consolidation moved from ~1000 serialized
+  IndexedDB round trips to batched transactions.
+
+### Removed
+
+- **The research screenshot capability** (`469e6e0`) — wired end to end, never called, and a
+  hazard: `captureVisibleTab` composites cross-origin iframe content while every guard on that
+  path inspects only the top frame's URL. Deleting it beat documenting it.
+- Dead exports `clearRegions`, `closeAllSessions` and `listTabGroups` (`668f8c5`, `469e6e0`).
+  `clearRegions` turned out not to be dead but *unwired* — region stamps were being left on the
+  user's page after a control session ended — so it was connected instead (`371b2a1`).
+
+---
+
+## [2026-08-09] — Dreaming moves to the offscreen host
+
+Memory consolidation ran in the MV3 service worker, which Chrome can kill mid-task. The
+generation now runs in the offscreen document, where a long model call can finish (`2e438f9`).
+
+### Fixed
+
+- **Dream generation no longer races the service-worker lifetime** (`2e438f9`) — the alarm still
+  fires in the worker, but the model call itself is dispatched to the offscreen host over a typed
+  message channel, with the existing storage-backed reentrancy lock unchanged.
+
+---
+
+## [2026-08-08] — Office document attachments
+
+The composer accepts Word, PowerPoint, Excel, OpenDocument, RTF and EPUB files, converting each
+into a normalized document model and a budgeted text representation rather than raw bytes.
+
+### Added
+
+- **Office document ingestion** (`0260b70`, `ed1ec59`) — documents are classified by extension and
+  MIME, routed to a budgeted text conversion, and assembled into the outgoing message like any
+  other attachment.
+- **A normalized document model with prose budgeting** (`79f99aa`) — one shape for every format,
+  so downstream code does not branch per file type.
+- **Workbook manifests with fair-share row budgeting** (`0de599a`) — a spreadsheet is summarized
+  per sheet with rows allocated across sheets rather than exhausted by the first one.
+- **A lazily loaded parser shell** (`10b30ac`) — the ~845 KB office parser is imported only when a
+  document is actually attached, with sparse-safe mapping of its AST.
+- **Document chips** (`b4e1ec0`) — attachment chips show a document icon and a short summary.
+
+### Fixed
+
+- Modern files carrying a legacy MIME type are no longer rejected, and the legacy-format
+  suggestion names the right extension (`9bbe296`).
+- Image counts reflect real image nodes instead of always reporting zero (`c982a91`).
+- A surrogate-pair regression test that could not fail now asserts (`d13fb54`).
+
+---
+
 ## [0.3.0] — 2026-08-03 — *Chrome Web Store update*
 
 The second store release. Users get three things they can see — files they can attach to a
