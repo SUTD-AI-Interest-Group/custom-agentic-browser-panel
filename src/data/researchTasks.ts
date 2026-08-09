@@ -118,6 +118,33 @@ export interface ResearchTask {
   nextRetryAt?: number
   /** True when the report was cut short by the 24h cap rather than fully converging. */
   partial?: boolean
+  /** What the launching conversation already established, prepended to Scope & Plan. */
+  brief?: string
+  /** Seed coverage from the launch card. */
+  subQuestions?: string[]
+  /** Source scope (registrable hosts). Empty/absent = unrestricted. Retained so a
+   *  resumed task keeps the scope the user approved. */
+  sites?: string[]
+}
+
+/**
+ * A launch card awaiting Start. Lives on the transcript message, NOT in
+ * `researchTasks` storage — so a proposal the user never starts leaves no row
+ * for the resume watchdog to find and no status for `isActiveStatus` to model.
+ * `taskId` is minted here and becomes `ResearchTask.id` on Start, which is what
+ * lets the launch card, the live card and the report share one slot.
+ */
+export interface ResearchProposal {
+  taskId: string
+  question: string
+  brief?: string
+  subQuestions: string[]
+  /** Registrable hosts; empty means unrestricted. */
+  sites: string[]
+  premise?: { asserted: string; corrected: string }
+  clarifications?: string[]
+  /** Epoch ms the framing call produced this, so a stale brief reads as stale. */
+  draftedAt: number
 }
 
 /** The absolute 24h deadline for a task, tolerant of legacy tasks that predate the field. */
@@ -151,7 +178,18 @@ export interface ResearchVerification {
 
 /** SW↔offscreen↔panel message protocol: panel sends `ensureAndStart`/`cancel`; offscreen sends `start`, `update`, `done`, `error`. */
 export type ResearchMsg =
-  | { type: 'research.ensureAndStart'; taskId: string; question: string; conversationId: string }
+  | {
+      type: 'research.ensureAndStart'
+      taskId: string
+      question: string
+      conversationId: string
+      /** What the launching conversation already established, prepended to Scope & Plan. */
+      brief?: string
+      /** Seed coverage from the launch card. */
+      subQuestions?: string[]
+      /** Source scope (registrable hosts). Empty/absent = unrestricted. */
+      sites?: string[]
+    }
   | {
       type: 'research.start'
       taskId: string
@@ -169,6 +207,12 @@ export type ResearchMsg =
       /** The persisted notebook to resume from, so a resumed task keeps its findings
        *  instead of starting over. */
       notebook?: ResearchNotebook
+      /** What the launching conversation already established, prepended to Scope & Plan. */
+      brief?: string
+      /** Seed coverage from the launch card. */
+      subQuestions?: string[]
+      /** Source scope (registrable hosts). Empty/absent = unrestricted. */
+      sites?: string[]
     }
   | { type: 'research.update'; taskId: string; steps: ResearchStep[]; notebook?: ResearchNotebook }
   // Resilience transitions (offscreen → SW): a phase hit a transient failure and is
