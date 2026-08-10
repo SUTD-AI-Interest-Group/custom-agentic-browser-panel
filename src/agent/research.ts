@@ -199,7 +199,11 @@ export async function runResearch(opts: {
   // Resume from the persisted notebook when recovering a stranded task; findings,
   // sources, coverage and plan all carry over, so the gather loop continues closing
   // gaps rather than starting from scratch.
-  const notebook: NotebookHandle = createNotebook(opts.resumeNotebook, emit)
+  // The source scope rides into the notebook itself, so it binds every writer —
+  // including the browse sub-agent, which follows links across origins by design
+  // and knows nothing about scope. A resumed task keeps the scope the user
+  // approved, since opts.sites is re-read from the persisted task.
+  const notebook: NotebookHandle = createNotebook(opts.resumeNotebook, emit, opts.sites)
   const resuming = !!opts.resumeNotebook && opts.resumeNotebook.findings.length > 0
 
   // A BrowseSite call runs a whole nested agent loop against a live tab. Its inner

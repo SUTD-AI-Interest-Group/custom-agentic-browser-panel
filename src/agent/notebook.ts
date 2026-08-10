@@ -20,6 +20,7 @@
 // rather than relying on each render surface to re-derive its own check.
 
 import { isSafeRenderUrl } from '../platform/safeRenderUrl'
+import { scopeAllows } from '../tools/browsePolicy'
 
 /** Confidence a finding's source actually supports its claim. */
 export type Confidence = 'high' | 'med' | 'low'
@@ -144,9 +145,12 @@ export function credibilityHint(url: string): string | undefined {
 export interface NotebookHandle {
   get(): ResearchNotebook
   setPlan(plan: ResearchPlan): void
-  /** Add or return the existing source for this URL; returns its citation index. */
-  addSource(input: { url: string; title?: string; fetchedVia?: 'headless' | 'tab' }): ResearchSourceRec
-  addFinding(input: { claim: string; sourceUrl?: string; quote?: string; confidence?: Confidence }): Finding
+  /** Add or return the existing source for this URL; returns its citation index,
+   *  or undefined when the URL is outside the task's source scope. */
+  addSource(input: { url: string; title?: string; fetchedVia?: 'headless' | 'tab' }): ResearchSourceRec | undefined
+  /** Record a claim; returns undefined when it is cited to a host outside the
+   *  task's source scope. */
+  addFinding(input: { claim: string; sourceUrl?: string; quote?: string; confidence?: Confidence }): Finding | undefined
   /** Add an image, or return undefined (recording nothing) for a duplicate URL
    *  OR one that fails isSafeRenderUrl — see the module header. */
   addImage(input: {
@@ -163,11 +167,34 @@ export interface NotebookHandle {
 
 /** Build a handle over an existing (or empty) notebook, firing `onChange` on
  *  every mutation so the controller can persist + emit. */
-export function createNotebook(initial?: ResearchNotebook, onChange?: () => void): NotebookHandle {
+export function createNotebook(
+  initial?: ResearchNotebook,
+  onChange?: () => void,
+  scope: string[] = [],
+): NotebookHandle {
   const nb: ResearchNotebook = initial ?? emptyNotebook()
   let seq = nb.findings.length + nb.images.length
   const nextId = (p: string) => `${p}${++seq}`
   const fire = () => onChange?.()
+
+  /**
+   * THE WRITE BOUNDARY IS THE SCOPE BOUNDARY.
+   *
+   * Research may browse anywhere — following a citation off-site is how research
+   * works, and `isSafeResearchAction` deliberately permits cross-origin
+   * navigation — but a *report* may only cite what the user pinned on the launch
+   * card. Screening here rather than at navigation is what makes that true for
+   * every writer, including the browse sub-agent (which knows nothing about
+   * scope) and any tool added later. Enumerating tools is how `HarvestImages`
+   * was missed the first time.
+   *
+   * An absent url passes: an uncited finding has no host to misattribute to, and
+   * refusing it would silently drop the agent's own synthesis. That is why
+   * addFinding tests `sourceUrl` DIRECTLY rather than checking whether the
+   * source resolved — a refused source would otherwise demote an out-of-scope
+   * claim to an uncited one and let it through anyway.
+   */
+  const inScope = (url?: string): boolean => !url || scopeAllows(url, scope)
 
   const findSourceByUrl = (url: string): ResearchSourceRec | undefined => {
     const hash = djb2(normalizeUrl(url))
@@ -181,6 +208,7 @@ export function createNotebook(initial?: ResearchNotebook, onChange?: () => void
       fire()
     },
     addSource({ url, title, fetchedVia = 'headless' }) {
+      if (!inScope(url)) return undefined
       const existing = findSourceByUrl(url)
       if (existing) {
         // A later real-tab render supersedes a headless fetch of the same page.
@@ -202,6 +230,7 @@ export function createNotebook(initial?: ResearchNotebook, onChange?: () => void
       return rec
     },
     addFinding({ claim, sourceUrl, quote, confidence = 'med' }) {
+      if (!inScope(sourceUrl)) return undefined
       const src = sourceUrl ? findSourceByUrl(sourceUrl) : undefined
       const f: Finding = { id: nextId('f'), claim, sourceN: src?.n, quote, confidence }
       nb.findings.push(f)
@@ -219,6 +248,10 @@ export function createNotebook(initial?: ResearchNotebook, onChange?: () => void
       // "blocked because X" reason back into the transcript would add an
       // oracle with no offsetting benefit.
       if (!isSafeRenderUrl(url)) return undefined
+      // Scope screens the image AND the page it came from: an in-scope page must
+      // not be able to launder an out-of-scope image into the report, and vice
+      // versa. synthesize() embeds every recorded image directly.
+      if (!inScope(url) || !inScope(sourceUrl)) return undefined
       const hash = djb2(normalizeUrl(url))
       if (nb.images.some((i) => i.contentHash === hash)) return undefined // dedup
       const src = sourceUrl ? findSourceByUrl(sourceUrl) : undefined
