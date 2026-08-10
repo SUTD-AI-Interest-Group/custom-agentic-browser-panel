@@ -335,6 +335,8 @@ test('two racing watchdog ticks claim and dispatch a stranded task only once', a
     // must keep the scope the user approved, not just the initial dispatch.
     // Riding along on this test since it already exercises that dispatch.
     sites: ['aftershockpc.com'],
+    brief: 'The overview page lists 4 configs.',
+    subQuestions: ['CPU / GPU per config'],
   }
   let claimed = false
 
@@ -369,6 +371,12 @@ test('two racing watchdog ticks claim and dispatch a stranded task only once', a
     // scope — not silently drop it, which would revert an in-flight resumed
     // task to unrestricted with nothing failing (sites is optional throughout).
     expect((starts[0][0] as any).sites).toEqual(['aftershockpc.com'])
+  // Same guard for the launch card's brief and sub-questions: both are read
+  // off the PERSISTED task, and both are optional throughout, so a refactor
+  // dropping either line is type-valid and would silently revert research to
+  // re-deriving what the foreground turn already settled.
+  expect((starts[0][0] as any).brief).toBe('The overview page lists 4 configs.')
+  expect((starts[0][0] as any).subQuestions).toEqual(['CPU / GPU per config'])
   } finally {
     vi.mocked(researchTasks.listTasks).mockImplementation(async () => [])
     vi.mocked(researchTasks.applyUpdate).mockImplementation(async () => undefined)
@@ -402,11 +410,26 @@ test('a research.ensureAndStart message persists the launch card sites onto the 
 
   fire(
     'onMessage',
-    { type: 'research.ensureAndStart', taskId: 't-scoped', question: 'q', conversationId: 'c1', sites: ['aftershockpc.com'] },
+    {
+      type: 'research.ensureAndStart',
+      taskId: 't-scoped',
+      question: 'q',
+      conversationId: 'c1',
+      sites: ['aftershockpc.com'],
+      brief: 'The overview page lists 4 configs.',
+      subQuestions: ['CPU / GPU per config'],
+    },
     {},
     sendResponse,
   )
   await acked
 
-  expect(researchTasks.saveTask).toHaveBeenCalledWith(expect.objectContaining({ id: 't-scoped', sites: ['aftershockpc.com'] }))
+  expect(researchTasks.saveTask).toHaveBeenCalledWith(
+    expect.objectContaining({
+      id: 't-scoped',
+      sites: ['aftershockpc.com'],
+      brief: 'The overview page lists 4 configs.',
+      subQuestions: ['CPU / GPU per config'],
+    }),
+  )
 })

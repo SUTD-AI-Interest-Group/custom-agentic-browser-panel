@@ -389,6 +389,8 @@ async function startResearchTask(taskId: string, opts: { resume?: boolean } = {}
     // no original research.ensureAndStart to hand this function) keeps the scope
     // the user approved, not just the initial dispatch.
     sites: task.sites,
+    brief: task.brief,
+    subQuestions: task.subQuestions,
   } satisfies ResearchMsg)
 }
 
@@ -467,13 +469,13 @@ chrome.runtime.onMessage.addListener((msg: ResearchMsg | DreamMsg, _sender, send
           conversationId: msg.conversationId,
           // Anchor the 24h cap at creation, so a later resume can't extend it.
           deadlineAt: now + MAX_RESEARCH_DURATION_MS,
-          // Carried on the task (not just this dispatch) so a watchdog resume —
-          // which re-derives its research.start from the PERSISTED task, not this
-          // message — still has the scope the user approved. See startResearchTask.
-          // (msg.brief/msg.subQuestions have the identical gap but no consumer
-          // downstream yet — out of scope for source-scope enforcement; see Task
-          // 8's report for a pointer.)
+          // All three are carried on the task (not just this dispatch) so a
+          // watchdog resume — which re-derives its research.start from the
+          // PERSISTED task, not this message — still has what the user approved
+          // on the launch card. See startResearchTask.
           sites: msg.sites,
+          brief: msg.brief,
+          subQuestions: msg.subQuestions,
         })
         // Dispatch through the shared, resilient path. Any failure here (e.g. offscreen
         // creation hiccup) leaves the task 'running'; the watchdog re-dispatches it.

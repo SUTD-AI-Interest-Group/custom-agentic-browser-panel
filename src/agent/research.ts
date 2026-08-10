@@ -111,6 +111,15 @@ export async function runResearch(opts: {
    *  round's createResearchTools call; see that function's own doc comment for
    *  what each tool does with it. */
   sites?: string[]
+  /** What the launching conversation already established, from the launch card.
+   *  Seeds Scope & Plan so research does not re-derive — or worse, re-litigate —
+   *  facts the foreground turn already settled. This is the field whose absence
+   *  let a task go hunting for a fifth machine on a page that listed four. */
+  brief?: string
+  /** The user's own sub-questions from the launch card. Offered to the planner to
+   *  incorporate and extend, never to replace its own — an edited card must be
+   *  honored without freezing the plan. */
+  subQuestions?: string[]
   /** Emits the live step log + notebook snapshot for the sheet. */
   onUpdate: (steps: ResearchStep[], notebook: ResearchNotebook) => void
   signal: AbortSignal
@@ -260,7 +269,12 @@ export async function runResearch(opts: {
         status: 'done',
       })
     } else {
-      const plan = await resilient((signal) => planResearch(opts.question, model, signal, trace))
+      const plan = await resilient((signal) =>
+        planResearch(opts.question, model, signal, trace, {
+          brief: opts.brief,
+          subQuestions: opts.subQuestions,
+        }),
+      )
       notebook.setPlan(plan)
       pushStep({
         kind: 'phase',
@@ -502,8 +516,21 @@ async function planResearch(
   model: LanguageModel,
   signal: AbortSignal,
   trace?: Trace,
+  seed?: { brief?: string; subQuestions?: string[] },
 ): Promise<ResearchPlan> {
-  const prompt = `Break this research question into a concrete plan.\n\nQuestion: ${question}\n\nReturn 3–6 focused sub-questions whose answers together fully address it, plus an ordered outline of the final report's sections, plus a rough effort estimate.`
+  // The brief is stated as settled fact, not as background reading. Research
+  // that re-derives what the foreground turn already established is not merely
+  // wasteful — it is how a task talks itself back into a premise the user
+  // already corrected.
+  const established = seed?.brief
+    ? `\n\nAlready established in the conversation this came from — treat these as settled and do NOT re-derive or contradict them:\n${seed.brief}`
+    : ''
+  // Offered, not imposed: the planner must be free to add what the user didn't
+  // think of, and an edited launch card must still be honored.
+  const asked = seed?.subQuestions?.length
+    ? `\n\nThe user's own sub-questions — incorporate all of these, then add any others the question needs:\n${seed.subQuestions.map((q, i) => `  ${i + 1}. ${q}`).join('\n')}`
+    : ''
+  const prompt = `Break this research question into a concrete plan.\n\nQuestion: ${question}${established}${asked}\n\nReturn 3–6 focused sub-questions whose answers together fully address it, plus an ordered outline of the final report's sections, plus a rough effort estimate.`
   try {
     const out = (await extractStructured(model, prompt, PLAN_SCHEMA as Record<string, unknown>, signal, trace)) as {
       subQuestions?: string[]
