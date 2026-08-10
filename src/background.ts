@@ -36,9 +36,9 @@ import { sweepHighlightsForWindow } from './platform/highlight'
 import { loadSettings, getSelectedProvider, observabilityConfig, resolveDreamIntervalMs } from './data/settings'
 import { isFetchableUrl } from './platform/webFetch'
 import { renderPage } from './platform/researchRender'
-import { closeSessionsForTask, handleBrowseOp } from './platform/researchBrowse'
+import { closeSessionsForTask, handleBrowseOp, reapExpiredSessions } from './platform/researchBrowse'
 import { searchInTab } from './platform/researchSearch'
-import { sweepOrphanWindow } from './platform/researchTab'
+import { JANITOR_ALARM, runJanitorTick, sweepOrphanWindows, teardownNow } from './platform/researchTab'
 
 chrome.sidePanel
   .setPanelBehavior({ openPanelOnActionClick: true })
@@ -113,13 +113,22 @@ chrome.storage.onChanged.addListener((changes, area) => {
 // MV3 can kill this worker at any time, which drops the research tab's handle and
 // strands its (minimized, invisible) window. Sweep any leftover on every wake —
 // module scope runs on each worker start, not just at install/startup.
-void sweepOrphanWindow()
+void sweepOrphanWindows()
 // Same reasoning for research itself: if this worker (and the offscreen host) were
 // evicted mid-task, resume any stranded task as soon as the worker comes back, not
 // only on the next alarm tick.
 void resumeStrandedResearch()
 
 chrome.alarms.onAlarm.addListener((alarm) => {
+  if (alarm.name === JANITOR_ALARM) {
+    // The research tab's teardown timer, which cannot be a setTimeout — this
+    // worker is evicted long before one that long would fire (see JANITOR_ALARM
+    // in platform/researchTab.ts). Reap expired browse sessions FIRST: each one
+    // holds a lease, and the tab only counts as idle once they are released.
+    reapExpiredSessions()
+    void runJanitorTick().catch((err) => console.error('[research] janitor tick failed', err))
+    return
+  }
   if (alarm.name === RESEARCH_WATCHDOG_ALARM) {
     void resumeStrandedResearch()
     return
@@ -330,6 +339,61 @@ function ensureOffscreen(): Promise<void> {
 }
 
 /**
+ * Close the offscreen document once nothing needs it.
+ *
+ * It hosts two tenants — research and the dream cycle — and the HOST is what
+ * reports idle (`offscreen.idle`), since it is the only context that sees both.
+ * This side re-checks storage for a task dispatched in the gap, because the
+ * host's view can be one message behind. Getting this wrong in the "too late"
+ * direction merely leaves the document resident a while longer; getting it
+ * wrong in the "too early" direction would strand a live generation — hence
+ * both checks, and the `creatingOffscreen` guard for a caller that is at this
+ * moment bringing the document up precisely because it needs it.
+ *
+ * The one gap left is a dream dispatched in the milliseconds between the host
+ * reporting idle and this close landing: that `dream.run` reaches no listener.
+ * It self-heals rather than wedging — the dream lock the worker took is
+ * reclaimed once its TTL expires (see dream.ts) and the next alarm tick starts a
+ * fresh cycle over the same unconsolidated episodes — so it costs one cycle, not
+ * correctness, and closing the document is not worth a second coordination
+ * protocol to avoid it.
+ */
+async function closeOffscreen(): Promise<void> {
+  if (creatingOffscreen) return
+  try {
+    const tasks = await listTasks()
+    if (tasks.some((t) => isActiveStatus(t.status))) return
+    if (!(await chrome.offscreen.hasDocument())) return
+    await chrome.offscreen.closeDocument()
+  } catch (err) {
+    console.warn('[offscreen] could not close the host', err)
+  }
+}
+
+/**
+ * Everything that must be handed back when a task stops being active — done,
+ * errored, or cancelled.
+ *
+ * Doing this HERE, in a live message handler, is the whole difference between a
+ * graceful shutdown and the old behaviour: this worker is provably alive at this
+ * instant, whereas anything deferred to a timer runs only if MV3 has not evicted
+ * it first — and after the last task ends nothing is keeping it alive, so it
+ * always has. Measured against the previous algorithm, the 60s teardown timer
+ * fired zero times across three runs and the isolated window survived until some
+ * later cold boot happened to sweep it.
+ */
+async function releaseTaskResources(taskId: string): Promise<void> {
+  // Each of this task's browse sessions holds a lease on the shared research
+  // tab. Scoped to THIS task — tasks run concurrently, and a global close would
+  // tear down another task's open page-walk mid-flight (see FIX H1).
+  closeSessionsForTask(taskId)
+  // Another task still running? It needs the window; leave it alone.
+  const tasks = await listTasks().catch(() => [])
+  if (tasks.some((t) => isActiveStatus(t.status))) return
+  await teardownNow()
+}
+
+/**
  * Fire a system notification announcing a research task finished. Exported for
  * direct testing, and `await`s the create call rather than firing it and
  * forgetting it — this used to be a bare, un-awaited statement, so a rejection
@@ -532,15 +596,19 @@ chrome.runtime.onMessage.addListener((msg: ResearchMsg | DreamMsg, _sender, send
             console.error('[research] notify failed', err)
           }
         }
+        await releaseTaskResources(msg.taskId)
       } else if (msg?.type === 'research.error') {
         await applyUpdate(msg.taskId, (cur) => (cur.status === 'cancelled' ? {} : { status: 'error', error: msg.error }))
+        await releaseTaskResources(msg.taskId)
       } else if (msg?.type === 'research.cancel') {
         await applyUpdate(msg.taskId, (cur) => (isActiveStatus(cur.status) ? { status: 'cancelled' } : {}))
         // A cancelled task's browse session would otherwise hold the research tab
-        // until its TTL expired, blocking the next task's first fetch. Scoped to
-        // THIS task only — tasks run concurrently, and a global close would tear
-        // down another task's open page-walk mid-flight (see FIX H1).
-        closeSessionsForTask(msg.taskId)
+        // until its TTL expired, blocking the next task's first fetch.
+        await releaseTaskResources(msg.taskId)
+      } else if (msg?.type === 'offscreen.idle') {
+        // The host has no research task and no dream left. Shut it down rather
+        // than leaving it resident until the browser restarts.
+        await closeOffscreen()
       } else if (msg?.type === 'research.clearTasks') {
         // Panel-issued "Clear"/"Erase all data" (Settings → Data). Only the SW
         // ever writes researchTasks state — see researchTasks.ts's clearTasks()

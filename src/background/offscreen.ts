@@ -21,6 +21,37 @@ let dreaming = false
 // distinguish a live worker from a dead one even across a long, quiet model call.
 const HEARTBEAT_MS = 20_000
 
+/**
+ * How long to wait before announcing idleness. `research.done` is posted
+ * immediately before this, and the SW decides whether to close us by re-reading
+ * that task's status from storage — so announcing in the same tick races its
+ * write, gets declined as "a task is still active", and leaves the document
+ * resident with nothing to trigger a second attempt. Deliberately a setTimeout:
+ * unlike the service worker, an offscreen document is not subject to MV3's idle
+ * eviction, so a timer here actually fires.
+ */
+const IDLE_REPORT_DELAY_MS = 2_000
+let idleReport: ReturnType<typeof setTimeout> | undefined
+
+/**
+ * Tell the service worker this host has nothing left to do, so it can close the
+ * document instead of leaving it resident until the browser restarts.
+ *
+ * This check has to live here: `running` and `dreaming` are the two tenants, and
+ * this is the only context that sees both. Called from the settle path of each,
+ * so whichever finishes last is the one that reports idle — and re-checked when
+ * the timer fires, so work that arrives in the meantime cancels the shutdown.
+ */
+function reportIdleIfDone(): void {
+  if (idleReport) clearTimeout(idleReport)
+  if (running.size > 0 || dreaming) return
+  idleReport = setTimeout(() => {
+    idleReport = undefined
+    if (running.size > 0 || dreaming) return
+    postResearchMsg({ type: 'offscreen.idle' })
+  }, IDLE_REPORT_DELAY_MS)
+}
+
 // Tab brokers (offscreen side): the offscreen host cannot touch tabs, so both the
 // one-shot render and the interactive browse session are round-trips to the SW —
 // send a request, resolve on the matching result by requestId.
@@ -150,6 +181,7 @@ chrome.runtime.onMessage.addListener((msg: ResearchMsg | DreamMsg) => {
       )
       .finally(() => {
         dreaming = false
+        reportIdleIfDone()
       })
     return
   }
@@ -211,10 +243,16 @@ chrome.runtime.onMessage.addListener((msg: ResearchMsg | DreamMsg) => {
       .finally(() => {
         clearInterval(heartbeat)
         running.delete(msg.taskId)
+        reportIdleIfDone()
       })
   } else if (msg?.type === 'research.cancel') {
     running.get(msg.taskId)?.abort()
     running.delete(msg.taskId)
+    // An abort settles runResearch asynchronously, so the `finally` above will
+    // report idle too — but only if that promise actually settles. Reporting
+    // here as well means a cancel of a task wedged in a dead round-trip still
+    // lets the host shut down.
+    reportIdleIfDone()
   } else if (msg?.type === 'research.renderResult') {
     pendingRenders.get(msg.requestId)?.(msg)
   } else if (msg?.type === 'research.browseResult') {
