@@ -686,6 +686,10 @@ export default function Chat({
   // Narrow panels collapse the tools + screenshot buttons into one "…" menu.
   const [moreOpen, setMoreOpen] = useState(false)
   const moreMenuRef = useRef<HTMLDivElement>(null)
+  // Deep-research mode is armed per-send, never sticky: it disarms the moment a
+  // launch card is created, because sticky arming is how a second 20-minute task
+  // gets fired by accident.
+  const [researchArmed, setResearchArmed] = useState(false)
 
   // Bumped when a turn finishes, to trigger persistence of the transcript.
   const [turnSeq, setTurnSeq] = useState(0)
@@ -3084,7 +3088,7 @@ export default function Chat({
             ))}
           </div>
         )}
-        <div className="composer">
+        <div className={researchArmed ? 'composer armed' : 'composer'}>
           {/* Agent steering: a subtle strip joined to the top of the composer (like
               the research dock), shown ONLY when a message is queued — a reply the
               user submitted mid-turn that's parked here instead of sent. It
@@ -3178,9 +3182,11 @@ export default function Chat({
             placeholder={
               !selected
                 ? 'Add a provider in settings to start'
-                : streaming
-                  ? 'Reply — queues as a follow-up…'
-                  : 'Ask anything…'
+                : researchArmed
+                  ? 'Research anything — this runs in the background…'
+                  : streaming
+                    ? 'Reply — queues as a follow-up…'
+                    : 'Ask anything…'
             }
             // Stays usable while a turn runs — a message sent now is parked in the
             // steer strip above (submit()); it auto-sends when the turn finishes, or
@@ -3342,9 +3348,25 @@ export default function Chat({
               onOpenSettings={onOpenSettings}
             />
             <div className="composer-btns">
+              {/* Deep research: arming lights the pill, the composer border and the
+                  placeholder together (see .research-pill / .composer.armed in
+                  styles.css) — a control that lights up alone is too easy to miss
+                  mid-task. One-shot: Task 10 disarms it the instant a launch card
+                  is created, never on a timer or on blur. */}
+              <button
+                className={researchArmed ? 'research-pill on' : 'research-pill'}
+                title="Deep research — reads the web in the background and reports back"
+                aria-pressed={researchArmed}
+                disabled={!selected}
+                onClick={() => setResearchArmed((a) => !a)}
+              >
+                <span className="research-pill__glyph" aria-hidden="true">◈</span>
+                <span className="research-pill__label">Deep research</span>
+              </button>
               {/* Tools and screenshot as their own buttons. Below the narrow
-                  breakpoint only the tools button collapses into the "…" menu
-                  (see .composer-btns in styles.css); the camera always stays out. */}
+                  breakpoint both the tools button AND the camera collapse into the
+                  "…" menu (see .composer-btns in styles.css) — freeing a full
+                  button's width so the research pill above can keep its label. */}
               <div className="tools-menu-wrap" ref={toolsMenuRef}>
                 <button
                   className="tools-btn"
@@ -3378,8 +3400,10 @@ export default function Chat({
                 <CameraIcon />
               </button>
 
-              {/* Narrow panel: only the tools button collapses into this menu —
-                  the camera above stays out as its own button at every width. */}
+              {/* Narrow panel: the tools button AND the camera both collapse into
+                  this menu at the same breakpoint (see .composer-btns in
+                  styles.css), so the screenshot row below is what keeps that
+                  action reachable once .cam-btn itself is hidden. */}
               <div className="more-menu-wrap" ref={moreMenuRef}>
                 <button
                   className="more-btn"
@@ -3397,6 +3421,16 @@ export default function Chat({
                 {moreOpen && (
                   <div className="tools-popover" role="dialog" aria-label="Tools">
                     <div className="tools-popover-head">Tools</div>
+                    <button
+                      className="more-item"
+                      disabled={!selected || capturing}
+                      onClick={() => {
+                        setMoreOpen(false)
+                        void capture()
+                      }}
+                    >
+                      Screenshot part of the page
+                    </button>
                     <ToolsMenuBody
                       settings={settings}
                       toggleTool={toggleTool}

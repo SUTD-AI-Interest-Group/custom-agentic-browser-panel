@@ -2700,6 +2700,37 @@ body {
   margin-left: auto;
 }
 
+/* ---- Deep research pill ----
+   Leads the .composer-btns cluster. Arming lights three things at once (pill,
+   composer border, placeholder) because a button that lights alone is too easy
+   to miss mid-task. This file has no --btn-bg token, so the resting state
+   matches the sibling .tools-btn's own background (transparent — defined by
+   shape and label alone until armed). */
+.research-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 25px;
+  padding: 0 9px;
+  flex: none;
+  border: none;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 11.5px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.research-pill.on {
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+  color: var(--accent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 55%, transparent);
+}
+.composer.armed {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
 /* Hybrid overflow behaviour for the composer actions.
    Wide panel  → tools + screenshot as two separate buttons ("…" hidden).
    Narrow panel → both collapse into the single "…" menu, which houses the
@@ -2750,14 +2781,37 @@ body {
   cursor: default;
 }
 
-@media (max-width: 360px) {
-  /* The camera stays out as its own button at every width; only the tools button
-     collapses into the "…" menu when the panel gets narrow. */
+/* Collapse order (Task 9). The research pill is the control no existing user
+   knows about, so it must be the LAST thing to go silent — the inverse of the
+   "newest thing collapses first" instinct. Tools and the camera now fold into
+   the "…" menu TOGETHER at one breakpoint: merging two 28px circular buttons
+   into a single "…" trigger actually frees a button's worth of width (hiding
+   the camera alone would not — .more-btn is the same 28px as .cam-btn), and
+   that freed width is what lets the pill keep its label as long as possible.
+   The "…" popover carries a screenshot row (see the moreOpen block in
+   Chat.tsx) precisely so the camera's action stays reachable once .cam-btn
+   itself is hidden here. Only below the pill's own, narrower breakpoint
+   (340px, below) does the pill give up its label too. */
+@media (max-width: 420px) {
   .composer-btns > .tools-menu-wrap {
     display: none;
   }
   .composer-btns > .more-menu-wrap {
     display: inline-flex;
+  }
+  .cam-btn {
+    display: none;
+  }
+}
+
+@media (max-width: 340px) {
+  /* Second, narrower breakpoint: only now — once both icon buttons are
+     already gone — does the pill itself shed its label for the bare glyph. */
+  .research-pill__label {
+    display: none;
+  }
+  .research-pill {
+    padding: 0 7px;
   }
 }
 
