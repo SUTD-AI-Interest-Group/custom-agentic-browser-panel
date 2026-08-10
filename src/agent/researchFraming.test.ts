@@ -1,5 +1,29 @@
-import { expect, test } from 'vitest'
-import { normalizeHost, parseFraming } from './researchFraming'
+import { beforeEach, expect, test, vi } from 'vitest'
+
+// frameResearch's abort-signal contract (fresh per-attempt timeout vs a reused
+// caller signal) had no coverage. Mock only generateObject/generateText from
+// 'ai' — everything else (jsonSchema, types) rides through the real module.
+// Same pattern as extract.test.ts.
+const generateObjectMock = vi.fn()
+const generateTextMock = vi.fn()
+
+vi.mock('ai', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('ai')>()
+  return {
+    ...actual,
+    generateObject: (...args: unknown[]) => generateObjectMock(...args),
+    generateText: (...args: unknown[]) => generateTextMock(...args),
+  }
+})
+
+import { frameResearch, normalizeHost, parseFraming, type FrameResearchOpts } from './researchFraming'
+
+const MODEL = {} as FrameResearchOpts['model']
+
+beforeEach(() => {
+  generateObjectMock.mockReset()
+  generateTextMock.mockReset()
+})
 
 const RAW = {
   question: 'Compare the specs of the 4 Aftershock prebuilt configs',
@@ -59,4 +83,45 @@ test('drops a dotless scope entry — a bare public suffix would restrict nothin
   expect(parseFraming({ question: 'q', sites: ['com', 'aftershockpc.com'] }, 'fb').sites).toEqual([
     'aftershockpc.com',
   ])
+})
+
+test('frameResearch: without a caller signal, the generateText fallback gets its own fresh timeout', async () => {
+  // Regression pin: the original code computed ONE AbortSignal.timeout() and
+  // reused that exact reference for both calls. AbortSignal.timeout() latches
+  // aborted permanently once it fires, so if ITS firing is why generateObject
+  // failed, generateText would see an already-aborted signal and reject before
+  // reaching the network — collapsing the three-tier fallback to two in exactly
+  // the timeout branch it exists to cover. A fresh instance per attempt (when
+  // there is no caller signal to preserve) is what keeps the fallback able to
+  // run at all. This does not reproduce the live-fetch-rejects-immediately part
+  // (that needs a real network stack, not this mocked unit test) — it pins the
+  // one thing a unit test can: the two calls must not share the SAME signal
+  // object when opts.signal is absent.
+  generateObjectMock.mockRejectedValue(new Error('the 20s ceiling fired'))
+  generateTextMock.mockResolvedValue({ text: JSON.stringify({ question: 'q' }) })
+
+  const result = await frameResearch({ model: MODEL, message: 'fallback q', context: '' })
+
+  expect(result.question).toBe('q')
+  const objectSignal = generateObjectMock.mock.calls[0][0].abortSignal
+  const textSignal = generateTextMock.mock.calls[0][0].abortSignal
+  expect(objectSignal).toBeInstanceOf(AbortSignal)
+  expect(textSignal).toBeInstanceOf(AbortSignal)
+  expect(textSignal).not.toBe(objectSignal)
+})
+
+test('frameResearch: a caller-supplied signal is reused as-is across both attempts', async () => {
+  // The other half of the same contract: genuine user-driven cancellation must
+  // keep covering the WHOLE call, not just the first attempt — a cancelled
+  // framing should stop outright rather than quietly start a second request.
+  generateObjectMock.mockRejectedValue(new Error('some non-abort failure'))
+  generateTextMock.mockResolvedValue({ text: JSON.stringify({ question: 'q' }) })
+  const controller = new AbortController()
+
+  await frameResearch({ model: MODEL, message: 'fallback q', context: '', signal: controller.signal })
+
+  const objectSignal = generateObjectMock.mock.calls[0][0].abortSignal
+  const textSignal = generateTextMock.mock.calls[0][0].abortSignal
+  expect(objectSignal).toBe(controller.signal)
+  expect(textSignal).toBe(controller.signal)
 })

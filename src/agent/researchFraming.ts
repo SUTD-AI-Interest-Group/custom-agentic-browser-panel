@@ -52,6 +52,12 @@ const strings = (v: unknown): string[] =>
  * chip the user reads as "pinned to one site" that in fact restricts nothing.
  * That is worse than no scope at all, because it misleads, so such entries are
  * dropped here rather than let through to become a scope entry.
+ *
+ * This is a cheap heuristic, not full Public-Suffix-List validation: a
+ * multi-label public suffix — `co.uk`, `github.io` — has a dot and still
+ * passes, and would still suffix-match every host under it in `scopeAllows`.
+ * Left open deliberately; closing it needs a PSL table/dependency this guard
+ * is not taking on.
  */
 const isScopableHost = (host: string | null): host is string => host !== null && host.includes('.')
 
@@ -156,26 +162,27 @@ const PROMPT = (message: string, context: string) =>
  * output is unreliable on some OpenAI-compatible endpoints and a failed framing
  * must degrade the card, never block the launch.
  *
- * NOTE on `signal`: when the caller doesn't supply one, the SAME AbortSignal.timeout
- * instance backs both the generateObject attempt and the generateText fallback below.
- * AbortSignal.timeout() fires (and latches aborted, permanently) at most once; if
- * that firing is *why* generateObject failed, the fallback's fetch sees an
- * already-aborted signal and rejects immediately without reaching the network —
- * so the fallback cannot help recover from a timeout specifically, only from a
- * fast non-timeout failure (e.g. a 400 for missing structured-output support,
- * this tier's primary reason for existing) that leaves time on the shared clock.
- * The three-tier degrade to the raw message still holds either way — see the
- * task report for the full analysis and why this wasn't restructured here.
+ * Each attempt gets its OWN abort signal when the caller passes none: an
+ * internally-minted `AbortSignal.timeout()` is a per-attempt budget, not a
+ * whole-call one, so `opts.signal ?? AbortSignal.timeout(...)` is evaluated
+ * separately at each call site rather than hoisted into one shared `const`.
+ * `AbortSignal.timeout()` fires (and latches aborted, permanently) at most
+ * once — reusing a single instance across both attempts would leave the
+ * generateText fallback unable to reach the network whenever a timeout, rather
+ * than some other failure, is what killed generateObject: the exact branch
+ * this fallback exists to cover. A caller-supplied `opts.signal`, by contrast,
+ * IS reused across both attempts unchanged — it represents genuine user-driven
+ * cancellation, and a cancelled framing should stop outright rather than
+ * quietly start a second request.
  */
 export async function frameResearch(opts: FrameResearchOpts): Promise<ResearchFramingResult> {
   const prompt = PROMPT(opts.message, opts.context)
-  const signal = opts.signal ?? AbortSignal.timeout(FRAMING_TIMEOUT_MS)
   try {
     const { object } = await generateObject({
       model: opts.model,
       schema: jsonSchema(FRAMING_SCHEMA as any),
       prompt,
-      abortSignal: signal,
+      abortSignal: opts.signal ?? AbortSignal.timeout(FRAMING_TIMEOUT_MS),
     })
     return parseFraming(object as object, opts.message)
   } catch {
@@ -183,7 +190,9 @@ export async function frameResearch(opts: FrameResearchOpts): Promise<ResearchFr
       const { text } = await generateText({
         model: opts.model,
         prompt: `${prompt}\n\nReply with JSON only.`,
-        abortSignal: signal,
+        // Deliberately re-evaluated rather than reusing a `signal` captured
+        // above — see the doc comment above this function.
+        abortSignal: opts.signal ?? AbortSignal.timeout(FRAMING_TIMEOUT_MS),
       })
       return parseFraming(text, opts.message)
     } catch {
