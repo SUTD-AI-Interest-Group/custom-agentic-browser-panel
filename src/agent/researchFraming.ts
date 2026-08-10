@@ -58,8 +58,12 @@ const strings = (v: unknown): string[] =>
  * passes, and would still suffix-match every host under it in `scopeAllows`.
  * Left open deliberately; closing it needs a PSL table/dependency this guard
  * is not taking on.
+ *
+ * Exported so the launch card's hand-typed "add a site" field (researchSites.ts)
+ * holds a manually-entered host to the exact same bar as a model-proposed one —
+ * one rule, two producers.
  */
-const isScopableHost = (host: string | null): host is string => host !== null && host.includes('.')
+export const isScopableHost = (host: string | null): host is string => host !== null && host.includes('.')
 
 /**
  * Normalize the framing call's output into a `ResearchFramingResult`.

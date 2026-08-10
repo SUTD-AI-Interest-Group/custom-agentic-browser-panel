@@ -77,7 +77,18 @@ import { unmountPresence, unmountAllPresence } from '../platform/presence'
 import { clearAllHighlights } from '../platform/highlight'
 import { grantedCapabilities, type BrowsingCapability } from '../platform/permissions'
 import { getSkill, listSkillMetas, listSkills } from '../data/skills'
-import { listTasks, isActiveStatus, postResearchMsg, type ResearchTask, type ResearchStatus, type ResearchVerification } from '../data/researchTasks'
+import {
+  listTasks,
+  isActiveStatus,
+  postResearchMsg,
+  type ResearchTask,
+  type ResearchStatus,
+  type ResearchVerification,
+  type ResearchProposal,
+} from '../data/researchTasks'
+import { frameResearch, type ResearchFramingResult } from '../agent/researchFraming'
+import { recentContext } from './recentContext'
+import ResearchLaunchCard from './ResearchLaunchCard'
 
 // How long a finished research task lingers in the composer dock (as a ✓/✕/⊘
 // bar) after it completes before auto-dismissing. Its report has already
@@ -690,8 +701,19 @@ export default function Chat({
   // launch card is created, because sticky arming is how a second 20-minute task
   // gets fired by accident.
   const [researchArmed, setResearchArmed] = useState(false)
+  // A ProposeResearch chip click stages its question here; an effect below
+  // drains it through the exact same framing call the armed composer's Send
+  // uses. A plain useState setter — not a closure over proposeResearch
+  // itself — is what gets threaded down through the memoized MessageView →
+  // ToolPill: setState setters are referentially stable across renders, so
+  // passing this prop never defeats MessageView's own memoization the way
+  // handing down a fresh closure every render would (see MessageView's doc
+  // comment on why prop identity matters there).
+  const [chipProposeText, setChipProposeText] = useState<string | null>(null)
 
-  // Bumped when a turn finishes, to trigger persistence of the transcript.
+  // Bumped when a turn finishes (or a launch card is created/edited-away — see
+  // proposeResearch/cancelProposal below, the only other writers), to trigger
+  // persistence of the transcript.
   const [turnSeq, setTurnSeq] = useState(0)
 
   // Auto-naming state, per mounted conversation (Chat is keyed by conversationId,
@@ -2029,6 +2051,135 @@ export default function Chat({
   }
 
   /**
+   * Turn `text` into an editable launch card and append it to the transcript.
+   * Shared by the armed composer's Send (submit(), below) and the
+   * ProposeResearch chip (see the drain effect below it) — both "the user
+   * armed and sent" and "the model suggested, the user clicked" must produce
+   * the exact same card through the exact same framing call, not two
+   * near-duplicate code paths that could drift.
+   *
+   * Display-only, exactly like the research report card above (see its own
+   * "Display-only" doc comment): appended ONLY to `messages`, never to
+   * `historyRef.current`, so an unstarted (or edited-but-unstarted) proposal
+   * can never reach the model as conversation history.
+   *
+   * A `ResearchProposal` has no storage of its own (unlike a `ResearchTask` —
+   * see its doc comment in researchTasks.ts): the transcript message IS the
+   * only record of it. So unlike a finished report, which self-heals from
+   * researchTasks storage on every reload, a launch card needs its own
+   * persistence trigger — turnSeq is the existing (only) wire for that (see
+   * its declaration above), so this bumps it after appending.
+   */
+  async function proposeResearch(text: string) {
+    // Clear any stale capture/attach/no-model error already showing above the
+    // composer — capture()/addFiles()/clearComposer() all clear it the same
+    // way when they start a fresh attempt; without this a leftover error from
+    // an earlier failure would sit there indefinitely through a later,
+    // otherwise-successful proposal.
+    setCaptureError(null)
+    const taskId = `r-${Date.now()}-${Math.floor(performance.now())}`
+    const context = recentContext(messages)
+    let framed: ResearchFramingResult
+    if (!selected) {
+      // The pill and the composer are normally disabled with no provider
+      // configured (see `selected` below), so this is a defensive backstop —
+      // a settings change racing an already-armed pill, not the common case —
+      // but it must still degrade visibly rather than silently drop the
+      // question the user just typed. No network call is even attempted:
+      // there is no model to hand it.
+      setCaptureError('No model is configured — add a provider in Settings to frame and run this research.')
+      framed = { question: text, subQuestions: [], sites: [] }
+    } else {
+      try {
+        framed = await frameResearch({
+          model: createModel(selected.provider, selected.modelId),
+          message: text,
+          context,
+        })
+      } catch (err) {
+        // frameResearch itself never throws (see its own doc comment) — this
+        // catch only guards createModel(), which CAN throw on a malformed
+        // provider config. Either way the launch must never be blocked: this
+        // degrades to the exact same bare shape frameResearch's own worst
+        // case produces, so the card still appears (just unframed) instead of
+        // the armed send silently vanishing with nothing to show for it.
+        console.error('[research] framing setup failed', err)
+        framed = { question: text, subQuestions: [], sites: [] }
+      }
+    }
+    setMessages((prev) => [
+      ...prev,
+      {
+        id: `research-${taskId}`,
+        role: 'assistant' as const,
+        parts: [],
+        proposal: { ...framed, taskId, draftedAt: Date.now() },
+      },
+    ])
+    setTurnSeq((n) => n + 1)
+  }
+
+  // Drain a ProposeResearch chip click (staged in chipProposeText, a stable
+  // setState setter threaded down to the chip — see its declaration above)
+  // into a real launch card via the exact same framing call Send uses.
+  useEffect(() => {
+    if (chipProposeText === null) return
+    setChipProposeText(null)
+    void proposeResearch(chipProposeText)
+    // proposeResearch is read fresh from this render's closure (it reads
+    // `messages`/`selected`, both of which legitimately change every render);
+    // only a fresh chipProposeText should ever retrigger the drain itself.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [chipProposeText])
+
+  /**
+   * Start: hand the (possibly user-edited) proposal to the SW, which creates
+   * the ResearchTask and dispatches it to the offscreen host. The message is
+   * left in place — Task 11 turns this same slot into the live card, then
+   * the report, so Start must never remove or replace it.
+   */
+  function startProposal(p: ResearchProposal) {
+    postResearchMsg({
+      type: 'research.ensureAndStart',
+      taskId: p.taskId,
+      question: p.question,
+      conversationId,
+      brief: p.brief,
+      subQuestions: p.subQuestions,
+      sites: p.sites,
+    })
+  }
+
+  /**
+   * Cancel: remove the card, restore the (possibly edited) question to the
+   * composer, and re-arm the pill — exactly where the user was before Send.
+   * Persisted immediately (see proposeResearch's own comment on why a
+   * proposal needs an explicit turnSeq bump): without this, a reload between
+   * Cancel and the next real turn would resurrect the already-cancelled card.
+   */
+  function cancelProposal(p: ResearchProposal) {
+    setMessages((prev) => prev.filter((m) => m.id !== `research-${p.taskId}`))
+    setInput(p.question)
+    setResearchArmed(true)
+    setTurnSeq((n) => n + 1)
+  }
+
+  /**
+   * Apply an in-place edit (question text, a site chip added/removed) from
+   * the launch card. In-memory only — deliberately NOT independently
+   * persisted on every keystroke, unlike creation/cancellation above: this
+   * file already avoids re-saving the whole transcript on every streamed
+   * token for the same reason (see the turnSeq-gated persistence effect), and
+   * a textarea edit is the same shape of high-frequency update. An edit made
+   * and never acted on (no Start, no Cancel) before a reload reverts to the
+   * card's last-persisted content — a narrow, documented gap, not silently
+   * unhandled.
+   */
+  function updateProposal(next: ResearchProposal) {
+    setMessages((prev) => prev.map((m) => (m.id === `research-${next.taskId}` ? { ...m, proposal: next } : m)))
+  }
+
+  /**
    * Inject a captured spec into the running chain as a mid-task steer: show its
    * bubble and enqueue it. A *promise* is pushed synchronously so steerPending
    * flips true this instant — even mid-assembly, a cycle that ends first won't drop
@@ -2084,7 +2235,10 @@ export default function Chat({
   }
 
   /**
-   * Composer submit. Idle → start a fresh turn immediately. In-flight → park the
+   * Composer submit. Armed (Deep research pill lit) → branch BEFORE the
+   * ordinary turn path entirely: no chat turn runs, the composer just clears
+   * and a launch card appears once framing resolves (see proposeResearch).
+   * Otherwise: idle → start a fresh turn immediately. In-flight → park the
    * message in `queued` (shown in the steer strip) rather than send it: leaving it
    * there sends it as a normal follow-up once the turn finishes (see the effect
    * below); pressing the strip's "Steer now" injects it mid-turn instead. Queuing
@@ -2092,6 +2246,14 @@ export default function Chat({
    * already queued merges into it (see mergeQueuedSpec) rather than replacing it.
    */
   function submit() {
+    if (researchArmed) {
+      const text = input.trim()
+      if (!text) return
+      setInput('')
+      setResearchArmed(false)
+      void proposeResearch(text)
+      return
+    }
     const spec = composeSpec()
     if (!spec) return
     clearComposer(spec.activeSelection)
@@ -2886,12 +3048,28 @@ export default function Chat({
               turnStartedAt={turnStartedAt}
               conversationId={conversationId}
               // Regenerate is offered on the last reply only. Anything appended
-              // after a turn — a background-research report landing in the
-              // transcript — makes that reply non-last, so the button withdraws
-              // rather than offering to delete the card sitting under it.
+              // after a turn — a background-research report or an unstarted
+              // launch card landing in the transcript — makes that reply
+              // non-last, so the button withdraws rather than offering to
+              // delete the card sitting under it. The !msg.research/!msg.proposal
+              // checks are the same safety net for when the card itself IS the
+              // last message (a launch card always is, right after creation):
+              // ResearchLaunchCard doesn't render MessageToolbar so this is
+              // inert today, but it keeps the guard correct in spirit, not
+              // just incidentally harmless.
               onRegenerate={
-                i === messages.length - 1 && msg.role === 'assistant' && !msg.research && canRegenerate
+                i === messages.length - 1 &&
+                msg.role === 'assistant' &&
+                !msg.research &&
+                !msg.proposal &&
+                canRegenerate
                   ? () => void regenerate()
+                  : undefined
+              }
+              onProposeResearch={setChipProposeText}
+              proposalActions={
+                msg.proposal
+                  ? { onChange: updateProposal, onStart: startProposal, onCancel: cancelProposal }
                   : undefined
               }
             />
@@ -3712,6 +3890,8 @@ const MessageView = memo(function MessageView({
   turnStartedAt,
   onRegenerate,
   conversationId,
+  onProposeResearch,
+  proposalActions,
 }: {
   message: UIMessage
   streaming: boolean
@@ -3721,11 +3901,37 @@ const MessageView = memo(function MessageView({
   /** Threaded down to McpAppCard so an app card's tool calls are scoped to
    *  THIS conversation's approval/session state (see mcpAppHostRegistry.ts). */
   conversationId: string
+  /** Stages a ProposeResearch chip's question for framing into a launch card
+   *  (drained by an effect in Chat, via the same call Send uses). Threaded
+   *  down to ToolPill. Always a stable setState setter (see its declaration
+   *  in Chat) — unlike proposalActions below, passing it is never what
+   *  defeats this component's own memoization. */
+  onProposeResearch: (text: string) => void
+  /** Only set for a message carrying `.proposal` (see the call site) — undefined
+   *  is a stable reference, so a message with no proposal never loses
+   *  memoization over this prop; a proposal message's own re-renders are
+   *  accepted the same way onRegenerate already accepts them for the last reply. */
+  proposalActions?: {
+    onChange: (p: ResearchProposal) => void
+    onStart: (p: ResearchProposal) => void
+    onCancel: (p: ResearchProposal) => void
+  }
 }) {
   const bodyRef = useRef<HTMLDivElement>(null)
 
   // A dropped-in background-research report renders as its own card.
   if (message.research) return <ResearchReportMessage message={message} />
+
+  // An unstarted launch card — the editable question before anything runs.
+  if (message.proposal && proposalActions)
+    return (
+      <ResearchLaunchCard
+        proposal={message.proposal}
+        onChange={proposalActions.onChange}
+        onStart={proposalActions.onStart}
+        onCancel={proposalActions.onCancel}
+      />
+    )
 
   if (message.role === 'user') {
     const text = message.parts.map((p) => (p.type === 'text' ? p.text : '')).join('')
@@ -3834,7 +4040,12 @@ const MessageView = memo(function MessageView({
           ) : part.type === 'reasoning' ? (
             <ReasoningBlock key={i} text={part.text} active={streaming && i === parts.length - 1} />
           ) : (
-            <ToolPill key={part.toolCallId} part={part} conversationId={conversationId} />
+            <ToolPill
+              key={part.toolCallId}
+              part={part}
+              conversationId={conversationId}
+              onProposeResearch={onProposeResearch}
+            />
           )
         })}
         {streaming &&
@@ -4271,10 +4482,14 @@ function controlActionLabel(input: any, output: any): string {
 function ToolPill({
   part,
   conversationId,
+  onProposeResearch,
 }: {
   part: Extract<UIPart, { type: 'tool' }>
   /** Threaded down to McpAppCard — see mcpAppHostRegistry.ts. */
   conversationId: string
+  /** Stages a ProposeResearch chip's question — see MessageView's doc comment
+   *  on this same prop for why it's always a stable setState setter. */
+  onProposeResearch: (text: string) => void
 }) {
   const output = part.output as any
   // Stable identity for the app card's init context: a fresh object literal
@@ -4395,6 +4610,20 @@ function ToolPill({
         {errorText && <div className="tool-error-text">{errorText}</div>}
         <pre>{JSON.stringify({ input: part.input, output: part.output }, null, 2)}</pre>
       </details>
+      {/* The model proposed research but did not start it (createProposeResearchTool
+          has no side effect — see its own doc comment). Clicking this chip runs the
+          IDENTICAL framing call the armed composer's Send uses (proposeResearch in
+          Chat.tsx), seeded from the model's own suggested question instead of the
+          user's typed one, and appends the same kind of editable launch card. */}
+      {part.toolName === 'ProposeResearch' && output?.proposed && typeof output.question === 'string' && (
+        <button
+          type="button"
+          className="research-propose-chip"
+          onClick={() => onProposeResearch(output.question)}
+        >
+          ◈ Research this properly · usually 10–20 min
+        </button>
+      )}
       {needsAuthServer && (
         <button
           className="btn ghost small"

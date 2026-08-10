@@ -1476,6 +1476,183 @@ body {
   padding: 0 14px 12px;
 }
 
+/* ---- Research launch card (Task 10) ----
+   The editable proposal a user gets after arming Deep research and sending —
+   the moment the question becomes visible and editable before anything runs.
+   Same card shell as .research-report (border/radius/background) so the two
+   read as one family; Task 11 slides this into the same slot as the live
+   card and the report. */
+
+.research-launch {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--surface);
+  padding: 14px;
+}
+
+.research-launch__label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+.research-launch__question {
+  width: 100%;
+  box-sizing: border-box;
+  resize: vertical;
+  min-height: 44px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+  font-size: 13.5px;
+  line-height: 1.4;
+}
+
+.research-launch__question:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+/* Amber, not red — a corrected assumption, not an error. Same palette as
+   .research-report__partial (the 24h-cap notice): something worth flagging
+   that isn't a failure. */
+.research-launch__premise {
+  padding: 7px 10px;
+  border: 1px solid #d97706;
+  border-radius: 8px;
+  font-size: 12px;
+  color: #b45309;
+  background: color-mix(in srgb, #d97706 8%, transparent);
+}
+@media (prefers-color-scheme: dark) {
+  .research-launch__premise {
+    color: #fbbf24;
+    border-color: #a16207;
+  }
+}
+
+.research-launch__sites {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.research-launch__site {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 4px 3px 10px;
+  background: var(--pill-bg);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-size: 11.5px;
+  color: var(--text);
+}
+
+.research-launch__add-site {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.research-launch__add-site input {
+  width: 130px;
+  box-sizing: border-box;
+  padding: 3px 8px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  font-size: 11.5px;
+}
+
+.research-launch__add-site input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.research-launch__brief summary {
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+.research-launch__brief p {
+  margin: 6px 0 0;
+  padding: 8px 10px;
+  background: var(--pill-bg);
+  border-radius: 8px;
+  font-size: 12.5px;
+  color: var(--text);
+  white-space: pre-wrap;
+}
+
+.research-launch__clarifications {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.research-launch__clarification {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+/* A leading "? " marks these as the model's own questions, not statements —
+   kept out of the JSX text itself (matches the .mention-item::before glyph-
+   prefix convention already used elsewhere in this file). */
+.research-launch__clarification::before {
+  content: '? ';
+  color: var(--text-muted);
+}
+
+.research-launch__duration {
+  font-size: 11.5px;
+  color: var(--text-muted);
+}
+
+.research-launch__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+/* The clickable chip beside a ProposeResearch tool pill (ToolPill in Chat.tsx).
+   Clicking it runs the SAME framing call the armed composer's Send uses, just
+   seeded from the model's own suggested question. Styled as an accent-tinted
+   pill rather than a plain .btn so it reads as a suggestion worth accepting —
+   the same recipe as .research-pill.on (Task 9's armed composer pill), so
+   "arm the pill" and "click the chip" visually read as the same family of
+   action. */
+.research-propose-chip {
+  align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-top: 4px;
+  padding: 5px 12px;
+  border: 1px solid color-mix(in srgb, var(--accent) 55%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.research-propose-chip:hover {
+  background: color-mix(in srgb, var(--accent) 20%, transparent);
+}
+
 /* ---- Verification badge (report card) ---- */
 .research-verify {
   display: inline-flex;

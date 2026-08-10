@@ -15,7 +15,7 @@ import { z } from 'zod'
 import { resolveActiveTools } from '../tools/toolDiscovery'
 import { toModelUsage } from './usage'
 import type { ModelUsage, Trace } from './observability'
-import type { ResearchVerification } from '../data/researchTasks'
+import type { ResearchProposal, ResearchVerification } from '../data/researchTasks'
 import type { AttachmentMeta } from '../data/attachments'
 
 /**
@@ -135,6 +135,17 @@ export interface UIMessage {
    * text lives in `parts`; `sources` carries the fetched pages.
    */
   research?: { question: string; error?: string; verification?: ResearchVerification; partial?: boolean }
+  /**
+   * Marks an editable background-research launch card: the moment a question
+   * becomes visible and editable before anything runs (see the design doc).
+   * Lives ONLY on the message — a `ResearchProposal` has no storage of its own
+   * (see its doc comment in researchTasks.ts) — so this is the one and only
+   * record of an unstarted proposal, unlike `research` above, which is
+   * reconstructed from `researchTasks` storage on every reload. Display-only,
+   * exactly like `research`: never pushed to the model-facing history, so an
+   * unstarted (or edited-but-unstarted) proposal can never reach the model.
+   */
+  proposal?: ResearchProposal
   /**
    * Tokens this assistant turn cost, summed across every step (and every cycle of
    * a continuation chain). Rendered as a subtle line under the reply. Absent on
