@@ -29,6 +29,7 @@ import {
   ingestFiles,
   makeHistoricalAttachmentResolver,
   type ComposerAttachment,
+  persistAttachments,
 } from './attachments'
 import { buildRetryNote } from './regenerate'
 import { COMPOSER_ACTION_MSG, drainComposerAction, type ComposerAction } from '../platform/composerActions'
@@ -77,12 +78,77 @@ import { unmountPresence, unmountAllPresence } from '../platform/presence'
 import { clearAllHighlights } from '../platform/highlight'
 import { grantedCapabilities, type BrowsingCapability } from '../platform/permissions'
 import { getSkill, listSkillMetas, listSkills } from '../data/skills'
-import { listTasks, isActiveStatus, postResearchMsg, type ResearchTask, type ResearchStatus, type ResearchVerification } from '../data/researchTasks'
+import {
+  listTasks,
+  isActiveStatus,
+  postResearchMsg,
+  type ResearchTask,
+  type ResearchStatus,
+  type ResearchVerification,
+  type ResearchAttachmentRef,
+  type ResearchProposal,
+} from '../data/researchTasks'
+import { frameResearch, type ResearchFramingResult } from '../agent/researchFraming'
+import { recentContext } from './recentContext'
+import ResearchLaunchCard from './ResearchLaunchCard'
+import { ResearchLiveCard } from './ResearchLiveCard'
 
 // How long a finished research task lingers in the composer dock (as a ✓/✕/⊘
 // bar) after it completes before auto-dismissing. Its report has already
 // dropped into the chat by then, so the bar is just a brief completion cue.
 const DOCK_LINGER_MS = 15_000
+
+/**
+ * Which of `taskIds` currently have their transcript slot scrolled out of view.
+ *
+ * This is what demotes the research dock from a permanent fixture to an
+ * off-screen safety net. While a task's live card is visible, a bar above the
+ * composer repeating the same status is a second copy of what the user is
+ * already looking at — and showing both is how one task comes to look like two.
+ *
+ * `revision` re-arms the observer when the transcript grows: a slot's DOM node
+ * is appended by an effect that can land after this one, so the first pass may
+ * find nothing to observe.
+ */
+function useOffscreenSlots(taskIds: string[], revision: number): Set<string> {
+  // Joined so the effect's dependency is a value, not a fresh array identity.
+  const key = taskIds.join(',')
+  const [offscreen, setOffscreen] = useState<Set<string>>(() => new Set())
+  useEffect(() => {
+    const ids = key ? key.split(',') : []
+    if (ids.length === 0) {
+      setOffscreen((prev) => (prev.size > 0 ? new Set() : prev))
+      return
+    }
+    const obs = new IntersectionObserver((entries) => {
+      setOffscreen((prev) => {
+        const next = new Set(prev)
+        for (const e of entries) {
+          const id = e.target.id.replace(/^research-/, '')
+          if (e.isIntersecting) next.delete(id)
+          else next.add(id)
+        }
+        // Same membership → same Set, so a scroll that crosses no boundary does
+        // not re-render the entire transcript on every frame.
+        if (next.size === prev.size && [...next].every((id) => prev.has(id))) return prev
+        return next
+      })
+    })
+    // A slot with no node yet counts as off-screen until it mounts and reports
+    // otherwise. That direction is deliberate: the dock is the fallback, so
+    // erring toward showing it can only ever duplicate information, never hide
+    // a running task entirely.
+    const unmounted: string[] = []
+    for (const id of ids) {
+      const el = document.getElementById(`research-${id}`)
+      if (el) obs.observe(el)
+      else unmounted.push(id)
+    }
+    if (unmounted.length > 0) setOffscreen((prev) => new Set([...prev, ...unmounted]))
+    return () => obs.disconnect()
+  }, [key, revision])
+  return offscreen
+}
 
 /** System-prompt suffix naming the QueryBrowserData sources available this turn. */
 function browsingInsightsNote(granted: Set<BrowsingCapability>): string {
@@ -126,7 +192,7 @@ Whenever the user asks you to do something in the browser, load the tool and do 
 
 Ground your answers on the page. When your answer comes from a specific passage, clause, figure, or section of the page or PDF the user is viewing ("what are the terms…", "which part mentions…", "where does it say…"), load HighlightContent and mark that spot as part of answering — it scrolls their tab to the passage and highlights it so they can see where your answer came from. Do this proactively, without being asked to "show" it; highlight each key passage of a multi-part answer.
 
-Capabilities to load when needed: HighlightContent (scroll to and mark the passage/figure your answer came from), ReadTabs (other open tabs — mode "gist" skims every tab with a one-line summary and flags duplicates, which is how you answer "what do I have open", "which tab had…", or start any tidy-up), GroupTabs (file tabs into named Chrome tab groups), CloseTabs (close tabs, or reopen the batch you last closed), RequestPageControl/ControlPage/AutofillForm (control a page — click, type, fill), NavigateTab (switch/open/load a tab), ExtractData (structured JSON from the page), RunCode (execute JavaScript in a sealed sandbox — compute, verify, transform data), CreateArtifact/UpdateArtifact (build a self-contained interactive HTML page, visualization, or mini-app rendered as a live card in the chat — the way to SHOW the user something you made), SaveMemory/SearchMemory (long-term memory), QueryBrowserData (history/bookmarks/top sites/downloads — only enabled sources), ListAllSkills/ReadSkill/SaveSkill (skills), StartResearch (background web research). Tools whose names start with mcp_ come from MCP servers the user connected (ListMcpResources/ReadMcpResource read those servers' resources) — list them with ToolSearch like any other capability. If the message is purely conversational and needs no browser action, just answer.`
+Capabilities to load when needed: HighlightContent (scroll to and mark the passage/figure your answer came from), ReadTabs (other open tabs — mode "gist" skims every tab with a one-line summary and flags duplicates, which is how you answer "what do I have open", "which tab had…", or start any tidy-up), GroupTabs (file tabs into named Chrome tab groups), CloseTabs (close tabs, or reopen the batch you last closed), RequestPageControl/ControlPage/AutofillForm (control a page — click, type, fill), NavigateTab (switch/open/load a tab), ExtractData (structured JSON from the page), RunCode (execute JavaScript in a sealed sandbox — compute, verify, transform data), CreateArtifact/UpdateArtifact (build a self-contained interactive HTML page, visualization, or mini-app rendered as a live card in the chat — the way to SHOW the user something you made), SaveMemory/SearchMemory (long-term memory), QueryBrowserData (history/bookmarks/top sites/downloads — only enabled sources), ListAllSkills/ReadSkill/SaveSkill (skills), ProposeResearch (propose background web research to the user — it does not start it). Tools whose names start with mcp_ come from MCP servers the user connected (ListMcpResources/ReadMcpResource read those servers' resources) — list them with ToolSearch like any other capability. If the message is purely conversational and needs no browser action, just answer.`
 
 /**
  * A pending approval as shown in the card. No longer carries its own
@@ -686,8 +752,26 @@ export default function Chat({
   // Narrow panels collapse the tools + screenshot buttons into one "…" menu.
   const [moreOpen, setMoreOpen] = useState(false)
   const moreMenuRef = useRef<HTMLDivElement>(null)
+  // Deep-research mode is armed per-send, never sticky: it disarms the moment a
+  // launch card is created, because sticky arming is how a second 20-minute task
+  // gets fired by accident.
+  const [researchArmed, setResearchArmed] = useState(false)
+  // Composer attachments parked per un-started proposal, so Cancel can hand the
+  // files back. Keyed by taskId; cleared on Cancel or Start (see both).
+  const proposalAttsRef = useRef<Map<string, ComposerAttachment[]>>(new Map())
+  // A ProposeResearch chip click stages its question here; an effect below
+  // drains it through the exact same framing call the armed composer's Send
+  // uses. A plain useState setter — not a closure over proposeResearch
+  // itself — is what gets threaded down through the memoized MessageView →
+  // ToolPill: setState setters are referentially stable across renders, so
+  // passing this prop never defeats MessageView's own memoization the way
+  // handing down a fresh closure every render would (see MessageView's doc
+  // comment on why prop identity matters there).
+  const [chipProposeText, setChipProposeText] = useState<string | null>(null)
 
-  // Bumped when a turn finishes, to trigger persistence of the transcript.
+  // Bumped when a turn finishes (or a launch card is created/edited-away — see
+  // proposeResearch/cancelProposal below, the only other writers), to trigger
+  // persistence of the transcript.
   const [turnSeq, setTurnSeq] = useState(0)
 
   // Auto-naming state, per mounted conversation (Chat is keyed by conversationId,
@@ -930,34 +1014,64 @@ export default function Chat({
     saveDraft(conversationId, input)
   }, [conversationId, input])
 
-  // Drop a finished research task into THIS conversation's transcript as a
-  // message, so its report card scrolls with the chat and later turns follow it
-  // (rather than staying pinned at the bottom). Reconstructed from persistent
-  // researchTasks storage, deduped by the deterministic `research-<id>` message
-  // id, and gated on `restored` so it appends after the restore, never racing
-  // it. Display-only: not added to model history.
+  // ONE SLOT PER TASK. A research task owns exactly one transcript message,
+  // `research-<taskId>`, which mutates in place through proposed → running →
+  // done rather than three separate things appearing at three different times.
+  // That anchoring is the point: the slot sits where the user asked, so a report
+  // landing twenty minutes later can never read as the reply to whatever they
+  // said most recently — the failure this whole feature exists to fix.
+  //
+  // The slot is usually minted by the launch card (proposeResearch, which knows
+  // the taskId before any task exists); this effect appends one only for a task
+  // with no slot yet — started from the Library, or whose proposal message was
+  // lost with an unsaved draft.
+  //
+  // This is an UPSERT, not the append it used to be: every status is included
+  // and a matched slot is REFRESHED in place, so the live card animates for free
+  // off the researchTasks storage subscription that already exists. `.proposal`
+  // is deliberately left on the message — researchCardState ignores it once a
+  // task carries the same id, and it stays the record of what was actually
+  // launched.
+  //
+  // The `changed` guard is load-bearing: returning `prev` unchanged when nothing
+  // differs is what stops a storage tick for one task from handing React a whole
+  // new array and re-rendering every message in the transcript.
   useEffect(() => {
     if (!restored) return
-    const done = researchTasks
-      .filter(
-        (t) =>
-          t.conversationId === conversationId &&
-          ((t.status === 'done' && t.report) || (t.status === 'error' && t.error)),
-      )
-      .sort((a, b) => a.updatedAt - b.updatedAt)
-    if (done.length === 0) return
+    const mine = researchTasks.filter((t) => t.conversationId === conversationId)
+    if (mine.length === 0) return
     setMessages((prev) => {
-      const have = new Set(prev.map((m) => m.id))
-      const add = done
-        .filter((t) => !have.has(`research-${t.id}`))
-        .map((t) => ({
-          id: `research-${t.id}`,
-          role: 'assistant' as const,
-          parts: t.report ? [{ type: 'text' as const, text: t.report }] : [],
-          sources: t.sources,
-          research: { question: t.question, error: t.error, verification: t.verification, partial: t.partial },
-        }))
-      return add.length ? [...prev, ...add] : prev
+      const pending = new Map(mine.map((t) => [`research-${t.id}`, t]))
+      const view = (t: ResearchTask) => ({
+        parts: t.report ? [{ type: 'text' as const, text: t.report }] : [],
+        sources: t.sources,
+        research: {
+          question: t.question,
+          status: t.status,
+          error: t.error,
+          verification: t.verification,
+          partial: t.partial,
+        },
+      })
+      let changed = false
+      const next = prev.map((m) => {
+        const t = pending.get(m.id)
+        if (!t) return m
+        pending.delete(m.id)
+        // Only the fields this effect owns are compared. A task whose status,
+        // error and report text are all unchanged has nothing to repaint, even
+        // though its `updatedAt` (and so the researchTasks array identity) moved.
+        const r = m.research
+        const sameText = (m.parts[0]?.type === 'text' ? m.parts[0].text : undefined) === t.report
+        if (r && r.status === t.status && r.error === t.error && r.partial === t.partial && sameText) return m
+        changed = true
+        return { ...m, ...view(t) }
+      })
+      for (const t of pending.values()) {
+        changed = true
+        next.push({ id: `research-${t.id}`, role: 'assistant' as const, ...view(t) })
+      }
+      return changed ? next : prev
     })
   }, [restored, researchTasks, conversationId])
 
@@ -1166,10 +1280,24 @@ export default function Chat({
     const lingering = researchTasks.some(
       (t) => !isActiveStatus(t.status) && now - t.updatedAt < DOCK_LINGER_MS,
     )
-    if (!lingering) return
+    // A RUNNING task needs the same tick for a different reason: its live card
+    // shows an elapsed clock, which would sit frozen at whatever `now` happened
+    // to be when the card mounted. The lingering condition alone never covers
+    // this — a task is either active or lingering, never both.
+    const running = researchTasks.some((t) => isActiveStatus(t.status))
+    if (!lingering && !running) return
     const id = setInterval(() => setNow(Date.now()), 1000)
     return () => clearInterval(id)
   }, [researchTasks, now, hidden])
+
+  // Which research slots are currently scrolled out of view — the input to the
+  // dock's demotion (see dockTasks). Keyed on this conversation's task ids, and
+  // re-armed when the transcript grows, since a slot's node can mount after the
+  // observer first attaches.
+  const offscreenSlots = useOffscreenSlots(
+    researchTasks.filter((t) => t.conversationId === conversationId).map((t) => t.id),
+    messages.length,
+  )
 
   // @all attaches every open tab; it's only honored when the user has granted
   // all-tabs visibility. The composer previews each attached page as a pill.
@@ -1448,19 +1576,19 @@ export default function Chat({
     postResearchMsg({ type: 'research.cancel', taskId })
   }
 
-  // Tapping a dock bar: an active task (running or paused/waiting) opens its
-  // live-workflow sheet; a finished one closes any sheet and scrolls the chat to the
-  // report card that dropped in (a cancelled task has no card, so this is a harmless
-  // no-op for it).
+  // Tapping a dock bar always scrolls to the task's slot, whatever its state.
+  //
+  // It used to open the live sheet for an active task, but the dock now only
+  // appears when that slot is off screen (see useOffscreenSlots), so "take me to
+  // the thing you're telling me about" is the only thing the tap can sensibly
+  // mean. The sheet is still one tap further in, from the live card itself —
+  // it stays the home of the full step log, just no longer the only way to see
+  // that anything is happening.
   function openDockTask(t: ResearchTask) {
-    if (isActiveStatus(t.status)) {
-      setOpenSheetTaskId(t.id)
-      return
-    }
     setOpenSheetTaskId(null)
     document
       .getElementById(`research-${t.id}`)
-      ?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+      ?.scrollIntoView({ behavior: 'smooth', block: 'center' })
   }
 
   // Arc/Dia-style snipe: tint the page, snap to hovered components, or drag
@@ -2025,6 +2153,171 @@ export default function Chat({
   }
 
   /**
+   * Turn `text` into an editable launch card and append it to the transcript.
+   * Shared by the armed composer's Send (submit(), below) and the
+   * ProposeResearch chip (see the drain effect below it) — both "the user
+   * armed and sent" and "the model suggested, the user clicked" must produce
+   * the exact same card through the exact same framing call, not two
+   * near-duplicate code paths that could drift.
+   *
+   * Display-only, exactly like the research report card above (see its own
+   * "Display-only" doc comment): appended ONLY to `messages`, never to
+   * `historyRef.current`, so an unstarted (or edited-but-unstarted) proposal
+   * can never reach the model as conversation history.
+   *
+   * A `ResearchProposal` has no storage of its own (unlike a `ResearchTask` —
+   * see its doc comment in researchTasks.ts): the transcript message IS the
+   * only record of it. So unlike a finished report, which self-heals from
+   * researchTasks storage on every reload, a launch card needs its own
+   * persistence trigger — turnSeq is the existing (only) wire for that (see
+   * its declaration above), so this bumps it after appending.
+   */
+  async function proposeResearch(text: string, atts: ComposerAttachment[] = []) {
+    // Clear any stale capture/attach/no-model error already showing above the
+    // composer — capture()/addFiles()/clearComposer() all clear it the same
+    // way when they start a fresh attempt; without this a leftover error from
+    // an earlier failure would sit there indefinitely through a later,
+    // otherwise-successful proposal.
+    setCaptureError(null)
+    const taskId = `r-${Date.now()}-${Math.floor(performance.now())}`
+    const context = recentContext(messages)
+    // Persist the composer's attachments so the offscreen research host can read
+    // them back by id (it opens the same lychee-attachments IndexedDB). Only the
+    // ones that actually stored are carried forward — a ref research cannot
+    // resolve is worse than no ref, since the launch card would promise a
+    // document that is not there. `persistAttachments` skips the delivery ladder
+    // entirely: the framing call takes text, and the research agent reads
+    // documents through its own tool rather than being handed them up front.
+    const attachmentRefs: ResearchAttachmentRef[] =
+      atts.length > 0
+        ? (await persistAttachments(atts, conversationId)).map((m) => ({
+            id: m.id,
+            name: m.name,
+            kind: m.kind,
+            pageCount: m.pageCount,
+          }))
+        : []
+    let framed: ResearchFramingResult
+    if (!selected) {
+      // The pill and the composer are normally disabled with no provider
+      // configured (see `selected` below), so this is a defensive backstop —
+      // a settings change racing an already-armed pill, not the common case —
+      // but it must still degrade visibly rather than silently drop the
+      // question the user just typed. No network call is even attempted:
+      // there is no model to hand it.
+      setCaptureError('No model is configured — add a provider in Settings to frame and run this research.')
+      framed = { question: text, subQuestions: [], sites: [] }
+    } else {
+      try {
+        framed = await frameResearch({
+          model: createModel(selected.provider, selected.modelId),
+          message: text,
+          context,
+        })
+      } catch (err) {
+        // frameResearch itself never throws (see its own doc comment) — this
+        // catch only guards createModel(), which CAN throw on a malformed
+        // provider config. Either way the launch must never be blocked: this
+        // degrades to the exact same bare shape frameResearch's own worst
+        // case produces, so the card still appears (just unframed) instead of
+        // the armed send silently vanishing with nothing to show for it.
+        console.error('[research] framing setup failed', err)
+        framed = { question: text, subQuestions: [], sites: [] }
+      }
+    }
+    // Cancel promises to put the user exactly where they were before Send, and
+    // that includes their files. The refs on the proposal are enough for
+    // research, but not enough to rebuild a composer chip (which holds decoded
+    // bytes), so the originals are parked here. In-memory only, matching the
+    // same tradeoff updateProposal already documents: a reload before Start
+    // loses them from the composer, though the persisted records survive.
+    if (atts.length > 0) proposalAttsRef.current.set(taskId, atts)
+    setMessages((prev) => [
+      ...prev,
+      {
+        id: `research-${taskId}`,
+        role: 'assistant' as const,
+        parts: [],
+        proposal: {
+          ...framed,
+          taskId,
+          ...(attachmentRefs.length > 0 ? { attachments: attachmentRefs } : {}),
+          draftedAt: Date.now(),
+        },
+      },
+    ])
+    setTurnSeq((n) => n + 1)
+  }
+
+  // Drain a ProposeResearch chip click (staged in chipProposeText, a stable
+  // setState setter threaded down to the chip — see its declaration above)
+  // into a real launch card via the exact same framing call Send uses.
+  useEffect(() => {
+    if (chipProposeText === null) return
+    setChipProposeText(null)
+    void proposeResearch(chipProposeText)
+    // proposeResearch is read fresh from this render's closure (it reads
+    // `messages`/`selected`, both of which legitimately change every render);
+    // only a fresh chipProposeText should ever retrigger the drain itself.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [chipProposeText])
+
+  /**
+   * Start: hand the (possibly user-edited) proposal to the SW, which creates
+   * the ResearchTask and dispatches it to the offscreen host. The message is
+   * left in place — Task 11 turns this same slot into the live card, then
+   * the report, so Start must never remove or replace it.
+   */
+  function startProposal(p: ResearchProposal) {
+    // The originals are the composer's to restore only until the task exists.
+    proposalAttsRef.current.delete(p.taskId)
+    postResearchMsg({
+      type: 'research.ensureAndStart',
+      taskId: p.taskId,
+      question: p.question,
+      conversationId,
+      brief: p.brief,
+      subQuestions: p.subQuestions,
+      sites: p.sites,
+      attachments: p.attachments,
+    })
+  }
+
+  /**
+   * Cancel: remove the card, restore the (possibly edited) question to the
+   * composer, and re-arm the pill — exactly where the user was before Send.
+   * Persisted immediately (see proposeResearch's own comment on why a
+   * proposal needs an explicit turnSeq bump): without this, a reload between
+   * Cancel and the next real turn would resurrect the already-cancelled card.
+   */
+  function cancelProposal(p: ResearchProposal) {
+    setMessages((prev) => prev.filter((m) => m.id !== `research-${p.taskId}`))
+    setInput(p.question)
+    const parked = proposalAttsRef.current.get(p.taskId)
+    if (parked) {
+      setAttachments(parked)
+      proposalAttsRef.current.delete(p.taskId)
+    }
+    setResearchArmed(true)
+    setTurnSeq((n) => n + 1)
+  }
+
+  /**
+   * Apply an in-place edit (question text, a site chip added/removed) from
+   * the launch card. In-memory only — deliberately NOT independently
+   * persisted on every keystroke, unlike creation/cancellation above: this
+   * file already avoids re-saving the whole transcript on every streamed
+   * token for the same reason (see the turnSeq-gated persistence effect), and
+   * a textarea edit is the same shape of high-frequency update. An edit made
+   * and never acted on (no Start, no Cancel) before a reload reverts to the
+   * card's last-persisted content — a narrow, documented gap, not silently
+   * unhandled.
+   */
+  function updateProposal(next: ResearchProposal) {
+    setMessages((prev) => prev.map((m) => (m.id === `research-${next.taskId}` ? { ...m, proposal: next } : m)))
+  }
+
+  /**
    * Inject a captured spec into the running chain as a mid-task steer: show its
    * bubble and enqueue it. A *promise* is pushed synchronously so steerPending
    * flips true this instant — even mid-assembly, a cycle that ends first won't drop
@@ -2080,7 +2373,10 @@ export default function Chat({
   }
 
   /**
-   * Composer submit. Idle → start a fresh turn immediately. In-flight → park the
+   * Composer submit. Armed (Deep research pill lit) → branch BEFORE the
+   * ordinary turn path entirely: no chat turn runs, the composer just clears
+   * and a launch card appears once framing resolves (see proposeResearch).
+   * Otherwise: idle → start a fresh turn immediately. In-flight → park the
    * message in `queued` (shown in the steer strip) rather than send it: leaving it
    * there sends it as a normal follow-up once the turn finishes (see the effect
    * below); pressing the strip's "Steer now" injects it mid-turn instead. Queuing
@@ -2088,6 +2384,18 @@ export default function Chat({
    * already queued merges into it (see mergeQueuedSpec) rather than replacing it.
    */
   function submit() {
+    if (researchArmed) {
+      const text = input.trim()
+      // Attachments alone are enough to research from — a dropped-in spec sheet
+      // with no typed question is a legitimate ask.
+      if (!text && attachments.length === 0) return
+      const atts = attachments
+      setInput('')
+      setAttachments([])
+      setResearchArmed(false)
+      void proposeResearch(text, atts)
+      return
+    }
     const spec = composeSpec()
     if (!spec) return
     clearComposer(spec.activeSelection)
@@ -2844,9 +3152,14 @@ export default function Chat({
   const myTasks = researchTasks.filter((t) => t.conversationId === conversationId)
   // Tasks shown in the composer dock: everything still running, plus terminal
   // tasks still inside their linger window. Newest first (listTasks order).
-  const dockTasks = myTasks.filter(
-    (t) => isActiveStatus(t.status) || now - t.updatedAt < DOCK_LINGER_MS,
-  )
+  //
+  // DEMOTED (see useOffscreenSlots): a task whose slot is on screen is dropped
+  // here, because the live card already says everything the bar would and says
+  // it in the place the user asked. The dock is now purely the off-screen
+  // safety net — nothing is ever both duplicated and invisible.
+  const dockTasks = myTasks
+    .filter((t) => isActiveStatus(t.status) || now - t.updatedAt < DOCK_LINGER_MS)
+    .filter((t) => offscreenSlots.has(t.id))
   // Finished reports are injected into `messages` as research-report cards (see
   // the injection effect), so there's no separate overlay list here.
   const openSheetTask = researchTasks.find((t) => t.id === openSheetTaskId) ?? null
@@ -2882,12 +3195,42 @@ export default function Chat({
               turnStartedAt={turnStartedAt}
               conversationId={conversationId}
               // Regenerate is offered on the last reply only. Anything appended
-              // after a turn — a background-research report landing in the
-              // transcript — makes that reply non-last, so the button withdraws
-              // rather than offering to delete the card sitting under it.
+              // after a turn — a background-research report or an unstarted
+              // launch card landing in the transcript — makes that reply
+              // non-last, so the button withdraws rather than offering to
+              // delete the card sitting under it. The !msg.research/!msg.proposal
+              // checks are the same safety net for when the card itself IS the
+              // last message (a launch card always is, right after creation):
+              // ResearchLaunchCard doesn't render MessageToolbar so this is
+              // inert today, but it keeps the guard correct in spirit, not
+              // just incidentally harmless.
               onRegenerate={
-                i === messages.length - 1 && msg.role === 'assistant' && !msg.research && canRegenerate
+                i === messages.length - 1 &&
+                msg.role === 'assistant' &&
+                !msg.research &&
+                !msg.proposal &&
+                canRegenerate
                   ? () => void regenerate()
+                  : undefined
+              }
+              onProposeResearch={setChipProposeText}
+              proposalActions={
+                msg.proposal
+                  ? { onChange: updateProposal, onStart: startProposal, onCancel: cancelProposal }
+                  : undefined
+              }
+              // Only the slot of a task that is actually in flight gets this, so
+              // every other message keeps a stable `undefined` and its memo. The
+              // live card intentionally DOES re-render each tick — that is what
+              // makes its elapsed clock and coverage move.
+              liveResearch={
+                msg.research && isActiveStatus(msg.research.status ?? 'done')
+                  ? {
+                      task: myTasks.find((t) => `research-${t.id}` === msg.id),
+                      now,
+                      onStop: cancelResearchTask,
+                      onOpen: setOpenSheetTaskId,
+                    }
                   : undefined
               }
             />
@@ -3084,7 +3427,7 @@ export default function Chat({
             ))}
           </div>
         )}
-        <div className="composer">
+        <div className={researchArmed ? 'composer armed' : 'composer'}>
           {/* Agent steering: a subtle strip joined to the top of the composer (like
               the research dock), shown ONLY when a message is queued — a reply the
               user submitted mid-turn that's parked here instead of sent. It
@@ -3178,9 +3521,11 @@ export default function Chat({
             placeholder={
               !selected
                 ? 'Add a provider in settings to start'
-                : streaming
-                  ? 'Reply — queues as a follow-up…'
-                  : 'Ask anything…'
+                : researchArmed
+                  ? 'Research anything — this runs in the background…'
+                  : streaming
+                    ? 'Reply — queues as a follow-up…'
+                    : 'Ask anything…'
             }
             // Stays usable while a turn runs — a message sent now is parked in the
             // steer strip above (submit()); it auto-sends when the turn finishes, or
@@ -3342,9 +3687,30 @@ export default function Chat({
               onOpenSettings={onOpenSettings}
             />
             <div className="composer-btns">
+              {/* Deep research: arming lights the pill, the composer border and the
+                  placeholder together (see .research-pill / .composer.armed in
+                  styles.css) — a control that lights up alone is too easy to miss
+                  mid-task. One-shot: Task 10 disarms it the instant a launch card
+                  is created, never on a timer or on blur. */}
+              <button
+                className={researchArmed ? 'research-pill on' : 'research-pill'}
+                title="Deep research — reads the web in the background and reports back"
+                // The narrow breakpoint (styles.css) hides .research-pill__label with
+                // display:none, which drops it out of the accessible-name-from-content
+                // computation entirely — title alone is accname's last-resort tier and
+                // isn't reliably announced. aria-label makes the name unconditional.
+                aria-label="Deep research — reads the web in the background and reports back"
+                aria-pressed={researchArmed}
+                disabled={!selected}
+                onClick={() => setResearchArmed((a) => !a)}
+              >
+                <span className="research-pill__glyph" aria-hidden="true">◈</span>
+                <span className="research-pill__label">Deep research</span>
+              </button>
               {/* Tools and screenshot as their own buttons. Below the narrow
-                  breakpoint only the tools button collapses into the "…" menu
-                  (see .composer-btns in styles.css); the camera always stays out. */}
+                  breakpoint both the tools button AND the camera collapse into the
+                  "…" menu (see .composer-btns in styles.css) — freeing a full
+                  button's width so the research pill above can keep its label. */}
               <div className="tools-menu-wrap" ref={toolsMenuRef}>
                 <button
                   className="tools-btn"
@@ -3378,8 +3744,10 @@ export default function Chat({
                 <CameraIcon />
               </button>
 
-              {/* Narrow panel: only the tools button collapses into this menu —
-                  the camera above stays out as its own button at every width. */}
+              {/* Narrow panel: the tools button AND the camera both collapse into
+                  this menu at the same breakpoint (see .composer-btns in
+                  styles.css), so the screenshot row below is what keeps that
+                  action reachable once .cam-btn itself is hidden. */}
               <div className="more-menu-wrap" ref={moreMenuRef}>
                 <button
                   className="more-btn"
@@ -3397,6 +3765,16 @@ export default function Chat({
                 {moreOpen && (
                   <div className="tools-popover" role="dialog" aria-label="Tools">
                     <div className="tools-popover-head">Tools</div>
+                    <button
+                      className="more-item"
+                      disabled={!selected || capturing}
+                      onClick={() => {
+                        setMoreOpen(false)
+                        void capture()
+                      }}
+                    >
+                      Screenshot part of the page
+                    </button>
                     <ToolsMenuBody
                       settings={settings}
                       toggleTool={toggleTool}
@@ -3673,6 +4051,9 @@ const MessageView = memo(function MessageView({
   turnStartedAt,
   onRegenerate,
   conversationId,
+  onProposeResearch,
+  proposalActions,
+  liveResearch,
 }: {
   message: UIMessage
   streaming: boolean
@@ -3682,11 +4063,61 @@ const MessageView = memo(function MessageView({
   /** Threaded down to McpAppCard so an app card's tool calls are scoped to
    *  THIS conversation's approval/session state (see mcpAppHostRegistry.ts). */
   conversationId: string
+  /** Stages a ProposeResearch chip's question for framing into a launch card
+   *  (drained by an effect in Chat, via the same call Send uses). Threaded
+   *  down to ToolPill. Always a stable setState setter (see its declaration
+   *  in Chat) — unlike proposalActions below, passing it is never what
+   *  defeats this component's own memoization. */
+  onProposeResearch: (text: string) => void
+  /** Only set for a message carrying `.proposal` (see the call site) — undefined
+   *  is a stable reference, so a message with no proposal never loses
+   *  memoization over this prop; a proposal message's own re-renders are
+   *  accepted the same way onRegenerate already accepts them for the last reply. */
+  proposalActions?: {
+    onChange: (p: ResearchProposal) => void
+    onStart: (p: ResearchProposal) => void
+    onCancel: (p: ResearchProposal) => void
+  }
+  /** Set only for the slot of a task that is still in flight — see the call site.
+   *  `task` can still be undefined for a beat after a reload, when the message has
+   *  been restored but researchTasks storage has not loaded yet; the routing below
+   *  falls back to the report card rather than rendering a card with no data. */
+  liveResearch?: {
+    task?: ResearchTask
+    now: number
+    onStop: (taskId: string) => void
+    onOpen: (taskId: string) => void
+  }
 }) {
   const bodyRef = useRef<HTMLDivElement>(null)
 
-  // A dropped-in background-research report renders as its own card.
+  // THE SLOT, in its three faces. Order is the contract: a task always wins over
+  // the proposal that spawned it (the draft is spent once real work carries its
+  // id), and a running task wins over the report view (which assumes a finished
+  // report and would render an empty body mid-flight).
+  if (liveResearch?.task)
+    return (
+      <ResearchLiveCard
+        task={liveResearch.task}
+        now={liveResearch.now}
+        onStop={() => liveResearch.onStop(liveResearch.task!.id)}
+        onOpen={() => liveResearch.onOpen(liveResearch.task!.id)}
+      />
+    )
+
+  // A finished (or errored/cancelled) background-research report.
   if (message.research) return <ResearchReportMessage message={message} />
+
+  // An unstarted launch card — the editable question before anything runs.
+  if (message.proposal && proposalActions)
+    return (
+      <ResearchLaunchCard
+        proposal={message.proposal}
+        onChange={proposalActions.onChange}
+        onStart={proposalActions.onStart}
+        onCancel={proposalActions.onCancel}
+      />
+    )
 
   if (message.role === 'user') {
     const text = message.parts.map((p) => (p.type === 'text' ? p.text : '')).join('')
@@ -3795,7 +4226,12 @@ const MessageView = memo(function MessageView({
           ) : part.type === 'reasoning' ? (
             <ReasoningBlock key={i} text={part.text} active={streaming && i === parts.length - 1} />
           ) : (
-            <ToolPill key={part.toolCallId} part={part} conversationId={conversationId} />
+            <ToolPill
+              key={part.toolCallId}
+              part={part}
+              conversationId={conversationId}
+              onProposeResearch={onProposeResearch}
+            />
           )
         })}
         {streaming &&
@@ -4232,10 +4668,14 @@ function controlActionLabel(input: any, output: any): string {
 function ToolPill({
   part,
   conversationId,
+  onProposeResearch,
 }: {
   part: Extract<UIPart, { type: 'tool' }>
   /** Threaded down to McpAppCard — see mcpAppHostRegistry.ts. */
   conversationId: string
+  /** Stages a ProposeResearch chip's question — see MessageView's doc comment
+   *  on this same prop for why it's always a stable setState setter. */
+  onProposeResearch: (text: string) => void
 }) {
   const output = part.output as any
   // Stable identity for the app card's init context: a fresh object literal
@@ -4303,8 +4743,7 @@ function ToolPill({
   else if (part.toolName === 'ControlPage') label = controlActionLabel(part.input, output)
   else if (part.toolName === 'ExtractData')
     label = output?.error ? 'Could not extract data' : 'Extracted structured data'
-  else if (part.toolName === 'StartResearch')
-    label = output?.started ? 'Started background research' : 'Research not started'
+  else if (part.toolName === 'ProposeResearch') label = 'Proposed background research'
   else if (part.toolName === 'AutofillForm')
     label = output?.error ? 'Autofill stopped' : `Filled ${output?.filled?.length ?? 0} form field${(output?.filled?.length ?? 0) === 1 ? '' : 's'}`
   else if (part.toolName === 'GetScreenshot' || part.toolName === 'GetElementScreenshot')
@@ -4357,6 +4796,20 @@ function ToolPill({
         {errorText && <div className="tool-error-text">{errorText}</div>}
         <pre>{JSON.stringify({ input: part.input, output: part.output }, null, 2)}</pre>
       </details>
+      {/* The model proposed research but did not start it (createProposeResearchTool
+          has no side effect — see its own doc comment). Clicking this chip runs the
+          IDENTICAL framing call the armed composer's Send uses (proposeResearch in
+          Chat.tsx), seeded from the model's own suggested question instead of the
+          user's typed one, and appends the same kind of editable launch card. */}
+      {part.toolName === 'ProposeResearch' && output?.proposed && typeof output.question === 'string' && (
+        <button
+          type="button"
+          className="research-propose-chip"
+          onClick={() => onProposeResearch(output.question)}
+        >
+          ◈ Research this properly · usually 10–20 min
+        </button>
+      )}
       {needsAuthServer && (
         <button
           className="btn ghost small"
@@ -4658,9 +5111,16 @@ function ShotCarousel({ shotIds }: { shotIds: string[] }) {
 // actions and a SourceBar. The `id` is the scroll target for its ✓ dock bar.
 function ResearchReportMessage({ message }: { message: UIMessage }) {
   const bodyRef = useRef<HTMLDivElement>(null)
-  // Collapsed hides the body + toolbar, leaving just the titled header. Starts
-  // expanded so a freshly-dropped report is readable; the header toggles it.
-  const [collapsed, setCollapsed] = useState(false)
+  // Collapsed hides the body + toolbar, leaving just the titled header.
+  //
+  // STARTS COLLAPSED, deliberately. A report can land twenty minutes after it was
+  // asked for, and the previous behaviour — arriving fully expanded — dropped two
+  // thousand words into the transcript unbidden, on top of an answer the user had
+  // already accepted. Collapsed, the arrival states what it is and what question
+  // it answered, and expands only when the user asks for it. This is the same
+  // instinct as Gemini's, whose finished report also announces itself rather than
+  // pushing itself into the conversation.
+  const [collapsed, setCollapsed] = useState(true)
   const research = message.research!
   const reportText = message.parts.map((p) => (p.type === 'text' ? p.text : '')).join('')
   return (
@@ -4673,7 +5133,19 @@ function ResearchReportMessage({ message }: { message: UIMessage }) {
           aria-expanded={!collapsed}
         >
           <ResearchGlyph />
-          <span className="research-report__title">{research.question}</span>
+          <span className="research-report__head-text">
+            <span className="research-report__title">{research.question}</span>
+            {/* The stamp is what stops a collapsed row reading as a reply to the
+                message above it: it names the question this answered and how many
+                sources stand behind it. */}
+            <span className="research-report__stamp">
+              {research.error
+                ? 'Research failed'
+                : `${message.sources?.length ?? 0} source${(message.sources?.length ?? 0) === 1 ? '' : 's'}`}
+              {research.verification && !research.error ? ' · verified' : ''}
+              {research.partial ? ' · partial' : ''}
+            </span>
+          </span>
           <svg className="research-report__caret" width="11" height="11" viewBox="0 0 12 12" aria-hidden>
             <path d="M3 4.5l3 3 3-3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" fill="none" />
           </svg>

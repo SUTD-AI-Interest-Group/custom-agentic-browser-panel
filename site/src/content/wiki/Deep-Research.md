@@ -28,9 +28,22 @@ research agent *cannot* touch your tabs, cookies, or data, because the runtime
 denies it the APIs. That is why its ten tools are **ungated**: unlike the
 foreground toolset, there is no approval card on `WebSearch` or `FetchUrl`. There
 is no human present to click one, and — more importantly — nothing to protect.
-Your single human decision happens once, at `StartResearch`, and the design spec
-calls this out as the reason the two halves of the product could be built
+Your single human decision happens once, at the **launch card**, and the design
+spec calls this out as the reason the two halves of the product could be built
 independently: research is *headless by construction*.
+
+That decision point used to be an approval card on the model's own
+`StartResearch` call — a yes/no on a question you never saw. It is now an
+editable card you open yourself (by arming **◈ Deep research**, or by clicking
+the chip the agent leaves when it *proposes* research — it can no longer start
+any). The card shows the question research will actually run, what the
+conversation already established, the sites to stay within, and a flag when you
+asserted something the context contradicts. `ProposeResearch` is ungated for the
+same reason the rest of this surface is: it starts nothing. **The gate moved; it
+did not disappear** — and it moved to the only place that can catch the failure
+that matters. Verification asks whether each claim rests on its source. It cannot
+ask whether the question was right, and a real page researched under a false
+premise grounds perfectly while still being wrong.
 
 **The expensive one — all state must round-trip through the service worker** via
 message passing. Every race condition below is the tax we paid for that

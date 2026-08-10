@@ -46,6 +46,9 @@ function fakeChrome() {
         return [{ result: genericPageResult }]
       }),
     },
+    // researchTab parks the leased window on the extension's own
+    // research-tab.html, so the stub needs getURL like the real API has.
+    runtime: { getURL: (p: string) => `chrome-extension://test/${p}` },
     storage: {
       session: {
         set: vi.fn(async () => {}),
@@ -179,6 +182,9 @@ function fakeChromeStaged(opts: { navUrl: string; snapshotUrl?: string; readUrl?
         ]
       }),
     },
+    // researchTab parks the leased window on the extension's own
+    // research-tab.html, so the stub needs getURL like the real API has.
+    runtime: { getURL: (p: string) => `chrome-extension://test/${p}` },
     storage: {
       session: {
         set: vi.fn(async () => {}),

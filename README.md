@@ -125,7 +125,7 @@ logic lives in `src/tools/toolDiscovery.ts`.
 | `SaveMemory` / `SearchMemory` | Long-term memory |
 | `QueryBrowserData` | History, bookmarks, top sites, downloads (only the sources you enable) |
 | `ListAllSkills` / `ReadSkill` / `SaveSkill` | Skills |
-| `StartResearch` | Kick off a background research task |
+| `ProposeResearch` | Suggest a background research task — you decide whether it runs |
 | `mcp_<server>_<tool>` | Any tool exposed by an MCP server you connected (below) |
 | `ListMcpResources` / `ReadMcpResource` | Browse and read MCP server resources |
 
@@ -198,12 +198,29 @@ illegible smear on exactly the pages where seeing matters.
 
 ## Background research
 
-`StartResearch` hands a question to a phased pipeline that runs in an offscreen
+Arm **◈ Deep research** in the composer and send, and your message becomes an
+editable **launch card**: the question research will actually run, what the
+conversation already established, the sites to stay within, and a flag if you
+asserted something the page contradicts. Nothing runs until you press Start. The
+agent can suggest research too, but it can only ever *propose* — the chip it
+leaves opens the same card, and only your click launches anything.
+
+That card exists because the question is where research goes wrong. Verification
+checks whether each claim rests on its source; it cannot tell you that the
+question itself was wrong, and a real page researched under a false premise
+grounds perfectly while still being useless.
+
+From Start, the question goes to a phased pipeline that runs in an offscreen
 document, so it survives you closing the panel: **Scope & Plan → (Gather ↔
 Reflect) → Synthesize → Verify**, over a structured notebook (plan, sources,
 findings, images, coverage) that serves as its long-horizon memory. Each gather
 round is a fresh turn seeded from a notebook *summary* rather than a growing
 transcript.
+
+The launch card, the live progress card and the finished report are all the same
+message in the same place in your chat — so a report that lands twenty minutes
+later is anchored to the question you asked, not to whatever you happened to be
+saying when it finished. It arrives collapsed; you expand it when you want it.
 
 Its tools — `WebSearch`, `FetchUrl`, `ExtractTable`, `SearchAcademic`,
 `SearchImages`, `HarvestImages`, `ReadNotebook`/`WriteNotebook` — are read-only and

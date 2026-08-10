@@ -10,9 +10,15 @@ import { loadPdf } from '../platform/pdf'
 import { searchAcademic, searchImages, harvestImages, type ImageResult } from '../platform/researchSources'
 import { summarizeNotebook, type NotebookHandle } from '../agent/notebook'
 import { runBrowseSession, type BrowseBroker } from '../agent/browseAgent'
-import { postResearchMsg } from '../data/researchTasks'
+import { scopeAllows } from './browsePolicy'
+import {
+  attachmentUrl,
+  isLoaded,
+  readRange,
+  searchAttachment,
+  type AttachmentLoad,
+} from '../agent/researchAttachments'
 import type { UIPart } from '../agent/agent'
-import type { ApprovalGate } from './tools'
 
 export type { BrowseBroker } from '../agent/browseAgent'
 
@@ -92,8 +98,44 @@ function briefImage(img: ImageResult) {
   return { url: img.url, caption: img.caption || img.title, license: img.license, source: img.sourcePageUrl }
 }
 
+/**
+ * Filter a batch of `{url}`-bearing rows down to the source scope, plus a note
+ * when the filter removed everything the backend found.
+ *
+ * A snippet/title/abstract alone is enough to hallucinate from, so an
+ * out-of-scope row must not reach the model at all — narrowing the outgoing
+ * QUERY (WebSearch's `site:` operator) is only ever a hint the engine may
+ * ignore, so this filter is what actually enforces the scope, every time.
+ *
+ * Shared by WebSearch/SearchAcademic/SearchImages: each hits a FIXED, trusted
+ * backend (lite.duckduckgo.com / api.openalex.org / commons.wikimedia.org +
+ * api.openverse.org — never a model-chosen host), but each ROW's own url can
+ * point anywhere. That's a different shape from FetchUrl/HarvestImages/
+ * BrowseSite, which take a model-chosen url directly and so are refused
+ * pre-network instead (see each's own `scopeAllows` check below) — there is
+ * nothing to filter there, the call itself either is or isn't in scope.
+ *
+ * An unexplained empty array reads as "nothing exists" when the truth is "the
+ * scope excluded what was found" — the same "state it, don't silently drop
+ * it" rule the pre-network refusals follow, so this attaches a `note` rather
+ * than returning a bare `{results: []}`.
+ */
+function withScope<T extends { url: string }>(rows: T[], sites: string[], noun: string): { results: T[]; note?: string } {
+  if (!sites.length) return { results: rows }
+  const results = rows.filter((row) => scopeAllows(row.url, sites))
+  return results.length
+    ? { results }
+    : { results, note: `Every ${noun} was outside this task's source scope (${sites.join(', ')}); try a different query.` }
+}
+
 // FetchUrl's text budget for a PDF, matching extractReadableText's HTML cap.
 const PDF_TEXT_BUDGET = 20_000
+
+// One ReadAttachment call's text budget. Larger than a fetched PDF's, because an
+// attached document is a source the user deliberately chose rather than one of
+// many the agent happened to find — and a range the agent asked for by page is
+// already a narrowing, unlike a whole fetched page.
+const ATTACHMENT_READ_BUDGET = 30_000
 
 /**
  * FetchUrl's PDF path: extract text with pdf.js instead of scraping DOM text —
@@ -145,6 +187,10 @@ export function createResearchTools(deps: {
   browseBroker?: BrowseBroker
   /** Optional tab-search broker; absent = keyless search only (fails when throttled). */
   searchBroker?: SearchBroker
+  /** Documents the user attached at launch, ALREADY RESOLVED to pages by the
+   *  host. Resolved once per task rather than per gather round, so a 40-page
+   *  PDF is parsed once instead of on every ReadAttachment call. */
+  attachments?: AttachmentLoad[]
   /** Page-walk budget, shared across the task's gather rounds. */
   browseBudget?: BrowseBudget
   /** The task id, so browse sessions are namespaced per task. */
@@ -155,8 +201,21 @@ export function createResearchTools(deps: {
   trace?: Trace
   /** Cancellation for the whole task. */
   signal?: AbortSignal
+  /**
+   * Source scope from the launch card: registrable hosts (see scopeAllows,
+   * browsePolicy.ts). Empty/absent = unrestricted — today's default behavior,
+   * and every existing caller that doesn't pass this gets it unchanged.
+   *
+   * Two enforcement shapes, by tool input shape (see withScope's doc comment
+   * for the full reasoning): WebSearch/SearchAcademic/SearchImages take a
+   * QUERY against a fixed backend, so their result ROWS are filtered after the
+   * fact (WebSearch also narrows the outgoing query as a hint); FetchUrl,
+   * HarvestImages and BrowseSite take a model-chosen URL directly, so THAT
+   * call is refused outright before any network work.
+   */
+  sites?: string[]
 }): ToolSet {
-  const { notebook, renderBroker, browseBroker, searchBroker, browseBudget } = deps
+  const { notebook, renderBroker, browseBroker, searchBroker, browseBudget, sites = [], attachments = [] } = deps
   const tools: ToolSet = {
     WebSearch: tool({
       description: 'Search the web (DuckDuckGo) and return ranked {title,url,snippet} results.',
@@ -165,15 +224,22 @@ export function createResearchTools(deps: {
         maxResults: z.number().optional().describe('Default 8, max 20'),
       }),
       execute: async ({ query, maxResults = 8 }, { abortSignal }) => {
-        const r = await searchDuckDuckGo(query, maxResults, abortSignal)
-        if (!('error' in r) && r.results.length) return { results: r.results }
+        // `site:` narrows the query for up to 3 scoped hosts (an OR chain past
+        // that gets unwieldy) — it's only a hint the engine may ignore; withScope
+        // below is what actually enforces it (see that function's own doc
+        // comment for the full "why", shared with SearchAcademic/SearchImages).
+        const scopedQuery =
+          sites.length > 0 && sites.length <= 3 ? `${query} (${sites.map((s) => `site:${s}`).join(' OR ')})` : query
+
+        const r = await searchDuckDuckGo(scopedQuery, maxResults, abortSignal)
+        if (!('error' in r) && r.results.length) return withScope(r.results, sites, 'result')
         // The keyless endpoint was throttled or parsed nothing. If a tab broker is
         // available, retry the search in a REAL browser tab — that clears the bot
         // wall a plain fetch can't. This is what turns "search failed after
         // retries" into actual results.
         if (searchBroker) {
-          const t = await searchBroker.search(query, maxResults)
-          if (!('error' in t) && t.results.length) return { results: t.results, via: 'tab' }
+          const t = await searchBroker.search(scopedQuery, maxResults)
+          if (!('error' in t) && t.results.length) return { ...withScope(t.results, sites, 'result'), via: 'tab' }
           // Both paths failed — surface the more informative error.
           if ('error' in r) return { error: r.error, note: 'error' in t ? `tab fallback also failed: ${t.error}` : undefined }
           return { results: [], note: 'No results from the web search or the tab fallback; try a different query.' }
@@ -191,6 +257,11 @@ export function createResearchTools(deps: {
         render: z.boolean().optional().describe('Force a real-tab render instead of a plain fetch'),
       }),
       execute: async ({ url, render }, { abortSignal }) => {
+        if (!scopeAllows(url, sites)) {
+          // Stated, not silent: a blocked read must appear in the step log so the
+          // report's gaps are explicable.
+          return { error: `Out of scope. This research is restricted to: ${sites.join(', ')}` }
+        }
         // A PDF has no DOM to render or scrape — go straight to the pdf.js
         // extractor (even under render:true; a tab render can never help).
         if (looksLikePdfUrl(url)) return await fetchPdfReadable(url, notebook, abortSignal)
@@ -263,7 +334,11 @@ export function createResearchTools(deps: {
       execute: async ({ query, maxResults = 8 }, { abortSignal }) => {
         const r = await searchAcademic(query, maxResults, abortSignal)
         if ('error' in r) return r
-        return r.results.length ? { results: r.results } : { results: [], note: 'No papers found; try different terms.' }
+        // OpenAlex itself is a fixed, trusted backend (the model never chooses
+        // ITS host), but each paper's own url/pdfUrl points at an arbitrary
+        // publisher — the same reachable-from-anywhere shape WebSearch's
+        // results have, so the same filter applies (see withScope).
+        return r.results.length ? withScope(r.results, sites, 'paper') : { results: [], note: 'No papers found; try different terms.' }
       },
     }),
 
@@ -277,8 +352,12 @@ export function createResearchTools(deps: {
       execute: async ({ query, maxResults = 6 }, { abortSignal }) => {
         const r = await searchImages(query, maxResults, abortSignal)
         if ('error' in r) return r
-        const added = recordImages(notebook, r.results, query)
-        return { found: r.results.length, added, images: r.results.map(briefImage) }
+        // Filter BEFORE recording: an out-of-scope image must never reach the
+        // notebook, since notebook.images is what synthesize()'s imageBlock
+        // embeds straight into the final report.
+        const { results: inScope, note } = withScope(r.results, sites, 'image')
+        const added = recordImages(notebook, inScope, query)
+        return { found: inScope.length, added, images: inScope.map(briefImage), ...(note ? { note } : {}) }
       },
     }),
 
@@ -287,6 +366,13 @@ export function createResearchTools(deps: {
         'Collect the meaningful <img> assets (charts, figures, photos) from a page you found useful, so relevant ones can be embedded in the report. Returns the images found on that page.',
       inputSchema: z.object({ url: z.string().describe('The page URL to harvest images from') }),
       execute: async ({ url }, { abortSignal }) => {
+        if (!scopeAllows(url, sites)) {
+          // Stated, not silent: a blocked read must appear in the step log so
+          // the report's gaps are explicable. Same treatment as FetchUrl —
+          // this tool takes an arbitrary model-chosen url and fetches it
+          // directly, so it needs the identical pre-network refusal.
+          return { error: `Out of scope. This research is restricted to: ${sites.join(', ')}` }
+        }
         const r = await harvestImages(url, abortSignal)
         if ('error' in r) return r
         const added = recordImages(notebook, r.results)
@@ -352,6 +438,71 @@ export function createResearchTools(deps: {
       },
     }),
 
+    /**
+     * Read a document the user attached to this research launch.
+     *
+     * Mirrors the foreground `ReadPdf`: list what you have, read a page range, or
+     * search. Paging rather than swallowing is what makes a 40-page spec sheet
+     * usable — the whole document would blow the gather round's context, and the
+     * agent almost never needs all of it.
+     *
+     * Recording the source on a successful read (not at launch) means the report's
+     * source list reflects what research actually used, not what it was handed.
+     */
+    ReadAttachment: tool({
+      description:
+        'Read a document the user attached to this research task. mode "list" shows what is available; ' +
+        '"read" returns a page range; "search" finds a phrase and returns matching pages with snippets. ' +
+        'These are primary sources chosen by the user — prefer them over anything you find on the web, and cite them.',
+      inputSchema: z.object({
+        mode: z.enum(['list', 'read', 'search']).describe('What to do.'),
+        name: z.string().optional().describe('Which attachment, by name. Omit with mode "list".'),
+        pages: z.string().optional().describe('Page range for mode "read", e.g. "1-4,9". Omit for all.'),
+        query: z.string().optional().describe('Phrase to find, for mode "search".'),
+      }),
+      execute: async ({ mode, name, pages, query }) => {
+        if (attachments.length === 0) return { error: 'No documents were attached to this research task.' }
+        if (mode === 'list') {
+          return {
+            attachments: attachments.map((a) =>
+              isLoaded(a)
+                ? { name: a.ref.name, kind: a.ref.kind, pages: a.pages.length, readable: true }
+                : { name: a.ref.name, kind: a.ref.kind, readable: false, reason: a.reason },
+            ),
+          }
+        }
+        if (!name) return { error: 'Pass `name` to say which attachment to read (use mode "list" to see them).' }
+        // Matched loosely because the model is quoting a filename back at us from
+        // a list it was shown, and an exact-match requirement turns a trailing
+        // ".pdf" or a case difference into a dead end it cannot diagnose.
+        const lower = name.toLowerCase()
+        const found =
+          attachments.find((a) => a.ref.name.toLowerCase() === lower) ??
+          attachments.find((a) => a.ref.name.toLowerCase().includes(lower))
+        if (!found) {
+          return { error: `No attachment named "${name}". Available: ${attachments.map((a) => a.ref.name).join(', ')}` }
+        }
+        if (!isLoaded(found)) return { error: `"${found.ref.name}" ${found.reason}` }
+
+        if (mode === 'search') {
+          if (!query) return { error: 'Pass `query` to search.' }
+          const res = searchAttachment(found, query)
+          if ('error' in res) return { error: res.error }
+          if (res.matches.length > 0) notebook.addSource({ url: attachmentUrl(found.ref.id), title: found.ref.name })
+          return { name: found.ref.name, ...res }
+        }
+
+        const res = readRange(found, pages, ATTACHMENT_READ_BUDGET)
+        if ('error' in res) return { error: res.error }
+        notebook.addSource({ url: attachmentUrl(found.ref.id), title: found.ref.name })
+        return {
+          name: found.ref.name,
+          pageCount: found.pages.length,
+          blocks: res.blocks,
+          omittedPages: res.omittedPages,
+        }
+      },
+    }),
     ReadNotebook: tool({
       description:
         'Read a compact summary of the research notebook so far: plan, per-sub-question coverage, findings, and numbered sources.',
@@ -373,6 +524,20 @@ export function createResearchTools(deps: {
           .describe('Specifically what to find there, e.g. "the 2024 pricing table" or "the methodology section of the linked paper"'),
       }),
       execute: async ({ url, objective }, { toolCallId, abortSignal }) => {
+        if (!scopeAllows(url, sites)) {
+          // Stated, not silent: a blocked read must appear in the step log so the
+          // report's gaps are explicable. Checked ahead of the model-config and
+          // budget checks below too, so a refused call never spends either.
+          //
+          // Known limitation: this gates only the session's OWN start url. Once a
+          // session is open, its interior link-following (GoToUrl / clicking an
+          // <a href>) is policy-checked by isSafeResearchAction (browsePolicy.ts),
+          // which allows cross-origin navigation by design ("surfing is the
+          // point") and is not scope-aware — threading `sites` through the
+          // offscreen->SW browse round-trip into that gate is a separate,
+          // larger change than this task's file list covers.
+          return { error: `Out of scope. This research is restricted to: ${sites.join(', ')}` }
+        }
         if (!deps.selected) return { error: 'No model configured.' }
         if (browseBudget && browseBudget.remaining <= 0) {
           return {
@@ -412,30 +577,28 @@ export function createResearchTools(deps: {
 }
 
 /**
- * Gated, foreground-only tool: asks the user for permission, then hands the
- * question to the background (offscreen) research host via `research.
- * ensureAndStart`. The task runs to completion even if the panel closes; the
- * result lands in `researchTasks` storage and a system notification fires.
+ * Ungated, foreground-only tool: the model can PROPOSE research but can no
+ * longer start it. It returns a proposal that the panel renders as a chip; the
+ * human gate is the launch card the chip opens, which shows the question, allows
+ * editing it, and scopes its sources.
+ *
+ * Deliberately ungated (like ToolSearch/GetTool): proposing touches no page, no
+ * network and no data. This strengthens rather than erodes the approval
+ * invariant — the old card was a yes/no on a question the user never saw.
  */
-export function createStartResearchTool(requestApproval: ApprovalGate, conversationId: string): ToolSet {
+export function createProposeResearchTool(): ToolSet {
   return {
-    StartResearch: tool({
+    ProposeResearch: tool({
       description:
-        'Launch a background research task (web search + read + synthesize a cited report). It runs even if the side panel is closed and notifies on completion. Asks permission first.',
-      inputSchema: z.object({ question: z.string().describe('The research question to investigate.') }),
-      execute: async ({ question }) => {
-        const approved = await requestApproval({ toolName: 'StartResearch', summary: 'Run background research', reason: question })
-        if (!approved) return { denied: true, message: 'The user denied permission for this tool call.' }
-        const taskId = `r-${Date.now()}-${Math.floor(performance.now())}`
-        // Tag the task with the launching conversation so its dock bar / report
-        // card surface only in that chat (not globally in every conversation).
-        postResearchMsg({ type: 'research.ensureAndStart', taskId, question, conversationId })
-        return {
-          started: true,
-          taskId,
-          note: 'Research is now running in the background and will appear in the panel with a notification when done. Do NOT research or answer the question yourself — reply with one short sentence telling the user it is underway, then end your turn.',
-        }
-      },
+        'Propose a background research task to the user. This does NOT start anything — the user ' +
+        'sees an editable launch card and decides. Use it when a question needs far more reading ' +
+        'than this turn can do. Say one short sentence about why, then end your turn.',
+      inputSchema: z.object({ question: z.string().describe('The research question to propose.') }),
+      execute: async ({ question }) => ({
+        proposed: true,
+        question,
+        note: 'Shown to the user as a proposal chip. It has NOT started. Do not claim it is running, and do not research the question yourself.',
+      }),
     }),
   }
 }

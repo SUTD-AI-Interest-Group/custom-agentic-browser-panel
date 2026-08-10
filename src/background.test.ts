@@ -330,6 +330,14 @@ test('two racing watchdog ticks claim and dispatch a stranded task only once', a
     steps: [],
     startedAt: now - 10 * 60_000,
     updatedAt: now - 10 * 60_000, // well past STALE_MS (3 min)
+    // Task 8 review finding: startResearchTask reads sites off the PERSISTED
+    // task (not a fresh message), so a watchdog resume — this exact path —
+    // must keep the scope the user approved, not just the initial dispatch.
+    // Riding along on this test since it already exercises that dispatch.
+    sites: ['aftershockpc.com'],
+    brief: 'The overview page lists 4 configs.',
+    subQuestions: ['CPU / GPU per config'],
+    attachments: [{ id: 'att-1', name: 'spec-sheet.pdf', kind: 'pdf', pageCount: 42 }],
   }
   let claimed = false
 
@@ -360,10 +368,77 @@ test('two racing watchdog ticks claim and dispatch a stranded task only once', a
     const starts = vi.mocked(researchTasks.postResearchMsg).mock.calls.filter(([m]) => (m as any).type === 'research.start')
     expect(starts).toHaveLength(1)
     expect(researchTasks.applyUpdate).toHaveBeenCalledTimes(1)
+    // The dispatched research.start message must carry the persisted task's
+    // scope — not silently drop it, which would revert an in-flight resumed
+    // task to unrestricted with nothing failing (sites is optional throughout).
+    expect((starts[0][0] as any).sites).toEqual(['aftershockpc.com'])
+  // Same guard for the launch card's brief and sub-questions: both are read
+  // off the PERSISTED task, and both are optional throughout, so a refactor
+  // dropping either line is type-valid and would silently revert research to
+  // re-deriving what the foreground turn already settled.
+  expect((starts[0][0] as any).brief).toBe('The overview page lists 4 configs.')
+  expect((starts[0][0] as any).subQuestions).toEqual(['CPU / GPU per config'])
+  // Attachments travel by REFERENCE: the offscreen host resolves the bytes from
+  // the same IndexedDB itself, so dropping this line would leave a resumed task
+  // unable to read documents the user explicitly chose.
+  expect((starts[0][0] as any).attachments).toEqual([
+    { id: 'att-1', name: 'spec-sheet.pdf', kind: 'pdf', pageCount: 42 },
+  ])
   } finally {
     vi.mocked(researchTasks.listTasks).mockImplementation(async () => [])
     vi.mocked(researchTasks.applyUpdate).mockImplementation(async () => undefined)
     vi.mocked(researchTasks.getTask).mockImplementation(async () => undefined)
     vi.mocked(settingsMod.getSelectedProvider).mockReturnValue(undefined as any)
   }
+})
+
+// ---------------------------------------------------------------------------
+// Task 8 review finding: research.ensureAndStart's handler must persist the
+// launch card's sites onto the saved ResearchTask (background.ts, the
+// saveTask({...}) call). This was previously unguarded — sites is optional
+// throughout the ResearchMsg/ResearchTask types, so a future refactor
+// dropping the field is type-valid and would silently revert all research to
+// unrestricted with nothing failing. Paired with the sites assertion added to
+// the racing-watchdog test above, which covers the other half: a later
+// dispatch (initial launch OR a watchdog resume) reading it back off the
+// persisted task.
+// ---------------------------------------------------------------------------
+
+test('a research.ensureAndStart message persists the launch card sites onto the saved task', async () => {
+  // getTask is irrelevant to what this test asserts (it only isolates
+  // startResearchTask's own dispatch, covered separately above) — undefined
+  // makes it a no-op so this test exercises exactly the saveTask call.
+  vi.mocked(researchTasks.getTask).mockImplementation(async () => undefined)
+  let resolveAck: () => void
+  const acked = new Promise<void>((resolve) => {
+    resolveAck = resolve
+  })
+  const sendResponse = vi.fn(() => resolveAck())
+
+  fire(
+    'onMessage',
+    {
+      type: 'research.ensureAndStart',
+      taskId: 't-scoped',
+      question: 'q',
+      conversationId: 'c1',
+      sites: ['aftershockpc.com'],
+      brief: 'The overview page lists 4 configs.',
+      subQuestions: ['CPU / GPU per config'],
+      attachments: [{ id: 'att-1', name: 'spec-sheet.pdf', kind: 'pdf', pageCount: 42 }],
+    },
+    {},
+    sendResponse,
+  )
+  await acked
+
+  expect(researchTasks.saveTask).toHaveBeenCalledWith(
+    expect.objectContaining({
+      id: 't-scoped',
+      sites: ['aftershockpc.com'],
+      brief: 'The overview page lists 4 configs.',
+      subQuestions: ['CPU / GPU per config'],
+      attachments: [{ id: 'att-1', name: 'spec-sheet.pdf', kind: 'pdf', pageCount: 42 }],
+    }),
+  )
 })

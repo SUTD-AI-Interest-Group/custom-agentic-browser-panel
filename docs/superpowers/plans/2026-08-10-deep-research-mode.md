@@ -1240,9 +1240,156 @@ git commit -m "docs: record the deep-research mode invariants"
 
 ---
 
+### Task 15: Scope-filter notebook writes
+
+> **Added mid-execution (2026-08-10).** Task 8's review surfaced that `BrowseSite` checks scope only on a session's *starting* URL — interior link-following goes through `isSafeResearchAction`, which permits cross-origin navigation by design. A scoped session could therefore wander off-site and have the sub-agent record what it found, which `synthesize()` would cite as real. The user ruled against threading scope through the 5-6 hop navigation protocol: **filter at the notebook write boundary instead.** Navigation stays free; the report can only cite what was scoped.
+
+**Files:**
+- Modify: `src/agent/notebook.ts` (`createNotebook` and its three writers)
+- Modify: `src/agent/research.ts` (pass `opts.sites` into `createNotebook`)
+- Modify: `src/agent/notebook.test.ts`
+
+**Interfaces:**
+- Consumes: `scopeAllows(url, scope)` (Task 2), `opts.sites` on `runResearch` (Task 8).
+- Produces: `createNotebook(initial?, onChange?, scope?: string[])`. No other signature changes — every call site of `addSource`/`addFinding`/`addImage` is unaffected.
+
+**Why this chokepoint:** `addImage` already documents itself as the SSRF/auto-fetch screen for report images (`notebook.ts:11-16`), so screening at the writer is this file's established pattern rather than a new idea. It also covers `browseAgent.ts:148,171` — the interior-navigation path — without that file knowing scope exists, and it covers any future tool that writes findings rather than only the ones we thought to enumerate.
+
+- [ ] **Step 1: Write the failing tests**
+
+Append to `src/agent/notebook.test.ts`:
+
+```ts
+test('an unscoped notebook records everything, exactly as before', () => {
+  const nb = createNotebook()
+  expect(nb.addSource({ url: 'https://anywhere.test/x' })).toBeTruthy()
+  expect(nb.addFinding({ claim: 'c', sourceUrl: 'https://anywhere.test/x' })).toBeTruthy()
+})
+
+test('a scoped notebook refuses an out-of-scope source', () => {
+  const nb = createNotebook(undefined, undefined, ['aftershockpc.com'])
+  expect(nb.addSource({ url: 'https://lenovo.com/pgx' })).toBeUndefined()
+  expect(nb.addSource({ url: 'https://sg.aftershockpc.com/apex' })).toBeTruthy()
+  expect(nb.get().sources).toHaveLength(1)
+})
+
+test('a scoped notebook refuses a finding cited to an out-of-scope host', () => {
+  const nb = createNotebook(undefined, undefined, ['aftershockpc.com'])
+  expect(nb.addFinding({ claim: 'the PGX has 128GB', sourceUrl: 'https://lenovo.com/pgx' })).toBeUndefined()
+  expect(nb.get().findings).toHaveLength(0)
+})
+
+// An uncited finding has no host to misattribute to, so scope has nothing to
+// say about it — refusing it would silently drop the agent's own synthesis.
+test('a scoped notebook still records an uncited finding', () => {
+  const nb = createNotebook(undefined, undefined, ['aftershockpc.com'])
+  expect(nb.addFinding({ claim: 'prices cluster in two tiers' })).toBeTruthy()
+})
+
+test('a scoped notebook refuses an out-of-scope image', () => {
+  const nb = createNotebook(undefined, undefined, ['aftershockpc.com'])
+  expect(nb.addImage({ url: 'https://lenovo.com/a.png', sourceUrl: 'https://lenovo.com/pgx', caption: 'c' })).toBeUndefined()
+})
+```
+
+- [ ] **Step 2: Run tests to verify they fail**
+
+Run: `npx vitest run src/agent/notebook.test.ts`
+Expected: FAIL — `createNotebook` takes two parameters, and the scoped cases record instead of refusing.
+
+- [ ] **Step 3: Implement**
+
+Give `createNotebook` a third optional parameter and one shared predicate:
+
+```ts
+export function createNotebook(
+  initial?: ResearchNotebook,
+  onChange?: () => void,
+  scope: string[] = [],
+): NotebookHandle {
+  /**
+   * The write boundary IS the scope boundary. Research may browse anywhere —
+   * following a citation off-site is how research works — but a report may only
+   * cite what the user pinned. Screening here rather than at navigation means
+   * every writer is covered, including the browse sub-agent (which knows nothing
+   * about scope) and any tool added later.
+   *
+   * An absent url is allowed through: an uncited finding has no host to
+   * misattribute to, and refusing it would drop the agent's own synthesis.
+   */
+  const inScope = (url?: string): boolean => !url || scopeAllows(url, scope)
+```
+
+Then return `undefined` early from `addSource` when `!inScope(url)`, from `addFinding` when `!inScope(sourceUrl)`, and from `addImage` when either `!inScope(url)` or `!inScope(sourceUrl)` — `addImage` already has an `undefined` return path for its SSRF screen (`notebook.ts:221`), so its signature is unchanged. Widen `addSource`'s and `addFinding`'s declared return types on `NotebookHandle` to include `undefined`, and fix any call site that assumed a value.
+
+- [ ] **Step 4: Pass the scope in**
+
+In `src/agent/research.ts`, pass `opts.sites` as `createNotebook`'s third argument wherever the notebook is created (including the resume path, so a resumed task keeps the scope the user approved).
+
+- [ ] **Step 5: Verify and commit**
+
+Run: `npm run typecheck && npm test`
+
+```bash
+git add src/agent/notebook.ts src/agent/notebook.test.ts src/agent/research.ts
+git commit -m "feat(research): scope-filter notebook writes so a report cites only pinned sources"
+```
+
+---
+
+### Task 16: Consume `brief` and `subQuestions`
+
+> **Added mid-execution (2026-08-10).** Both fields reach the service worker and stop there — no task in the original plan consumed them. The spec's entire reason for `brief` is that research must not re-derive what the foreground turn already established, so leaving it unconsumed would ship the feature's stated benefit as dead data.
+
+**Files:**
+- Modify: `src/background.ts` (persist and forward, exactly as `sites` is)
+- Modify: `src/background/offscreen.ts` (forward into `runResearch`)
+- Modify: `src/agent/research.ts` (`runResearch` opts → `planResearch`)
+- Modify: `src/background.test.ts`
+
+**Interfaces:**
+- Consumes: the `brief?`/`subQuestions?` protocol fields (Task 3), and Task 8's threading pattern for `sites` — follow it exactly rather than inventing a second style.
+- Produces: `planResearch(question, model, signal, trace, seed?: {brief?: string; subQuestions?: string[]})`.
+
+- [ ] **Step 1: Mirror Task 8's threading**
+
+`src/background.ts` currently persists `sites` onto the saved `ResearchTask` and re-reads it in `startResearchTask` when building `research.start`. Do the same for `brief` and `subQuestions` at both points. `src/background/offscreen.ts` forwards them into `runResearch` opts beside `sites`.
+
+- [ ] **Step 2: Seed the plan**
+
+`planResearch(opts.question, model, signal, trace)` (`src/agent/research.ts:259`) gains a fifth `seed` argument carrying `{brief, subQuestions}`. In its prompt:
+
+- the **brief** is prepended as established context, with an explicit instruction that these facts are already settled and must not be re-derived or contradicted — this is the mechanism that stops research re-litigating a question the foreground turn already answered;
+- the **subQuestions** are offered as the user's own sub-questions, to be incorporated and extended rather than replaced, so an edited launch card is honored without freezing the plan.
+
+Leave the resume path alone: a resumed task already has a plan and must not re-plan (`research.ts:250-257`).
+
+- [ ] **Step 3: Test the threading**
+
+Extend the `sites` regression tests added in Task 8's fix round to assert `brief` and `subQuestions` survive `research.ensureAndStart` → `saveTask` and `startResearchTask` → `research.start`. These are the tests that stop the fields silently reverting to dead data.
+
+- [ ] **Step 4: Verify and commit**
+
+Run: `npm run typecheck && npm test`
+
+```bash
+git add src/background.ts src/background/offscreen.ts src/agent/research.ts src/background.test.ts
+git commit -m "feat(research): feed the launch card's brief and sub-questions into Scope & Plan"
+```
+
+---
+
 ## Self-Review
 
-**Spec coverage.** Armed pill → Task 9. Launch card with premise flag, clarifications, brief, scope → Tasks 6 + 10. Framing call as a non-agent-turn → Task 6. `ProposeResearch` + chip + ungating + policy migration → Tasks 4, 5, 10. One-slot upsert and the five states → Tasks 3, 7, 11. Dock demotion → Task 12. Labelled window + in-card narration → Tasks 11 (the `↳ in a private window` line) and 13. Source scoping enforced in `browsePolicy.ts` → Tasks 2, 8. Testing table → Tasks 1, 2, 4, 7 cover `parseFraming`, `scopeAllows`, the settings migration and `researchCardState`; `toolNames` is checked in Task 5. Invariants → Task 14. No gaps.
+**Spec coverage.** Armed pill → Task 9. Launch card with premise flag, clarifications, brief, scope → Tasks 6 + 10. Framing call as a non-agent-turn → Task 6. `ProposeResearch` + chip + ungating + policy migration → Tasks 4, 5, 10. One-slot upsert and the five states → Tasks 3, 7, 11. Dock demotion → Task 12. Labelled window + in-card narration → Tasks 11 (the `↳ in a private window` line) and 13. Source scoping enforced in `browsePolicy.ts` → Tasks 2, 8. Testing table → Tasks 1, 2, 4, 7 cover `parseFraming`, `scopeAllows`, the settings migration and `researchCardState`; `toolNames` is checked in Task 5. Invariants → Task 14.
+
+**This claim was wrong, and execution proved it.** Three gaps this review missed, all found by implementers and reviewers during Tasks 6 and 8, recorded here rather than quietly patched:
+
+1. **No task owned `src/background.ts`.** The service worker drops `sites` between `research.ensureAndStart` and `research.start`, so Task 8's enforcement would have been correctly wired, fully tested, and permanently inert in production. Found by the Task 8 implementer, which traced the whole path rather than trusting the brief's file list, checked every other brief before concluding nobody owned it, and flagged before acting. Fixed in `f7c7c86`.
+2. **`brief` and `subQuestions` were threaded but never consumed** — the spec's stated reason for `brief` existing was shipping as dead data. Now Task 16.
+3. **Scope enforcement enumerated tools instead of finding a chokepoint.** The plan named `WebSearch`/`FetchUrl`/`BrowseSite` and missed `HarvestImages`, which takes a model-chosen URL and reaches the report in *fewer* hops than the gap we did know about; `BrowseSite`'s interior navigation was unguarded too. Now Tasks 8's fix round and 15.
+
+The pattern in all three: enumerating call sites where a chokepoint existed. Task 15 corrects the approach as well as the instance.
 
 **Placeholder scan.** No TBD/TODO. Tasks 10, 11 and 13 describe component structure in prose rather than full JSX — deliberate, because they are Chrome-coupled view code whose exact markup must follow the surrounding file's conventions, and every literal copy string, class name, state name and handler signature they need is given exactly. Every pure unit has complete test and implementation code.
 

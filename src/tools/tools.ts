@@ -38,7 +38,7 @@ import { instrumentToolset, type Trace } from '../agent/observability'
 import { getExecHost } from '../exec/host'
 import { budgetOutcome, escapeHtml, RUN_MEMORY_BYTES, RUN_TIMEOUT_MS } from '../exec/protocol'
 import { saveArtifact, updateArtifactContent } from '../data/artifacts'
-import { createStartResearchTool } from './research'
+import { createProposeResearchTool } from './research'
 import { buildCatalog, searchCatalog, partitionToolNames, type CatalogEntry } from './toolDiscovery'
 import {
   hasElementChanged,
@@ -1894,10 +1894,12 @@ export function createAgentTools(
     }),
   }
 
-  // Background web research: gated in the foreground (this card), then handed
-  // off to the offscreen research host, which runs the real (ungated) research
-  // tools headlessly — see src/tools/research.ts and src/agent/research.ts.
-  Object.assign(tools, createStartResearchTool(requestApproval, conversationId))
+  // Background web research: the model can only PROPOSE it. ProposeResearch is
+  // deliberately ungated (touches no page, network, or data) — the real gate is
+  // the user's click on the launch card the proposal chip opens, which hands the
+  // question off to the offscreen research host that runs the real (ungated)
+  // research tools headlessly — see src/tools/research.ts and src/agent/research.ts.
+  Object.assign(tools, createProposeResearchTool())
 
   // MCP server tools, pre-gated and policy-filtered by buildMcpTools. Built-in
   // names win a collision (the mcp_ prefix makes one implausible anyway).

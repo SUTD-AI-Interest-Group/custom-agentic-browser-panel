@@ -108,7 +108,7 @@ export const TOOL_CATALOG: ToolCatalogEntry[] = [
   { name: 'HighlightContent', group: 'reading', label: 'Highlight a passage on the page' },
   { name: 'ReadTabs', group: 'reading', label: 'List / read other open tabs (text / DOM)' },
   { name: 'ExtractData', group: 'reading', label: 'Extract structured data from this page' },
-  { name: 'StartResearch', group: 'reading', label: 'Run background web research' },
+  { name: 'ProposeResearch', group: 'reading', label: 'Propose background web research' },
   { name: 'RequestPageControl', group: 'control', label: 'Start a page-control session' },
   { name: 'ControlPage', group: 'control', label: 'Perform a page-control action' },
   { name: 'AutofillForm', group: 'control', label: 'Fill a form from your profile' },
@@ -343,6 +343,20 @@ const EMPTY: Settings = {
   observability: DEFAULT_OBSERVABILITY,
 }
 
+/**
+ * Migration: `StartResearch` was renamed `ProposeResearch` when the model lost
+ * the ability to launch research (2026-08-10). Carry the user's policy across so
+ * someone who set `never` keeps meaning it; an explicitly-set new key always wins.
+ * Pure and exported so it can be unit-tested without chrome.storage.
+ */
+export function migrateResearchToolPolicy(
+  policies: Record<string, ToolPolicy> | undefined,
+): Record<string, ToolPolicy> | undefined {
+  if (!policies || !('StartResearch' in policies)) return policies
+  const { StartResearch, ...rest } = policies
+  return 'ProposeResearch' in rest ? rest : { ...rest, ProposeResearch: StartResearch }
+}
+
 export async function loadSettings(): Promise<Settings> {
   const data = await chrome.storage.local.get(STORAGE_KEY)
   const stored = data[STORAGE_KEY] as Partial<Settings> | undefined
@@ -361,6 +375,7 @@ export async function loadSettings(): Promise<Settings> {
   // base URL, so the capability-profile layer and model picker have a key to work
   // from. Use sites also fall back via `providerKind`, so this only persists it.
   settings.providers = settings.providers.map((p) => (p.kind ? p : { ...p, kind: inferKind(p.baseURL) }))
+  settings.toolPolicies = migrateResearchToolPolicy(settings.toolPolicies)
   // Secrets are sealed at rest (see src/data/vault.ts). Open them here so every
   // consumer of Settings sees plaintext; a pre-vault install is migrated in
   // place on first load.

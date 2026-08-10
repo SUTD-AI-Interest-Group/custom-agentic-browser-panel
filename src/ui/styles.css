@@ -1476,6 +1476,183 @@ body {
   padding: 0 14px 12px;
 }
 
+/* ---- Research launch card (Task 10) ----
+   The editable proposal a user gets after arming Deep research and sending —
+   the moment the question becomes visible and editable before anything runs.
+   Same card shell as .research-report (border/radius/background) so the two
+   read as one family; Task 11 slides this into the same slot as the live
+   card and the report. */
+
+.research-launch {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--surface);
+  padding: 14px;
+}
+
+.research-launch__label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+.research-launch__question {
+  width: 100%;
+  box-sizing: border-box;
+  resize: vertical;
+  min-height: 44px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+  font-size: 13.5px;
+  line-height: 1.4;
+}
+
+.research-launch__question:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+/* Amber, not red — a corrected assumption, not an error. Same palette as
+   .research-report__partial (the 24h-cap notice): something worth flagging
+   that isn't a failure. */
+.research-launch__premise {
+  padding: 7px 10px;
+  border: 1px solid #d97706;
+  border-radius: 8px;
+  font-size: 12px;
+  color: #b45309;
+  background: color-mix(in srgb, #d97706 8%, transparent);
+}
+@media (prefers-color-scheme: dark) {
+  .research-launch__premise {
+    color: #fbbf24;
+    border-color: #a16207;
+  }
+}
+
+.research-launch__sites {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.research-launch__site {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 4px 3px 10px;
+  background: var(--pill-bg);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-size: 11.5px;
+  color: var(--text);
+}
+
+.research-launch__add-site {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.research-launch__add-site input {
+  width: 130px;
+  box-sizing: border-box;
+  padding: 3px 8px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  font-size: 11.5px;
+}
+
+.research-launch__add-site input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.research-launch__brief summary {
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+.research-launch__brief p {
+  margin: 6px 0 0;
+  padding: 8px 10px;
+  background: var(--pill-bg);
+  border-radius: 8px;
+  font-size: 12.5px;
+  color: var(--text);
+  white-space: pre-wrap;
+}
+
+.research-launch__clarifications {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.research-launch__clarification {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+/* A leading "? " marks these as the model's own questions, not statements —
+   kept out of the JSX text itself (matches the .mention-item::before glyph-
+   prefix convention already used elsewhere in this file). */
+.research-launch__clarification::before {
+  content: '? ';
+  color: var(--text-muted);
+}
+
+.research-launch__duration {
+  font-size: 11.5px;
+  color: var(--text-muted);
+}
+
+.research-launch__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+/* The clickable chip beside a ProposeResearch tool pill (ToolPill in Chat.tsx).
+   Clicking it runs the SAME framing call the armed composer's Send uses, just
+   seeded from the model's own suggested question. Styled as an accent-tinted
+   pill rather than a plain .btn so it reads as a suggestion worth accepting —
+   the same recipe as .research-pill.on (Task 9's armed composer pill), so
+   "arm the pill" and "click the chip" visually read as the same family of
+   action. */
+.research-propose-chip {
+  align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-top: 4px;
+  padding: 5px 12px;
+  border: 1px solid color-mix(in srgb, var(--accent) 55%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.research-propose-chip:hover {
+  background: color-mix(in srgb, var(--accent) 20%, transparent);
+}
+
 /* ---- Verification badge (report card) ---- */
 .research-verify {
   display: inline-flex;
@@ -2700,6 +2877,51 @@ body {
   margin-left: auto;
 }
 
+/* ---- Deep research pill ----
+   Leads the .composer-btns cluster. Arming lights three things at once (pill,
+   composer border, placeholder) because a button that lights alone is too easy
+   to miss mid-task. This file has no --btn-bg token, so the resting state
+   matches the sibling .tools-btn's own background (transparent — defined by
+   shape and label alone until armed). */
+.research-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 25px;
+  padding: 0 9px;
+  flex: none;
+  border: none;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 11.5px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+/* :not(.on) — the sibling hover idiom (background → --pill-bg, color → --text)
+   is for the neutral resting look only. Without this guard the rule's higher
+   specificity (.research-pill:hover:not(:disabled) beats .research-pill.on)
+   would win over the armed state's accent tint on every hover, flashing a lit
+   pill back to neutral gray under the mouse — undermining the one thing
+   arming exists to signal. */
+.research-pill:hover:not(:disabled):not(.on) {
+  background: var(--pill-bg);
+  color: var(--text);
+}
+.research-pill:disabled {
+  opacity: 0.3;
+  cursor: default;
+}
+.research-pill.on {
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+  color: var(--accent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 55%, transparent);
+}
+.composer.armed {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
 /* Hybrid overflow behaviour for the composer actions.
    Wide panel  → tools + screenshot as two separate buttons ("…" hidden).
    Narrow panel → both collapse into the single "…" menu, which houses the
@@ -2750,14 +2972,37 @@ body {
   cursor: default;
 }
 
-@media (max-width: 360px) {
-  /* The camera stays out as its own button at every width; only the tools button
-     collapses into the "…" menu when the panel gets narrow. */
+/* Collapse order (Task 9). The research pill is the control no existing user
+   knows about, so it must be the LAST thing to go silent — the inverse of the
+   "newest thing collapses first" instinct. Tools and the camera now fold into
+   the "…" menu TOGETHER at one breakpoint: merging two 28px circular buttons
+   into a single "…" trigger actually frees a button's worth of width (hiding
+   the camera alone would not — .more-btn is the same 28px as .cam-btn), and
+   that freed width is what lets the pill keep its label as long as possible.
+   The "…" popover carries a screenshot row (see the moreOpen block in
+   Chat.tsx) precisely so the camera's action stays reachable once .cam-btn
+   itself is hidden here. Only below the pill's own, narrower breakpoint
+   (340px, below) does the pill give up its label too. */
+@media (max-width: 420px) {
   .composer-btns > .tools-menu-wrap {
     display: none;
   }
   .composer-btns > .more-menu-wrap {
     display: inline-flex;
+  }
+  .cam-btn {
+    display: none;
+  }
+}
+
+@media (max-width: 340px) {
+  /* Second, narrower breakpoint: only now — once both icon buttons are
+     already gone — does the pill itself shed its label for the bare glyph. */
+  .research-pill__label {
+    display: none;
+  }
+  .research-pill {
+    padding: 0 7px;
   }
 }
 
@@ -5669,4 +5914,215 @@ body {
   font-size: 12px;
   font-style: italic;
   color: var(--muted, #888);
+}
+
+/* ---- The research slot's running face (ResearchLiveCard) ----
+   Same visual family as .research-report (its own finished face) — one object,
+   three states, so they must not read as three different components. Accent
+   border while in flight, settling to the report card's neutral border when it
+   finishes and this is replaced. */
+
+.research-live {
+  border: 1px solid color-mix(in srgb, var(--accent) 42%, transparent);
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--accent) 6%, var(--surface));
+  padding: 11px 14px 12px;
+}
+
+.research-live__head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  padding: 0;
+  border: none;
+  background: none;
+  font-family: inherit;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--accent);
+  text-align: left;
+  cursor: pointer;
+}
+
+.research-live__elapsed {
+  margin-left: auto;
+  font-weight: 400;
+  color: var(--text-muted);
+}
+
+/* Reuses the spinner geometry of .research-spinner rather than inventing a
+   second one; kept local so the live card carries no dependency on the sheet. */
+.research-live__spinner {
+  width: 10px;
+  height: 10px;
+  flex: none;
+  border-radius: 50%;
+  border: 1.6px solid color-mix(in srgb, var(--accent) 30%, transparent);
+  border-top-color: var(--accent);
+  animation: research-live-spin 900ms linear infinite;
+}
+
+@keyframes research-live-spin {
+  to { transform: rotate(360deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .research-live__spinner { animation-duration: 3s; }
+}
+
+.research-live__question {
+  margin: 7px 0 0;
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: var(--text);
+}
+
+.research-live__bar {
+  height: 3px;
+  margin-top: 9px;
+  border-radius: 2px;
+  background: var(--border);
+  overflow: hidden;
+}
+
+.research-live__bar > i {
+  display: block;
+  height: 100%;
+  border-radius: 2px;
+  background: var(--accent);
+  transition: width 400ms ease;
+}
+
+.research-live__coverage {
+  margin: 9px 0 0;
+  padding: 0;
+  list-style: none;
+  font-size: 11.5px;
+  line-height: 1.7;
+  color: var(--text-muted);
+}
+
+.research-live__coverage li {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.research-live__mark {
+  width: 9px;
+  flex: none;
+  text-align: center;
+}
+
+.research-live__coverage .done > .research-live__mark::before { content: '✓'; color: var(--ok, #3f9a63); }
+.research-live__coverage .active > .research-live__mark::before { content: '▸'; color: var(--accent); }
+.research-live__coverage .pending > .research-live__mark::before { content: '○'; }
+.research-live__coverage .active > .research-live__text { color: var(--text); }
+
+/* The current step, trailing the active sub-question. Truncates rather than
+   wrapping — it changes every few seconds and must not reflow the card. */
+.research-live__doing {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  opacity: 0.75;
+}
+
+/* Shown only once a source has actually been fetched through the leased tab —
+   see the component's comment on why that is the honest signal. */
+.research-live__window {
+  margin: 7px 0 0;
+  font-size: 11px;
+  color: var(--text-muted);
+  cursor: help;
+}
+
+.research-live__paused {
+  margin: 7px 0 0;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.research-live__foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.research-live__stop {
+  margin-left: auto;
+  padding: 3px 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface);
+  font-family: inherit;
+  font-size: 11px;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.research-live__stop:hover { background: var(--pill-bg); }
+
+/* The collapsed finished row's second line: source count, verification and
+   partial-ness. This is what makes an arriving report legible as its own
+   artifact rather than as a reply to the message above it. */
+.research-report__head-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1;
+}
+
+.research-report__stamp {
+  font-weight: 400;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+/* ---- Attached documents on the research launch card ----
+   Placed above the site scope: a file the user chose is a stronger claim on the
+   research than a host they merely allowed. */
+
+.research-launch__atts {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-top: 9px;
+}
+
+.research-launch__att {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 100%;
+  padding: 3px 6px 3px 8px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface);
+  font-size: 11px;
+  color: var(--text);
+}
+
+.research-launch__att-icon { flex: none; font-size: 10px; }
+
+.research-launch__att-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.research-launch__att-sub { flex: none; color: var(--text-muted); }
+
+.research-launch__att-note {
+  width: 100%;
+  font-size: 10.5px;
+  color: var(--text-muted);
 }

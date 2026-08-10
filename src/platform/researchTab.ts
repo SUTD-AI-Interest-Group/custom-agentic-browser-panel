@@ -113,15 +113,23 @@ async function ensureTab(): Promise<number> {
   // reject — on some Chrome builds it RESOLVES with null instead — so a bare
   // try/catch isn't enough; treat a null/idless window as "incognito unavailable"
   // and fall through, or `win.id` throws "reading 'id' of null".
+  //
+  // The window parks on `research-tab.html` rather than the default new-tab
+  // page. captureVisibleTab cannot screenshot a minimized window, so this one is
+  // briefly restored to normal for every capture (see renderInTab below) — which
+  // is exactly when users notice it. A blank incognito window flickering into
+  // view with nothing in it reads as something having gone wrong; a page that
+  // says what it is does not.
+  const parked = chrome.runtime.getURL('research-tab.html')
   let win: chrome.windows.Window | undefined
   try {
-    win = await chrome.windows.create({ incognito: true, focused: false, state: 'minimized' })
+    win = await chrome.windows.create({ url: parked, incognito: true, focused: false, state: 'minimized' })
     usingIncognito = true
   } catch {
     win = undefined
   }
   if (!win || win.id === undefined) {
-    win = await chrome.windows.create({ focused: false, state: 'minimized' })
+    win = await chrome.windows.create({ url: parked, focused: false, state: 'minimized' })
     usingIncognito = false
   }
   if (!win || win.id === undefined) throw new Error('could not open a research window')

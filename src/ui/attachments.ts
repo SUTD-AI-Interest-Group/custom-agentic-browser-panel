@@ -372,6 +372,60 @@ async function extractPdfTextBlock(
  * originals to the capped store. Store failures degrade to an unpersisted send
  * (the parts are already in memory) — never a failed send.
  */
+/**
+ * The original file for one composer attachment, base64-encoded for storage.
+ *
+ * Split out of `assembleAttachments`'s persistence step so the two callers that
+ * need to save an attachment share one definition of what "the original" is.
+ * `assembleAttachments` may already have encoded a PDF for the native-document
+ * route, so it passes that in rather than paying for a second encode.
+ */
+function originalDataUrl(att: ComposerAttachment, encodedPdf?: string): string {
+  return att.kind === 'image'
+    ? att.dataUrl
+    : att.kind === 'pdf'
+      ? (encodedPdf ?? bytesToDataUrl(att.bytes, 'application/pdf'))
+      : att.kind === 'document'
+        ? bytesToDataUrl(att.bytes, OFFICE_MIME[att.doc.format])
+        : bytesToDataUrl(new TextEncoder().encode(att.text), 'text/plain')
+}
+
+/**
+ * Persist composer attachments to the capped store WITHOUT building any
+ * model-facing parts.
+ *
+ * This exists for the deep-research launch path, which needs the bytes on disk
+ * (the offscreen research host reads them back by id from the same IndexedDB)
+ * but has no model message to attach them to — the framing call takes text
+ * only, and the research agent reads documents through its own ReadAttachment
+ * tool rather than being handed them up front. Routing that through
+ * `assembleAttachments` would run the whole delivery ladder — vision probe, PDF
+ * page rendering — purely to throw the result away.
+ *
+ * Best-effort per attachment, exactly like the send path: failing to persist
+ * bookkeeping must never lose the user's request. Returns the refs that were
+ * actually stored, so a caller can carry only what research will be able to
+ * find.
+ */
+export async function persistAttachments(
+  atts: ComposerAttachment[],
+  conversationId: string,
+): Promise<AttachmentMeta[]> {
+  const saved: AttachmentMeta[] = []
+  const metas = attachmentUiMetas(atts)
+  for (let i = 0; i < atts.length; i++) {
+    const att = atts[i]
+    const meta = metas[i]
+    try {
+      await saveAttachment({ id: att.id, conversationId, meta, dataUrl: originalDataUrl(att) })
+      saved.push(meta)
+    } catch (err) {
+      console.warn('attachment not persisted:', err)
+    }
+  }
+  return saved
+}
+
 export async function assembleAttachments(
   atts: ComposerAttachment[],
   o: { provider: ProviderConfig; modelId: string; conversationId: string },
@@ -443,14 +497,7 @@ export async function assembleAttachments(
     // Reuses the native-pdf route's encode above when there is one, computes it
     // fresh (once) otherwise — pdf-pages/pdf-text still persist the original
     // file regardless of which delivery route was used to show it to the model.
-    const dataUrl =
-      att.kind === 'image'
-        ? att.dataUrl
-        : att.kind === 'pdf'
-          ? (pdfDataUrl ?? bytesToDataUrl(att.bytes, 'application/pdf'))
-          : att.kind === 'document'
-            ? bytesToDataUrl(att.bytes, OFFICE_MIME[att.doc.format])
-            : bytesToDataUrl(new TextEncoder().encode(att.text), 'text/plain')
+    const dataUrl = originalDataUrl(att, pdfDataUrl ?? undefined)
     const meta = attachmentUiMetas([att])[0]
     await saveAttachment({ id: att.id, conversationId: o.conversationId, meta, dataUrl }).catch((err) => {
       console.warn('attachment not persisted:', err)

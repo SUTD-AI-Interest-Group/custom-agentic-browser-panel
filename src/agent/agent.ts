@@ -15,7 +15,7 @@ import { z } from 'zod'
 import { resolveActiveTools } from '../tools/toolDiscovery'
 import { toModelUsage } from './usage'
 import type { ModelUsage, Trace } from './observability'
-import type { ResearchVerification } from '../data/researchTasks'
+import type { ResearchProposal, ResearchStatus, ResearchVerification } from '../data/researchTasks'
 import type { AttachmentMeta } from '../data/attachments'
 
 /**
@@ -134,7 +134,30 @@ export interface UIMessage {
    * reply, so it scrolls with the chat and later turns follow it. The report
    * text lives in `parts`; `sources` carries the fetched pages.
    */
-  research?: { question: string; error?: string; verification?: ResearchVerification; partial?: boolean }
+  research?: {
+    question: string
+    /**
+     * The task's live status, mirrored onto the message so the slot can pick its
+     * face (live card vs finished report) without waiting for `researchTasks` to
+     * load. Absent on messages written before this field existed, which are by
+     * definition finished — treat a missing status as terminal.
+     */
+    status?: ResearchStatus
+    error?: string
+    verification?: ResearchVerification
+    partial?: boolean
+  }
+  /**
+   * Marks an editable background-research launch card: the moment a question
+   * becomes visible and editable before anything runs (see the design doc).
+   * Lives ONLY on the message — a `ResearchProposal` has no storage of its own
+   * (see its doc comment in researchTasks.ts) — so this is the one and only
+   * record of an unstarted proposal, unlike `research` above, which is
+   * reconstructed from `researchTasks` storage on every reload. Display-only,
+   * exactly like `research`: never pushed to the model-facing history, so an
+   * unstarted (or edited-but-unstarted) proposal can never reach the model.
+   */
+  proposal?: ResearchProposal
   /**
    * Tokens this assistant turn cost, summed across every step (and every cycle of
    * a continuation chain). Rendered as a subtle line under the reply. Absent on

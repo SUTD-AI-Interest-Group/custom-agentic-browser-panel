@@ -384,6 +384,14 @@ async function startResearchTask(taskId: string, opts: { resume?: boolean } = {}
     resume: opts.resume,
     // On resume, hand back the persisted notebook so gathered findings carry over.
     notebook: opts.resume ? task.notebook : undefined,
+    // Carried on the task since research.ensureAndStart's creation (see above) —
+    // read from there rather than a fresh message so a WATCHDOG resume (which has
+    // no original research.ensureAndStart to hand this function) keeps the scope
+    // the user approved, not just the initial dispatch.
+    sites: task.sites,
+    brief: task.brief,
+    subQuestions: task.subQuestions,
+    attachments: task.attachments,
   } satisfies ResearchMsg)
 }
 
@@ -462,6 +470,14 @@ chrome.runtime.onMessage.addListener((msg: ResearchMsg | DreamMsg, _sender, send
           conversationId: msg.conversationId,
           // Anchor the 24h cap at creation, so a later resume can't extend it.
           deadlineAt: now + MAX_RESEARCH_DURATION_MS,
+          // All three are carried on the task (not just this dispatch) so a
+          // watchdog resume — which re-derives its research.start from the
+          // PERSISTED task, not this message — still has what the user approved
+          // on the launch card. See startResearchTask.
+          sites: msg.sites,
+          brief: msg.brief,
+          subQuestions: msg.subQuestions,
+          attachments: msg.attachments,
         })
         // Dispatch through the shared, resilient path. Any failure here (e.g. offscreen
         // creation hiccup) leaves the task 'running'; the watchdog re-dispatches it.

@@ -35,9 +35,9 @@ test('addSource dedupes by normalized URL and assigns 1-based citation numbers',
   const b = nb.addSource({ url: 'https://b.com/p', title: 'B' })
   // Same page via a tracking param + hash → same source, no new number.
   const aAgain = nb.addSource({ url: 'https://a.com/p?utm_source=z#top', title: 'A2' })
-  expect(a.n).toBe(1)
-  expect(b.n).toBe(2)
-  expect(aAgain.n).toBe(1)
+  expect(a!.n).toBe(1)
+  expect(b!.n).toBe(2)
+  expect(aAgain!.n).toBe(1)
   expect(nb.get().sources).toHaveLength(2)
 })
 
@@ -45,7 +45,7 @@ test('a real-tab render upgrades a prior headless fetch of the same URL', () => 
   const nb = createNotebook()
   nb.addSource({ url: 'https://a.com', fetchedVia: 'headless' })
   const upgraded = nb.addSource({ url: 'https://a.com', fetchedVia: 'tab' })
-  expect(upgraded.fetchedVia).toBe('tab')
+  expect(upgraded!.fetchedVia).toBe('tab')
   expect(nb.get().sources).toHaveLength(1)
 })
 
@@ -53,11 +53,11 @@ test('addFinding links to a source by URL and carries its citation number', () =
   const nb = createNotebook()
   nb.addSource({ url: 'https://a.com', title: 'A' })
   const f = nb.addFinding({ claim: 'sky is blue', sourceUrl: 'https://a.com', quote: 'the sky is blue', confidence: 'high' })
-  expect(f.sourceN).toBe(1)
-  expect(f.confidence).toBe('high')
+  expect(f!.sourceN).toBe(1)
+  expect(f!.confidence).toBe('high')
   const orphan = nb.addFinding({ claim: 'unknown' })
-  expect(orphan.sourceN).toBeUndefined()
-  expect(orphan.confidence).toBe('med')
+  expect(orphan!.sourceN).toBeUndefined()
+  expect(orphan!.confidence).toBe('med')
 })
 
 test('addImage dedupes by URL and returns undefined on a repeat', () => {
@@ -142,4 +142,62 @@ test('summarizeNotebook caps SOURCES to the most recent maxSources and notes the
   expect(s).not.toContain('[3] Source 3 — https://s3.com')
   // ...and the omitted count is called out.
   expect(s).toContain('…and 3 more sources')
+})
+
+// ---- Source scope: the write boundary IS the scope boundary ----------------
+// Research may browse anywhere (isSafeResearchAction permits cross-origin
+// navigation by design), but the report may only cite what the user pinned on
+// the launch card. These pin that the notebook is where that is enforced, so it
+// binds every writer — including the browse sub-agent, which knows nothing
+// about scope.
+
+test('an unscoped notebook records everything, exactly as before', () => {
+  const nb = createNotebook()
+  expect(nb.addSource({ url: 'https://anywhere.test/x' })).toBeTruthy()
+  expect(nb.addFinding({ claim: 'c', sourceUrl: 'https://anywhere.test/x' })).toBeTruthy()
+  expect(nb.get().sources).toHaveLength(1)
+  expect(nb.get().findings).toHaveLength(1)
+})
+
+test('a scoped notebook refuses an out-of-scope source and admits subdomains', () => {
+  const nb = createNotebook(undefined, undefined, ['aftershockpc.com'])
+  expect(nb.addSource({ url: 'https://lenovo.com/pgx' })).toBeUndefined()
+  expect(nb.addSource({ url: 'https://sg.aftershockpc.com/apex' })).toBeTruthy()
+  expect(nb.get().sources).toHaveLength(1)
+})
+
+test('a scoped notebook refuses a finding cited to an out-of-scope host', () => {
+  const nb = createNotebook(undefined, undefined, ['aftershockpc.com'])
+  expect(nb.addFinding({ claim: 'the PGX has 128GB', sourceUrl: 'https://lenovo.com/pgx' })).toBeUndefined()
+  expect(nb.get().findings).toHaveLength(0)
+})
+
+// The load-bearing case: addFinding must test sourceUrl DIRECTLY, not infer
+// scope from whether the source resolved. Checking the lookup instead would
+// demote an out-of-scope claim to an uncited one and record it anyway — which
+// is precisely how an unrelated vendor's machine ended up in a real report.
+test('an out-of-scope claim is refused outright, not demoted to uncited', () => {
+  const nb = createNotebook(undefined, undefined, ['aftershockpc.com'])
+  nb.addSource({ url: 'https://lenovo.com/pgx' }) // already refused
+  const f = nb.addFinding({ claim: 'the PGX belongs in this comparison', sourceUrl: 'https://lenovo.com/pgx' })
+  expect(f).toBeUndefined()
+  expect(nb.get().findings).toHaveLength(0)
+})
+
+// An uncited finding has no host to misattribute to, and refusing it would
+// silently drop the agent's own synthesis across the sources it DID read.
+test('a scoped notebook still records an uncited finding', () => {
+  const nb = createNotebook(undefined, undefined, ['aftershockpc.com'])
+  expect(nb.addFinding({ claim: 'prices cluster in two tiers' })).toBeTruthy()
+  expect(nb.get().findings).toHaveLength(1)
+})
+
+test('a scoped notebook refuses an image by its own url or by its source page', () => {
+  const nb = createNotebook(undefined, undefined, ['aftershockpc.com'])
+  // Out-of-scope image hosted off an in-scope page.
+  expect(nb.addImage({ url: 'https://cdn.lenovo.com/a.png', sourceUrl: 'https://aftershockpc.com/x' })).toBeUndefined()
+  // In-scope image laundered through an out-of-scope page.
+  expect(nb.addImage({ url: 'https://aftershockpc.com/a.png', sourceUrl: 'https://lenovo.com/x' })).toBeUndefined()
+  expect(nb.addImage({ url: 'https://aftershockpc.com/b.png', sourceUrl: 'https://aftershockpc.com/x' })).toBeTruthy()
+  expect(nb.get().images).toHaveLength(1)
 })
