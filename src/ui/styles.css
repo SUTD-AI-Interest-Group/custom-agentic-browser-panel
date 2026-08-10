@@ -5309,13 +5309,13 @@ body {
 
 .shot-card-dim {
   font-size: 11px;
-  color: var(--text-dim);
+  color: var(--text-muted);
 }
 
 .shot-card-missing {
   margin: 4px 0 8px;
   font-size: 11px;
-  color: var(--text-dim);
+  color: var(--text-muted);
   font-style: italic;
 }
 
