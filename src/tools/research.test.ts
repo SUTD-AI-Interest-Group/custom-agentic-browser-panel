@@ -3,6 +3,7 @@ import { createResearchTools } from './research'
 import { createNotebook } from '../agent/notebook'
 import { runBrowseSession, type BrowseBroker } from '../agent/browseAgent'
 import { searchDuckDuckGo, fetchReadable } from '../platform/webFetch'
+import { searchAcademic, searchImages, harvestImages } from '../platform/researchSources'
 import type { ProviderConfig } from '../data/settings'
 
 // BrowseSite's execute() constructs a real model via createModel() before handing
@@ -27,6 +28,15 @@ vi.mock('../agent/browseAgent', () => ({
 vi.mock('../platform/webFetch', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../platform/webFetch')>()
   return { ...actual, searchDuckDuckGo: vi.fn(), fetchReadable: vi.fn() }
+})
+
+// Same reasoning as webFetch above, for the three researchSources network calls
+// exercised by the review-fix-round tests (SearchAcademic/SearchImages/
+// HarvestImages) — the pure parsers (parseOpenAlexWork, parseCommonsImages, …)
+// stay real via importOriginal, only the fetch()-touching entry points are mocked.
+vi.mock('../platform/researchSources', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../platform/researchSources')>()
+  return { ...actual, searchAcademic: vi.fn(), searchImages: vi.fn(), harvestImages: vi.fn() }
 })
 
 const fakeProvider: ProviderConfig = { id: 'p1', name: 'Test', baseURL: 'https://x.test', apiKey: '', models: ['m'] }
@@ -102,18 +112,28 @@ describe('WriteNotebook claim/quote length cap (F3 secondary — HIGH)', () => {
   })
 })
 
-// Task 8: the launch card's source scope, enforced at three points. scopeAllows
-// itself is exhaustively covered by browsePolicy.test.ts (Task 2) — what's under
-// test here is that research.ts actually WIRES `sites` into it at the right
-// places, with the right defaults. mockReset (not mockClear) in beforeEach so a
-// test that forgets to configure searchDuckDuckGo/fetchReadable fails LOUDLY
-// (undefined response -> a thrown TypeError) rather than silently inheriting a
-// previous test's resolved value.
+// Task 8: the launch card's source scope. scopeAllows itself is exhaustively
+// covered by browsePolicy.test.ts (Task 2) — what's under test here is that
+// research.ts actually WIRES `sites` into it at the right places, with the
+// right defaults, across every tool that touches an arbitrary (model-chosen
+// or backend-returned) URL: WebSearch/SearchAcademic/SearchImages filter their
+// RESULT rows (a fixed backend, but each row's own url can be anywhere);
+// FetchUrl/HarvestImages/BrowseSite refuse a model-chosen url outright, before
+// any network work. The HarvestImages/SearchAcademic/SearchImages cases were
+// added in the review-fix round (HarvestImages had been missed entirely;
+// SearchAcademic/SearchImages return unfiltered result URLs from otherwise-
+// fixed backends, the same shape as WebSearch). mockReset (not mockClear) in
+// beforeEach so a test that forgets to configure a mock's return value fails
+// LOUDLY (undefined response -> a thrown TypeError) rather than silently
+// inheriting a previous test's resolved value.
 describe('source scope enforcement (Task 8)', () => {
   beforeEach(() => {
     vi.mocked(searchDuckDuckGo).mockReset()
     vi.mocked(fetchReadable).mockReset()
     vi.mocked(runBrowseSession).mockClear()
+    vi.mocked(searchAcademic).mockReset()
+    vi.mocked(searchImages).mockReset()
+    vi.mocked(harvestImages).mockReset()
   })
 
   it('WebSearch narrows the query with site: operators for 1-3 scoped hosts, and filters out-of-scope results from the response', async () => {
@@ -229,5 +249,87 @@ describe('source scope enforcement (Task 8)', () => {
 
     expect(runBrowseSession).toHaveBeenCalledTimes(1)
     expect(result.summary).toBe('ok')
+  })
+
+  // Review-fix round: HarvestImages is structurally identical to FetchUrl (an
+  // arbitrary model-chosen url, fetched directly) but had been missed entirely
+  // in the first pass.
+  it('HarvestImages refuses an out-of-scope host before any network work, naming the allowed scope', async () => {
+    const tools = createResearchTools({ selected: null, notebook: createNotebook(), sites: ['aftershockpc.com'] })
+
+    const result = await (tools.HarvestImages as any).execute({ url: 'https://evil.test/x' }, { abortSignal: undefined })
+
+    expect(result.error).toBe('Out of scope. This research is restricted to: aftershockpc.com')
+    expect(harvestImages).not.toHaveBeenCalled()
+  })
+
+  it('HarvestImages lets an in-scope host reach the real harvest', async () => {
+    vi.mocked(harvestImages).mockResolvedValue({ results: [{ url: 'https://aftershockpc.com/img.jpg', title: 'a photo' }] })
+    const tools = createResearchTools({ selected: null, notebook: createNotebook(), sites: ['aftershockpc.com'] })
+
+    const result = await (tools.HarvestImages as any).execute({ url: 'https://aftershockpc.com/page' }, { abortSignal: undefined })
+
+    expect(harvestImages).toHaveBeenCalledWith('https://aftershockpc.com/page', undefined)
+    expect(result.found).toBe(1)
+  })
+
+  // Review-fix round: SearchAcademic hits a fixed backend (OpenAlex), but each
+  // paper's own url/pdfUrl points at an arbitrary publisher — the same
+  // reachable-from-anywhere shape as WebSearch's results.
+  it('SearchAcademic filters out-of-scope papers from the response', async () => {
+    vi.mocked(searchAcademic).mockResolvedValue({
+      results: [
+        { title: 'In scope paper', abstract: '', authors: [], url: 'https://aftershockpc.com/paper' },
+        { title: 'Out of scope paper', abstract: '', authors: [], url: 'https://elsevier.test/paper' },
+      ],
+    })
+    const tools = createResearchTools({ selected: null, notebook: createNotebook(), sites: ['aftershockpc.com'] })
+
+    const result = await (tools.SearchAcademic as any).execute({ query: 'q' }, { abortSignal: undefined })
+
+    expect(result.results).toEqual([{ title: 'In scope paper', abstract: '', authors: [], url: 'https://aftershockpc.com/paper' }])
+  })
+
+  it('SearchAcademic leaves results untouched when no scope is given (unrestricted default)', async () => {
+    vi.mocked(searchAcademic).mockResolvedValue({
+      results: [{ title: 'Any paper', abstract: '', authors: [], url: 'https://anywhere.test/paper' }],
+    })
+    const tools = createResearchTools({ selected: null, notebook: createNotebook() })
+
+    const result = await (tools.SearchAcademic as any).execute({ query: 'q' }, { abortSignal: undefined })
+
+    expect(result.results).toHaveLength(1)
+  })
+
+  // Review-fix round: SearchImages is the sharpest of the three fixed-backend
+  // cases, since a recorded image can be embedded straight into the final
+  // report by synthesize()'s imageBlock — so the filter must run BEFORE
+  // recordImages, not just before the tool result is returned to the model.
+  it('SearchImages filters out-of-scope images and never records them into the notebook', async () => {
+    vi.mocked(searchImages).mockResolvedValue({
+      results: [
+        { url: 'https://aftershockpc.com/img-in.jpg', title: 'in scope' },
+        { url: 'https://elsewhere.test/img-out.jpg', title: 'out of scope' },
+      ],
+    })
+    const notebook = createNotebook()
+    const tools = createResearchTools({ selected: null, notebook, sites: ['aftershockpc.com'] })
+
+    const result = await (tools.SearchImages as any).execute({ query: 'q' }, { abortSignal: undefined })
+
+    expect(result.found).toBe(1)
+    expect(result.images).toEqual([expect.objectContaining({ url: 'https://aftershockpc.com/img-in.jpg' })])
+    expect(notebook.get().images.map((i) => i.url)).toEqual(['https://aftershockpc.com/img-in.jpg'])
+  })
+
+  it('SearchImages leaves results untouched when no scope is given (unrestricted default)', async () => {
+    vi.mocked(searchImages).mockResolvedValue({ results: [{ url: 'https://anywhere.test/img.jpg', title: 'x' }] })
+    const notebook = createNotebook()
+    const tools = createResearchTools({ selected: null, notebook })
+
+    const result = await (tools.SearchImages as any).execute({ query: 'q' }, { abortSignal: undefined })
+
+    expect(result.found).toBe(1)
+    expect(notebook.get().images).toHaveLength(1)
   })
 })

@@ -91,6 +91,36 @@ function briefImage(img: ImageResult) {
   return { url: img.url, caption: img.caption || img.title, license: img.license, source: img.sourcePageUrl }
 }
 
+/**
+ * Filter a batch of `{url}`-bearing rows down to the source scope, plus a note
+ * when the filter removed everything the backend found.
+ *
+ * A snippet/title/abstract alone is enough to hallucinate from, so an
+ * out-of-scope row must not reach the model at all — narrowing the outgoing
+ * QUERY (WebSearch's `site:` operator) is only ever a hint the engine may
+ * ignore, so this filter is what actually enforces the scope, every time.
+ *
+ * Shared by WebSearch/SearchAcademic/SearchImages: each hits a FIXED, trusted
+ * backend (lite.duckduckgo.com / api.openalex.org / commons.wikimedia.org +
+ * api.openverse.org — never a model-chosen host), but each ROW's own url can
+ * point anywhere. That's a different shape from FetchUrl/HarvestImages/
+ * BrowseSite, which take a model-chosen url directly and so are refused
+ * pre-network instead (see each's own `scopeAllows` check below) — there is
+ * nothing to filter there, the call itself either is or isn't in scope.
+ *
+ * An unexplained empty array reads as "nothing exists" when the truth is "the
+ * scope excluded what was found" — the same "state it, don't silently drop
+ * it" rule the pre-network refusals follow, so this attaches a `note` rather
+ * than returning a bare `{results: []}`.
+ */
+function withScope<T extends { url: string }>(rows: T[], sites: string[], noun: string): { results: T[]; note?: string } {
+  if (!sites.length) return { results: rows }
+  const results = rows.filter((row) => scopeAllows(row.url, sites))
+  return results.length
+    ? { results }
+    : { results, note: `Every ${noun} was outside this task's source scope (${sites.join(', ')}); try a different query.` }
+}
+
 // FetchUrl's text budget for a PDF, matching extractReadableText's HTML cap.
 const PDF_TEXT_BUDGET = 20_000
 
@@ -158,8 +188,13 @@ export function createResearchTools(deps: {
    * Source scope from the launch card: registrable hosts (see scopeAllows,
    * browsePolicy.ts). Empty/absent = unrestricted — today's default behavior,
    * and every existing caller that doesn't pass this gets it unchanged.
-   * WebSearch narrows its query and filters results to this scope; FetchUrl and
-   * BrowseSite refuse an out-of-scope host outright, before any network work.
+   *
+   * Two enforcement shapes, by tool input shape (see withScope's doc comment
+   * for the full reasoning): WebSearch/SearchAcademic/SearchImages take a
+   * QUERY against a fixed backend, so their result ROWS are filtered after the
+   * fact (WebSearch also narrows the outgoing query as a hint); FetchUrl,
+   * HarvestImages and BrowseSite take a model-chosen URL directly, so THAT
+   * call is refused outright before any network work.
    */
   sites?: string[]
 }): ToolSet {
@@ -173,32 +208,21 @@ export function createResearchTools(deps: {
       }),
       execute: async ({ query, maxResults = 8 }, { abortSignal }) => {
         // `site:` narrows the query for up to 3 scoped hosts (an OR chain past
-        // that gets unwieldy) — but it is only a hint the engine may ignore, so
-        // the filter below is what actually enforces the scope.
+        // that gets unwieldy) — it's only a hint the engine may ignore; withScope
+        // below is what actually enforces it (see that function's own doc
+        // comment for the full "why", shared with SearchAcademic/SearchImages).
         const scopedQuery =
           sites.length > 0 && sites.length <= 3 ? `${query} (${sites.map((s) => `site:${s}`).join(' OR ')})` : query
-        // A snippet alone is enough to hallucinate from, so an out-of-scope result
-        // must not reach the model even as a title — filtering at fetch time only
-        // would be too late. When the scope removes everything found, say so
-        // rather than returning an unexplained empty array (the same "state it,
-        // don't silently drop it" rule FetchUrl/BrowseSite follow below).
-        const withScope = (rows: SearchResultRow[]): { results: SearchResultRow[]; note?: string } => {
-          if (!sites.length) return { results: rows }
-          const results = rows.filter((row) => scopeAllows(row.url, sites))
-          return results.length
-            ? { results }
-            : { results, note: `Every result was outside this task's source scope (${sites.join(', ')}); try a different query.` }
-        }
 
         const r = await searchDuckDuckGo(scopedQuery, maxResults, abortSignal)
-        if (!('error' in r) && r.results.length) return withScope(r.results)
+        if (!('error' in r) && r.results.length) return withScope(r.results, sites, 'result')
         // The keyless endpoint was throttled or parsed nothing. If a tab broker is
         // available, retry the search in a REAL browser tab — that clears the bot
         // wall a plain fetch can't. This is what turns "search failed after
         // retries" into actual results.
         if (searchBroker) {
           const t = await searchBroker.search(scopedQuery, maxResults)
-          if (!('error' in t) && t.results.length) return { ...withScope(t.results), via: 'tab' }
+          if (!('error' in t) && t.results.length) return { ...withScope(t.results, sites, 'result'), via: 'tab' }
           // Both paths failed — surface the more informative error.
           if ('error' in r) return { error: r.error, note: 'error' in t ? `tab fallback also failed: ${t.error}` : undefined }
           return { results: [], note: 'No results from the web search or the tab fallback; try a different query.' }
@@ -293,7 +317,11 @@ export function createResearchTools(deps: {
       execute: async ({ query, maxResults = 8 }, { abortSignal }) => {
         const r = await searchAcademic(query, maxResults, abortSignal)
         if ('error' in r) return r
-        return r.results.length ? { results: r.results } : { results: [], note: 'No papers found; try different terms.' }
+        // OpenAlex itself is a fixed, trusted backend (the model never chooses
+        // ITS host), but each paper's own url/pdfUrl points at an arbitrary
+        // publisher — the same reachable-from-anywhere shape WebSearch's
+        // results have, so the same filter applies (see withScope).
+        return r.results.length ? withScope(r.results, sites, 'paper') : { results: [], note: 'No papers found; try different terms.' }
       },
     }),
 
@@ -307,8 +335,12 @@ export function createResearchTools(deps: {
       execute: async ({ query, maxResults = 6 }, { abortSignal }) => {
         const r = await searchImages(query, maxResults, abortSignal)
         if ('error' in r) return r
-        const added = recordImages(notebook, r.results, query)
-        return { found: r.results.length, added, images: r.results.map(briefImage) }
+        // Filter BEFORE recording: an out-of-scope image must never reach the
+        // notebook, since notebook.images is what synthesize()'s imageBlock
+        // embeds straight into the final report.
+        const { results: inScope, note } = withScope(r.results, sites, 'image')
+        const added = recordImages(notebook, inScope, query)
+        return { found: inScope.length, added, images: inScope.map(briefImage), ...(note ? { note } : {}) }
       },
     }),
 
@@ -317,6 +349,13 @@ export function createResearchTools(deps: {
         'Collect the meaningful <img> assets (charts, figures, photos) from a page you found useful, so relevant ones can be embedded in the report. Returns the images found on that page.',
       inputSchema: z.object({ url: z.string().describe('The page URL to harvest images from') }),
       execute: async ({ url }, { abortSignal }) => {
+        if (!scopeAllows(url, sites)) {
+          // Stated, not silent: a blocked read must appear in the step log so
+          // the report's gaps are explicable. Same treatment as FetchUrl —
+          // this tool takes an arbitrary model-chosen url and fetches it
+          // directly, so it needs the identical pre-network refusal.
+          return { error: `Out of scope. This research is restricted to: ${sites.join(', ')}` }
+        }
         const r = await harvestImages(url, abortSignal)
         if ('error' in r) return r
         const added = recordImages(notebook, r.results)
