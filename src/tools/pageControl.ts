@@ -19,6 +19,7 @@ import {
   isCommittingName,
   isDismissalName,
 } from './committingVocabulary'
+import { buildEntry, type ControlJournalEntry } from './pageControlJournal'
 
 /**
  * A per-task grant to control one tab. Origin-fenced. There is no per-session
@@ -30,6 +31,26 @@ export interface ControlSession {
   origin: string
   plan: string
   active: boolean
+  /**
+   * What this session has done, in order. Safe to render and persist: values are
+   * redacted and a sensitive field's is replaced outright (see
+   * `pageControlJournal.ts`). Appended by `runControlStep`, the single point
+   * every action passes through.
+   */
+  journal?: ControlJournalEntry[]
+  /**
+   * RAW prior field values, keyed by `[index]`, for undo to restore.
+   *
+   * **In-memory only, and deliberately so.** These may be passwords. The session
+   * object is torn down in the turn chain's outer `finally`, so a raw value can
+   * never outlive the turn that typed it — whereas `journal` above, which is
+   * rendered and may be persisted, never contains one. That lifetime split is
+   * what lets undo work without creating a new secret-at-rest surface; see
+   * pageControlJournal.ts's module header.
+   *
+   * Never serialize a ControlSession.
+   */
+  undoState?: Map<number, { value: string; kind: 'type' | 'select' }>
   /**
    * One-shot: the just-approved point-of-no-return may have triggered a
    * full-page cross-origin load that committed *after* our post-action snapshot.
@@ -200,6 +221,13 @@ export interface ControlStepDeps {
   tabId: number
   spec: ControlSpec
   snapshot: PageSnapshot
+  /**
+   * The live session, when this step belongs to one. Passed so the step can
+   * record itself here — the single chokepoint every action already funnels
+   * through, rather than in each per-action helper. (Enumerating call sites is
+   * how `HarvestImages` escaped the research scope check the first time.)
+   */
+  session?: ControlSession
   /** Presence hook: glide the cursor/spotlight to `index` before acting. */
   beforeAct?: (index: number | undefined) => Promise<void>
   /** Presence hook: play the click pulse after acting. */
@@ -258,10 +286,40 @@ const clickElementOrHighlight = (tabId: number, spec: ControlSpec): Promise<Acti
 
 /** Run one action: presence glide → real action → pulse → re-snapshot. */
 export async function runControlStep(deps: ControlStepDeps): Promise<ControlStepResult> {
-  const { tabId, spec, beforeAct, afterAct, afterNav } = deps
+  const { tabId, spec, beforeAct, afterAct, afterNav, session } = deps
   const needsTarget = spec.index !== undefined && spec.action !== 'navigate'
   if (beforeAct && needsTarget) await beforeAct(spec.index)
   const result = await runRaw(tabId, spec)
+
+  // Record what just happened, at the one point every action passes through.
+  // Only successful actions are journalled: a failed step changed nothing, so
+  // offering to undo it would be offering to overwrite a field the agent never
+  // touched.
+  if (session && result.ok) {
+    const el = deps.snapshot.elements.find((e) => e.index === spec.index)
+    const entry = buildEntry(spec, el, result.prior, Date.now(), {
+      origin: deps.snapshot.origin,
+      url: deps.snapshot.url,
+    })
+    session.journal = [...(session.journal ?? []), entry]
+    // The RAW prior value goes to in-memory undo state only, and only for an
+    // entry we are actually willing to undo — a sensitive field is classified
+    // non-undoable, so its prior value is never retained at all.
+    if (entry.undoable && result.prior !== undefined && spec.index !== undefined) {
+      const undoState = session.undoState ?? new Map()
+      // First write wins: undo restores the value the field had when this
+      // session started, not the intermediate one from an earlier edit in the
+      // same session. Restoring an intermediate would leave the field holding
+      // something the agent typed, which is not "undone".
+      if (!undoState.has(spec.index)) {
+        undoState.set(spec.index, {
+          value: result.prior,
+          kind: spec.action === 'select' ? 'select' : 'type',
+        })
+      }
+      session.undoState = undoState
+    }
+  }
   // The ripple represents a click; only play it for clicks (not type/select/
   // scroll/navigate/press/highlight).
   if (afterAct && result.ok && spec.action === 'click') await afterAct()

@@ -1404,6 +1404,7 @@ export function createAgentTools(
           tabId: tab.id,
           spec,
           snapshot: snap,
+          session: pageControl.session() ?? undefined,
           beforeAct: (index) => (index === undefined ? Promise.resolve() : focusOn(tab.id!, index, spec.label)),
           afterAct: () => pulse(tab.id!),
           afterNav: async () => {
@@ -1513,6 +1514,10 @@ export function createAgentTools(
           }
           await runControlStep({
             tabId: tab.id, spec, snapshot: snap,
+            // AutofillForm rides the same session, so its field writes join the
+            // same journal — a batch fill is exactly the case where "what did it
+            // just put in my form?" is hardest to answer from the transcript.
+            session: pageControl.session() ?? undefined,
             beforeAct: (i) => (i === undefined ? Promise.resolve() : focusOn(tab.id!, i, undefined)),
             afterAct: () => pulse(tab.id!),
           })

@@ -9,6 +9,16 @@ export interface ActionResult {
   ok: boolean
   message: string
   urlChanged?: boolean
+  /**
+   * For `type`/`select`: the field's value BEFORE this action, captured inside
+   * the same injection that overwrote it (any later read would see the new
+   * value). This is what page-control undo restores.
+   *
+   * **Raw and unredacted.** It may be a password. The caller keeps it in memory
+   * on the live `ControlSession` and never persists or renders it — see
+   * `src/tools/pageControlJournal.ts`'s module header for the lifetime split.
+   */
+  prior?: string
 }
 
 function injClick(attr: string, index: number) {
@@ -38,9 +48,14 @@ function injType(attr: string, index: number, text: string, clear: boolean) {
   el.scrollIntoView({ block: 'center', behavior: 'instant' as ScrollBehavior })
   ;(el as HTMLElement).focus()
   if (isContentEditable) {
+    // `prior` is what undo restores. Captured here, in the same injection that
+    // performs the edit, because any later read would see the NEW value — and
+    // it is returned rather than stored on the page, since each injection runs
+    // in a fresh isolated-world context with no shared state.
+    const prior = el.textContent ?? ''
     el.textContent = clear ? text : (el.textContent ?? '') + text
     el.dispatchEvent(new InputEvent('input', { bubbles: true }))
-    return { ok: true, message: `typed into element ${index}` }
+    return { ok: true, message: `typed into element ${index}`, prior }
   }
   const input = el as HTMLInputElement
   const proto =
@@ -48,12 +63,13 @@ function injType(attr: string, index: number, text: string, clear: boolean) {
       ? HTMLTextAreaElement.prototype
       : HTMLInputElement.prototype
   const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set
+  const prior = input.value ?? ''
   const next = clear ? text : (input.value ?? '') + text
   if (setter) setter.call(input, next)
   else input.value = next
   input.dispatchEvent(new Event('input', { bubbles: true }))
   input.dispatchEvent(new Event('change', { bubbles: true }))
-  return { ok: true, message: `typed into element ${index}` }
+  return { ok: true, message: `typed into element ${index}`, prior }
 }
 
 function injSelect(attr: string, index: number, value: string) {
@@ -69,9 +85,11 @@ function injSelect(attr: string, index: number, value: string) {
     (o) => o.value === value || o.text.trim() === value.trim(),
   )
   if (!opt) return { ok: false, message: `no option matching "${value}" in element ${index}` }
+  // Read before writing — see injType's `prior`.
+  const prior = el.value
   el.value = opt.value
   el.dispatchEvent(new Event('change', { bubbles: true }))
-  return { ok: true, message: `selected "${opt.text.trim()}" in element ${index}` }
+  return { ok: true, message: `selected "${opt.text.trim()}" in element ${index}`, prior }
 }
 
 function injScroll(attr: string, direction: string, index: number) {
@@ -192,6 +210,28 @@ export function typeIntoElement(
 /** Choose an option (by value or visible text) in the <select> at `index`. */
 export function selectOption(tabId: number, index: number, value: string): Promise<ActionResult> {
   return guarded(tabId, () => inject(tabId, injSelect, [ATTR, index, value]))
+}
+
+/**
+ * Put a field's previous value back — page-control undo.
+ *
+ * Reuses the same setters and events as `injType`/`injSelect` rather than
+ * assigning `.value` directly, because a React-controlled input ignores a bare
+ * assignment: the framework's own state still holds the agent's text and
+ * overwrites the restored value on the next render. Undo that silently
+ * un-undoes itself would be worse than no undo.
+ */
+export function restoreValue(
+  tabId: number,
+  index: number,
+  value: string,
+  kind: 'type' | 'select',
+): Promise<ActionResult> {
+  return guarded(tabId, () =>
+    kind === 'select'
+      ? inject(tabId, injSelect, [ATTR, index, value])
+      : inject(tabId, injType, [ATTR, index, value, true]),
+  )
 }
 
 /** Scroll the page up/down, or bring element `index` into view. */
