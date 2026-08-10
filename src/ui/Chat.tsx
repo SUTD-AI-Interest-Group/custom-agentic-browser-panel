@@ -89,6 +89,7 @@ import {
 import { frameResearch, type ResearchFramingResult } from '../agent/researchFraming'
 import { recentContext } from './recentContext'
 import ResearchLaunchCard from './ResearchLaunchCard'
+import { ResearchLiveCard } from './ResearchLiveCard'
 
 // How long a finished research task lingers in the composer dock (as a ✓/✕/⊘
 // bar) after it completes before auto-dismissing. Its report has already
@@ -956,34 +957,64 @@ export default function Chat({
     saveDraft(conversationId, input)
   }, [conversationId, input])
 
-  // Drop a finished research task into THIS conversation's transcript as a
-  // message, so its report card scrolls with the chat and later turns follow it
-  // (rather than staying pinned at the bottom). Reconstructed from persistent
-  // researchTasks storage, deduped by the deterministic `research-<id>` message
-  // id, and gated on `restored` so it appends after the restore, never racing
-  // it. Display-only: not added to model history.
+  // ONE SLOT PER TASK. A research task owns exactly one transcript message,
+  // `research-<taskId>`, which mutates in place through proposed → running →
+  // done rather than three separate things appearing at three different times.
+  // That anchoring is the point: the slot sits where the user asked, so a report
+  // landing twenty minutes later can never read as the reply to whatever they
+  // said most recently — the failure this whole feature exists to fix.
+  //
+  // The slot is usually minted by the launch card (proposeResearch, which knows
+  // the taskId before any task exists); this effect appends one only for a task
+  // with no slot yet — started from the Library, or whose proposal message was
+  // lost with an unsaved draft.
+  //
+  // This is an UPSERT, not the append it used to be: every status is included
+  // and a matched slot is REFRESHED in place, so the live card animates for free
+  // off the researchTasks storage subscription that already exists. `.proposal`
+  // is deliberately left on the message — researchCardState ignores it once a
+  // task carries the same id, and it stays the record of what was actually
+  // launched.
+  //
+  // The `changed` guard is load-bearing: returning `prev` unchanged when nothing
+  // differs is what stops a storage tick for one task from handing React a whole
+  // new array and re-rendering every message in the transcript.
   useEffect(() => {
     if (!restored) return
-    const done = researchTasks
-      .filter(
-        (t) =>
-          t.conversationId === conversationId &&
-          ((t.status === 'done' && t.report) || (t.status === 'error' && t.error)),
-      )
-      .sort((a, b) => a.updatedAt - b.updatedAt)
-    if (done.length === 0) return
+    const mine = researchTasks.filter((t) => t.conversationId === conversationId)
+    if (mine.length === 0) return
     setMessages((prev) => {
-      const have = new Set(prev.map((m) => m.id))
-      const add = done
-        .filter((t) => !have.has(`research-${t.id}`))
-        .map((t) => ({
-          id: `research-${t.id}`,
-          role: 'assistant' as const,
-          parts: t.report ? [{ type: 'text' as const, text: t.report }] : [],
-          sources: t.sources,
-          research: { question: t.question, error: t.error, verification: t.verification, partial: t.partial },
-        }))
-      return add.length ? [...prev, ...add] : prev
+      const pending = new Map(mine.map((t) => [`research-${t.id}`, t]))
+      const view = (t: ResearchTask) => ({
+        parts: t.report ? [{ type: 'text' as const, text: t.report }] : [],
+        sources: t.sources,
+        research: {
+          question: t.question,
+          status: t.status,
+          error: t.error,
+          verification: t.verification,
+          partial: t.partial,
+        },
+      })
+      let changed = false
+      const next = prev.map((m) => {
+        const t = pending.get(m.id)
+        if (!t) return m
+        pending.delete(m.id)
+        // Only the fields this effect owns are compared. A task whose status,
+        // error and report text are all unchanged has nothing to repaint, even
+        // though its `updatedAt` (and so the researchTasks array identity) moved.
+        const r = m.research
+        const sameText = (m.parts[0]?.type === 'text' ? m.parts[0].text : undefined) === t.report
+        if (r && r.status === t.status && r.error === t.error && r.partial === t.partial && sameText) return m
+        changed = true
+        return { ...m, ...view(t) }
+      })
+      for (const t of pending.values()) {
+        changed = true
+        next.push({ id: `research-${t.id}`, role: 'assistant' as const, ...view(t) })
+      }
+      return changed ? next : prev
     })
   }, [restored, researchTasks, conversationId])
 
@@ -3072,6 +3103,20 @@ export default function Chat({
                   ? { onChange: updateProposal, onStart: startProposal, onCancel: cancelProposal }
                   : undefined
               }
+              // Only the slot of a task that is actually in flight gets this, so
+              // every other message keeps a stable `undefined` and its memo. The
+              // live card intentionally DOES re-render each tick — that is what
+              // makes its elapsed clock and coverage move.
+              liveResearch={
+                msg.research && isActiveStatus(msg.research.status ?? 'done')
+                  ? {
+                      task: myTasks.find((t) => `research-${t.id}` === msg.id),
+                      now,
+                      onStop: cancelResearchTask,
+                      onOpen: setOpenSheetTaskId,
+                    }
+                  : undefined
+              }
             />
           </Fragment>
         ))}
@@ -3892,6 +3937,7 @@ const MessageView = memo(function MessageView({
   conversationId,
   onProposeResearch,
   proposalActions,
+  liveResearch,
 }: {
   message: UIMessage
   streaming: boolean
@@ -3916,10 +3962,34 @@ const MessageView = memo(function MessageView({
     onStart: (p: ResearchProposal) => void
     onCancel: (p: ResearchProposal) => void
   }
+  /** Set only for the slot of a task that is still in flight — see the call site.
+   *  `task` can still be undefined for a beat after a reload, when the message has
+   *  been restored but researchTasks storage has not loaded yet; the routing below
+   *  falls back to the report card rather than rendering a card with no data. */
+  liveResearch?: {
+    task?: ResearchTask
+    now: number
+    onStop: (taskId: string) => void
+    onOpen: (taskId: string) => void
+  }
 }) {
   const bodyRef = useRef<HTMLDivElement>(null)
 
-  // A dropped-in background-research report renders as its own card.
+  // THE SLOT, in its three faces. Order is the contract: a task always wins over
+  // the proposal that spawned it (the draft is spent once real work carries its
+  // id), and a running task wins over the report view (which assumes a finished
+  // report and would render an empty body mid-flight).
+  if (liveResearch?.task)
+    return (
+      <ResearchLiveCard
+        task={liveResearch.task}
+        now={liveResearch.now}
+        onStop={() => liveResearch.onStop(liveResearch.task!.id)}
+        onOpen={() => liveResearch.onOpen(liveResearch.task!.id)}
+      />
+    )
+
+  // A finished (or errored/cancelled) background-research report.
   if (message.research) return <ResearchReportMessage message={message} />
 
   // An unstarted launch card — the editable question before anything runs.
@@ -4925,9 +4995,16 @@ function ShotCarousel({ shotIds }: { shotIds: string[] }) {
 // actions and a SourceBar. The `id` is the scroll target for its ✓ dock bar.
 function ResearchReportMessage({ message }: { message: UIMessage }) {
   const bodyRef = useRef<HTMLDivElement>(null)
-  // Collapsed hides the body + toolbar, leaving just the titled header. Starts
-  // expanded so a freshly-dropped report is readable; the header toggles it.
-  const [collapsed, setCollapsed] = useState(false)
+  // Collapsed hides the body + toolbar, leaving just the titled header.
+  //
+  // STARTS COLLAPSED, deliberately. A report can land twenty minutes after it was
+  // asked for, and the previous behaviour — arriving fully expanded — dropped two
+  // thousand words into the transcript unbidden, on top of an answer the user had
+  // already accepted. Collapsed, the arrival states what it is and what question
+  // it answered, and expands only when the user asks for it. This is the same
+  // instinct as Gemini's, whose finished report also announces itself rather than
+  // pushing itself into the conversation.
+  const [collapsed, setCollapsed] = useState(true)
   const research = message.research!
   const reportText = message.parts.map((p) => (p.type === 'text' ? p.text : '')).join('')
   return (
@@ -4940,7 +5017,19 @@ function ResearchReportMessage({ message }: { message: UIMessage }) {
           aria-expanded={!collapsed}
         >
           <ResearchGlyph />
-          <span className="research-report__title">{research.question}</span>
+          <span className="research-report__head-text">
+            <span className="research-report__title">{research.question}</span>
+            {/* The stamp is what stops a collapsed row reading as a reply to the
+                message above it: it names the question this answered and how many
+                sources stand behind it. */}
+            <span className="research-report__stamp">
+              {research.error
+                ? 'Research failed'
+                : `${message.sources?.length ?? 0} source${(message.sources?.length ?? 0) === 1 ? '' : 's'}`}
+              {research.verification && !research.error ? ' · verified' : ''}
+              {research.partial ? ' · partial' : ''}
+            </span>
+          </span>
           <svg className="research-report__caret" width="11" height="11" viewBox="0 0 12 12" aria-hidden>
             <path d="M3 4.5l3 3 3-3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" fill="none" />
           </svg>

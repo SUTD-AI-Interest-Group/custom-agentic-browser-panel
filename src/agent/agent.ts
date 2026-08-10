@@ -15,7 +15,7 @@ import { z } from 'zod'
 import { resolveActiveTools } from '../tools/toolDiscovery'
 import { toModelUsage } from './usage'
 import type { ModelUsage, Trace } from './observability'
-import type { ResearchProposal, ResearchVerification } from '../data/researchTasks'
+import type { ResearchProposal, ResearchStatus, ResearchVerification } from '../data/researchTasks'
 import type { AttachmentMeta } from '../data/attachments'
 
 /**
@@ -134,7 +134,19 @@ export interface UIMessage {
    * reply, so it scrolls with the chat and later turns follow it. The report
    * text lives in `parts`; `sources` carries the fetched pages.
    */
-  research?: { question: string; error?: string; verification?: ResearchVerification; partial?: boolean }
+  research?: {
+    question: string
+    /**
+     * The task's live status, mirrored onto the message so the slot can pick its
+     * face (live card vs finished report) without waiting for `researchTasks` to
+     * load. Absent on messages written before this field existed, which are by
+     * definition finished — treat a missing status as terminal.
+     */
+    status?: ResearchStatus
+    error?: string
+    verification?: ResearchVerification
+    partial?: boolean
+  }
   /**
    * Marks an editable background-research launch card: the moment a question
    * becomes visible and editable before anything runs (see the design doc).

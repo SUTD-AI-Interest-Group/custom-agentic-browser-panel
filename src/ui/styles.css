@@ -5915,3 +5915,172 @@ body {
   font-style: italic;
   color: var(--muted, #888);
 }
+
+/* ---- The research slot's running face (ResearchLiveCard) ----
+   Same visual family as .research-report (its own finished face) — one object,
+   three states, so they must not read as three different components. Accent
+   border while in flight, settling to the report card's neutral border when it
+   finishes and this is replaced. */
+
+.research-live {
+  border: 1px solid color-mix(in srgb, var(--accent) 42%, transparent);
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--accent) 6%, var(--surface));
+  padding: 11px 14px 12px;
+}
+
+.research-live__head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  padding: 0;
+  border: none;
+  background: none;
+  font-family: inherit;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--accent);
+  text-align: left;
+  cursor: pointer;
+}
+
+.research-live__elapsed {
+  margin-left: auto;
+  font-weight: 400;
+  color: var(--text-muted);
+}
+
+/* Reuses the spinner geometry of .research-spinner rather than inventing a
+   second one; kept local so the live card carries no dependency on the sheet. */
+.research-live__spinner {
+  width: 10px;
+  height: 10px;
+  flex: none;
+  border-radius: 50%;
+  border: 1.6px solid color-mix(in srgb, var(--accent) 30%, transparent);
+  border-top-color: var(--accent);
+  animation: research-live-spin 900ms linear infinite;
+}
+
+@keyframes research-live-spin {
+  to { transform: rotate(360deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .research-live__spinner { animation-duration: 3s; }
+}
+
+.research-live__question {
+  margin: 7px 0 0;
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: var(--text);
+}
+
+.research-live__bar {
+  height: 3px;
+  margin-top: 9px;
+  border-radius: 2px;
+  background: var(--border);
+  overflow: hidden;
+}
+
+.research-live__bar > i {
+  display: block;
+  height: 100%;
+  border-radius: 2px;
+  background: var(--accent);
+  transition: width 400ms ease;
+}
+
+.research-live__coverage {
+  margin: 9px 0 0;
+  padding: 0;
+  list-style: none;
+  font-size: 11.5px;
+  line-height: 1.7;
+  color: var(--text-muted);
+}
+
+.research-live__coverage li {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.research-live__mark {
+  width: 9px;
+  flex: none;
+  text-align: center;
+}
+
+.research-live__coverage .done > .research-live__mark::before { content: '✓'; color: var(--ok, #3f9a63); }
+.research-live__coverage .active > .research-live__mark::before { content: '▸'; color: var(--accent); }
+.research-live__coverage .pending > .research-live__mark::before { content: '○'; }
+.research-live__coverage .active > .research-live__text { color: var(--text); }
+
+/* The current step, trailing the active sub-question. Truncates rather than
+   wrapping — it changes every few seconds and must not reflow the card. */
+.research-live__doing {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  opacity: 0.75;
+}
+
+/* Shown only once a source has actually been fetched through the leased tab —
+   see the component's comment on why that is the honest signal. */
+.research-live__window {
+  margin: 7px 0 0;
+  font-size: 11px;
+  color: var(--text-muted);
+  cursor: help;
+}
+
+.research-live__paused {
+  margin: 7px 0 0;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.research-live__foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.research-live__stop {
+  margin-left: auto;
+  padding: 3px 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface);
+  font-family: inherit;
+  font-size: 11px;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.research-live__stop:hover { background: var(--pill-bg); }
+
+/* The collapsed finished row's second line: source count, verification and
+   partial-ness. This is what makes an arriving report legible as its own
+   artifact rather than as a reply to the message above it. */
+.research-report__head-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1;
+}
+
+.research-report__stamp {
+  font-weight: 400;
+  font-size: 11px;
+  color: var(--text-muted);
+}
