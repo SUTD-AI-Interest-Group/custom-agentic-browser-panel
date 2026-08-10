@@ -51,6 +51,7 @@ import {
   getSelectedProvider,
   getTitleProvider,
   observabilityConfig,
+  resolveModelPrice,
   toolPolicy,
   TOOL_CATALOG,
   GROUP_ORDER,
@@ -58,6 +59,9 @@ import {
   type ProviderConfig,
   type Settings,
 } from '../data/settings'
+import type { ModelPrice } from '../agent/pricing'
+import type { ModelUsage } from '../agent/observability'
+import { conversationUsage, usageLabel } from './usageDisplay'
 import { getActiveTab, listOpenTabs, openPdfAtPage, readTabContent, type TabContent, type TabSummary } from '../platform/tabs'
 import { looksLikePdfUrl } from '../platform/pdfText'
 import { loadPdf } from '../platform/pdf'
@@ -856,6 +860,15 @@ export default function Chat({
   const composerActionRef = useRef<(action: ComposerAction) => Promise<void>>(async () => {})
 
   const selected = getSelectedProvider(settings)
+
+  // The active model's token rates, resolved once per model change rather than
+  // per message. resolveModelPrice builds a fresh object on every call, so
+  // passing it straight into the memoized MessageView would break that memo on
+  // every render of the transcript — the exact cost this useMemo exists to avoid.
+  const modelPrice = useMemo(
+    () => (selected ? resolveModelPrice(selected.provider, selected.modelId) : {}),
+    [selected?.provider, selected?.modelId],
+  )
 
   // This conversation's previous user messages, newest first — the source list
   // for ArrowUp/ArrowDown composer history recall (3b, see the textarea's
@@ -3237,6 +3250,7 @@ export default function Chat({
               streaming={streaming && i === messages.length - 1}
               turnStartedAt={turnStartedAt}
               conversationId={conversationId}
+              price={modelPrice}
               // Regenerate is offered on the last reply only. Anything appended
               // after a turn — a background-research report or an unstarted
               // launch card landing in the transcript — makes that reply
@@ -3279,6 +3293,10 @@ export default function Chat({
             />
           </Fragment>
         ))}
+        {/* What this whole conversation has cost so far. Hidden while streaming:
+            the running total would tick mid-reply and pull the eye away from the
+            answer being written. */}
+        {!streaming && <ConversationUsageLine messages={messages} price={modelPrice} />}
         {approval && (
           // Keyed by the card's own identity: a settle can only ever land on
           // the card it was captured from (see settleApproval/ApprovalQueue
@@ -4097,10 +4115,16 @@ const MessageView = memo(function MessageView({
   onProposeResearch,
   proposalActions,
   liveResearch,
+  price,
 }: {
   message: UIMessage
   streaming: boolean
   turnStartedAt: number | null
+  /** Rates for the model currently selected, used to cost this reply's tokens.
+   *  Memoized by the caller: `resolveModelPrice` builds a fresh object per call,
+   *  and passing that straight through would defeat this component's memo on
+   *  every single render. */
+  price: ModelPrice
   /** Set only on the transcript's last reply, and only when it can be re-run. */
   onRegenerate?: () => void
   /** Threaded down to McpAppCard so an app card's tool calls are scoped to
@@ -4293,7 +4317,7 @@ const MessageView = memo(function MessageView({
         )}
       </div>
       {message.parts.length > 0 && !streaming && (
-        <MessageToolbar message={message} targetRef={bodyRef} onRegenerate={onRegenerate} />
+        <MessageToolbar message={message} targetRef={bodyRef} onRegenerate={onRegenerate} price={price} />
       )}
     </div>
   )
@@ -4355,10 +4379,12 @@ function MessageToolbar({
   message,
   targetRef,
   onRegenerate,
+  price,
 }: {
   message: UIMessage
   targetRef: React.RefObject<HTMLDivElement>
   onRegenerate?: () => void
+  price: ModelPrice
 }) {
   const markdown = message.parts
     .map((p) => (p.type === 'text' ? p.text : ''))
@@ -4375,7 +4401,47 @@ function MessageToolbar({
         trailing={onRegenerate && <RegenerateButton onClick={onRegenerate} />}
       />
       <SourceBar sources={deriveSources(message)} />
+      {message.usage && <UsageChip usage={message.usage} price={price} />}
     </div>
+  )
+}
+
+/**
+ * The conversation's running total, under the last message.
+ *
+ * Deliberately a footer inside the transcript rather than a top-bar figure: the
+ * top bar is App's, and a chat's cost belongs with the chat it accrued in — a
+ * per-tab panel can switch conversations under you, and a total that stayed put
+ * in the chrome would look like it described whatever you were now reading.
+ *
+ * Renders nothing at all when no reply reported usage, rather than a zero.
+ */
+function ConversationUsageLine({ messages, price }: { messages: UIMessage[]; price: ModelPrice }) {
+  const total = useMemo(() => conversationUsage(messages), [messages])
+  if (!total) return null
+  const label = usageLabel(total, price)
+  return (
+    <div className="conversation-usage" title={label.detail}>
+      This chat: {label.tokens} tokens
+      {label.cost && ` · ${label.cost}`}
+    </div>
+  )
+}
+
+/**
+ * What one reply cost, in tokens and (when rates are configured) dollars.
+ *
+ * Rendered only when the endpoint actually reported usage — a streaming endpoint
+ * with usage reporting off gives us nothing, and a chip reading "0 → 0" would
+ * look like a bug rather than an absence.
+ */
+function UsageChip({ usage, price }: { usage: ModelUsage; price: ModelPrice }) {
+  const label = usageLabel(usage, price)
+  return (
+    <span className="usage-chip" title={label.detail}>
+      {label.tokens}
+      {label.cost && <span className="usage-chip-cost"> · {label.cost}</span>}
+    </span>
   )
 }
 

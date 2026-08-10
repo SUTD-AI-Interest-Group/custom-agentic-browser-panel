@@ -320,6 +320,34 @@ body {
   gap: 8px;
 }
 
+/* Token/cost for one reply. Pushed to the far right of the toolbar so it never
+   competes with the copy actions for the eye, and shrink-proof so a long total
+   truncates rather than wrapping the toolbar onto two lines. */
+.usage-chip {
+  margin-left: auto;
+  flex-shrink: 0;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-muted);
+  white-space: nowrap;
+  cursor: default;
+}
+
+.usage-chip-cost {
+  opacity: 0.85;
+}
+
+/* The conversation's running total, closing the transcript. */
+.conversation-usage {
+  margin: 4px 0 2px;
+  padding: 0 2px;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-muted);
+  text-align: right;
+  cursor: default;
+}
+
 /* The copy-as-image / copy-as-markdown group, flush left; the source favicon
    bar (when present) sits just to its right. */
 .msg-toolbar-actions {
