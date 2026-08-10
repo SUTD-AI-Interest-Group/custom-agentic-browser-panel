@@ -73,6 +73,9 @@ import {
 import { getInFlight, sweepInFlight, type InFlightTurn } from '../data/conversations'
 import { relativeTime } from '../platform/time'
 import TraceDrawer from './TraceDrawer'
+import ControlJournalCard from './ControlJournalCard'
+import { revertableEntries, type ControlJournalEntry } from '../tools/pageControlJournal'
+import { restoreValue } from '../platform/pageActions'
 import { saveTrace, type TraceStep } from '../data/traces'
 import type { TraceSink } from '../agent/agent'
 import { applyCompaction, estimateHistoryTokens, planCompaction } from '../agent/compaction'
@@ -724,6 +727,18 @@ export default function Chat({
   const [continuation, setContinuation] = useState<{ checkpoint: Checkpoint | null } | null>(null)
   /** A turn interrupted mid-stream, waiting for the user to resume or discard it. */
   const [recovery, setRecovery] = useState<InFlightTurn | null>(null)
+  /**
+   * What a just-ended page-control session did, offered back for review/undo.
+   *
+   * `undoState` carries RAW prior field values and is deliberately component
+   * state, never storage: it dies when the card is dismissed or the panel
+   * closes. `entries` is the redacted half and is what renders.
+   */
+  const [controlJournal, setControlJournal] = useState<{
+    tabId: number
+    entries: ControlJournalEntry[]
+    undoState: Map<number, { value: string; kind: 'type' | 'select' }>
+  } | null>(null)
   // Set when a page tool stopped the turn because this chat's tab is no longer in
   // front (see PageTarget in tools.ts). Holds the human-readable reason for the
   // strip; cleared when the user returns to the tab and the chain resumes.
@@ -1060,6 +1075,36 @@ export default function Chat({
       cancelled = true
     }
   }, [conversationId])
+
+  /**
+   * The page the control-journal card's tab is on right now.
+   *
+   * Read when the card appears so its "Undo all (n)" count is honest: an entry
+   * is only revertable while the document that carries its `data-agent-idx`
+   * stamps is still in front. Without this the button could promise three
+   * undos and perform none, because the user navigated after the session ended.
+   */
+  const [journalPage, setJournalPage] = useState<{ origin: string; url: string } | null>(null)
+  useEffect(() => {
+    if (!controlJournal) {
+      setJournalPage(null)
+      return
+    }
+    let cancelled = false
+    void chrome.tabs
+      .get(controlJournal.tabId)
+      .then((tab) => {
+        if (cancelled) return
+        const url = tab.url ?? ''
+        setJournalPage({ origin: new URL(url).origin, url })
+      })
+      .catch(() => {
+        if (!cancelled) setJournalPage(null)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [controlJournal])
 
   /**
    * Last-gasp checkpoint flush when the panel is going away. Best-effort by
@@ -1523,6 +1568,13 @@ export default function Chat({
     const s = pageSessionRef.current
     pageSessionRef.current = null
     if (s) {
+      // Surface what the session did, before the session object goes away.
+      // The card holds the entries (redacted) plus the raw undo state, which
+      // lives ONLY here in component memory and dies with the card — see
+      // pageControlJournal.ts's lifetime split. Nothing is written to disk.
+      if (s.journal && s.journal.length > 0) {
+        setControlJournal({ tabId: s.tabId, entries: s.journal, undoState: s.undoState ?? new Map() })
+      }
       void clearIndex(s.tabId)
       void clearRegions(s.tabId)
       void unmountPresence(s.tabId)
@@ -3302,6 +3354,50 @@ export default function Chat({
     })
   }
 
+  /**
+   * Put back what a page-control session changed.
+   *
+   * **User-initiated undo is itself the human gate**, so this raises no approval
+   * card of its own. That is not a gap in the security model: the action is
+   * requested by the user (not the model), strictly narrowing (it only restores
+   * values the agent overwrote), and scoped to fields the classifier already
+   * judged safe to touch — a sensitive field is never in `undoState` at all.
+   *
+   * Re-checks `isUndoable` against the tab's CURRENT origin/url immediately
+   * before acting, because the card can sit on screen indefinitely and the page
+   * may have navigated since. `data-agent-idx` stamps belong to one document;
+   * applying an index to a different page would edit an unrelated field.
+   */
+  async function undoControlActions(scope: 'last' | 'all') {
+    if (!controlJournal) return
+    const { tabId, entries, undoState } = controlJournal
+    let current: { origin: string; url: string }
+    try {
+      const tab = await chrome.tabs.get(tabId)
+      const url = tab.url ?? ''
+      current = { origin: new URL(url).origin, url }
+    } catch {
+      // The tab is gone; nothing can be restored on it.
+      setControlJournal(null)
+      return
+    }
+    const candidates = revertableEntries(entries, current)
+    const targets = scope === 'last' ? candidates.slice(0, 1) : candidates
+    const undone = new Set<number>()
+    for (const entry of targets) {
+      if (entry.index === undefined) continue
+      const prior = undoState.get(entry.index)
+      if (!prior) continue
+      const res = await restoreValue(tabId, entry.index, prior.value, prior.kind)
+      if (res.ok) undone.add(entry.index)
+    }
+    // Drop the entries that were actually restored, so a second click cannot
+    // re-apply them and the card honestly reflects what is left.
+    const remaining = entries.filter((e) => e.index === undefined || !undone.has(e.index))
+    if (remaining.length === 0 || undone.size === entries.length) setControlJournal(null)
+    else setControlJournal({ tabId, entries: remaining, undoState })
+  }
+
   /** Throw away an interrupted turn's checkpoint; the partial transcript stays. */
   async function discardInterruptedTurn() {
     setRecovery(null)
@@ -3620,6 +3716,17 @@ export default function Chat({
             record={recovery}
             onResume={() => void resumeInterruptedTurn()}
             onDiscard={() => void discardInterruptedTurn()}
+          />
+        )}
+        {controlJournal && !streaming && (
+          <ControlJournalCard
+            entries={controlJournal.entries}
+            revertableCount={
+              journalPage ? revertableEntries(controlJournal.entries, journalPage).length : 0
+            }
+            onUndoLast={() => void undoControlActions('last')}
+            onUndoAll={() => void undoControlActions('all')}
+            onDismiss={() => setControlJournal(null)}
           />
         )}
         {parkedReason !== null && !streaming && (
