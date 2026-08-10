@@ -24,6 +24,9 @@ function fakeChrome(landedUrl: string) {
     scripting: {
       executeScript: vi.fn(async () => [{ result: { rows: [{ title: 'A', url: 'https://a.example/', snippet: '' }], challenged: false } }]),
     },
+    // researchTab parks the leased window on the extension's own
+    // research-tab.html, so the stub needs getURL like the real API has.
+    runtime: { getURL: (p: string) => `chrome-extension://test/${p}` },
     storage: {
       session: {
         set: vi.fn(async () => {}),

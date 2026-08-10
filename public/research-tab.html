@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Lychee is researching…</title>
+    <!--
+      The parking page for the research browsing window.
+
+      This window is real and necessary: background research reads pages that
+      plain fetch() returns nothing for (SPAs, paywalls, anything JS-rendered),
+      and it is opened incognito and minimized so it stays out of the way. It
+      surfaces anyway — captureVisibleTab cannot screenshot a minimized window,
+      so the window is briefly restored to normal for each capture. Users saw
+      that as blank incognito windows appearing and vanishing with nothing in
+      them.
+
+      So the tab parks here between navigations and identifies itself. Entirely
+      self-contained (no external fetch of any kind) because this loads under
+      the extension's own CSP.
+    -->
+    <style>
+      :root {
+        color-scheme: light dark;
+        --bg: #ffffff;
+        --surface: #fafafa;
+        --text: #18181b;
+        --muted: #71717a;
+        --accent: #c9304a;
+        --border: #e4e4e7;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #18181b;
+          --surface: #232327;
+          --text: #f4f4f5;
+          --muted: #9d9da6;
+          --accent: #f2687e;
+          --border: #34343a;
+        }
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 24px;
+        background: var(--bg);
+        color: var(--text);
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+        -webkit-font-smoothing: antialiased;
+      }
+      .card {
+        max-width: 460px;
+        width: 100%;
+        padding: 28px 30px;
+        border: 1px solid var(--border);
+        border-radius: 16px;
+        background: var(--surface);
+      }
+      .badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        font-size: 13px;
+        font-weight: 600;
+        color: var(--accent);
+      }
+      .dot {
+        width: 9px;
+        height: 9px;
+        border-radius: 50%;
+        background: var(--accent);
+        animation: pulse 1.6s ease-in-out infinite;
+      }
+      @keyframes pulse {
+        0%, 100% { opacity: 1; }
+        50% { opacity: 0.3; }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .dot { animation: none; }
+      }
+      h1 {
+        margin: 14px 0 0;
+        font-size: 19px;
+        font-weight: 600;
+        letter-spacing: -0.01em;
+      }
+      p {
+        margin: 10px 0 0;
+        font-size: 13.5px;
+        line-height: 1.6;
+        color: var(--muted);
+      }
+      .note {
+        margin-top: 18px;
+        padding-top: 14px;
+        border-top: 1px solid var(--border);
+        font-size: 12.5px;
+      }
+    </style>
+  </head>
+  <body>
+    <main class="card">
+      <span class="badge"><span class="dot" aria-hidden="true"></span> Lychee AI</span>
+      <h1>Reading pages for your research</h1>
+      <p>
+        A research task you started in the side panel is using this window to read pages that
+        only load properly in a real browser. It opens minimized and closes itself when the
+        research finishes or goes idle.
+      </p>
+      <p class="note">
+        Safe to close — research will open another one if it still needs it. Nothing you do in
+        your normal browsing windows is affected, and this window keeps its own separate
+        cookies.
+      </p>
+    </main>
+  </body>
+</html>
