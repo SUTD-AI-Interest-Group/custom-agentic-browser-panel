@@ -9,6 +9,7 @@ import {
   migrateResearchToolPolicy,
   resetSettingsKeepingProviders,
   resolveDreamIntervalMs,
+  resolveModelPrice,
   resolveReasoningEffort,
   setGroupPolicy,
   toolPolicy,
@@ -184,6 +185,29 @@ describe('resolveReasoningEffort', () => {
 
   it('is undefined when neither model nor provider set it', () => {
     expect(resolveReasoningEffort(provider(), 'm1')).toBeUndefined()
+  })
+})
+
+describe('resolveModelPrice', () => {
+  it('returns the per-model rates when set', () => {
+    const p = provider({ modelConfigs: { m1: { price: { inputPerMTok: 3, outputPerMTok: 15 } } } })
+    expect(resolveModelPrice(p, 'm1')).toEqual({ inputPerMTok: 3, outputPerMTok: 15 })
+  })
+
+  it('returns an empty price for a model with no rates, so callers need no null check', () => {
+    expect(resolveModelPrice(provider(), 'm1')).toEqual({})
+  })
+
+  it('does not leak one model’s rates onto another', () => {
+    const p = provider({ modelConfigs: { m1: { price: { inputPerMTok: 3 } } } })
+    expect(resolveModelPrice(p, 'm2')).toEqual({})
+  })
+
+  it('preserves a rate of 0, which is a real price and not the same as unset', () => {
+    // A free local endpoint. If this collapsed to `{}` the UI would show
+    // "no price set" for a model that genuinely costs nothing.
+    const p = provider({ modelConfigs: { m1: { price: { inputPerMTok: 0, outputPerMTok: 0 } } } })
+    expect(resolveModelPrice(p, 'm1')).toEqual({ inputPerMTok: 0, outputPerMTok: 0 })
   })
 })
 

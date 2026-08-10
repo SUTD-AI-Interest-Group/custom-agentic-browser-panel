@@ -2,6 +2,7 @@
 // A "provider" is any OpenAI-compatible endpoint (OpenAI, OpenRouter, Groq,
 // Ollama, Anthropic's /v1 compat layer, LM Studio, vLLM, ...).
 
+import type { ModelPrice } from '../agent/pricing'
 import type { McpSettings } from '../mcp/config'
 import { clearAuth } from '../mcp/auth'
 import { openSettings, sealSettings, secretValues } from './settingsVault'
@@ -46,6 +47,16 @@ export interface ModelConfig {
    * hides it, `undefined` leaves it to auto-detection.
    */
   reasoning?: boolean
+  /**
+   * What this model costs, in dollars per **million** tokens — the unit every
+   * provider publishes, so a figure can be copied off a pricing page without
+   * arithmetic. User-supplied and per-model rather than shipped as a table,
+   * because this app talks to arbitrary OpenAI-compatible endpoints: a bundled
+   * price list would be wrong for a custom endpoint immediately and silently
+   * stale for the rest within a quarter, and a confidently wrong cost is worse
+   * than no cost at all. Applied by `estimateCost` (src/agent/pricing.ts).
+   */
+  price?: ModelPrice
 }
 
 export interface ProviderConfig {
@@ -464,6 +475,21 @@ export function resolveReasoningEffort(
   modelId: string,
 ): ReasoningEffort | undefined {
   return provider.modelConfigs?.[modelId]?.reasoningEffort ?? provider.reasoningEffort
+}
+
+/**
+ * A model's configured rates, or an empty price when it has none. Returns `{}`
+ * rather than `undefined` so callers can pass the result straight to
+ * `estimateCost` without a null check — an empty price already means "nothing
+ * is priced", which is exactly what `estimateCost` reports as `undefined`.
+ *
+ * Deliberately has no provider-level fallback, unlike `resolveReasoningEffort`:
+ * effort is a preference that sensibly applies across a provider's models,
+ * whereas price is a property of one specific model. Inheriting a sibling's
+ * rate would quietly bill a cheap model at an expensive one's price.
+ */
+export function resolveModelPrice(provider: ProviderConfig, modelId: string): ModelPrice {
+  return provider.modelConfigs?.[modelId]?.price ?? {}
 }
 
 export function getSelectedProvider(

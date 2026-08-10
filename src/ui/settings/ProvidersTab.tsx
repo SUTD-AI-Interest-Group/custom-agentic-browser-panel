@@ -1,5 +1,12 @@
-import { useEffect, useRef, useState } from 'react'
-import { providerKind, type ProviderConfig, type ReasoningEffort, type Settings } from '../../data/settings'
+import { Fragment, useEffect, useRef, useState } from 'react'
+import {
+  providerKind,
+  resolveModelPrice,
+  type ProviderConfig,
+  type ReasoningEffort,
+  type Settings,
+} from '../../data/settings'
+import type { ModelPrice } from '../../agent/pricing'
 import { profileFor } from '../../data/providerProfiles'
 import { fetchModelList } from '../../platform/modelList'
 import { resolveModelRefresh } from './modelRefresh'
@@ -22,6 +29,84 @@ const PRESETS: Array<Pick<ProviderConfig, 'name' | 'baseURL' | 'kind'> & { model
 /** Drop the scheme so a collapsed card reads "api.openai.com/v1", not the whole URL. */
 function hostLabel(baseURL: string): string {
   return baseURL.replace(/^https?:\/\//, '') || 'not configured'
+}
+
+/** The three rate columns, in the order a provider's pricing page lists them. */
+const RATE_FIELDS: Array<{ key: keyof ModelPrice; label: string; title: string }> = [
+  { key: 'inputPerMTok', label: 'in', title: 'Input tokens, $ per million' },
+  { key: 'outputPerMTok', label: 'out', title: 'Output tokens, $ per million' },
+  { key: 'cachedInputPerMTok', label: 'cached', title: 'Cached input tokens, $ per million' },
+]
+
+/**
+ * Optional per-model token rates, so the chat can show a real cost without
+ * Langfuse. Collapsed by default — most users never set these, and an expanded
+ * grid of three inputs per model would dominate a ~400px card for a provider
+ * with a dozen models.
+ *
+ * A blank field means "unpriced" and shows nothing in the chat, rather than
+ * showing $0.00 and implying the turn was free.
+ */
+function ModelRates({
+  provider,
+  onChange,
+  onCommit,
+}: {
+  provider: ProviderConfig
+  onChange: (modelId: string, field: keyof ModelPrice, raw: string) => void
+  onCommit: () => void
+}) {
+  const [open, setOpen] = useState(false)
+  const models = provider.models.filter((m) => m.trim())
+  if (models.length === 0) return null
+  return (
+    <div className="model-rates">
+      <button className="link-btn tiny" aria-expanded={open} onClick={() => setOpen((o) => !o)}>
+        {open ? 'Hide token rates' : 'Token rates (optional)'}
+      </button>
+      {open && (
+        <>
+          <p className="hint">
+            Dollars per <strong>million</strong> tokens, copied from your provider's pricing page.
+            Leave blank to show token counts without a cost.
+          </p>
+          <div className="model-rates-grid">
+            <span />
+            {RATE_FIELDS.map((f) => (
+              <span key={f.key} className="model-rates-head" title={f.title}>
+                {f.label}
+              </span>
+            ))}
+            {models.map((modelId) => {
+              const price = resolveModelPrice(provider, modelId)
+              return (
+                <Fragment key={modelId}>
+                  <span className="model-rates-name" title={modelId}>
+                    {modelId}
+                  </span>
+                  {RATE_FIELDS.map((f) => (
+                    <input
+                      key={f.key}
+                      className="model-rate-input"
+                      type="number"
+                      min="0"
+                      step="0.01"
+                      inputMode="decimal"
+                      aria-label={`${modelId} — ${f.title}`}
+                      value={price[f.key] ?? ''}
+                      placeholder="—"
+                      onChange={(e) => onChange(modelId, f.key, e.target.value)}
+                      onBlur={onCommit}
+                    />
+                  ))}
+                </Fragment>
+              )
+            })}
+          </div>
+        </>
+      )}
+    </div>
+  )
 }
 
 /**
@@ -73,6 +158,38 @@ export default function ProvidersTab({
       providers: draft.providers.map((p) => (p.id === id ? { ...p, ...patch } : p)),
     }
     ;(persist ? commit : buffer)(next)
+  }
+
+  /**
+   * Write one rate onto one model, keeping `modelConfigs` sparse: an emptied
+   * field drops its key, a price with no keys left drops `price`, and a model
+   * config with nothing left drops the model entirely. Sparseness is what lets
+   * old installs and newly-added models need no migration.
+   *
+   * A blank input clears the rate rather than storing `0`. The two must not
+   * collapse: `0` is a real price (a free local endpoint), and `estimateCost`
+   * distinguishes them — an unset rate leaves that term unpriced, a zero rate
+   * prices it at nothing.
+   */
+  function updateModelPrice(providerId: string, modelId: string, field: keyof ModelPrice, raw: string) {
+    const target = draft.providers.find((p) => p.id === providerId)
+    if (!target) return
+    const trimmed = raw.trim()
+    const parsed = trimmed === '' ? undefined : Number(trimmed)
+    // Ignore an unparseable entry outright rather than storing NaN, which would
+    // poison every later cost estimate for this model with a silent NaN total.
+    if (parsed !== undefined && (!Number.isFinite(parsed) || parsed < 0)) return
+
+    const price: ModelPrice = { ...resolveModelPrice(target, modelId), [field]: parsed }
+    for (const key of Object.keys(price) as Array<keyof ModelPrice>) {
+      if (price[key] === undefined) delete price[key]
+    }
+    const configs = { ...target.modelConfigs }
+    const { price: _dropped, ...rest } = configs[modelId] ?? {}
+    const nextConfig = Object.keys(price).length > 0 ? { ...rest, price } : rest
+    if (Object.keys(nextConfig).length > 0) configs[modelId] = nextConfig
+    else delete configs[modelId]
+    updateProvider(providerId, { modelConfigs: configs })
   }
 
   function addProvider(preset: (typeof PRESETS)[number]) {
@@ -236,6 +353,11 @@ export default function ProvidersTab({
                       {refreshMsg[p.id] && <span className="hint">{refreshMsg[p.id]}</span>}
                     </div>
                   </div>
+                  <ModelRates
+                    provider={p}
+                    onChange={(modelId, field, raw) => updateModelPrice(p.id, modelId, field, raw)}
+                    onCommit={commitDraft}
+                  />
                   <Select
                     label="Reasoning effort"
                     value={p.reasoningEffort ?? ''}
