@@ -10,6 +10,7 @@ import { loadPdf } from '../platform/pdf'
 import { searchAcademic, searchImages, harvestImages, type ImageResult } from '../platform/researchSources'
 import { summarizeNotebook, type NotebookHandle } from '../agent/notebook'
 import { runBrowseSession, type BrowseBroker } from '../agent/browseAgent'
+import { scopeAllows } from './browsePolicy'
 import type { UIPart } from '../agent/agent'
 
 export type { BrowseBroker } from '../agent/browseAgent'
@@ -153,8 +154,16 @@ export function createResearchTools(deps: {
   trace?: Trace
   /** Cancellation for the whole task. */
   signal?: AbortSignal
+  /**
+   * Source scope from the launch card: registrable hosts (see scopeAllows,
+   * browsePolicy.ts). Empty/absent = unrestricted — today's default behavior,
+   * and every existing caller that doesn't pass this gets it unchanged.
+   * WebSearch narrows its query and filters results to this scope; FetchUrl and
+   * BrowseSite refuse an out-of-scope host outright, before any network work.
+   */
+  sites?: string[]
 }): ToolSet {
-  const { notebook, renderBroker, browseBroker, searchBroker, browseBudget } = deps
+  const { notebook, renderBroker, browseBroker, searchBroker, browseBudget, sites = [] } = deps
   const tools: ToolSet = {
     WebSearch: tool({
       description: 'Search the web (DuckDuckGo) and return ranked {title,url,snippet} results.',
@@ -163,15 +172,33 @@ export function createResearchTools(deps: {
         maxResults: z.number().optional().describe('Default 8, max 20'),
       }),
       execute: async ({ query, maxResults = 8 }, { abortSignal }) => {
-        const r = await searchDuckDuckGo(query, maxResults, abortSignal)
-        if (!('error' in r) && r.results.length) return { results: r.results }
+        // `site:` narrows the query for up to 3 scoped hosts (an OR chain past
+        // that gets unwieldy) — but it is only a hint the engine may ignore, so
+        // the filter below is what actually enforces the scope.
+        const scopedQuery =
+          sites.length > 0 && sites.length <= 3 ? `${query} (${sites.map((s) => `site:${s}`).join(' OR ')})` : query
+        // A snippet alone is enough to hallucinate from, so an out-of-scope result
+        // must not reach the model even as a title — filtering at fetch time only
+        // would be too late. When the scope removes everything found, say so
+        // rather than returning an unexplained empty array (the same "state it,
+        // don't silently drop it" rule FetchUrl/BrowseSite follow below).
+        const withScope = (rows: SearchResultRow[]): { results: SearchResultRow[]; note?: string } => {
+          if (!sites.length) return { results: rows }
+          const results = rows.filter((row) => scopeAllows(row.url, sites))
+          return results.length
+            ? { results }
+            : { results, note: `Every result was outside this task's source scope (${sites.join(', ')}); try a different query.` }
+        }
+
+        const r = await searchDuckDuckGo(scopedQuery, maxResults, abortSignal)
+        if (!('error' in r) && r.results.length) return withScope(r.results)
         // The keyless endpoint was throttled or parsed nothing. If a tab broker is
         // available, retry the search in a REAL browser tab — that clears the bot
         // wall a plain fetch can't. This is what turns "search failed after
         // retries" into actual results.
         if (searchBroker) {
-          const t = await searchBroker.search(query, maxResults)
-          if (!('error' in t) && t.results.length) return { results: t.results, via: 'tab' }
+          const t = await searchBroker.search(scopedQuery, maxResults)
+          if (!('error' in t) && t.results.length) return { ...withScope(t.results), via: 'tab' }
           // Both paths failed — surface the more informative error.
           if ('error' in r) return { error: r.error, note: 'error' in t ? `tab fallback also failed: ${t.error}` : undefined }
           return { results: [], note: 'No results from the web search or the tab fallback; try a different query.' }
@@ -189,6 +216,11 @@ export function createResearchTools(deps: {
         render: z.boolean().optional().describe('Force a real-tab render instead of a plain fetch'),
       }),
       execute: async ({ url, render }, { abortSignal }) => {
+        if (!scopeAllows(url, sites)) {
+          // Stated, not silent: a blocked read must appear in the step log so the
+          // report's gaps are explicable.
+          return { error: `Out of scope. This research is restricted to: ${sites.join(', ')}` }
+        }
         // A PDF has no DOM to render or scrape — go straight to the pdf.js
         // extractor (even under render:true; a tab render can never help).
         if (looksLikePdfUrl(url)) return await fetchPdfReadable(url, notebook, abortSignal)
@@ -371,6 +403,20 @@ export function createResearchTools(deps: {
           .describe('Specifically what to find there, e.g. "the 2024 pricing table" or "the methodology section of the linked paper"'),
       }),
       execute: async ({ url, objective }, { toolCallId, abortSignal }) => {
+        if (!scopeAllows(url, sites)) {
+          // Stated, not silent: a blocked read must appear in the step log so the
+          // report's gaps are explicable. Checked ahead of the model-config and
+          // budget checks below too, so a refused call never spends either.
+          //
+          // Known limitation: this gates only the session's OWN start url. Once a
+          // session is open, its interior link-following (GoToUrl / clicking an
+          // <a href>) is policy-checked by isSafeResearchAction (browsePolicy.ts),
+          // which allows cross-origin navigation by design ("surfing is the
+          // point") and is not scope-aware — threading `sites` through the
+          // offscreen->SW browse round-trip into that gate is a separate,
+          // larger change than this task's file list covers.
+          return { error: `Out of scope. This research is restricted to: ${sites.join(', ')}` }
+        }
         if (!deps.selected) return { error: 'No model configured.' }
         if (browseBudget && browseBudget.remaining <= 0) {
           return {

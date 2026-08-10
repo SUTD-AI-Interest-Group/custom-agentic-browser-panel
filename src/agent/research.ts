@@ -106,6 +106,11 @@ export async function runResearch(opts: {
   browseBroker?: BrowseBroker
   /** Run a search in a real tab when the keyless fetch is throttled. */
   searchBroker?: SearchBroker
+  /** Source scope from the launch card (registrable hosts). Empty/absent =
+   *  unrestricted — today's default. Passed straight through to every gather
+   *  round's createResearchTools call; see that function's own doc comment for
+   *  what each tool does with it. */
+  sites?: string[]
   /** Emits the live step log + notebook snapshot for the sheet. */
   onUpdate: (steps: ResearchStep[], notebook: ResearchNotebook) => void
   signal: AbortSignal
@@ -286,6 +291,7 @@ export async function runResearch(opts: {
         taskId: opts.taskId,
         onBrowseStep,
         signal: opts.signal,
+        sites: opts.sites,
       })
       const roundStart = allSteps.length
       let roundParts: UIPart[] = []

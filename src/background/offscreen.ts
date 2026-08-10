@@ -175,6 +175,7 @@ chrome.runtime.onMessage.addListener((msg: ResearchMsg | DreamMsg) => {
       signal: ctrl.signal,
       deadlineAt: msg.deadlineAt,
       resumeNotebook: msg.notebook,
+      sites: msg.sites,
       renderBroker: makeRenderBroker(msg.taskId, ctrl.signal),
       browseBroker: makeBrowseBroker(msg.taskId, ctrl.signal),
       searchBroker: makeSearchBroker(msg.taskId, ctrl.signal),
