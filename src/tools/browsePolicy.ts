@@ -198,6 +198,12 @@ export function isSafeResearchAction(action: BrowseAction, el?: IndexedElement):
  */
 export function scopeAllows(url: string, scope: string[]): boolean {
   if (scope.length === 0) return true
+  // A document the user attached is always in scope: they handed it over
+  // deliberately, which makes it the most explicitly-scoped source there is, and
+  // refusing it because they ALSO pinned a website would be perverse. It has no
+  // host to match anyway. This cannot widen browsing — `attachment:` is not a
+  // fetchable scheme, so isFetchableUrl refuses it regardless of what this says.
+  if (url.startsWith('attachment:')) return true
   const host = normalizeHost(url)
   if (!host) return false
   return scope.some((entry) => {

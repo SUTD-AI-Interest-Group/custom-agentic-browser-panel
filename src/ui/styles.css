@@ -6084,3 +6084,45 @@ body {
   font-size: 11px;
   color: var(--text-muted);
 }
+
+/* ---- Attached documents on the research launch card ----
+   Placed above the site scope: a file the user chose is a stronger claim on the
+   research than a host they merely allowed. */
+
+.research-launch__atts {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-top: 9px;
+}
+
+.research-launch__att {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 100%;
+  padding: 3px 6px 3px 8px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface);
+  font-size: 11px;
+  color: var(--text);
+}
+
+.research-launch__att-icon { flex: none; font-size: 10px; }
+
+.research-launch__att-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.research-launch__att-sub { flex: none; color: var(--text-muted); }
+
+.research-launch__att-note {
+  width: 100%;
+  font-size: 10.5px;
+  color: var(--text-muted);
+}

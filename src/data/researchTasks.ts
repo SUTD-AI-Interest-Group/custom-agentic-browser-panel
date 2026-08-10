@@ -125,6 +125,30 @@ export interface ResearchTask {
   /** Source scope (registrable hosts). Empty/absent = unrestricted. Retained so a
    *  resumed task keeps the scope the user approved. */
   sites?: string[]
+  /** Documents the user attached at launch, by reference. Retained so a resumed
+   *  task can still read them. */
+  attachments?: ResearchAttachmentRef[]
+}
+
+/**
+ * A document the user attached to a research launch, carried by REFERENCE only.
+ *
+ * Bytes never cross the message boundary: the offscreen research host opens the
+ * same `lychee-attachments` IndexedDB the panel wrote to (it is an extension
+ * page, so same origin — and it already reads IndexedDB to dream) and resolves
+ * `id` itself. The rest of these fields exist so the launch card, the step log
+ * and the report's citation chip can name the document without a round-trip.
+ *
+ * The store is capped by size and age while research runs to a 24h deadline, so
+ * a task can outlive its own attachment. Readers must treat a missing record as
+ * a stated "no longer available", never as a failure of the run.
+ */
+export interface ResearchAttachmentRef {
+  id: string
+  name: string
+  kind: 'image' | 'pdf' | 'text' | 'document'
+  /** PDFs only — lets the launch card and ReadAttachment show extents up front. */
+  pageCount?: number
 }
 
 /**
@@ -143,6 +167,8 @@ export interface ResearchProposal {
   sites: string[]
   premise?: { asserted: string; corrected: string }
   clarifications?: string[]
+  /** Documents the user attached to the armed message, by reference. */
+  attachments?: ResearchAttachmentRef[]
   /** Epoch ms the framing call produced this, so a stale brief reads as stale. */
   draftedAt: number
 }
@@ -189,6 +215,8 @@ export type ResearchMsg =
       subQuestions?: string[]
       /** Source scope (registrable hosts). Empty/absent = unrestricted. */
       sites?: string[]
+      /** Documents attached at launch, by reference — bytes stay in IndexedDB. */
+      attachments?: ResearchAttachmentRef[]
     }
   | {
       type: 'research.start'
@@ -213,6 +241,9 @@ export type ResearchMsg =
       subQuestions?: string[]
       /** Source scope (registrable hosts). Empty/absent = unrestricted. */
       sites?: string[]
+      /** Documents attached at launch, by reference — the host resolves the bytes
+       *  itself from IndexedDB. */
+      attachments?: ResearchAttachmentRef[]
     }
   | { type: 'research.update'; taskId: string; steps: ResearchStep[]; notebook?: ResearchNotebook }
   // Resilience transitions (offscreen → SW): a phase hit a transient failure and is

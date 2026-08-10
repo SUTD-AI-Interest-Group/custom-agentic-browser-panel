@@ -29,6 +29,7 @@ import {
   ingestFiles,
   makeHistoricalAttachmentResolver,
   type ComposerAttachment,
+  persistAttachments,
 } from './attachments'
 import { buildRetryNote } from './regenerate'
 import { COMPOSER_ACTION_MSG, drainComposerAction, type ComposerAction } from '../platform/composerActions'
@@ -84,6 +85,7 @@ import {
   type ResearchTask,
   type ResearchStatus,
   type ResearchVerification,
+  type ResearchAttachmentRef,
   type ResearchProposal,
 } from '../data/researchTasks'
 import { frameResearch, type ResearchFramingResult } from '../agent/researchFraming'
@@ -754,6 +756,9 @@ export default function Chat({
   // launch card is created, because sticky arming is how a second 20-minute task
   // gets fired by accident.
   const [researchArmed, setResearchArmed] = useState(false)
+  // Composer attachments parked per un-started proposal, so Cancel can hand the
+  // files back. Keyed by taskId; cleared on Cancel or Start (see both).
+  const proposalAttsRef = useRef<Map<string, ComposerAttachment[]>>(new Map())
   // A ProposeResearch chip click stages its question here; an effect below
   // drains it through the exact same framing call the armed composer's Send
   // uses. A plain useState setter — not a closure over proposeResearch
@@ -2167,7 +2172,7 @@ export default function Chat({
    * persistence trigger — turnSeq is the existing (only) wire for that (see
    * its declaration above), so this bumps it after appending.
    */
-  async function proposeResearch(text: string) {
+  async function proposeResearch(text: string, atts: ComposerAttachment[] = []) {
     // Clear any stale capture/attach/no-model error already showing above the
     // composer — capture()/addFiles()/clearComposer() all clear it the same
     // way when they start a fresh attempt; without this a leftover error from
@@ -2176,6 +2181,22 @@ export default function Chat({
     setCaptureError(null)
     const taskId = `r-${Date.now()}-${Math.floor(performance.now())}`
     const context = recentContext(messages)
+    // Persist the composer's attachments so the offscreen research host can read
+    // them back by id (it opens the same lychee-attachments IndexedDB). Only the
+    // ones that actually stored are carried forward — a ref research cannot
+    // resolve is worse than no ref, since the launch card would promise a
+    // document that is not there. `persistAttachments` skips the delivery ladder
+    // entirely: the framing call takes text, and the research agent reads
+    // documents through its own tool rather than being handed them up front.
+    const attachmentRefs: ResearchAttachmentRef[] =
+      atts.length > 0
+        ? (await persistAttachments(atts, conversationId)).map((m) => ({
+            id: m.id,
+            name: m.name,
+            kind: m.kind,
+            pageCount: m.pageCount,
+          }))
+        : []
     let framed: ResearchFramingResult
     if (!selected) {
       // The pill and the composer are normally disabled with no provider
@@ -2204,13 +2225,25 @@ export default function Chat({
         framed = { question: text, subQuestions: [], sites: [] }
       }
     }
+    // Cancel promises to put the user exactly where they were before Send, and
+    // that includes their files. The refs on the proposal are enough for
+    // research, but not enough to rebuild a composer chip (which holds decoded
+    // bytes), so the originals are parked here. In-memory only, matching the
+    // same tradeoff updateProposal already documents: a reload before Start
+    // loses them from the composer, though the persisted records survive.
+    if (atts.length > 0) proposalAttsRef.current.set(taskId, atts)
     setMessages((prev) => [
       ...prev,
       {
         id: `research-${taskId}`,
         role: 'assistant' as const,
         parts: [],
-        proposal: { ...framed, taskId, draftedAt: Date.now() },
+        proposal: {
+          ...framed,
+          taskId,
+          ...(attachmentRefs.length > 0 ? { attachments: attachmentRefs } : {}),
+          draftedAt: Date.now(),
+        },
       },
     ])
     setTurnSeq((n) => n + 1)
@@ -2236,6 +2269,8 @@ export default function Chat({
    * the report, so Start must never remove or replace it.
    */
   function startProposal(p: ResearchProposal) {
+    // The originals are the composer's to restore only until the task exists.
+    proposalAttsRef.current.delete(p.taskId)
     postResearchMsg({
       type: 'research.ensureAndStart',
       taskId: p.taskId,
@@ -2244,6 +2279,7 @@ export default function Chat({
       brief: p.brief,
       subQuestions: p.subQuestions,
       sites: p.sites,
+      attachments: p.attachments,
     })
   }
 
@@ -2257,6 +2293,11 @@ export default function Chat({
   function cancelProposal(p: ResearchProposal) {
     setMessages((prev) => prev.filter((m) => m.id !== `research-${p.taskId}`))
     setInput(p.question)
+    const parked = proposalAttsRef.current.get(p.taskId)
+    if (parked) {
+      setAttachments(parked)
+      proposalAttsRef.current.delete(p.taskId)
+    }
     setResearchArmed(true)
     setTurnSeq((n) => n + 1)
   }
@@ -2345,10 +2386,14 @@ export default function Chat({
   function submit() {
     if (researchArmed) {
       const text = input.trim()
-      if (!text) return
+      // Attachments alone are enough to research from — a dropped-in spec sheet
+      // with no typed question is a legitimate ask.
+      if (!text && attachments.length === 0) return
+      const atts = attachments
       setInput('')
+      setAttachments([])
       setResearchArmed(false)
-      void proposeResearch(text)
+      void proposeResearch(text, atts)
       return
     }
     const spec = composeSpec()

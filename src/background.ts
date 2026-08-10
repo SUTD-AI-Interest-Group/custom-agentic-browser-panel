@@ -391,6 +391,7 @@ async function startResearchTask(taskId: string, opts: { resume?: boolean } = {}
     sites: task.sites,
     brief: task.brief,
     subQuestions: task.subQuestions,
+    attachments: task.attachments,
   } satisfies ResearchMsg)
 }
 
@@ -476,6 +477,7 @@ chrome.runtime.onMessage.addListener((msg: ResearchMsg | DreamMsg, _sender, send
           sites: msg.sites,
           brief: msg.brief,
           subQuestions: msg.subQuestions,
+          attachments: msg.attachments,
         })
         // Dispatch through the shared, resilient path. Any failure here (e.g. offscreen
         // creation hiccup) leaves the task 'running'; the watchdog re-dispatches it.

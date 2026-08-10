@@ -68,6 +68,46 @@ export default function ResearchLaunchCard({
         </div>
       )}
 
+      {/* Attached documents. Shown before the site scope because they are the
+          stronger claim on the research: a file the user chose beats a host they
+          allowed. Removable here, since the card is the last point at which
+          dropping one costs nothing. */}
+      {proposal.attachments && proposal.attachments.length > 0 && (
+        <div className="research-launch__atts">
+          {proposal.attachments.map((att) => (
+            <span className="research-launch__att" key={att.id} title={att.name}>
+              <span className="research-launch__att-icon" aria-hidden="true">
+                {att.kind === 'image' ? '🖼' : '📄'}
+              </span>
+              <span className="research-launch__att-name">{att.name}</span>
+              {att.pageCount != null && (
+                <span className="research-launch__att-sub">
+                  {att.pageCount} page{att.pageCount === 1 ? '' : 's'}
+                </span>
+              )}
+              <button
+                type="button"
+                className="context-remove"
+                title={`Remove ${att.name}`}
+                aria-label={`Remove ${att.name}`}
+                onClick={() =>
+                  onChange({ ...proposal, attachments: proposal.attachments!.filter((a) => a.id !== att.id) })
+                }
+              >
+                <svg width="8" height="8" viewBox="0 0 8 8" fill="none" aria-hidden="true">
+                  <path d="M1.5 1.5l5 5M6.5 1.5l-5 5" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
+                </svg>
+              </button>
+            </span>
+          ))}
+          {/* An image contributes nothing on this path — say so on the card rather
+              than letting the user discover it from a report that never cites it. */}
+          {proposal.attachments.some((a) => a.kind === 'image') && (
+            <span className="research-launch__att-note">Images are carried as sources but not read</span>
+          )}
+        </div>
+      )}
+
       <div className="research-launch__sites">
         {proposal.sites.map((site) => (
           <span className="research-launch__site" key={site}>

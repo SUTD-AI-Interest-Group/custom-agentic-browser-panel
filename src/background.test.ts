@@ -337,6 +337,7 @@ test('two racing watchdog ticks claim and dispatch a stranded task only once', a
     sites: ['aftershockpc.com'],
     brief: 'The overview page lists 4 configs.',
     subQuestions: ['CPU / GPU per config'],
+    attachments: [{ id: 'att-1', name: 'spec-sheet.pdf', kind: 'pdf', pageCount: 42 }],
   }
   let claimed = false
 
@@ -377,6 +378,12 @@ test('two racing watchdog ticks claim and dispatch a stranded task only once', a
   // re-deriving what the foreground turn already settled.
   expect((starts[0][0] as any).brief).toBe('The overview page lists 4 configs.')
   expect((starts[0][0] as any).subQuestions).toEqual(['CPU / GPU per config'])
+  // Attachments travel by REFERENCE: the offscreen host resolves the bytes from
+  // the same IndexedDB itself, so dropping this line would leave a resumed task
+  // unable to read documents the user explicitly chose.
+  expect((starts[0][0] as any).attachments).toEqual([
+    { id: 'att-1', name: 'spec-sheet.pdf', kind: 'pdf', pageCount: 42 },
+  ])
   } finally {
     vi.mocked(researchTasks.listTasks).mockImplementation(async () => [])
     vi.mocked(researchTasks.applyUpdate).mockImplementation(async () => undefined)
@@ -418,6 +425,7 @@ test('a research.ensureAndStart message persists the launch card sites onto the 
       sites: ['aftershockpc.com'],
       brief: 'The overview page lists 4 configs.',
       subQuestions: ['CPU / GPU per config'],
+      attachments: [{ id: 'att-1', name: 'spec-sheet.pdf', kind: 'pdf', pageCount: 42 }],
     },
     {},
     sendResponse,
@@ -430,6 +438,7 @@ test('a research.ensureAndStart message persists the launch card sites onto the 
       sites: ['aftershockpc.com'],
       brief: 'The overview page lists 4 configs.',
       subQuestions: ['CPU / GPU per config'],
+      attachments: [{ id: 'att-1', name: 'spec-sheet.pdf', kind: 'pdf', pageCount: 42 }],
     }),
   )
 })

@@ -14,8 +14,16 @@ import {
 } from './notebook'
 import { createResearchTools, type BrowseBroker, type RenderBroker, type SearchBroker } from '../tools/research'
 import { withResilience, classifyError, ResearchDeadlineError } from './resilience'
+import { describeAttachments, loadAttachments } from './researchAttachments'
 import type { ObservabilityConfig, ProviderConfig } from '../data/settings'
-import { MAX_RESEARCH_DURATION_MS, capSteps, type ResearchSource, type ResearchStep, type ResearchVerification } from '../data/researchTasks'
+import {
+  MAX_RESEARCH_DURATION_MS,
+  capSteps,
+  type ResearchAttachmentRef,
+  type ResearchSource,
+  type ResearchStep,
+  type ResearchVerification,
+} from '../data/researchTasks'
 
 /** Compact one-line stringify for a step summary. */
 function compact(value: unknown): string {
@@ -120,6 +128,9 @@ export async function runResearch(opts: {
    *  incorporate and extend, never to replace its own — an edited card must be
    *  honored without freezing the plan. */
   subQuestions?: string[]
+  /** Documents attached at launch, by reference. Resolved here in the offscreen
+   *  host (same-origin IndexedDB); the bytes never crossed a message. */
+  attachments?: ResearchAttachmentRef[]
   /** Emits the live step log + notebook snapshot for the sheet. */
   onUpdate: (steps: ResearchStep[], notebook: ResearchNotebook) => void
   signal: AbortSignal
@@ -215,6 +226,12 @@ export async function runResearch(opts: {
   const notebook: NotebookHandle = createNotebook(opts.resumeNotebook, emit, opts.sites)
   const resuming = !!opts.resumeNotebook && opts.resumeNotebook.findings.length > 0
 
+  // Resolve attached documents ONCE per task, not per gather round: a 40-page
+  // PDF would otherwise be re-parsed on every round. Never throws — an
+  // unreadable or pruned attachment comes back as a stated reason the agent can
+  // report, since a task can outlive its own files.
+  const attachments = opts.attachments?.length ? await loadAttachments(opts.attachments) : []
+
   // A BrowseSite call runs a whole nested agent loop against a live tab. Its inner
   // steps are kept per tool-call id and spliced in under their BrowseSite row, so
   // the user can watch the page walk instead of staring at one opaque row for a
@@ -273,6 +290,7 @@ export async function runResearch(opts: {
         planResearch(opts.question, model, signal, trace, {
           brief: opts.brief,
           subQuestions: opts.subQuestions,
+          attachments: describeAttachments(attachments),
         }),
       )
       notebook.setPlan(plan)
@@ -310,6 +328,7 @@ export async function runResearch(opts: {
         onBrowseStep,
         signal: opts.signal,
         sites: opts.sites,
+        attachments,
       })
       const roundStart = allSteps.length
       let roundParts: UIPart[] = []
@@ -516,7 +535,7 @@ async function planResearch(
   model: LanguageModel,
   signal: AbortSignal,
   trace?: Trace,
-  seed?: { brief?: string; subQuestions?: string[] },
+  seed?: { brief?: string; subQuestions?: string[]; attachments?: string },
 ): Promise<ResearchPlan> {
   // The brief is stated as settled fact, not as background reading. Research
   // that re-derives what the foreground turn already established is not merely
@@ -530,7 +549,7 @@ async function planResearch(
   const asked = seed?.subQuestions?.length
     ? `\n\nThe user's own sub-questions — incorporate all of these, then add any others the question needs:\n${seed.subQuestions.map((q, i) => `  ${i + 1}. ${q}`).join('\n')}`
     : ''
-  const prompt = `Break this research question into a concrete plan.\n\nQuestion: ${question}${established}${asked}\n\nReturn 3–6 focused sub-questions whose answers together fully address it, plus an ordered outline of the final report's sections, plus a rough effort estimate.`
+  const prompt = `Break this research question into a concrete plan.\n\nQuestion: ${question}${established}${asked}${seed?.attachments ?? ''}\n\nReturn 3–6 focused sub-questions whose answers together fully address it, plus an ordered outline of the final report's sections, plus a rough effort estimate.`
   try {
     const out = (await extractStructured(model, prompt, PLAN_SCHEMA as Record<string, unknown>, signal, trace)) as {
       subQuestions?: string[]

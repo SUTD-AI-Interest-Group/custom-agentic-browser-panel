@@ -11,6 +11,13 @@ import { searchAcademic, searchImages, harvestImages, type ImageResult } from '.
 import { summarizeNotebook, type NotebookHandle } from '../agent/notebook'
 import { runBrowseSession, type BrowseBroker } from '../agent/browseAgent'
 import { scopeAllows } from './browsePolicy'
+import {
+  attachmentUrl,
+  isLoaded,
+  readRange,
+  searchAttachment,
+  type AttachmentLoad,
+} from '../agent/researchAttachments'
 import type { UIPart } from '../agent/agent'
 
 export type { BrowseBroker } from '../agent/browseAgent'
@@ -124,6 +131,12 @@ function withScope<T extends { url: string }>(rows: T[], sites: string[], noun: 
 // FetchUrl's text budget for a PDF, matching extractReadableText's HTML cap.
 const PDF_TEXT_BUDGET = 20_000
 
+// One ReadAttachment call's text budget. Larger than a fetched PDF's, because an
+// attached document is a source the user deliberately chose rather than one of
+// many the agent happened to find — and a range the agent asked for by page is
+// already a narrowing, unlike a whole fetched page.
+const ATTACHMENT_READ_BUDGET = 30_000
+
 /**
  * FetchUrl's PDF path: extract text with pdf.js instead of scraping DOM text —
  * Chrome's PDF viewer has no DOM, so the rendered-tab escalation can never help
@@ -174,6 +187,10 @@ export function createResearchTools(deps: {
   browseBroker?: BrowseBroker
   /** Optional tab-search broker; absent = keyless search only (fails when throttled). */
   searchBroker?: SearchBroker
+  /** Documents the user attached at launch, ALREADY RESOLVED to pages by the
+   *  host. Resolved once per task rather than per gather round, so a 40-page
+   *  PDF is parsed once instead of on every ReadAttachment call. */
+  attachments?: AttachmentLoad[]
   /** Page-walk budget, shared across the task's gather rounds. */
   browseBudget?: BrowseBudget
   /** The task id, so browse sessions are namespaced per task. */
@@ -198,7 +215,7 @@ export function createResearchTools(deps: {
    */
   sites?: string[]
 }): ToolSet {
-  const { notebook, renderBroker, browseBroker, searchBroker, browseBudget, sites = [] } = deps
+  const { notebook, renderBroker, browseBroker, searchBroker, browseBudget, sites = [], attachments = [] } = deps
   const tools: ToolSet = {
     WebSearch: tool({
       description: 'Search the web (DuckDuckGo) and return ranked {title,url,snippet} results.',
@@ -421,6 +438,71 @@ export function createResearchTools(deps: {
       },
     }),
 
+    /**
+     * Read a document the user attached to this research launch.
+     *
+     * Mirrors the foreground `ReadPdf`: list what you have, read a page range, or
+     * search. Paging rather than swallowing is what makes a 40-page spec sheet
+     * usable — the whole document would blow the gather round's context, and the
+     * agent almost never needs all of it.
+     *
+     * Recording the source on a successful read (not at launch) means the report's
+     * source list reflects what research actually used, not what it was handed.
+     */
+    ReadAttachment: tool({
+      description:
+        'Read a document the user attached to this research task. mode "list" shows what is available; ' +
+        '"read" returns a page range; "search" finds a phrase and returns matching pages with snippets. ' +
+        'These are primary sources chosen by the user — prefer them over anything you find on the web, and cite them.',
+      inputSchema: z.object({
+        mode: z.enum(['list', 'read', 'search']).describe('What to do.'),
+        name: z.string().optional().describe('Which attachment, by name. Omit with mode "list".'),
+        pages: z.string().optional().describe('Page range for mode "read", e.g. "1-4,9". Omit for all.'),
+        query: z.string().optional().describe('Phrase to find, for mode "search".'),
+      }),
+      execute: async ({ mode, name, pages, query }) => {
+        if (attachments.length === 0) return { error: 'No documents were attached to this research task.' }
+        if (mode === 'list') {
+          return {
+            attachments: attachments.map((a) =>
+              isLoaded(a)
+                ? { name: a.ref.name, kind: a.ref.kind, pages: a.pages.length, readable: true }
+                : { name: a.ref.name, kind: a.ref.kind, readable: false, reason: a.reason },
+            ),
+          }
+        }
+        if (!name) return { error: 'Pass `name` to say which attachment to read (use mode "list" to see them).' }
+        // Matched loosely because the model is quoting a filename back at us from
+        // a list it was shown, and an exact-match requirement turns a trailing
+        // ".pdf" or a case difference into a dead end it cannot diagnose.
+        const lower = name.toLowerCase()
+        const found =
+          attachments.find((a) => a.ref.name.toLowerCase() === lower) ??
+          attachments.find((a) => a.ref.name.toLowerCase().includes(lower))
+        if (!found) {
+          return { error: `No attachment named "${name}". Available: ${attachments.map((a) => a.ref.name).join(', ')}` }
+        }
+        if (!isLoaded(found)) return { error: `"${found.ref.name}" ${found.reason}` }
+
+        if (mode === 'search') {
+          if (!query) return { error: 'Pass `query` to search.' }
+          const res = searchAttachment(found, query)
+          if ('error' in res) return { error: res.error }
+          if (res.matches.length > 0) notebook.addSource({ url: attachmentUrl(found.ref.id), title: found.ref.name })
+          return { name: found.ref.name, ...res }
+        }
+
+        const res = readRange(found, pages, ATTACHMENT_READ_BUDGET)
+        if ('error' in res) return { error: res.error }
+        notebook.addSource({ url: attachmentUrl(found.ref.id), title: found.ref.name })
+        return {
+          name: found.ref.name,
+          pageCount: found.pages.length,
+          blocks: res.blocks,
+          omittedPages: res.omittedPages,
+        }
+      },
+    }),
     ReadNotebook: tool({
       description:
         'Read a compact summary of the research notebook so far: plan, per-sub-question coverage, findings, and numbered sources.',

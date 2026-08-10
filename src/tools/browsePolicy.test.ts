@@ -434,3 +434,18 @@ test('scheme and port are ignored, and any one scope entry suffices', () => {
 test('an unparseable url is rejected under a non-empty scope', () => {
   expect(scopeAllows('not a url', ['aftershockpc.com'])).toBe(false)
 })
+
+test('an attached document is always in scope, even under a site scope', () => {
+  // The user handed it over deliberately — it is the most explicitly-scoped
+  // source there is, and it has no host to match. Refusing it because they also
+  // pinned a website would be perverse.
+  expect(scopeAllows('attachment:a1b2', ['aftershockpc.com'])).toBe(true)
+  expect(scopeAllows('attachment:a1b2', [])).toBe(true)
+})
+
+test('the attachment carve-out does not widen ordinary web scope', () => {
+  // Only the exact scheme prefix is privileged — a host that merely mentions it
+  // stays subject to the scope like anything else.
+  expect(scopeAllows('https://attachment.evil.net/x', ['aftershockpc.com'])).toBe(false)
+  expect(scopeAllows('https://lenovo.com/attachment:a1b2', ['aftershockpc.com'])).toBe(false)
+})
