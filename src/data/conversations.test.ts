@@ -3,15 +3,20 @@ import { beforeEach, describe, expect, it } from 'vitest'
 import {
   _resetDbForTests,
   clearConversations,
+  clearInFlight,
   comparePinnedThenRecent,
   conversationsUsage,
   deleteConversation,
   getConversation,
+  getInFlight,
   listConversations,
   renameConversation,
   saveConversation,
+  saveInFlight,
+  sweepInFlight,
   togglePin,
   type ConversationSummary,
+  type InFlightTurn,
 } from './conversations'
 
 type Row = Pick<ConversationSummary, 'pinned' | 'updatedAt'>
@@ -239,15 +244,19 @@ describe('listConversations / conversationsUsage (summaries store)', () => {
     expect(bad2).toBeDefined()
     expect(bad2?.title).toBe('(unreadable conversation)')
 
-    // The upgrade must have actually completed: version bumped to 2, and a
-    // second raw open confirms it rather than being stuck retrying forever.
+    // The upgrade must have actually completed, and a second raw open confirms
+    // it rather than being stuck retrying forever. This row was seeded at v1, so
+    // this also covers the straight v1 → current jump an old install takes:
+    // every store must exist afterwards, not just the one the last bump added.
+    // Keep this in step with DB_VERSION in conversations.ts.
     const db = await new Promise<IDBDatabase>((resolve, reject) => {
       const req = indexedDB.open('lychee-conversations')
       req.onsuccess = () => resolve(req.result)
       req.onerror = () => reject(req.error)
     })
-    expect(db.version).toBe(2)
+    expect(db.version).toBe(3)
     expect(db.objectStoreNames.contains('summaries')).toBe(true)
+    expect(db.objectStoreNames.contains('inflight')).toBe(true)
 
     // The original malformed records themselves must be untouched: the
     // migration may read the conversations store but must never mutate or
@@ -326,5 +335,97 @@ describe('saveConversation / renameConversation / togglePin', () => {
         pinned: false,
       },
     ])
+  })
+})
+
+describe('in-flight turns', () => {
+  beforeEach(async () => {
+    await _resetDbForTests()
+  })
+
+  const inflight = (o: Partial<InFlightTurn> = {}): InFlightTurn => ({
+    conversationId: 'c1',
+    startedAt: 1000,
+    updatedAt: 1000,
+    messages: [{ id: 'a1', role: 'assistant', parts: [{ type: 'text', text: 'half a rep' }] }],
+    history: [{ role: 'user', content: 'go' }],
+    ctx: {
+      attachedSources: [],
+      activeSkill: null,
+      journalUserText: 'go',
+      droppableTail: true,
+      regen: null,
+    },
+    activeNames: ['ReadPage'],
+    autoContinues: 0,
+    episodeId: 'e1',
+    assistantId: 'a1',
+    ...o,
+  })
+
+  it('round-trips an in-flight record', async () => {
+    await saveInFlight(inflight())
+    const got = await getInFlight('c1')
+    expect(got?.assistantId).toBe('a1')
+    expect(got?.activeNames).toEqual(['ReadPage'])
+    expect(got?.messages).toHaveLength(1)
+  })
+
+  it('is undefined for a conversation with nothing in flight', async () => {
+    expect(await getInFlight('nope')).toBeUndefined()
+  })
+
+  it('clears explicitly', async () => {
+    await saveInFlight(inflight())
+    await clearInFlight('c1')
+    expect(await getInFlight('c1')).toBeUndefined()
+  })
+
+  it('is deleted by the final saveConversation, in the same transaction', async () => {
+    // THE atomicity rule. A finished turn must never leave a resume card behind
+    // — and the delete has to ride the same transaction as the record write, or
+    // a crash between the two would strand one.
+    await saveInFlight(inflight())
+    await saveConversation({ id: 'c1', messages: [], history: [] })
+    expect(await getInFlight('c1')).toBeUndefined()
+  })
+
+  it('does not disturb another conversation’s in-flight record', async () => {
+    await saveInFlight(inflight({ conversationId: 'c1' }))
+    await saveInFlight(inflight({ conversationId: 'c2' }))
+    await saveConversation({ id: 'c1', messages: [], history: [] })
+    expect(await getInFlight('c1')).toBeUndefined()
+    expect(await getInFlight('c2')).toBeDefined()
+  })
+
+  it('is taken with the conversation on delete', async () => {
+    await saveInFlight(inflight())
+    await deleteConversation('c1')
+    expect(await getInFlight('c1')).toBeUndefined()
+  })
+
+  it('is wiped by clearConversations', async () => {
+    await saveInFlight(inflight())
+    await clearConversations()
+    expect(await getInFlight('c1')).toBeUndefined()
+  })
+
+  it('sweeps records older than the cutoff and keeps fresh ones', async () => {
+    const now = Date.now()
+    await saveInFlight(inflight({ conversationId: 'old', updatedAt: now - 10 * 86_400_000 }))
+    await saveInFlight(inflight({ conversationId: 'fresh', updatedAt: now - 60_000 }))
+    await sweepInFlight(7 * 86_400_000)
+    expect(await getInFlight('old')).toBeUndefined()
+    expect(await getInFlight('fresh')).toBeDefined()
+  })
+
+  it('a rename or pin does NOT clear an in-flight turn', async () => {
+    // The auto-namer fires while a turn is still streaming. If renaming cleared
+    // the in-flight record, every conversation would lose its crash recovery at
+    // precisely the moment the turn was still running.
+    await saveInFlight(inflight())
+    await renameConversation('c1', 'Named mid-turn')
+    await togglePin('c1')
+    expect(await getInFlight('c1')).toBeDefined()
   })
 })

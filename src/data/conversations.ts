@@ -103,10 +103,53 @@ function degradedSummaryRow(id: string): SummaryRow {
   return { id, title: '(unreadable conversation)', createdAt: 0, updatedAt: 0, messageCount: 0, pinned: false, bytes: 0 }
 }
 
+/**
+ * A turn caught mid-flight, so closing the side panel does not destroy it.
+ *
+ * The panel persists a transcript only when a turn *finishes* — so closing it
+ * during a long multi-tool turn used to lose the reply AND the user's own
+ * message. This is the checkpoint that survives that, written on a debounce
+ * while the turn streams and deleted in the same transaction as the final save.
+ *
+ * Everything here is what `runTurnChain` needs to pick the turn back up. Three
+ * things are deliberately ABSENT, and their absence is the safety property:
+ *
+ *  - **No page-control grant.** The session is origin- and tab-fenced against a
+ *    page that has almost certainly changed by the time anyone resumes; a
+ *    resumed turn must ask for control again through a fresh card.
+ *  - **No image queue.** Its pixels describe a page state that no longer exists.
+ *  - **No pending approval.** The chain's teardown already denied it.
+ */
+export interface InFlightTurn {
+  conversationId: string
+  startedAt: number
+  /** Last checkpoint write; drives staleness (see `sweepInFlight`). */
+  updatedAt: number
+  /** The transcript including the partially-streamed assistant bubble. */
+  messages: UIMessage[]
+  /** Model-facing history, dehydrated exactly like a saved conversation's. */
+  history: ModelMessage[]
+  /** `runTurnChain`'s own ctx argument, replayed verbatim on resume. */
+  ctx: {
+    attachedSources: MessageSource[]
+    activeSkill: { name: string; body: string } | null
+    journalUserText: string
+    droppableTail: boolean
+    regen: RegenTarget | null
+  }
+  /** Progressive-disclosure set, so a resumed turn keeps its loaded tools. */
+  activeNames: string[]
+  autoContinues: number
+  episodeId: string
+  /** Bubble the cycle was streaming into, so resume patches the same one. */
+  assistantId: string
+}
+
 const DB_NAME = 'lychee-conversations'
-const DB_VERSION = 2
+const DB_VERSION = 3
 const STORE = 'conversations'
 const SUMMARY_STORE = 'summaries'
+const INFLIGHT_STORE = 'inflight'
 
 let dbPromise: Promise<IDBDatabase> | null = null
 
@@ -117,6 +160,11 @@ function openDb(): Promise<IDBDatabase> {
       req.onupgradeneeded = (event) => {
         const db = req.result
         if (!db.objectStoreNames.contains(STORE)) db.createObjectStore(STORE, { keyPath: 'id' })
+        // v3. Nothing to backfill: "no turn was in flight" is the correct state
+        // for every conversation that existed before this store did.
+        if (!db.objectStoreNames.contains(INFLIGHT_STORE)) {
+          db.createObjectStore(INFLIGHT_STORE, { keyPath: 'conversationId' })
+        }
         if (!db.objectStoreNames.contains(SUMMARY_STORE)) {
           const summaryStore = db.createObjectStore(SUMMARY_STORE, { keyPath: 'id' })
           // Upgrading an install that already has conversations (oldVersion >
@@ -235,17 +283,35 @@ export async function listConversations(): Promise<ConversationSummary[]> {
 function mutate(
   id: string,
   fn: (existing: StoredConversation | undefined) => StoredConversation,
+  /**
+   * Also drop this conversation's in-flight checkpoint, inside the SAME
+   * transaction as the record write. Set only by `saveConversation`, which runs
+   * when a turn has genuinely finished.
+   *
+   * Two separate transactions would not do: a crash between them leaves either
+   * a resume card for a turn that already completed (the user re-runs finished
+   * work) or a saved transcript with its checkpoint still live. Riding the
+   * record's own transaction makes "the turn is done" and "there is nothing to
+   * resume" a single atomic fact.
+   *
+   * Deliberately NOT set by `renameConversation`/`togglePin`: the auto-namer
+   * fires while a turn is still streaming, so clearing there would delete the
+   * checkpoint of a turn that is still running.
+   */
+  alsoClearInFlight = false,
 ): Promise<void> {
+  const stores = alsoClearInFlight ? [STORE, SUMMARY_STORE, INFLIGHT_STORE] : [STORE, SUMMARY_STORE]
   return openDb().then(
     (db) =>
       new Promise<void>((resolve, reject) => {
-        const tx = db.transaction([STORE, SUMMARY_STORE], 'readwrite')
+        const tx = db.transaction(stores, 'readwrite')
         const store = tx.objectStore(STORE)
         const read = store.get(id) as IDBRequest<StoredConversation | undefined>
         read.onsuccess = () => {
           const next = fn(read.result)
           store.put(next)
           tx.objectStore(SUMMARY_STORE).put(toSummaryRow(next))
+          if (alsoClearInFlight) tx.objectStore(INFLIGHT_STORE).delete(id)
         }
         tx.oncomplete = () => resolve()
         tx.onerror = () => reject(tx.error)
@@ -277,7 +343,7 @@ export async function saveConversation(input: {
     // last turn predates the field) must leave the stored one alone rather
     // than retire a Regenerate button that still works.
     regen: input.regen ?? existing?.regen,
-  }))
+  }), true)
 }
 
 /** Set the title, creating a stub row if the transcript hasn't saved yet. */
@@ -305,9 +371,12 @@ export async function togglePin(id: string): Promise<void> {
 export async function deleteConversation(id: string): Promise<void> {
   const db = await openDb()
   await new Promise<void>((resolve, reject) => {
-    const tx = db.transaction([STORE, SUMMARY_STORE], 'readwrite')
+    const tx = db.transaction([STORE, SUMMARY_STORE, INFLIGHT_STORE], 'readwrite')
     tx.objectStore(STORE).delete(id)
     tx.objectStore(SUMMARY_STORE).delete(id)
+    // A checkpoint outliving its conversation would be unreachable but not
+    // harmless: nothing would ever clear it, and it holds a whole transcript.
+    tx.objectStore(INFLIGHT_STORE).delete(id)
     tx.oncomplete = () => resolve()
     tx.onerror = () => reject(tx.error)
     tx.onabort = () => reject(tx.error)
@@ -321,9 +390,52 @@ export async function deleteConversation(id: string): Promise<void> {
 export async function clearConversations(): Promise<void> {
   const db = await openDb()
   await new Promise<void>((resolve, reject) => {
-    const tx = db.transaction([STORE, SUMMARY_STORE], 'readwrite')
+    const tx = db.transaction([STORE, SUMMARY_STORE, INFLIGHT_STORE], 'readwrite')
     tx.objectStore(STORE).clear()
     tx.objectStore(SUMMARY_STORE).clear()
+    tx.objectStore(INFLIGHT_STORE).clear()
+    tx.oncomplete = () => resolve()
+    tx.onerror = () => reject(tx.error)
+    tx.onabort = () => reject(tx.error)
+  })
+}
+
+/**
+ * Checkpoint a turn that is still streaming. Called on a debounce, so it must
+ * stay a single cheap `put` — no read-modify-write, no summary maintenance.
+ */
+export async function saveInFlight(record: InFlightTurn): Promise<void> {
+  await requestOn<IDBValidKey>(INFLIGHT_STORE, 'readwrite', (s) => s.put(record))
+}
+
+/** The checkpoint for a conversation, if a turn was interrupted mid-flight. */
+export async function getInFlight(conversationId: string): Promise<InFlightTurn | undefined> {
+  return requestOn<InFlightTurn | undefined>(INFLIGHT_STORE, 'readonly', (s) =>
+    s.get(conversationId),
+  )
+}
+
+/** Discard a checkpoint — the user declined to resume, or the turn ended. */
+export async function clearInFlight(conversationId: string): Promise<void> {
+  await requestOn<undefined>(INFLIGHT_STORE, 'readwrite', (s) => s.delete(conversationId))
+}
+
+/**
+ * Drop checkpoints older than `maxAgeMs`. A turn interrupted last month is not
+ * something the user wants offered back to them, and each record holds a whole
+ * transcript — so without a sweep, an install that crashes occasionally
+ * accumulates them silently forever.
+ */
+export async function sweepInFlight(maxAgeMs: number): Promise<void> {
+  const all = await requestOn<InFlightTurn[]>(INFLIGHT_STORE, 'readonly', (s) => s.getAll())
+  const cutoff = Date.now() - maxAgeMs
+  const stale = all.filter((r) => r.updatedAt < cutoff)
+  if (stale.length === 0) return
+  const db = await openDb()
+  await new Promise<void>((resolve, reject) => {
+    const tx = db.transaction(INFLIGHT_STORE, 'readwrite')
+    const store = tx.objectStore(INFLIGHT_STORE)
+    for (const r of stale) store.delete(r.conversationId)
     tx.oncomplete = () => resolve()
     tx.onerror = () => reject(tx.error)
     tx.onabort = () => reject(tx.error)
