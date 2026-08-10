@@ -138,6 +138,52 @@ export function classifyError(err: unknown): ErrorInfo {
   return { kind: 'transient', reason: msg ? `${truncate(msg)} — will retry` : 'Temporary error — will retry' }
 }
 
+/**
+ * Provider phrasings for "this prompt does not fit in the model's context
+ * window". Every one of these arrives as a 400, which `classifyError` files as
+ * permanent — correctly, since the byte-identical request would be rejected
+ * identically.
+ *
+ * `tokens per (minute|day)` is excluded deliberately: a rate limit also talks
+ * about tokens, and treating one as an overflow would summarize away a
+ * conversation's history to "fix" a problem that waiting solves.
+ */
+const CONTEXT_OVERFLOW_PATTERNS = [
+  /context[_ ]length[_ ]exceeded/i,
+  /maximum context length/i,
+  /context window/i,
+  /prompt is too long/i,
+  /too many tokens/i,
+  /reduce the length of the messages/i,
+  /input length exceeds/i,
+]
+
+/**
+ * Does this failure mean the prompt was too large for the model's context
+ * window — as opposed to any other 400?
+ *
+ * **Deliberately separate from `classifyError` rather than a new `kind`.**
+ * `classifyError`'s permanent/transient split is the contract the research
+ * retry loop runs on: an error it calls transient is retried with backoff until
+ * the task's 24h deadline. A context overflow must stay *permanent* there,
+ * because research has no compaction path and would otherwise retry an
+ * impossible request for a day (the exact failure fixed in the 2026-08-10
+ * audit). Only the foreground turn chain, which can compact and retry, consults
+ * this predicate — so the capability is additive and no existing caller's
+ * behaviour moves.
+ */
+export function isContextOverflow(err: unknown): boolean {
+  // A non-Error value carries no provider diagnosis to trust; `messageOf` would
+  // happily stringify a bare string that merely contains the phrase.
+  if (!(err instanceof Error)) return false
+  const status = statusOf(err)
+  // A rate limit is never an overflow, however it is worded.
+  if (status === 429) return false
+  const msg = messageOf(err)
+  if (/tokens per (minute|day|hour)/i.test(msg)) return false
+  return CONTEXT_OVERFLOW_PATTERNS.some((re) => re.test(msg))
+}
+
 /** Convenience: the paused-card reason for an error. */
 export function describeError(err: unknown): string {
   return classifyError(err).reason

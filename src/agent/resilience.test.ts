@@ -6,10 +6,55 @@ import {
   classifyError,
   describeError,
   isAbortError,
+  isContextOverflow,
   backoffDelay,
   withResilience,
   type SleepOutcome,
 } from './resilience'
+
+describe('isContextOverflow', () => {
+  it('recognises the common context-length rejections across providers', () => {
+    for (const msg of [
+      "This model's maximum context length is 128000 tokens, however you requested 130000",
+      'context_length_exceeded',
+      'prompt is too long: 210000 tokens > 200000 maximum',
+      'Requested token count exceeds the model context window',
+      'input length exceeds context window',
+      'Please reduce the length of the messages',
+    ]) {
+      expect(isContextOverflow(Object.assign(new Error(msg), { status: 400 }))).toBe(true)
+    }
+  })
+
+  it('does not fire on an unrelated 400', () => {
+    expect(isContextOverflow(Object.assign(new Error('invalid tool schema'), { status: 400 }))).toBe(
+      false,
+    )
+  })
+
+  it('does not fire on a rate limit that merely mentions tokens', () => {
+    // "tokens per minute" is a quota, not a window. Compacting here would throw
+    // away conversation history to fix a problem that waiting would fix.
+    const err = Object.assign(new Error('Rate limit reached: 30000 tokens per minute'), {
+      status: 429,
+    })
+    expect(isContextOverflow(err)).toBe(false)
+  })
+
+  it('is false for a non-error value', () => {
+    expect(isContextOverflow(undefined)).toBe(false)
+    expect(isContextOverflow('context_length_exceeded')).toBe(false)
+  })
+
+  it('leaves classifyError untouched — a context 400 stays permanent', () => {
+    // Load-bearing: research retries on `transient` until its 24h deadline, so
+    // this error must keep classifying as permanent THERE. The new predicate is
+    // purely additive, consulted only by the foreground chain, which can
+    // actually do something about it (compact and retry).
+    const err = Object.assign(new Error('context_length_exceeded'), { status: 400 })
+    expect(classifyError(err).kind).toBe('permanent')
+  })
+})
 
 describe('classifyError', () => {
   it('marks an AbortError as an abort (not transient)', () => {
