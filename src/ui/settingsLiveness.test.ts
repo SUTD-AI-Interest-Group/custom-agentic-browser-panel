@@ -48,7 +48,16 @@ test("runTurnChain's per-cycle MCP-toolset construction reads settingsRef.curren
   const start = src.indexOf('async function runTurnChain(ctx:')
   expect(start).toBeGreaterThan(-1)
   const loopStart = src.indexOf('while (true) {', start)
-  const cycleBody = src.slice(loopStart, loopStart + 1500)
+  expect(loopStart).toBeGreaterThan(-1)
+  // Anchored to the end of the cycle's runAgentTurn call rather than a fixed
+  // byte count: the window is meant to be "one cycle of the loop", and a
+  // character budget silently stops meaning that the moment anything is added
+  // above the call. (It did — proactive compaction pushed the second match out
+  // of a 1500-char window and failed this test without the guarded property
+  // having moved at all.)
+  const cycleEnd = src.indexOf('parkPending:', loopStart)
+  expect(cycleEnd).toBeGreaterThan(loopStart)
+  const cycleBody = src.slice(loopStart, cycleEnd)
   // buildMcpTools's settings field and the per-cycle tool-policy callback
   // passed into createAgentTools — the two live MCP-policy gating touchpoints.
   expect(cycleBody).toMatch(/settings: settingsRef\.current/)

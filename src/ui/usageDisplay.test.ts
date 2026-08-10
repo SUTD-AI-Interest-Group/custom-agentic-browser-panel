@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { UIMessage } from '../agent/agent'
-import { conversationUsage, usageLabel } from './usageDisplay'
+import { conversationUsage, lastReportedInputTokens, usageLabel } from './usageDisplay'
 
 const reply = (usage?: UIMessage['usage']): UIMessage => ({
   id: Math.random().toString(36).slice(2),
@@ -43,6 +43,30 @@ describe('conversationUsage', () => {
 
   it('returns undefined for an empty transcript', () => {
     expect(conversationUsage([])).toBeUndefined()
+  })
+})
+
+describe('lastReportedInputTokens', () => {
+  it('reads the most recent reply that reported usage, not the first', () => {
+    const found = lastReportedInputTokens([
+      reply({ inputTokens: 100 }),
+      reply({ inputTokens: 900 }),
+    ])
+    expect(found).toBe(900)
+  })
+
+  it('skips a trailing reply that reported nothing', () => {
+    expect(lastReportedInputTokens([reply({ inputTokens: 500 }), reply(undefined)])).toBe(500)
+  })
+
+  it('is undefined when nothing in the transcript reported usage', () => {
+    // The caller then falls back to a character estimate, which is the right
+    // behaviour for an endpoint that reports no usage at all.
+    expect(lastReportedInputTokens([ask(), reply(undefined)])).toBeUndefined()
+  })
+
+  it('is undefined for an empty transcript', () => {
+    expect(lastReportedInputTokens([])).toBeUndefined()
   })
 })
 

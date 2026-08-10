@@ -61,7 +61,19 @@ import {
 } from '../data/settings'
 import type { ModelPrice } from '../agent/pricing'
 import type { ModelUsage } from '../agent/observability'
-import { conversationUsage, usageLabel } from './usageDisplay'
+import { conversationUsage, lastReportedInputTokens, usageLabel } from './usageDisplay'
+import { applyCompaction, estimateHistoryTokens, planCompaction } from '../agent/compaction'
+import { summarizeSpan } from '../agent/summarizeSpan'
+import { resolveContextLimit } from '../data/providerProfiles'
+import { isContextOverflow } from '../agent/resilience'
+
+/**
+ * How full the context window may get before older turns are folded into a
+ * summary. A quarter of the window is left as headroom for the reply itself,
+ * the tools' schemas, and the growth of the very turn about to run — compacting
+ * at 95% would routinely be too late to help the turn that triggered it.
+ */
+const COMPACT_AT_FRACTION = 0.75
 import { getActiveTab, listOpenTabs, openPdfAtPage, readTabContent, type TabContent, type TabSummary } from '../platform/tabs'
 import { looksLikePdfUrl } from '../platform/pdfText'
 import { loadPdf } from '../platform/pdf'
@@ -859,6 +871,13 @@ export default function Chat({
   // closure over `selected`/`streaming` (3e).
   const composerActionRef = useRef<(action: ComposerAction) => Promise<void>>(async () => {})
 
+  // Input tokens the provider reported for the most recent cycle — the proactive
+  // compaction trigger. A ref, not state: it is read inside runTurnChain's loop
+  // and must never cause a render. Undefined means "not measured yet" (a fresh
+  // panel, a just-compacted history, or an endpoint that reports no usage), in
+  // which case the check falls back to a character estimate.
+  const lastInputTokensRef = useRef<number | undefined>(undefined)
+
   const selected = getSelectedProvider(settings)
 
   // The active model's token rates, resolved once per model change rather than
@@ -969,6 +988,13 @@ export default function Chat({
         historyRef.current = history
         titledRef.current = c.title !== null
         setRegenTarget(c.regen ? { ...c.regen, opener: regenOpener } : null)
+        // Carry the last turn's REPORTED input tokens across the reload, so a
+        // reopened long conversation compacts on its very next turn rather than
+        // having to spend one more full-size request re-measuring what it
+        // already recorded. Without this, the proactive check falls back to the
+        // character estimate on exactly the conversations whose real token cost
+        // is hardest to guess (tool results, attachments, images).
+        lastInputTokensRef.current = lastReportedInputTokens(c.messages)
       }
       setRestored(true)
     })
@@ -2727,10 +2753,59 @@ export default function Chat({
     // page-control session/overlay survive (see shouldTearDownPageControl).
     // Defaults to 'completed'; overwritten on every other exit path.
     let exitReason: ChainExitReason = 'completed'
+    // One reactive compaction retry per chain (see the cycle's catch). Separate
+    // from proactive compaction, which may legitimately fire on many cycles of a
+    // long chain; this flag exists only to stop an overflow that compaction
+    // cannot fix from retrying forever.
+    let retriedAfterOverflow = false
+
+    /**
+     * Fold this conversation's older turns into a summary, in place on
+     * `historyRef`. Returns false when it declined, so callers can tell "made
+     * room" from "nothing to give".
+     *
+     * Never compacts across an open page-control session: `[index]` addresses
+     * only mean anything alongside the registry output that produced them, and
+     * summarizing that span away would leave the model clicking indices it can
+     * no longer justify.
+     *
+     * The summarizer is the chat-naming model chain (`getTitleProvider` — a
+     * small, cheap model by preference, falling back to the chat model), for the
+     * same reason chat naming uses it: this is one unwatched background
+     * generation, not reasoning work.
+     */
+    const compactHistory = async (): Promise<boolean> => {
+      const session = pageControl.session()
+      if (session && session.active) return false
+      const plan = planCompaction(historyRef.current)
+      if (!plan) return false
+      const namer = getTitleProvider(settingsRef.current)
+      const summarizer = namer
+        ? createModel(namer.provider, namer.modelId)
+        : createModel(model.provider, model.modelId)
+      const summary = await summarizeSpan(summarizer, plan.fold)
+      historyRef.current = applyCompaction(plan, summary)
+      const folded = plan.fold.length
+      const id = assistantId
+      setMessages((m) => m.map((msg) => (msg.id === id ? { ...msg, compacted: folded } : msg)))
+      // The previous reading described a history that no longer exists, so the
+      // next cycle must re-measure rather than immediately compacting again on
+      // a stale number.
+      lastInputTokensRef.current = undefined
+      return true
+    }
 
     try {
       while (true) {
         parked = null
+        // Proactive compaction, before the request is built. The trigger is the
+        // last cycle's REPORTED input tokens — ground truth from the provider,
+        // not a guess — falling back to a character estimate only before any
+        // usage has been reported (a restored conversation's first cycle, or an
+        // endpoint that reports no usage at all).
+        const contextLimit = resolveContextLimit(model.provider, model.modelId)
+        const used = lastInputTokensRef.current ?? estimateHistoryTokens(historyRef.current)
+        if (used > contextLimit * COMPACT_AT_FRACTION) await compactHistory()
         const base = MERGE_AUTO_CONTINUES ? mergedParts : []
         // MCP server tools join the ToolSet through createAgentTools's
         // extraTools (NOT spread in here) so the disclosure catalog sees them.
@@ -2746,7 +2821,7 @@ export default function Chat({
           conversationId,
           visionCapable,
         })
-        const result = await runAgentTurn({
+        const runCycle = () => runAgentTurn({
           model: createModel(model.provider, model.modelId),
           system,
           history: [...historyRef.current],
@@ -2787,6 +2862,26 @@ export default function Chat({
           // tool has reported it needs the bound tab in front.
           parkPending: () => parked !== null,
         })
+
+        // Reactive compaction backstop. The proactive check above only fires
+        // when the configured context limit is right; an unset or too-generous
+        // limit sails past the real window and the provider rejects the whole
+        // request. That arrives as a 400, which classifyError files as
+        // permanent — correctly, since the identical request would fail
+        // identically — so without this the turn simply dies.
+        //
+        // Compact once and re-run the same cycle. `retriedAfterOverflow` guards
+        // the loop: if a compacted history STILL overflows, the problem is not
+        // the history and retrying cannot help.
+        let result: Awaited<ReturnType<typeof runCycle>>
+        try {
+          result = await runCycle()
+        } catch (err) {
+          if (retriedAfterOverflow || !isContextOverflow(err)) throw err
+          retriedAfterOverflow = true
+          if (!(await compactHistory())) throw err
+          continue
+        }
         patch(assistantId, base)(result.parts)
         historyRef.current.push(...result.responseMessages)
         pushedAny = true
@@ -2802,6 +2897,10 @@ export default function Chat({
           setMessages((m) =>
             m.map((msg) => (msg.id === id ? { ...msg, usage: sumUsage(msg.usage, cycleUsage) } : msg)),
           )
+          // Ground truth for the next cycle's compaction check: what the provider
+          // says this history actually cost to send, rather than what a
+          // character heuristic guesses it might.
+          if (cycleUsage.inputTokens) lastInputTokensRef.current = cycleUsage.inputTokens
         }
         if (MERGE_AUTO_CONTINUES) mergedParts = [...mergedParts, ...result.parts]
         assistantTexts.push(
@@ -3243,6 +3342,16 @@ export default function Chat({
             {msg.autoContinue != null && (
               <div className="auto-continue-divider">
                 <span>↻ Continued automatically</span>
+              </div>
+            )}
+            {/* The transcript above this line is untouched — only the model's
+                copy of the conversation was condensed, so the user can still
+                scroll back to everything they actually said. */}
+            {msg.compacted != null && (
+              <div className="auto-continue-divider compacted-divider">
+                <span title={`${msg.compacted} earlier messages were replaced by a summary in the model's context. Your transcript is unchanged.`}>
+                  ↯ Earlier messages summarized to fit the context window
+                </span>
               </div>
             )}
             <MessageView

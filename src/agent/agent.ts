@@ -129,6 +129,16 @@ export interface UIMessage {
    */
   autoContinue?: number
   /**
+   * When set, the conversation's earlier turns were folded into a summary just
+   * before this bubble, and N raw messages left the model-facing history. Renders
+   * as a divider above the bubble, the same shape as `autoContinue`.
+   *
+   * Display-only, and deliberately so: the fold itself happens to `historyRef`,
+   * and the transcript the user reads is never edited. What they said is still
+   * there to scroll back to — only the model's copy is condensed.
+   */
+  compacted?: number
+  /**
    * Marks a background-research report injected into the transcript: it renders
    * as a research report card (titled header + report body) instead of a plain
    * reply, so it scrolls with the chat and later turns follow it. The report

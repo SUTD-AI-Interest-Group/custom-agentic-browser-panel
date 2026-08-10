@@ -28,6 +28,23 @@ export function conversationUsage(messages: UIMessage[]): ModelUsage | undefined
   return total
 }
 
+/**
+ * Input tokens reported by the most recent reply that reported any — the
+ * proactive-compaction trigger, recovered from a transcript on reload.
+ *
+ * Scans from the end and stops at the first hit: an endpoint that reports usage
+ * only sometimes should be read at its latest reading, not its first, and a
+ * conversation whose tail predates usage reporting falls back to `undefined`
+ * (the caller then estimates) rather than to a stale figure from long ago.
+ */
+export function lastReportedInputTokens(messages: UIMessage[]): number | undefined {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const input = messages[i].usage?.inputTokens
+    if (input) return input
+  }
+  return undefined
+}
+
 /** The strings a usage chip renders: a compact summary, an optional cost, and
  *  the fuller breakdown that rides in the `title` tooltip. */
 export interface UsageLabel {

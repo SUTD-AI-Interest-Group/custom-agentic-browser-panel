@@ -1184,6 +1184,13 @@ body {
   background: var(--surface);
 }
 
+/* Compaction reuses the divider shape but earns a `cursor: help`: unlike the
+   auto-continue notice, this one has a tooltip worth discovering — it is what
+   tells the user their own transcript was not edited. */
+.compacted-divider span {
+  cursor: help;
+}
+
 /* The Continue card: the model's checkpoint + a resume button. Blue-fenced like
    the page-control session card, since both are the agent asking to keep going. */
 .continuation-card {
