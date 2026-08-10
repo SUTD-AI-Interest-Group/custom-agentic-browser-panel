@@ -244,6 +244,43 @@ action — instead of getting cut off mid-action. The panel auto-continues a few
 times with a fresh budget (the control session and overlay survive), then
 surfaces a Continue card and hands the decision back to you.
 
+**A long chat folds rather than breaking.** Once the conversation passes ~75% of
+the model's context window — measured from the tokens the provider actually
+reported, not a guess — the older turns are condensed into a summary and a
+divider appears in the transcript. Your transcript is never edited; only the
+model's copy is condensed. If the window turns out to be smaller than configured,
+a context-length rejection is caught and the same fold runs as a retry, instead
+of the turn simply dying. Context limits are per model in Settings → Providers.
+
+**A turn survives the panel closing.** The transcript used to persist only once a
+turn finished, so closing the side panel mid-answer lost the reply *and* your
+message. Turns are now checkpointed as they stream; reopening offers **Resume /
+Discard**. A resumed turn deliberately does not inherit any page-control
+permission — the page has probably moved on, so it asks again.
+
+## Seeing what a turn did
+
+Two optional surfaces, both local:
+
+- **Token and cost.** Every reply carries a quiet `1.2k → 340` chip, and the chat
+  a running total. Enter per-model rates in Settings → Providers and it becomes a
+  real figure; leave them blank and you get counts without invented prices.
+- **Turn traces.** Switch on *Record turn traces* in Settings → General and each
+  reply gains a **⛓ Trace** drawer: the steps, how long each took, which tools
+  were available at each one (progressive disclosure is otherwise invisible),
+  when a call to an unloaded tool was repaired into `GetTool`, and the tokens
+  spent. Stored locally and prunable in Settings → Data; tool *inputs* are never
+  recorded, so a password typed into a page cannot land in one.
+
+## Undoing page control
+
+When a control session ends, a card summarises what the agent changed on the
+page, and offers **Undo last** / **Undo all**. Field edits are restored to the
+values they had before the session; submitted forms, navigations and password or
+payment fields are named as permanent rather than silently skipped. The values
+needed to undo live only in memory for the life of that card — the record you can
+see is redacted, so nothing sensitive is ever written down.
+
 ## Memory & dreaming
 
 A two-tier memory in IndexedDB:
@@ -321,7 +358,10 @@ src/exec/engine.ts            QuickJS execution under a timeout/memory budget
 src/exec/protocol.ts          Pure message-shape validation + output budgeting (tested)
 src/exec/runtime.ts           Sandbox-side entry: runs RunCode, mounts artifact HTML
 
-src/agent/agent.ts            One turn: streamText → UI part stream; Checkpoint; repair
+src/agent/agent.ts            One turn: streamText → UI part stream; Checkpoint; repair; trace sink
+src/agent/compaction.ts       Pure: where to fold a long history, and how to stitch it
+src/agent/summarizeSpan.ts    Condenses a folded span; never throws
+src/agent/pricing.ts          Pure: per-model rates → a cost figure
 src/agent/provider.ts         Config → AI SDK model (createOpenAICompatible)
 src/agent/research.ts         Research state machine
 src/agent/notebook.ts         Structured research notebook
@@ -337,6 +377,9 @@ src/data/conversations.ts     IndexedDB: chat history
 src/data/skills.ts            IndexedDB: skills + SKILL.md parse/serialize
 src/data/screenshots.ts       IndexedDB: captured images (kept out of model history)
 src/data/researchTasks.ts     IndexedDB: research tasks + reports
+src/data/traces.ts            IndexedDB: local turn traces (opt-in, pruned)
+src/ui/turnRecovery.ts        Checkpoint debounce + resume eligibility
+src/tools/pageControlJournal.ts  Pure: what a control session did, and what can be undone
 
 src/platform/domIndex.ts      "What can I click?" — interactive registry
 src/platform/regionIndex.ts   "What can I look at?" — visual-region registry

@@ -17,6 +17,80 @@ for that history.
 
 ---
 
+## [2026-08-11] — Turns you can see, survive, and take back
+
+Five features around one theme: a turn should be legible, survivable, and reversible.
+Design: `docs/superpowers/specs/2026-08-10-turn-observability-and-durability-design.md`.
+
+Every feature was driven in real Chromium against a local LM Studio model behind a logging
+proxy, not just unit-tested — which is how three of the four defects below were found at all.
+
+### Added
+
+- **Token counts and cost, finally surfaced** — `toModelUsage`/`sumUsage` had been carefully
+  plumbed and `UIMessage.usage` populated for months, and *nothing rendered it*. Each reply now
+  carries a `1.2k → 340` chip and the chat a running total; per-model rates in Settings →
+  Providers turn that into a real figure. Rates are user-entered rather than bundled: a
+  model-agnostic client cannot ship prices that stay true, and a confidently wrong cost is worse
+  than none. `estimateCost` subtracts cached tokens from the input total rather than adding them
+  (every provider that reports both counts cached *inside* input — billing both is an ~11x
+  overstatement on a cached prompt) and never bills `reasoningTokens`, which is a breakdown of
+  output, not an addition to it.
+- **Context compaction** — a long chat used to die on a `context_length_exceeded` 400, which
+  `classifyError` correctly calls *permanent*, so the turn ended with no recovery and the only
+  way forward was a new chat. Older turns now fold into a summary at ~75% of the window,
+  measured from the provider's **reported** input tokens. Two invariants are structural: the cut
+  only ever lands before a `user` message, and the replacement is always a user+assistant pair,
+  so a tool call is never split from its result and no two same-role messages ever end up
+  adjacent. The reactive backstop (`isContextOverflow`) sits *beside* `classifyError` rather
+  than inside it — research has no compaction path and must keep treating that 400 as permanent,
+  or it retries an impossible request to its 24h deadline.
+- **Turn durability** — the transcript persisted only *after* a turn finished, so closing the
+  panel mid-answer lost the reply and the user's own message. Turns are checkpointed as they
+  stream into a new `inflight` store, and reopening offers Resume / Discard. The checkpoint is
+  deleted in the **same transaction** as the final save, so a finished turn can never leave a
+  resume card behind. A resumed turn deliberately inherits no page-control grant: the tab has
+  almost certainly navigated, so the origin fence is stale and it must ask again.
+- **Local turn traces** (opt-in, Settings → General) — the step timeline, which tools
+  progressive disclosure actually exposed at each step, when `repairToolCall` rewrote a call
+  into `GetTool`, and tokens per step. Previously visible only through Langfuse, an
+  off-by-default beta that ships content off-device; `RunCode` shipped broken precisely because
+  nothing local showed what happened at runtime.
+- **Page-control journal and undo** — a granted session could type into a dozen fields and left
+  no record and no way back. A card now lists what changed and offers Undo last / Undo all. The
+  record is split by *lifetime*: the rendered journal is redacted, while the raw prior values
+  undo needs live only in memory on the session and die with it — so a password can be typed and
+  undone without ever being written anywhere it could outlive the turn. Submits, navigations and
+  sensitive fields are named as permanent rather than silently skipped.
+
+### Fixed
+
+- **The trace drawer rendered `NaN` for every token count** — found only by driving a real
+  model. `redactSecrets`'s key rule matches the substring `token`, so running each step through
+  it replaced `inputTokens`/`outputTokens` with `[redacted]`. Over-redaction is documented as
+  acceptable in that function because it guards payloads that carry user data; a trace step does
+  not — it holds numbers, tool names and a finish reason. The record is now protected by
+  *exclusion* (tool inputs are never captured), which is the real mechanism, mutation-tested by
+  adding `input` back and watching the secret test fail.
+- **A reopened conversation ignored its own recorded token usage for one turn** — the
+  compaction trigger read a ref that was never seeded on load, so a long chat restored from disk
+  fell back to a character estimate on exactly the histories hardest to estimate.
+- **`settingsLiveness.test.ts` guarded its property with a fixed 1500-character window** — which
+  silently stopped covering the second of its two matches the moment anything was added above
+  them. Re-anchored to the end of the cycle's `runAgentTurn` call.
+- **`ALL_STORE_KEYS` in `storage.test.ts` drifted from the real union** — the runtime proxy for
+  a compile-time guarantee, and the one place the compiler could not catch the new store. Caught
+  by the test that exists to say so.
+
+### Changed
+
+- A mutation pass on the compaction planner showed its "always cuts before a user message" test
+  could not fail: a perfectly alternating fixture cannot distinguish a correct cut from one
+  shifted by two. Rewritten against an irregular history, and now caught by three tests instead
+  of two.
+
+---
+
 ## [2026-08-10] — Second adversarial audit: four criticals, and a feature that had never run
 
 A nine-way audit of the whole codebase, then a fix wave in which every fix was re-reviewed by
