@@ -330,6 +330,11 @@ test('two racing watchdog ticks claim and dispatch a stranded task only once', a
     steps: [],
     startedAt: now - 10 * 60_000,
     updatedAt: now - 10 * 60_000, // well past STALE_MS (3 min)
+    // Task 8 review finding: startResearchTask reads sites off the PERSISTED
+    // task (not a fresh message), so a watchdog resume — this exact path —
+    // must keep the scope the user approved, not just the initial dispatch.
+    // Riding along on this test since it already exercises that dispatch.
+    sites: ['aftershockpc.com'],
   }
   let claimed = false
 
@@ -360,10 +365,48 @@ test('two racing watchdog ticks claim and dispatch a stranded task only once', a
     const starts = vi.mocked(researchTasks.postResearchMsg).mock.calls.filter(([m]) => (m as any).type === 'research.start')
     expect(starts).toHaveLength(1)
     expect(researchTasks.applyUpdate).toHaveBeenCalledTimes(1)
+    // The dispatched research.start message must carry the persisted task's
+    // scope — not silently drop it, which would revert an in-flight resumed
+    // task to unrestricted with nothing failing (sites is optional throughout).
+    expect((starts[0][0] as any).sites).toEqual(['aftershockpc.com'])
   } finally {
     vi.mocked(researchTasks.listTasks).mockImplementation(async () => [])
     vi.mocked(researchTasks.applyUpdate).mockImplementation(async () => undefined)
     vi.mocked(researchTasks.getTask).mockImplementation(async () => undefined)
     vi.mocked(settingsMod.getSelectedProvider).mockReturnValue(undefined as any)
   }
+})
+
+// ---------------------------------------------------------------------------
+// Task 8 review finding: research.ensureAndStart's handler must persist the
+// launch card's sites onto the saved ResearchTask (background.ts, the
+// saveTask({...}) call). This was previously unguarded — sites is optional
+// throughout the ResearchMsg/ResearchTask types, so a future refactor
+// dropping the field is type-valid and would silently revert all research to
+// unrestricted with nothing failing. Paired with the sites assertion added to
+// the racing-watchdog test above, which covers the other half: a later
+// dispatch (initial launch OR a watchdog resume) reading it back off the
+// persisted task.
+// ---------------------------------------------------------------------------
+
+test('a research.ensureAndStart message persists the launch card sites onto the saved task', async () => {
+  // getTask is irrelevant to what this test asserts (it only isolates
+  // startResearchTask's own dispatch, covered separately above) — undefined
+  // makes it a no-op so this test exercises exactly the saveTask call.
+  vi.mocked(researchTasks.getTask).mockImplementation(async () => undefined)
+  let resolveAck: () => void
+  const acked = new Promise<void>((resolve) => {
+    resolveAck = resolve
+  })
+  const sendResponse = vi.fn(() => resolveAck())
+
+  fire(
+    'onMessage',
+    { type: 'research.ensureAndStart', taskId: 't-scoped', question: 'q', conversationId: 'c1', sites: ['aftershockpc.com'] },
+    {},
+    sendResponse,
+  )
+  await acked
+
+  expect(researchTasks.saveTask).toHaveBeenCalledWith(expect.objectContaining({ id: 't-scoped', sites: ['aftershockpc.com'] }))
 })
