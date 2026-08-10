@@ -62,6 +62,16 @@ import {
 import type { ModelPrice } from '../agent/pricing'
 import type { ModelUsage } from '../agent/observability'
 import { conversationUsage, lastReportedInputTokens, usageLabel } from './usageDisplay'
+import {
+  discardInFlight,
+  flushInFlightSave,
+  INFLIGHT_MAX_AGE_MS,
+  isResumable,
+  restoreCtx,
+  scheduleInFlightSave,
+} from './turnRecovery'
+import { getInFlight, sweepInFlight, type InFlightTurn } from '../data/conversations'
+import { relativeTime } from '../platform/time'
 import { applyCompaction, estimateHistoryTokens, planCompaction } from '../agent/compaction'
 import { summarizeSpan } from '../agent/summarizeSpan'
 import { resolveContextLimit } from '../data/providerProfiles'
@@ -709,6 +719,8 @@ export default function Chat({
   // model's checkpoint and, on click, resumes with a fresh budget. Ephemeral —
   // the checkpoint itself rides in the message history, so it survives a reload.
   const [continuation, setContinuation] = useState<{ checkpoint: Checkpoint | null } | null>(null)
+  /** A turn interrupted mid-stream, waiting for the user to resume or discard it. */
+  const [recovery, setRecovery] = useState<InFlightTurn | null>(null)
   // Set when a page tool stopped the turn because this chat's tab is no longer in
   // front (see PageTarget in tools.ts). Holds the human-readable reason for the
   // strip; cleared when the user returns to the tab and the chain resumes.
@@ -953,6 +965,28 @@ export default function Chat({
     return () => document.removeEventListener('keydown', onKey)
   }, [capturing])
 
+  /**
+   * The resolver that turns stored `lychee-attachment:<id>` sentinels back into
+   * real parts, re-planned against the provider that is active NOW rather than
+   * the one active when the file was attached. A PDF attached under a
+   * native-document provider is stored as a real `application/pdf` part; if the
+   * conversation is later continued on a compatible provider, resending that
+   * part verbatim breaks every subsequent turn with no UI to remove it.
+   *
+   * Shared by conversation restore and interrupted-turn resume — both read a
+   * stored history back, so both need the same re-planning. Without a selected
+   * provider there is nothing to plan against, so it degrades to the plain byte
+   * swap.
+   */
+  function attachmentResolver() {
+    return selected
+      ? makeHistoricalAttachmentResolver(selected.provider, selected.modelId)
+      : async (ref: AttachmentRef): Promise<ResolvedAttachmentPart> => {
+          const rec = await getAttachment(ref.id).catch(() => null)
+          return rec ? { data: rec.dataUrl } : null
+        }
+  }
+
   // Restore a persisted conversation on mount. Chat is keyed by conversationId
   // in App, so this runs once per chat and never mid-conversation. Attachment
   // sentinels in the stored history are rehydrated here (see attachmentRefs.ts);
@@ -968,12 +1002,7 @@ export default function Chat({
     // The resolver degrades it down the same ladder a fresh attachment uses.
     // Without a selected provider there is nothing to plan against, so fall
     // back to the plain byte swap.
-    const resolveRef = selected
-      ? makeHistoricalAttachmentResolver(selected.provider, selected.modelId)
-      : async (ref: AttachmentRef): Promise<ResolvedAttachmentPart> => {
-          const rec = await getAttachment(ref.id).catch(() => null)
-          return rec ? { data: rec.dataUrl } : null
-        }
+    const resolveRef = attachmentResolver()
     void getConversation(conversationId).then(async (c) => {
       if (cancelled) return
       if (c) {
@@ -1001,6 +1030,43 @@ export default function Chat({
     return () => {
       cancelled = true
     }
+  }, [conversationId])
+
+  /**
+   * On conversation mount: look for a turn that was cut off mid-stream (the
+   * panel closed, the browser quit) and offer it back.
+   *
+   * Deliberately does NOT auto-resume. Resuming re-spends tokens and can re-enter
+   * a page-control flow, and the user may well have closed the panel *because*
+   * they wanted the turn to stop. Offering is the honest default; the card's
+   * Discard is a real answer, not a dismissal.
+   */
+  useEffect(() => {
+    let cancelled = false
+    // Sweep first so a checkpoint from months ago is deleted rather than
+    // offered; this is the only place the panel routinely opens this store.
+    void sweepInFlight(INFLIGHT_MAX_AGE_MS).catch(() => {})
+    void getInFlight(conversationId)
+      .then((record) => {
+        if (cancelled || !record) return
+        if (isResumable(record, Date.now())) setRecovery(record)
+        else void discardInFlight(conversationId).catch(() => {})
+      })
+      .catch(() => {})
+    return () => {
+      cancelled = true
+    }
+  }, [conversationId])
+
+  /**
+   * Last-gasp checkpoint flush when the panel is going away. Best-effort by
+   * nature — an async IndexedDB write may not commit before teardown — so the
+   * 1s debounce remains the real mechanism and this only narrows its window.
+   */
+  useEffect(() => {
+    const flush = () => flushInFlightSave(conversationId)
+    window.addEventListener('pagehide', flush)
+    return () => window.removeEventListener('pagehide', flush)
   }, [conversationId])
 
   /**
@@ -2703,8 +2769,17 @@ export default function Chat({
 
     // Patch one assistant bubble: its parts are `base` (prior cycles, in merge
     // mode) followed by this cycle's streamed parts.
-    const patch = (id: string, base: UIPart[]) => (parts: UIPart[]) =>
+    const patch = (id: string, base: UIPart[]) => (parts: UIPart[]) => {
       setMessages((m) => m.map((msg) => (msg.id === id ? { ...msg, parts: [...base, ...parts] } : msg)))
+      // Checkpoint alongside the stream, so an interrupted turn is recoverable
+      // to within the debounce window rather than lost entirely. Reads
+      // messagesRef (synced by an effect) rather than the array above, so it
+      // always sees the committed transcript rather than this one patch.
+      // `checkpoint` is declared below but only ever *called* from here during
+      // streaming, long after its initialization — and it closes over the
+      // per-cycle `assistantId`, so it must not be hoisted above the reassignment.
+      checkpoint()
+    }
 
     const assistantTexts: string[] = []
     // Journal lines for any steers the user injected mid-chain, folded into the
@@ -2758,6 +2833,38 @@ export default function Chat({
     // long chain; this flag exists only to stop an overflow that compaction
     // cannot fix from retrying forever.
     let retriedAfterOverflow = false
+
+    /**
+     * Checkpoint this turn so closing the panel does not destroy it.
+     *
+     * Debounced rather than written per streamed token: a token-rate write would
+     * re-serialize the whole transcript hundreds of times a turn on the panel's
+     * single JS thread. The debounce means the worst case is losing the last
+     * second of a reply, against the current worst case of losing all of it.
+     *
+     * Fire-and-forget and never awaited — a storage hiccup must not be able to
+     * stall or fail the turn it is insuring.
+     */
+    const checkpoint = () => {
+      scheduleInFlightSave({
+        conversationId,
+        startedAt: ctx.startedAt,
+        updatedAt: Date.now(),
+        messages: messagesRef.current,
+        history: dehydrateHistory(historyRef.current),
+        ctx: {
+          attachedSources: ctx.attachedSources,
+          activeSkill: ctx.activeSkill,
+          journalUserText: ctx.journalUserText,
+          droppableTail: ctx.droppableTail,
+          regen: null,
+        },
+        activeNames: [...activeNames],
+        autoContinues: autoContinuesRef.current,
+        episodeId: episodeIdRef.current,
+        assistantId,
+      })
+    }
 
     /**
      * Fold this conversation's older turns into a summary, in place on
@@ -3121,6 +3228,51 @@ export default function Chat({
   }
 
   /**
+   * Pick up a turn that was cut off when the panel closed.
+   *
+   * Restores the transcript and model history from the checkpoint, then re-enters
+   * `runTurnChain` with the same ctx. Two things are pointedly NOT restored (see
+   * `restoreCtx`): the page-control grant — the tab has almost certainly moved on,
+   * so a resumed turn must ask again through a fresh card — and the image queue,
+   * whose pixels describe a page that no longer exists.
+   */
+  async function resumeInterruptedTurn() {
+    if (streaming || !recovery) return
+    const record = recovery
+    setRecovery(null)
+    const { ctx, activeNames } = restoreCtx(record)
+    // Drop the checkpoint before re-running: if the resumed turn is itself
+    // interrupted it will write a fresh one, and leaving the old record live
+    // would offer the user a strictly staler version of the same turn.
+    await discardInFlight(record.conversationId).catch(() => {})
+    setMessages(record.messages)
+    // Re-plan attachments against the provider active NOW, not the one that was
+    // active when the turn was interrupted — the user may well have switched
+    // models in between, and a stale plan is the exact failure the 2026-08-10
+    // audit fixed for ordinary conversation loads.
+    historyRef.current = await hydrateHistory(record.history, attachmentResolver())
+    episodeIdRef.current = record.episodeId
+    autoContinuesRef.current = record.autoContinues
+    turnAllowed.current = new Set(activeNames)
+    await runTurnChain({
+      startedAt: Date.now(),
+      attachedSources: ctx.attachedSources,
+      activeSkill: ctx.activeSkill,
+      journalUserText: ctx.journalUserText,
+      // The interrupted turn's user message is already in the restored history
+      // and must not be popped as a dangling tail if this attempt also fails.
+      droppableTail: false,
+      regen: { historyLen: historyRef.current.length, opener: null },
+    })
+  }
+
+  /** Throw away an interrupted turn's checkpoint; the partial transcript stays. */
+  async function discardInterruptedTurn() {
+    setRecovery(null)
+    await discardInFlight(conversationId).catch(() => {})
+  }
+
+  /**
    * Resume a turn parked because this chat's tab wasn't in front. Same shape as
    * continueTask — the parking tool's result is already in history, so a fresh
    * chain just carries on — with one difference: the auto-continue tally is
@@ -3425,6 +3577,13 @@ export default function Chat({
             checkpoint={continuation.checkpoint}
             onContinue={() => void continueTask()}
             onDismiss={() => setContinuation(null)}
+          />
+        )}
+        {recovery && !streaming && (
+          <RecoveryCard
+            record={recovery}
+            onResume={() => void resumeInterruptedTurn()}
+            onDiscard={() => void discardInterruptedTurn()}
           />
         )}
         {parkedReason !== null && !streaming && (
@@ -5720,6 +5879,56 @@ function ApprovalCard({
 // Shown after a long task auto-continues MAX_AUTO_CONTINUES times without
 // finishing: surfaces the model's checkpoint (what's done, what's left, what to
 // avoid, the next action) and a Continue button that resumes with a fresh budget.
+/**
+ * A turn that was cut off when the panel closed, offered back to the user.
+ *
+ * Deliberately states what resuming does NOT carry over. A user who left mid
+ * page-control has every reason to expect the agent to pick up where it left
+ * off with the same permission, and it will not — saying so on the card is
+ * cheaper than letting them discover it from a second approval prompt.
+ */
+function RecoveryCard({
+  record,
+  onResume,
+  onDiscard,
+}: {
+  record: InFlightTurn
+  onResume: () => void
+  onDiscard: () => void
+}) {
+  const asked = record.ctx.journalUserText.split('\n')[0].slice(0, 120)
+  return (
+    <div className="recovery-card" role="status">
+      <div className="recovery-header">
+        <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
+          <path
+            d="M7 3.5v3.5l2.5 1.5M12 7A5 5 0 1 1 7 2a5 5 0 0 1 3.6 1.5"
+            stroke="currentColor"
+            strokeWidth="1.3"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+        </svg>
+        <span>This turn was interrupted</span>
+        <span className="recovery-when">{relativeTime(record.updatedAt)}</span>
+      </div>
+      {asked && <div className="recovery-asked">“{asked}”</div>}
+      <div className="recovery-note">
+        Resuming re-runs it from where it stopped. It won't keep any page-control
+        permission from before — it will ask again if it needs it.
+      </div>
+      <div className="recovery-actions">
+        <button className="btn primary small" onClick={onResume}>
+          Resume
+        </button>
+        <button className="btn ghost small" onClick={onDiscard}>
+          Discard
+        </button>
+      </div>
+    </div>
+  )
+}
+
 function ContinuationCard({
   checkpoint,
   onContinue,

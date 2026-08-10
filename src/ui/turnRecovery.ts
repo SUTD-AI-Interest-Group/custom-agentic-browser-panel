@@ -6,7 +6,78 @@
 // rule that actually matters here — that a resumed turn never inherits a
 // page-control grant — is locked down by a unit test rather than by a comment.
 
-import type { InFlightTurn } from '../data/conversations'
+import { clearInFlight, saveInFlight, type InFlightTurn } from '../data/conversations'
+
+/**
+ * Debounce window for checkpoint writes. Long enough that a fast stream
+ * coalesces into a handful of writes rather than hundreds, short enough that a
+ * panel closed mid-reply loses at most about a second of it.
+ */
+const CHECKPOINT_DEBOUNCE_MS = 1000
+
+// One pending timer and payload per conversation. Module-level (not a ref) for
+// the same reason drafts.ts does it: a fresh Chat mount on conversation switch
+// must not cancel a still-pending write belonging to the chat just left.
+const timers = new Map<string, ReturnType<typeof setTimeout>>()
+const pendingRecords = new Map<string, InFlightTurn>()
+
+/**
+ * Checkpoint a streaming turn, coalescing rapid calls into one write per pause.
+ *
+ * Deliberately fire-and-forget: this insures the turn, so it must never be able
+ * to stall or fail it. A rejected write leaves the previous checkpoint in place,
+ * which is strictly better than no checkpoint and strictly better than a broken
+ * turn.
+ */
+export function scheduleInFlightSave(record: InFlightTurn): void {
+  const key = record.conversationId
+  pendingRecords.set(key, record)
+  const pending = timers.get(key)
+  if (pending) clearTimeout(pending)
+  timers.set(
+    key,
+    setTimeout(() => {
+      timers.delete(key)
+      const latest = pendingRecords.get(key)
+      pendingRecords.delete(key)
+      if (latest) void saveInFlight(latest).catch(() => {})
+    }, CHECKPOINT_DEBOUNCE_MS),
+  )
+}
+
+/**
+ * Write any pending checkpoint immediately. Called from `pagehide`, where the
+ * debounce timer will never fire because the document is going away.
+ *
+ * Best-effort by nature: the panel may be torn down before an async IndexedDB
+ * write commits. The debounce above is the real mechanism — this only narrows
+ * the window it leaves open.
+ */
+export function flushInFlightSave(conversationId: string): void {
+  const pending = timers.get(conversationId)
+  if (pending) {
+    clearTimeout(pending)
+    timers.delete(conversationId)
+  }
+  const latest = pendingRecords.get(conversationId)
+  pendingRecords.delete(conversationId)
+  if (latest) void saveInFlight(latest).catch(() => {})
+}
+
+/**
+ * Drop a checkpoint and cancel any pending debounced write, so a queued save
+ * cannot resurrect a turn the user just discarded — the same hazard
+ * `clearDraft` guards against.
+ */
+export async function discardInFlight(conversationId: string): Promise<void> {
+  const pending = timers.get(conversationId)
+  if (pending) {
+    clearTimeout(pending)
+    timers.delete(conversationId)
+  }
+  pendingRecords.delete(conversationId)
+  await clearInFlight(conversationId)
+}
 
 /**
  * How long an interrupted turn stays offerable. A week is generous for "I
