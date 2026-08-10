@@ -1576,15 +1576,23 @@ export default function Chat({
     postResearchMsg({ type: 'research.cancel', taskId })
   }
 
-  // Tapping a dock bar always scrolls to the task's slot, whatever its state.
+  // Tapping a dock bar goes to whatever that task's payload actually is.
   //
-  // It used to open the live sheet for an active task, but the dock now only
-  // appears when that slot is off screen (see useOffscreenSlots), so "take me to
-  // the thing you're telling me about" is the only thing the tap can sensibly
-  // mean. The sheet is still one tap further in, from the live card itself —
-  // it stays the home of the full step log, just no longer the only way to see
-  // that anything is happening.
+  // STILL RUNNING → open the progress sheet. The dock only appears once the slot
+  // is off screen (see useOffscreenSlots), and someone who has scrolled away and
+  // then taps the bar wants to know what it is DOING — scrolling them back up the
+  // transcript to a card they deliberately left is an extra step in front of the
+  // thing they asked for. (This reverses an earlier call that reasoned "the dock
+  // names a slot, so the tap should reveal the slot". That was the wrong frame:
+  // the bar names a *task*, and the task's live detail is the sheet.)
+  //
+  // FINISHED → scroll to the card. Its payload is the report, which lives in the
+  // transcript; the sheet would only offer a completed step log nobody asked for.
   function openDockTask(t: ResearchTask) {
+    if (isActiveStatus(t.status)) {
+      setOpenSheetTaskId(t.id)
+      return
+    }
     setOpenSheetTaskId(null)
     document
       .getElementById(`research-${t.id}`)
