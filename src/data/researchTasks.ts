@@ -169,6 +169,20 @@ export interface ResearchProposal {
   clarifications?: string[]
   /** Documents the user attached to the armed message, by reference. */
   attachments?: ResearchAttachmentRef[]
+  /**
+   * True while the framing call is still in flight.
+   *
+   * The card is rendered BEFORE that call, carrying the user's raw message as
+   * the question, and filled in when it returns. Awaiting first meant an armed
+   * send showed nothing at all until the model answered — up to two chained
+   * 20s timeouts on a slow or structured-output-shy endpoint — which is
+   * indistinguishable from the feature being broken.
+   */
+  framing?: boolean
+  /** Set when framing failed. The card still works (the raw question is a
+   *  perfectly good one), but the user is told it was not refined rather than
+   *  silently getting a less useful card. */
+  framingError?: string
   /** Epoch ms the framing call produced this, so a stale brief reads as stale. */
   draftedAt: number
 }

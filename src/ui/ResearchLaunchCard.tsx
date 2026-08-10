@@ -52,7 +52,24 @@ export default function ResearchLaunchCard({
     // in Chat.tsx) — the transcript message's own id — so a future scroll-to
     // (or Task 11's single-slot transition) can target this card the same way.
     <div className="research-launch" id={`research-${proposal.taskId}`}>
-      <div className="research-launch__label">◈ Deep research</div>
+      <div className="research-launch__label">
+        <span>◈ Deep research</span>
+        {/* The card exists before framing finishes, so it has to say which state
+            it is in. Silence here is what made a slow endpoint look like a broken
+            feature. */}
+        {proposal.framing && (
+          <span className="research-launch__framing" role="status">
+            <span className="research-launch__framing-dot" aria-hidden="true" />
+            Refining your question…
+          </span>
+        )}
+      </div>
+
+      {proposal.framingError && (
+        <div className="research-launch__framing-error" role="note">
+          Couldn't refine the question ({proposal.framingError}) — you can edit it below and research it as written.
+        </div>
+      )}
 
       <textarea
         className="research-launch__question"

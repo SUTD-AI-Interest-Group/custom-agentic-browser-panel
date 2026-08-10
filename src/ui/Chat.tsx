@@ -1105,11 +1105,22 @@ export default function Chat({
   // App refresh its history list.
   useEffect(() => {
     if (turnSeq === 0) return
-    // Never persist the transient `fixingMath: true` — a save that races an
-    // in-flight repair would otherwise show a stuck spinner on reload.
+    // Never persist a transient in-flight flag — a save that races the work it
+    // marks would otherwise show a stuck spinner on reload. `fixingMath` is one;
+    // a proposal's `framing` is the other, and it is the stricter case: the
+    // framing call lives in THIS page, so a reload kills it outright and nothing
+    // would ever arrive to clear the flag.
     void saveConversation({
       id: conversationId,
-      messages: messages.map((m) => (m.fixingMath ? { ...m, fixingMath: false } : m)),
+      messages: messages.map((m) =>
+        m.fixingMath || m.proposal?.framing
+          ? {
+              ...m,
+              fixingMath: false,
+              ...(m.proposal?.framing ? { proposal: { ...m.proposal, framing: false } } : {}),
+            }
+          : m,
+      ),
       // Attachment file parts are dehydrated to `lychee-attachment:<id>` refs on
       // the way to disk — the bytes live once in the capped attachments store.
       history: dehydrateHistory(historyRef.current),
@@ -2205,7 +2216,34 @@ export default function Chat({
             pageCount: m.pageCount,
           }))
         : []
+    // Show the card NOW, carrying the raw message as the question, and fill it
+    // in when framing returns. Awaiting first meant an armed send rendered
+    // nothing at all until the model answered — up to two chained 20s timeouts
+    // on a slow or structured-output-shy endpoint — which is indistinguishable
+    // from the feature being broken, and a rejection (this runs behind `void`)
+    // left no trace at all.
+    if (atts.length > 0) proposalAttsRef.current.set(taskId, atts)
+    setMessages((prev) => [
+      ...prev,
+      {
+        id: `research-${taskId}`,
+        role: 'assistant' as const,
+        parts: [],
+        proposal: {
+          taskId,
+          question: text,
+          subQuestions: [],
+          sites: [],
+          ...(attachmentRefs.length > 0 ? { attachments: attachmentRefs } : {}),
+          framing: true,
+          draftedAt: Date.now(),
+        },
+      },
+    ])
+    setTurnSeq((n) => n + 1)
+
     let framed: ResearchFramingResult
+    let framingError: string | undefined
     if (!selected) {
       // The pill and the composer are normally disabled with no provider
       // configured (see `selected` below), so this is a defensive backstop —
@@ -2214,6 +2252,7 @@ export default function Chat({
       // question the user just typed. No network call is even attempted:
       // there is no model to hand it.
       setCaptureError('No model is configured — add a provider in Settings to frame and run this research.')
+      framingError = 'no model is configured'
       framed = { question: text, subQuestions: [], sites: [] }
     } else {
       try {
@@ -2230,30 +2269,26 @@ export default function Chat({
         // case produces, so the card still appears (just unframed) instead of
         // the armed send silently vanishing with nothing to show for it.
         console.error('[research] framing setup failed', err)
+        framingError = err instanceof Error ? err.message : String(err)
         framed = { question: text, subQuestions: [], sites: [] }
       }
     }
-    // Cancel promises to put the user exactly where they were before Send, and
-    // that includes their files. The refs on the proposal are enough for
-    // research, but not enough to rebuild a composer chip (which holds decoded
-    // bytes), so the originals are parked here. In-memory only, matching the
-    // same tradeoff updateProposal already documents: a reload before Start
-    // loses them from the composer, though the persisted records survive.
-    if (atts.length > 0) proposalAttsRef.current.set(taskId, atts)
-    setMessages((prev) => [
-      ...prev,
-      {
-        id: `research-${taskId}`,
-        role: 'assistant' as const,
-        parts: [],
-        proposal: {
-          ...framed,
-          taskId,
-          ...(attachmentRefs.length > 0 ? { attachments: attachmentRefs } : {}),
-          draftedAt: Date.now(),
-        },
-      },
-    ])
+    // Merge the framing into the card already on screen. An edit the user made
+    // while the call was in flight WINS: they were looking at the question and
+    // changed it, so replacing it under them would be the same class of failure
+    // this whole feature exists to prevent. Only an untouched draft is filled in.
+    setMessages((prev) =>
+      prev.map((m) => {
+        if (m.id !== `research-${taskId}` || !m.proposal) return m
+        const untouched = m.proposal.framing === true && m.proposal.question === text
+        return {
+          ...m,
+          proposal: untouched
+            ? { ...m.proposal, ...framed, framing: false, framingError }
+            : { ...m.proposal, framing: false, framingError },
+        }
+      }),
+    )
     setTurnSeq((n) => n + 1)
   }
 

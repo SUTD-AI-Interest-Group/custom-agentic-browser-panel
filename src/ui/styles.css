@@ -6132,3 +6132,46 @@ body {
   font-size: 10.5px;
   color: var(--text-muted);
 }
+
+/* ---- Launch card: framing states ----
+   The card is rendered before the framing call returns, so it must say so. */
+
+.research-launch__label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.research-launch__framing {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-weight: 400;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.research-launch__framing-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: research-framing-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes research-framing-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.25; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .research-launch__framing-dot { animation: none; }
+}
+
+/* Muted, not alarming: framing failing costs refinement, not the launch. */
+.research-launch__framing-error {
+  margin-top: 7px;
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--text-muted);
+}
