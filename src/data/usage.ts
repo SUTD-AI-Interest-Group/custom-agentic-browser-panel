@@ -14,6 +14,7 @@ export type StoreKey =
   | 'memory'
   | 'skills'
   | 'research'
+  | 'traces'
 
 export interface StoreUsage {
   /** Estimated bytes — see `estimateBytes`. */

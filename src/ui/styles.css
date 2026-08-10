@@ -1191,6 +1191,103 @@ body {
   cursor: help;
 }
 
+/* The local turn-trace drawer. Styled like the Thinking block it sits near —
+   both are optional depth under a reply that most readers collapse past. */
+.trace-drawer {
+  margin-top: 4px;
+  font-size: 11.5px;
+}
+
+.trace-head {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 4px;
+  border: none;
+  background: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 11.5px;
+}
+
+.trace-drawer.open .reasoning-chevron {
+  transform: rotate(90deg);
+}
+
+.trace-body {
+  margin: 4px 0 0 4px;
+  padding-left: 8px;
+  border-left: 2px solid var(--border);
+  color: var(--text-muted);
+}
+
+.trace-summary {
+  margin-bottom: 4px;
+  font-weight: 600;
+}
+
+.trace-steps {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.trace-step-head {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.trace-step-index {
+  flex-shrink: 0;
+  min-width: 14px;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.7;
+}
+
+.trace-step-calls {
+  /* A step with several tool calls must not push the timing off the card. */
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.trace-step-time {
+  margin-left: auto;
+  flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.75;
+}
+
+.trace-step-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  margin-left: 20px;
+  opacity: 0.8;
+}
+
+.trace-step-meta span {
+  cursor: default;
+}
+
+.trace-step-repair {
+  margin-left: 20px;
+  margin-top: 2px;
+  color: var(--accent);
+}
+
+.trace-step-repair code {
+  font-size: 10.5px;
+}
+
+.trace-empty {
+  opacity: 0.75;
+}
+
 /* The recovery card: a turn cut off when the panel closed. Neutral-fenced, not
    blue: unlike the Continue card this is not the agent asking to keep going, it
    is the app reporting something went wrong and offering a way back. */

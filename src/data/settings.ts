@@ -236,6 +236,16 @@ export interface Settings {
   /** Beta Langfuse observability. Absent on old installs → treated as disabled. */
   observability?: ObservabilityConfig
   /**
+   * Record a local, redacted step-by-step trace of each turn (src/data/traces.ts),
+   * shown as a collapsible drawer under a reply. Off by default and absent on old
+   * installs — it is a debugging surface, not something every user needs, and it
+   * costs a store write per turn.
+   *
+   * Independent of `observability`: that ships content to Langfuse, this never
+   * leaves the browser. A user may reasonably want either, both, or neither.
+   */
+  turnTrace?: boolean
+  /**
    * MCP servers: `servers` is byte-for-byte the standard `mcpServers` JSON
    * object (upload/edit/copy are pure serialization); enabled flags and
    * per-server tool policies ride in sidecar maps that never export. Sparse —

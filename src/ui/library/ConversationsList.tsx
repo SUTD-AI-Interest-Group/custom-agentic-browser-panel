@@ -10,6 +10,7 @@ import { deleteShotsForConversation } from '../../data/screenshots'
 import { deleteAttachmentsForConversation } from '../../data/attachments'
 import { deleteMcpArtifactsForConversation } from '../../data/mcpArtifacts'
 import { deleteArtifactsForConversation } from '../../data/artifacts'
+import { deleteTracesForConversation } from '../../data/traces'
 import { relativeTime } from '../../platform/time'
 import { conversationTitle } from '../conversationTitle'
 
@@ -72,6 +73,7 @@ export default function ConversationsList({
         deleteAttachmentsForConversation(id).catch(() => {}),
         deleteMcpArtifactsForConversation(id).catch(() => {}),
         deleteArtifactsForConversation(id).catch(() => {}),
+        deleteTracesForConversation(id).catch(() => {}),
       ])
     } finally {
       refresh()

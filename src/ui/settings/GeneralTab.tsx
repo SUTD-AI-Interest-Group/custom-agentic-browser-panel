@@ -66,6 +66,19 @@ export default function GeneralTab({
           Fetch link previews
         </label>
         <p className="hint">Contacts linked sites for their title, description and image.</p>
+        <label className="check">
+          <input
+            type="checkbox"
+            checked={draft.turnTrace === true}
+            onChange={(e) => commit({ ...draft, turnTrace: e.target.checked })}
+          />
+          Record turn traces
+        </label>
+        <p className="hint">
+          Adds a “Trace” drawer under each reply showing its steps, the tools available at
+          each one, and tokens used. Stored locally, with values redacted; nothing is sent
+          anywhere. Clear them in the Data tab.
+        </p>
       </Section>
 
       <McpSection draft={draft} commit={commit} />

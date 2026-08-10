@@ -15,7 +15,6 @@ import { z } from 'zod'
 import { resolveActiveTools } from '../tools/toolDiscovery'
 import { toModelUsage } from './usage'
 import type { ModelUsage, Trace } from './observability'
-import { redactSecrets } from './observability/redact'
 import type { TraceStep } from '../data/traces'
 import type { ResearchProposal, ResearchStatus, ResearchVerification } from '../data/researchTasks'
 import type { AttachmentMeta } from '../data/attachments'
@@ -140,6 +139,13 @@ export interface UIMessage {
    * there to scroll back to — only the model's copy is condensed.
    */
   compacted?: number
+  /**
+   * A local turn trace was recorded under this bubble's id (src/data/traces.ts),
+   * so the Trace drawer should offer itself here. Persisted with the transcript
+   * so the drawer still appears after a reload; the trace store prunes on its
+   * own schedule, and the drawer says so plainly when the record is gone.
+   */
+  hasTrace?: boolean
   /**
    * Marks a background-research report injected into the transcript: it renders
    * as a research report card (titled header + report body) instead of a plain
@@ -458,16 +464,27 @@ export async function runAgentTurn(options: {
    * around it: a tracing failure must never be able to surface as a turn
    * failure, so everything here is best-effort and swallowed.
    *
-   * Tool NAMES are safe to record verbatim; tool INPUTS are not, and are
-   * deliberately not recorded at all here — the drawer shows which tools ran,
-   * not what was typed into them. `redactSecrets` still runs over the whole
-   * payload as a second net, because `finishReason` and model ids come from the
-   * provider and a future edit might widen what this carries.
+   * **A TraceStep carries no user data, by construction.** Every field is
+   * either a number this code computed, a provider-controlled enum
+   * (`finishReason`, `model`), or a TOOL NAME. Tool *inputs* — which routinely
+   * hold real secrets typed through a page (`ControlPage`'s `text`/`value`,
+   * `AutofillForm`'s `fields[].value`) — are deliberately never recorded: the
+   * drawer shows which tools ran, not what was typed into them. That exclusion,
+   * not redaction, is the security property, and `traceSink.test.ts` drives a
+   * secret through this path to enforce it.
+   *
+   * An earlier version ran the whole step through `redactSecrets` as a second
+   * net. That was actively harmful: its key rule matches the substring
+   * `token`, so `inputTokens`/`outputTokens` were replaced with `[redacted]`
+   * and the drawer rendered `NaN`. Over-redaction is documented as acceptable
+   * there precisely because that function is meant for payloads that DO carry
+   * user data — which this one does not. If a free-form field is ever added
+   * here, redact it at the point it is added, not by blanketing the record.
    */
   const emitStep = (step: TraceStep) => {
     if (!sink) return
     try {
-      sink.step(redactSecrets(step) as TraceStep)
+      sink.step(step)
     } catch {
       /* best-effort */
     }

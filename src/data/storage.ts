@@ -13,13 +13,14 @@ import { clearShots, shotsUsage } from './screenshots'
 import { clearAttachments, attachmentsUsage } from './attachments'
 import { clearSkills, skillsUsage } from './skills'
 import { clearTasks, tasksUsage } from './researchTasks'
+import { clearTraces, tracesUsage } from './traces'
 import { seedBuiltinSkills } from './builtinSkills'
 import { resetVault } from './vault'
 import type { StorageReport, StoreKey, StoreUsage } from './usage'
 
 /** Read every store once and total it up. Counts are dozens, so one pass is cheap. */
 export async function storageReport(): Promise<StorageReport> {
-  const [conversations, screenshots, attachments, mcp, artifacts, memory, skills, research] =
+  const [conversations, screenshots, attachments, mcp, artifacts, memory, skills, research, traces] =
     await Promise.all([
       conversationsUsage(),
       shotsUsage(),
@@ -29,6 +30,7 @@ export async function storageReport(): Promise<StorageReport> {
       memoryUsage(),
       skillsUsage(),
       tasksUsage(),
+      tracesUsage(),
     ])
   const stores: Record<StoreKey, StoreUsage> = {
     conversations,
@@ -39,6 +41,7 @@ export async function storageReport(): Promise<StorageReport> {
     memory,
     skills,
     research,
+    traces,
   }
   const total = Object.values(stores).reduce((n, s) => n + s.bytes, 0)
   // estimate() is absent in some contexts; the quota bar simply hides then.
@@ -88,6 +91,9 @@ export async function clearStore(key: StoreKey): Promise<void> {
     case 'research':
       await clearTasks()
       return
+    case 'traces':
+      await clearTraces()
+      return
     default: {
       // Exhaustiveness guard: if StoreKey ever gains a 9th member without a
       // case above, `key` stops being assignable to `never` here and the
@@ -119,6 +125,7 @@ const RAW_CLEARERS: Record<StoreKey, () => Promise<void>> = {
   memory: clearMemory,
   skills: clearSkills,
   research: clearTasks,
+  traces: clearTraces,
 }
 
 /**

@@ -14,6 +14,7 @@ const ROWS: Array<{ key: StoreKey; label: string }> = [
   { key: 'memory', label: 'Memory' },
   { key: 'skills', label: 'Skills' },
   { key: 'research', label: 'Research' },
+  { key: 'traces', label: 'Turn traces' },
 ]
 
 /** What clearing each store actually destroys — revealed once the button is armed. */
@@ -26,6 +27,7 @@ const CLEAR_EFFECT: Record<StoreKey, string> = {
   memory: 'Deletes all memories and the episode log.',
   skills: 'Deletes your custom skills. Built-ins are restored.',
   research: 'Deletes all saved reports.',
+  traces: 'Deletes the recorded step-by-step traces of past turns.',
 }
 
 /**

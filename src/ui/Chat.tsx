@@ -72,6 +72,9 @@ import {
 } from './turnRecovery'
 import { getInFlight, sweepInFlight, type InFlightTurn } from '../data/conversations'
 import { relativeTime } from '../platform/time'
+import TraceDrawer from './TraceDrawer'
+import { saveTrace, type TraceStep } from '../data/traces'
+import type { TraceSink } from '../agent/agent'
 import { applyCompaction, estimateHistoryTokens, planCompaction } from '../agent/compaction'
 import { summarizeSpan } from '../agent/summarizeSpan'
 import { resolveContextLimit } from '../data/providerProfiles'
@@ -2786,8 +2789,22 @@ export default function Chat({
     // episode as user turns alongside the opening message.
     const steerJournals: string[] = []
     const assistantIds = new Set<string>()
+    // Local turn trace: buffered across the whole chain (every auto-continue
+    // cycle belongs to the same logical turn) and written once at the end, so a
+    // 24-step turn costs one store write rather than 24. Off by default; when
+    // the setting is off there is no sink at all and runAgentTurn skips the work
+    // entirely rather than building steps nobody will read.
+    const traceSteps: TraceStep[] = []
+    const traceEnabled = settingsRef.current.turnTrace === true
+    const sink: TraceSink | undefined = traceEnabled
+      ? { step: (s) => traceSteps.push({ ...s, index: traceSteps.length }) }
+      : undefined
     let pushedAny = false
     let assistantId = uid()
+    // The chain's trace hangs under its FIRST bubble — the one that stays put as
+    // auto-continues append more — so the drawer sits at the top of the turn it
+    // describes rather than migrating down it.
+    const traceTurnId = assistantId
     let mergedParts: UIPart[] = []
     setMessages((m) => [...m, { id: assistantId, role: 'assistant', parts: [], sources: ctx.attachedSources }])
     assistantIds.add(assistantId)
@@ -2961,6 +2978,7 @@ export default function Chat({
           imageQueue,
           activeNames,
           trace,
+          sink,
           // Agent steering: halt this cycle at the next step boundary when the user
           // has queued a mid-task steer, so the drain below can splice it into
           // history and continue the chain.
@@ -3150,6 +3168,24 @@ export default function Chat({
       setStreaming(false)
       setTurnStartedAt(null)
       setTurnSeq((n) => n + 1)
+      // Write the local trace once for the whole chain, keyed to the bubble the
+      // drawer hangs under. In the finally rather than the success path: a turn
+      // that errored or was stopped is exactly the one worth inspecting.
+      // Fire-and-forget — a trace write must never delay or fail a turn.
+      if (traceSteps.length > 0) {
+        const id = traceTurnId
+        void saveTrace({
+          id,
+          conversationId,
+          createdAt: ctx.startedAt,
+          label: ctx.journalUserText.split('\n')[0].slice(0, 120),
+          steps: traceSteps,
+        })
+          // Flag the bubble only once the write succeeded, so the drawer is
+          // never offered for a trace that failed to save.
+          .then(() => setMessages((m) => m.map((msg) => (msg.id === id ? { ...msg, hasTrace: true } : msg))))
+          .catch(() => {})
+      }
       // Observability: deliver this turn's buffered events. Best-effort.
       void observer.flush()
     }
@@ -4587,6 +4623,7 @@ const MessageView = memo(function MessageView({
       {message.parts.length > 0 && !streaming && (
         <MessageToolbar message={message} targetRef={bodyRef} onRegenerate={onRegenerate} price={price} />
       )}
+      {message.hasTrace && !streaming && <TraceDrawer turnId={message.id} />}
     </div>
   )
 })

@@ -17,6 +17,7 @@ vi.mock('./screenshots', () => ({ clearShots: vi.fn(async () => {}), shotsUsage:
 vi.mock('./attachments', () => ({ clearAttachments: vi.fn(async () => {}), attachmentsUsage: vi.fn() }))
 vi.mock('./skills', () => ({ clearSkills: vi.fn(async () => {}), skillsUsage: vi.fn() }))
 vi.mock('./researchTasks', () => ({ clearTasks: vi.fn(async () => {}), tasksUsage: vi.fn() }))
+vi.mock('./traces', () => ({ clearTraces: vi.fn(async () => {}), tracesUsage: vi.fn() }))
 vi.mock('./builtinSkills', () => ({ seedBuiltinSkills: vi.fn(async () => {}) }))
 vi.mock('./vault', () => ({ resetVault: vi.fn(async () => {}) }))
 
@@ -28,6 +29,7 @@ import { clearShots } from './screenshots'
 import { clearAttachments } from './attachments'
 import { clearSkills } from './skills'
 import { clearTasks } from './researchTasks'
+import { clearTraces } from './traces'
 import { seedBuiltinSkills } from './builtinSkills'
 import { resetVault } from './vault'
 import { clearStore, eraseAllData } from './storage'
@@ -42,6 +44,7 @@ const ALL_STORE_KEYS: StoreKey[] = [
   'memory',
   'skills',
   'research',
+  'traces',
 ]
 
 beforeEach(() => {
@@ -79,7 +82,7 @@ describe('clearStore', () => {
 })
 
 describe('eraseAllData', () => {
-  it('clears every one of the 8 StoreKey stores exactly once — a 9th key added to StoreKey without a matching entry here must fail to compile, not silently survive an erase', async () => {
+  it('clears every one of the 9 StoreKey stores exactly once — a 10th key added to StoreKey without a matching entry here must fail to compile, not silently survive an erase', async () => {
     await eraseAllData()
     expect(clearConversations).toHaveBeenCalledTimes(1)
     expect(clearShots).toHaveBeenCalledTimes(1)
@@ -89,6 +92,7 @@ describe('eraseAllData', () => {
     expect(clearMemory).toHaveBeenCalledTimes(1)
     expect(clearSkills).toHaveBeenCalledTimes(1)
     expect(clearTasks).toHaveBeenCalledTimes(1)
+    expect(clearTraces).toHaveBeenCalledTimes(1)
     expect(resetVault).toHaveBeenCalledTimes(1)
   })
 
@@ -106,7 +110,17 @@ describe('eraseAllData', () => {
     // enforces every case is handled); this just keeps the *test's own* notion
     // of "every store" from drifting from the real union if it's ever extended.
     expect(ALL_STORE_KEYS.sort()).toEqual(
-      (['conversations', 'screenshots', 'attachments', 'mcp', 'artifacts', 'memory', 'skills', 'research'] as StoreKey[]).sort(),
+      ([
+        'conversations',
+        'screenshots',
+        'attachments',
+        'mcp',
+        'artifacts',
+        'memory',
+        'skills',
+        'research',
+        'traces',
+      ] as StoreKey[]).sort(),
     )
   })
 })

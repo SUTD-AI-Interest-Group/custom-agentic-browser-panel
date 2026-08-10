@@ -14,11 +14,15 @@
 // the SAME transaction as the record, so pruning never deserializes a full
 // trace just to run the eviction math — the screenshots.ts lesson.
 //
-// EVERYTHING WRITTEN HERE HAS ALREADY PASSED THROUGH `redactSecrets`. A step's
-// tool inputs routinely carry real secrets typed through a page (ControlPage's
-// `text`/`value`, AutofillForm's `fields[].value`), so the capture side
-// (src/agent/agent.ts) redacts before it ever reaches this module. This store
-// does no redaction of its own — it must never be handed raw input.
+// NOTHING WRITTEN HERE CARRIES USER DATA, and that is a property of the record
+// SHAPE rather than of any filtering step. A `TraceStep` holds numbers, a
+// provider-controlled finish reason, and tool NAMES — never tool inputs, which
+// routinely carry real secrets typed through a page (ControlPage's
+// `text`/`value`, AutofillForm's `fields[].value`). The capture side
+// (src/agent/agent.ts `emitStep`) explains why exclusion is used here rather
+// than `redactSecrets`, and `traceSink.test.ts` drives a password through the
+// real path to prove it. Keep `TraceStep` free of free-form fields; if one is
+// ever genuinely needed, redact it where it is added.
 
 import { estimateBytes, planPrune, type StoreUsage } from './usage'
 import type { ModelUsage } from '../agent/observability'
