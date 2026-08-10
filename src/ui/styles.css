@@ -6054,8 +6054,11 @@ body {
   color: var(--text-muted);
 }
 
+/* Both footer actions share one pill shape; only their colour differs. The
+   first one carries the auto margin, so the pair sits together at the right
+   edge with the row's own gap between them. */
+.research-live__view,
 .research-live__stop {
-  margin-left: auto;
   padding: 3px 10px;
   border: 1px solid var(--border);
   border-radius: 999px;
@@ -6066,6 +6069,9 @@ body {
   cursor: pointer;
 }
 
+.research-live__view { margin-left: auto; color: var(--accent); }
+
+.research-live__view:hover,
 .research-live__stop:hover { background: var(--pill-bg); }
 
 /* The collapsed finished row's second line: source count, verification and

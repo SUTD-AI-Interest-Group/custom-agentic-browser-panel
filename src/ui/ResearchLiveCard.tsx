@@ -98,6 +98,14 @@ export function ResearchLiveCard({
         <span className="research-live__sources">
           {sources.length} source{sources.length === 1 ? '' : 's'}
         </span>
+        {/* The header is clickable too, but nothing says so — an explicit button
+            beside Stop is what makes the full log findable. It leads, because
+            "show me what it is doing" is the common intent and Stop is the
+            destructive one; putting Stop last also keeps it away from the tap
+            that opens the log. */}
+        <button className="research-live__view" onClick={onOpen}>
+          View progress
+        </button>
         <button className="research-live__stop" onClick={onStop}>
           Stop
         </button>
