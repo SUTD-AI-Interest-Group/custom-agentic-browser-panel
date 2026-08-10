@@ -2721,6 +2721,20 @@ body {
   white-space: nowrap;
   cursor: pointer;
 }
+/* :not(.on) — the sibling hover idiom (background → --pill-bg, color → --text)
+   is for the neutral resting look only. Without this guard the rule's higher
+   specificity (.research-pill:hover:not(:disabled) beats .research-pill.on)
+   would win over the armed state's accent tint on every hover, flashing a lit
+   pill back to neutral gray under the mouse — undermining the one thing
+   arming exists to signal. */
+.research-pill:hover:not(:disabled):not(.on) {
+  background: var(--pill-bg);
+  color: var(--text);
+}
+.research-pill:disabled {
+  opacity: 0.3;
+  cursor: default;
+}
 .research-pill.on {
   background: color-mix(in srgb, var(--accent) 18%, transparent);
   color: var(--accent);

@@ -3356,6 +3356,11 @@ export default function Chat({
               <button
                 className={researchArmed ? 'research-pill on' : 'research-pill'}
                 title="Deep research — reads the web in the background and reports back"
+                // The narrow breakpoint (styles.css) hides .research-pill__label with
+                // display:none, which drops it out of the accessible-name-from-content
+                // computation entirely — title alone is accname's last-resort tier and
+                // isn't reliably announced. aria-label makes the name unconditional.
+                aria-label="Deep research — reads the web in the background and reports back"
                 aria-pressed={researchArmed}
                 disabled={!selected}
                 onClick={() => setResearchArmed((a) => !a)}
