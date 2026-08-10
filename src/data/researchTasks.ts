@@ -312,6 +312,14 @@ export type ResearchMsg =
       results?: { title: string; url: string; snippet: string }[]
       error?: string
     }
+  // Shutdown (offscreen → SW): the host has nothing left to do — no research task
+  // running AND no dream cycle in flight. Only the host can say this, since it is
+  // the one context that sees both tenants; the SW answers by closing the document
+  // (re-checking storage for an active task first, in case one was dispatched in
+  // the gap). Nothing is lost if this message is dropped — ensureOffscreen
+  // recreates the host on demand, and the worst case is a document that lives
+  // until the next task finishes.
+  | { type: 'offscreen.idle' }
 
 /**
  * Send one research message, fire-and-forget. Every hop in this protocol is

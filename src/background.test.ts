@@ -45,12 +45,16 @@ vi.mock('./platform/researchRender', () => ({
 vi.mock('./platform/researchBrowse', () => ({
   closeSessionsForTask: vi.fn(),
   handleBrowseOp: vi.fn(async () => ({ ok: false, message: 'not exercised' })),
+  reapExpiredSessions: vi.fn(() => 0),
 }))
 vi.mock('./platform/researchSearch', () => ({
   searchInTab: vi.fn(async () => ({ results: [] })),
 }))
 vi.mock('./platform/researchTab', () => ({
-  sweepOrphanWindow: vi.fn(async () => {}),
+  JANITOR_ALARM: 'research-tab-janitor',
+  sweepOrphanWindows: vi.fn(async () => {}),
+  runJanitorTick: vi.fn(async () => {}),
+  teardownNow: vi.fn(async () => {}),
 }))
 // researchTasks keeps its real PURE helpers (resumableTasks/isActiveStatus/
 // taskDeadline/capSteps/MAX_RESEARCH_DURATION_MS) — only the storage-touching

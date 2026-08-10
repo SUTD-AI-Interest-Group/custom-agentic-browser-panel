@@ -27,15 +27,40 @@ import { isFetchableUrl } from './webFetch'
 const NAV_TIMEOUT_MS = 30_000
 const IDLE_TEARDOWN_MS = 60_000
 
-/** Survives a service-worker restart, so an orphaned window can be swept. */
-const ORPHAN_KEY = 'researchRenderWindowId'
+/**
+ * The janitor alarm — how an idle window actually gets closed.
+ *
+ * Teardown CANNOT be a setTimeout. This module runs in the MV3 service worker,
+ * which Chrome evicts after ~30s idle, and a released lease is followed by
+ * exactly the silence that triggers that eviction: the research heartbeat that
+ * had been keeping the worker alive (offscreen.ts, every 20s) stops when the
+ * task ends. Measured in a real browser against this exact algorithm, over
+ * three create/release cycles, the 60s timer fired ZERO times — each window
+ * instead survived until the *next* cold worker boot happened to run the orphan
+ * sweep, which is why finished research left minimized windows lying around.
+ * An alarm is the only timer that outlives the worker: Chrome persists it and
+ * wakes the worker to deliver it.
+ *
+ * Armed only while there is something to clean up, and disarmed the moment
+ * there isn't, so an idle install is never woken on a timer it doesn't need.
+ * 0.5 is Chrome's floor for a repeating alarm.
+ */
+export const JANITOR_ALARM = 'research-tab-janitor'
+const JANITOR_PERIOD_MINUTES = 0.5
+
+/** Survives a service-worker restart, so orphaned windows can be swept. A LIST:
+ *  a single id could only ever remember the newest window, so every window the
+ *  worker lost track of before writing it (see ensureTab) leaked permanently. */
+const ORPHAN_KEY = 'researchRenderWindowIds'
+/** The pre-list key, still swept so an in-place update strands nothing. */
+const LEGACY_ORPHAN_KEY = 'researchRenderWindowId'
 
 /**
- * Set synchronously the instant sweepOrphanWindow is called (before its first
+ * Set synchronously the instant sweepOrphanWindows is called (before its first
  * await) and resolved once the sweep finishes. background.ts calls
- * sweepOrphanWindow unconditionally at SW startup, before any message
+ * sweepOrphanWindows unconditionally at SW startup, before any message
  * listener can fire, so this is always set by the time a message-triggered
- * ensureTab() could possibly run. Gating ensureTab's ORPHAN_KEY write on it
+ * ensureTab() could possibly run. Gating ensureTab's orphan write on it
  * closes the TOCTOU where a fast-retrying acquireTab() (e.g. the offscreen
  * host immediately retrying a browse `open` after its old session died across
  * a SW restart — the exact case this sweep exists to clean up after) could
@@ -48,7 +73,20 @@ let sweepGate: Promise<void> | undefined
 let renderWindowId: number | undefined
 let renderTabId: number | undefined
 let usingIncognito = false
-let idleTimer: ReturnType<typeof setTimeout> | undefined
+
+/** Outstanding leases. Tearing the window down is only ever safe at zero. */
+let leaseCount = 0
+/** When the last lease was released — the clock the idle teardown runs on.
+ *  `undefined` while a lease is held (or before one ever was). */
+let idleSince: number | undefined
+/**
+ * The in-flight teardown, set SYNCHRONOUSLY before teardown's first await.
+ * acquireTab awaits it before claiming a lease, and every teardown entry point
+ * checks `leaseCount` synchronously — so whichever of the two commits first is
+ * decided without an interleaving, and a janitor tick can never close a window
+ * out from under a lease that was being handed out at the same moment.
+ */
+let tearingDown: Promise<void> | undefined
 
 // Leases are serialized through a promise chain: each acquirer waits for the
 // previous lease's release() before it gets the tab.
@@ -78,11 +116,17 @@ export function acquireTab(): Promise<TabLease> {
   chain = previous.then(() => gate)
 
   return previous.then(async () => {
-    if (idleTimer) clearTimeout(idleTimer)
+    // Never claim a lease over a teardown that is already committed — see
+    // `tearingDown`. It resolves quickly (one windows.remove) and only ever
+    // runs when no lease was outstanding.
+    if (tearingDown) await tearingDown.catch(() => {})
+    leaseCount++
+    idleSince = undefined
     let released = false
     const release = () => {
       if (released) return
       released = true
+      leaseCount--
       scheduleTeardown()
       unlock()
     }
@@ -134,14 +178,63 @@ async function ensureTab(): Promise<number> {
   }
   if (!win || win.id === undefined) throw new Error('could not open a research window')
   renderWindowId = win.id
+  // Remember it across a service-worker restart BEFORE anything below can
+  // throw. This write used to sit after the tab-id check, so a window whose
+  // `tabs` came back empty was created and then abandoned by the throw with
+  // its id recorded nowhere: the idle teardown could not reach it (module
+  // state dies with the worker) and the sweep did not know it existed. The
+  // next acquireTab() then found no cached tab and opened ANOTHER window —
+  // which is how these accumulate rather than merely linger.
+  if (sweepGate) await sweepGate
+  await trackOrphan(win.id)
+  // From here on the window is recoverable, so the janitor has something to do.
+  armJanitor()
   renderTabId = win.tabs?.[0]?.id
-  if (renderTabId === undefined) throw new Error('could not open a research tab')
-  // Remember it across a service-worker restart so sweepOrphanWindow can close it.
-  if (renderWindowId !== undefined) {
-    if (sweepGate) await sweepGate
-    await chrome.storage.session.set({ [ORPHAN_KEY]: renderWindowId }).catch(() => {})
+  if (renderTabId === undefined) {
+    // Don't leave a window we cannot use sitting there invisibly.
+    await closeWindow(win.id)
+    renderWindowId = undefined
+    throw new Error('could not open a research tab')
   }
   return renderTabId
+}
+
+/** Tolerates the pre-list shape (a bare number) so an in-place update reads. */
+function readIds(raw: unknown): number[] {
+  if (typeof raw === 'number') return [raw]
+  return Array.isArray(raw) ? raw.filter((n): n is number => typeof n === 'number') : []
+}
+
+/** Record a window id so a LATER worker can close it even if this one is
+ *  evicted before it gets the chance — which is the normal case, not the
+ *  exceptional one (see JANITOR_ALARM). */
+async function trackOrphan(id: number): Promise<void> {
+  try {
+    const got = await chrome.storage.session.get(ORPHAN_KEY)
+    const ids = readIds(got[ORPHAN_KEY])
+    if (!ids.includes(id)) ids.push(id)
+    await chrome.storage.session.set({ [ORPHAN_KEY]: ids })
+  } catch {
+    /* Storage unavailable — the in-memory teardown path still holds this id. */
+  }
+}
+
+async function untrackOrphan(id: number): Promise<void> {
+  try {
+    const got = await chrome.storage.session.get(ORPHAN_KEY)
+    const ids = readIds(got[ORPHAN_KEY]).filter((n) => n !== id)
+    if (ids.length) await chrome.storage.session.set({ [ORPHAN_KEY]: ids })
+    else await chrome.storage.session.remove(ORPHAN_KEY)
+  } catch {
+    /* Nothing to untrack. */
+  }
+}
+
+/** Close one window and stop tracking it. Never throws — a window that is
+ *  already gone is the success case, not an error. */
+async function closeWindow(id: number): Promise<void> {
+  await chrome.windows.remove(id).catch(() => {})
+  await untrackOrphan(id)
 }
 
 /** Result of a guarded navigation: where the tab actually landed, and whether
@@ -208,37 +301,109 @@ export function exec<T>(tabId: number, func: () => T) {
   return chrome.scripting.executeScript({ target: { tabId }, func })
 }
 
-function scheduleTeardown(): void {
-  if (idleTimer) clearTimeout(idleTimer)
-  idleTimer = setTimeout(teardown, IDLE_TEARDOWN_MS)
+function armJanitor(): void {
+  try {
+    chrome.alarms.create(JANITOR_ALARM, { periodInMinutes: JANITOR_PERIOD_MINUTES })
+  } catch {
+    /* No alarms API (a test realm) — the direct teardown paths still work. */
+  }
 }
 
-function teardown(): void {
-  const id = renderWindowId
-  renderWindowId = undefined
-  renderTabId = undefined
-  if (id === undefined) return
-  chrome.windows.remove(id).catch(() => {})
-  chrome.storage.session.remove(ORPHAN_KEY).catch(() => {})
+function disarmJanitor(): void {
+  try {
+    void chrome.alarms.clear(JANITOR_ALARM)
+  } catch {
+    /* As above. */
+  }
+}
+
+/** Start the window's idle clock. The janitor closes it once it has gone
+ *  IDLE_TEARDOWN_MS without a lease. */
+function scheduleTeardown(): void {
+  if (leaseCount > 0) return
+  idleSince = Date.now()
+  armJanitor()
 }
 
 /**
- * Close a research window stranded by a service-worker restart. MV3 can kill the
- * worker at any time, which drops the module-scope tab handle and leaves the
- * (minimized, invisible) window open forever. Call once on SW startup.
+ * One janitor tick — the alarm's whole job. Closes the research window once it
+ * has gone IDLE_TEARDOWN_MS without a lease, then disarms itself.
+ *
+ * Deliberately correct on a worker that has never heard of the window: after an
+ * eviction this module's state is empty, and the persisted orphan list is the
+ * only surviving record that a window exists at all, so an empty-state tick
+ * sweeps that list rather than assuming there is nothing to do.
  */
-export function sweepOrphanWindow(): Promise<void> {
+export async function runJanitorTick(): Promise<void> {
+  if (leaseCount > 0) return
+  // A window this worker knows about gets its full idle grace; one it only
+  // knows about through the orphan list is already stranded, so it goes now.
+  if (renderWindowId !== undefined && idleSince !== undefined && Date.now() - idleSince < IDLE_TEARDOWN_MS) return
+  await teardown()
+  if (leaseCount === 0) disarmJanitor()
+}
+
+/**
+ * Close the research window right now, if nothing is using it.
+ *
+ * Called the moment a research task ends, from the service worker's own message
+ * handler — i.e. while the worker is provably alive, which is the one thing a
+ * timer scheduled for later cannot count on. This is what makes a finished task
+ * clean up *gracefully* instead of leaving the window for a later janitor tick
+ * (or, before this existed, for the next cold boot's crash-recovery sweep). A
+ * window that still has an outstanding lease — another task mid-fetch — is left
+ * alone for the janitor.
+ */
+export async function teardownNow(): Promise<void> {
+  if (leaseCount > 0) return
+  await teardown()
+  if (leaseCount === 0) disarmJanitor()
+}
+
+/** Close the window and forget it, including anything the orphan list still
+ *  holds. Idempotent and concurrency-safe via `tearingDown`. */
+function teardown(): Promise<void> {
+  if (tearingDown) return tearingDown
+  const id = renderWindowId
+  renderWindowId = undefined
+  renderTabId = undefined
+  idleSince = undefined
+  const run = (async () => {
+    if (id !== undefined) await closeWindow(id)
+    await sweepOrphanWindows()
+  })()
+  tearingDown = run.catch(() => {})
+  return tearingDown.finally(() => {
+    tearingDown = undefined
+  })
+}
+
+/**
+ * Close research windows stranded by a service-worker restart. MV3 can kill the
+ * worker at any time, which drops the module-scope tab handle and leaves the
+ * (minimized, invisible) window open forever. Call once on SW startup — and
+ * again from teardown, since after an eviction this list is the only thing that
+ * remembers a window at all.
+ */
+export function sweepOrphanWindows(): Promise<void> {
   let release!: () => void
   sweepGate = new Promise((r) => {
     release = r
   })
   return (async () => {
     try {
-      const got = await chrome.storage.session.get(ORPHAN_KEY)
-      const id = got[ORPHAN_KEY] as number | undefined
-      if (id === undefined) return
-      await chrome.storage.session.remove(ORPHAN_KEY)
-      await chrome.windows.remove(id).catch(() => {})
+      const got = await chrome.storage.session.get([ORPHAN_KEY, LEGACY_ORPHAN_KEY])
+      // Never close the window a lease is currently using: teardown callers
+      // check leaseCount synchronously, but a startup sweep races nothing at
+      // all and this keeps that true if a caller is ever added.
+      const ids = [...readIds(got[ORPHAN_KEY]), ...readIds(got[LEGACY_ORPHAN_KEY])].filter(
+        (id) => id !== renderWindowId,
+      )
+      if (!ids.length) return
+      await chrome.storage.session.remove([ORPHAN_KEY, LEGACY_ORPHAN_KEY])
+      // Sequential, not Promise.all: a handful of ids at most, and a failure on
+      // one must not skip the rest.
+      for (const id of ids) await chrome.windows.remove(id).catch(() => {})
     } catch {
       /* nothing to sweep */
     } finally {

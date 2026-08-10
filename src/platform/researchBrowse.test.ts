@@ -1,5 +1,5 @@
 import { test, expect, vi, afterEach } from 'vitest'
-import { handleBrowseOp } from './researchBrowse'
+import { handleBrowseOp, reapExpiredSessions, SESSION_TTL_MS } from './researchBrowse'
 import { acquireTab } from './researchTab'
 
 // A single fake chrome covering exactly what open→(tab dies)→read touches:
@@ -103,6 +103,47 @@ test('a dead underlying tab releases its browse session AND the shared research-
   ])
   expect(outcome).toBe('resolved')
   otherLease?.release()
+})
+
+test('an abandoned browse session is reaped on a janitor tick, releasing the shared lease', async () => {
+  const fake = fakeChrome()
+  vi.stubGlobal('chrome', fake.chrome)
+
+  const sessionId = 'task-9:browse:0'
+  expect((await handleBrowseOp(sessionId, { kind: 'open', url: 'https://example.com/' })).ok).toBe(true)
+
+  // Nothing ever sends `close`: the offscreen host driving this session died,
+  // or its loop hung. The TTL used to be a setTimeout in the service worker,
+  // which Chrome evicts long before 240s elapse — and the host dying is exactly
+  // the case where nothing else is keeping that worker alive, so the timer that
+  // was supposed to catch it never ran. Now the janitor alarm reaps it by
+  // timestamp, which works whether or not the worker survived.
+  expect(reapExpiredSessions(Date.now() + SESSION_TTL_MS + 1_000)).toBe(0)
+
+  expect((await handleBrowseOp(sessionId, { kind: 'read' })).message).toBe('no open browse session — call open first')
+
+  let freed: { tabId: number; release(): void } | undefined
+  const outcome = await Promise.race([
+    acquireTab().then((lease) => {
+      freed = lease
+      return 'resolved' as const
+    }),
+    new Promise<'timed-out'>((resolve) => setTimeout(() => resolve('timed-out'), 100)),
+  ])
+  expect(outcome).toBe('resolved')
+  freed?.release()
+})
+
+test('a live browse session survives a janitor tick — only expired holds are reaped', async () => {
+  const fake = fakeChrome()
+  vi.stubGlobal('chrome', fake.chrome)
+
+  const sessionId = 'task-10:browse:0'
+  expect((await handleBrowseOp(sessionId, { kind: 'open', url: 'https://example.com/' })).ok).toBe(true)
+
+  expect(reapExpiredSessions(Date.now())).toBe(1)
+  expect((await handleBrowseOp(sessionId, { kind: 'read' })).ok).toBe(true)
+  handleBrowseOp(sessionId, { kind: 'close' })
 })
 
 // --- C3 / TOCTOU: redirect re-validation mid-browse-session -----------------

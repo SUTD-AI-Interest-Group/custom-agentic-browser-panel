@@ -6,8 +6,9 @@
 // A session leases the research tab for its whole life (researchTab.acquireTab),
 // so a concurrent FetchUrl render escalation cannot navigate the page out from
 // under it mid-click. Because a lease that is never released would stall every
-// later render, each session arms a TTL watchdog: if the offscreen host dies or
-// its loop hangs, the session self-closes and the tab goes back to the pool.
+// later render, each session carries a TTL: if the offscreen host dies or its
+// loop hangs, researchTab.ts's janitor alarm reaps the session (see
+// reapExpiredSessions) and the tab goes back to the pool.
 //
 // SAFETY: every action is checked by the pure policy in src/tools/browsePolicy.ts
 // BEFORE the page is touched. There is no human at the gate here — the agent runs
@@ -42,7 +43,7 @@ import { isSafeResearchAction, type BrowseAction } from '../tools/browsePolicy'
 import type { BrowseObservation, BrowseOp, BrowseResult } from '../data/researchTasks'
 
 /** A session cannot hold the shared tab longer than this, whatever the caller does. */
-const SESSION_TTL_MS = 240_000
+export const SESSION_TTL_MS = 240_000
 /** Each observation carries only an excerpt; the model calls `read` for the full text. */
 const EXCERPT_CHARS = 1_500
 
@@ -50,7 +51,18 @@ interface Session {
   lease: TabLease
   /** The latest snapshot's registry — an action's index is resolved against this. */
   elements: IndexedElement[]
-  ttl: ReturnType<typeof setTimeout>
+  /**
+   * When this session's hold on the shared tab expires, as a timestamp reaped by
+   * researchTab.ts's janitor alarm (via reapExpiredSessions).
+   *
+   * Deliberately NOT a setTimeout. This module runs in the MV3 service worker,
+   * where a 240s timer is well past the ~30s idle eviction ceiling: it only ever
+   * fired at all while some *other* activity happened to be keeping the worker
+   * alive, which is precisely not the case when the thing that died is the
+   * offscreen host driving this session — the exact failure this TTL exists to
+   * catch. A timestamp plus an alarm-driven sweep works in both cases.
+   */
+  expiresAt: number
 }
 
 const sessions = new Map<string, Session>()
@@ -100,7 +112,7 @@ async function openSession(sessionId: string, url: string): Promise<BrowseResult
   let session = sessions.get(sessionId)
   if (!session) {
     const lease = await acquireTab()
-    session = { lease, elements: [], ttl: armTtl(sessionId) }
+    session = { lease, elements: [], expiresAt: armTtl() }
     sessions.set(sessionId, session)
   }
   const nav = await navigateAndWait(session.lease.tabId, url)
@@ -137,7 +149,7 @@ async function actInSession(sessionId: string, action: BrowseAction): Promise<Br
     // shared resource indefinitely instead of being caught by handleBrowseOp's
     // dead-tab detection.
     const obs = await observe(session)
-    bumpTtl(sessionId, session)
+    bumpTtl(session)
     return obs.ok
       ? { ok: false, message: verdict.reason, observation: obs.observation }
       : { ok: false, message: verdict.reason }
@@ -154,7 +166,7 @@ async function actInSession(sessionId: string, action: BrowseAction): Promise<Br
   // sampled here) are what catch a redirect to a blocked target before
   // anything is read off the page.
   const obs = await observe(session)
-  bumpTtl(sessionId, session)
+  bumpTtl(session)
   if (!obs.ok) return { ok: false, message: `refused to continue: ${obs.reason}` }
   return { ok: result.ok, message: result.message, observation: obs.observation }
 }
@@ -189,7 +201,7 @@ async function readSession(sessionId: string): Promise<BrowseResult> {
   // would just re-open the exact race this design closes.
   const read = await readReadableText(session.lease.tabId)
   // Only bump once the round trip actually reached the page — see actInSession.
-  bumpTtl(sessionId, session)
+  bumpTtl(session)
   if (read.blockedReason) {
     return { ok: false, message: `refused to read: the tab is on a blocked target (${read.blockedReason})` }
   }
@@ -267,8 +279,21 @@ export function closeSession(sessionId: string): void {
   const session = sessions.get(sessionId)
   if (!session) return
   sessions.delete(sessionId)
-  clearTimeout(session.ttl)
   session.lease.release()
+}
+
+/**
+ * Close every session whose hold has expired, releasing its lease back to the
+ * pool. Driven by researchTab.ts's janitor alarm rather than a per-session
+ * timer — see `Session.expiresAt` for why a timer could not do this job.
+ * Returns how many sessions are still open, so the caller can tell whether the
+ * shared tab is genuinely idle.
+ */
+export function reapExpiredSessions(now: number = Date.now()): number {
+  for (const [id, session] of [...sessions]) {
+    if (session.expiresAt <= now) closeSession(id)
+  }
+  return sessions.size
 }
 
 /** Close only the sessions belonging to one task — used when THAT task is cancelled.
@@ -282,11 +307,10 @@ export function closeSessionsForTask(taskId: string): void {
   }
 }
 
-function armTtl(sessionId: string) {
-  return setTimeout(() => closeSession(sessionId), SESSION_TTL_MS)
+function armTtl(): number {
+  return Date.now() + SESSION_TTL_MS
 }
 
-function bumpTtl(sessionId: string, session: Session): void {
-  clearTimeout(session.ttl)
-  session.ttl = armTtl(sessionId)
+function bumpTtl(session: Session): void {
+  session.expiresAt = armTtl()
 }
