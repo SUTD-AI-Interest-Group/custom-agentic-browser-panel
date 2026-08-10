@@ -15,6 +15,8 @@ import { z } from 'zod'
 import { resolveActiveTools } from '../tools/toolDiscovery'
 import { toModelUsage } from './usage'
 import type { ModelUsage, Trace } from './observability'
+import { redactSecrets } from './observability/redact'
+import type { TraceStep } from '../data/traces'
 import type { ResearchProposal, ResearchStatus, ResearchVerification } from '../data/researchTasks'
 import type { AttachmentMeta } from '../data/attachments'
 
@@ -339,6 +341,15 @@ export function toValidModelMessages(messages: ModelMessage[]): ModelMessage[] {
   return out
 }
 
+/**
+ * Where a turn's local trace steps go. A one-method interface rather than the
+ * store itself so `runAgentTurn` stays free of IndexedDB — the panel supplies a
+ * sink that buffers and writes, research supplies none.
+ */
+export interface TraceSink {
+  step: (step: TraceStep) => void
+}
+
 export async function runAgentTurn(options: {
   model: LanguageModel
   /** See `AgentSystemPrompt`'s docstring. */
@@ -408,6 +419,17 @@ export async function runAgentTurn(options: {
    * by the instrumented toolset — see `createAgentTools`.
    */
   trace?: Trace
+  /**
+   * Optional local trace sink (src/data/traces.ts), independent of Langfuse and
+   * off by default. Fed from the same hooks `trace` uses, but everything handed
+   * to it passes through `redactSecrets` first: a step's tool inputs routinely
+   * carry real secrets typed through a page (ControlPage's `text`/`value`,
+   * AutofillForm's `fields[].value`), under key names generic enough that no
+   * name-pattern rule alone would catch them.
+   *
+   * Never awaited and never allowed to throw — see `emitStep`.
+   */
+  sink?: TraceSink
 }): Promise<AgentTurnResult> {
   const { model, system, history, tools, abortSignal, onUpdate } = options
   const wrapUpNudge = options.wrapUpNudge ?? DEFAULT_WRAP_UP_NUDGE
@@ -423,6 +445,33 @@ export async function runAgentTurn(options: {
   // Captured if the model calls Checkpoint (its input IS the reflection payload).
   let checkpoint: Checkpoint | undefined
   const emit = () => onUpdate([...parts])
+
+  // Local trace state. `pendingStepMeta` carries the two facts only prepareStep
+  // knows (what was disclosed this step, how many images were drained) forward
+  // to onStepFinish, which is where the step is actually emitted.
+  const sink = options.sink
+  let pendingStepMeta: { activeTools: string[]; imagesDrained: number } | undefined
+  let pendingRepair: { from: string; to: string } | undefined
+
+  /**
+   * Hand one step to the local sink. Wrapped exactly like the Langfuse calls
+   * around it: a tracing failure must never be able to surface as a turn
+   * failure, so everything here is best-effort and swallowed.
+   *
+   * Tool NAMES are safe to record verbatim; tool INPUTS are not, and are
+   * deliberately not recorded at all here — the drawer shows which tools ran,
+   * not what was typed into them. `redactSecrets` still runs over the whole
+   * payload as a second net, because `finishReason` and model ids come from the
+   * provider and a future edit might widen what this carries.
+   */
+  const emitStep = (step: TraceStep) => {
+    if (!sink) return
+    try {
+      sink.step(redactSecrets(step) as TraceStep)
+    } catch {
+      /* best-effort */
+    }
+  }
 
   const result = streamText({
     model,
@@ -479,6 +528,37 @@ export async function runAgentTurn(options: {
         }
       } catch {
         /* best-effort */
+      }
+      // Local trace: one record per step, carrying what prepareStep staged.
+      if (sink) {
+        try {
+          const calls = Array.isArray(step?.toolCalls) ? step.toolCalls : []
+          const results = Array.isArray(step?.toolResults) ? step.toolResults : []
+          const failed = new Set(
+            results
+              .filter((r: any) => r?.output?.type === 'error-text' || r?.output?.type === 'error-json')
+              .map((r: any) => r?.toolCallId),
+          )
+          emitStep({
+            index: idx,
+            startedAt: Date.parse(start) || 0,
+            durationMs: Math.max(0, Date.parse(stepStart) - Date.parse(start)),
+            model: (step?.response?.modelId as string) || modelId,
+            activeTools: pendingStepMeta?.activeTools ?? [],
+            toolCalls: calls.map((t: any) => ({
+              name: String(t?.toolName ?? 'unknown'),
+              ok: !failed.has(t?.toolCallId),
+            })),
+            usage: toModelUsage(step?.usage),
+            finishReason: step?.finishReason,
+            repaired: pendingRepair,
+            imagesDrained: pendingStepMeta?.imagesDrained || undefined,
+          })
+        } catch {
+          /* best-effort */
+        }
+        pendingRepair = undefined
+        pendingStepMeta = undefined
       }
       if (!trace) return
       try {
@@ -552,6 +632,10 @@ export async function runAgentTurn(options: {
           Object.hasOwn(tools, name) &&
           Object.hasOwn(tools, 'GetTool')
         if (loadable) {
+          // Record the rewrite: from the outside this looks like the model
+          // calling GetTool unprompted, which is the single most confusing thing
+          // a trace reader can meet without an explanation.
+          pendingRepair = { from: name, to: 'GetTool' }
           return { ...toolCall, toolName: 'GetTool', input: JSON.stringify({ names: [name] }) }
         }
         // A genuinely hallucinated name can't be fixed by re-generating arguments.
@@ -686,6 +770,17 @@ export async function runAgentTurn(options: {
       const activeTools = options.activeNames
         ? [CHECKPOINT_TOOL, ...resolveActiveTools(options.activeNames, Object.keys(tools))]
         : undefined
+      // Stage the two facts only this hook knows, for onStepFinish to emit with
+      // the rest of the step: what progressive disclosure actually exposed, and
+      // how many queued images were drained into a synthetic user message. Both
+      // are invisible in the transcript, and both are what make a surprising
+      // step legible after the fact.
+      if (sink) {
+        pendingStepMeta = {
+          activeTools: activeTools ?? Object.keys(tools),
+          imagesDrained: injected.filter((m) => Array.isArray(m.content)).length,
+        }
+      }
       const messages = [...base, ...injected]
       // toolOrder mirrors activeTools verbatim. The AI SDK's own activeTools
       // membership filter (`filterActiveTools`/`orderToolEntries` in the `ai`
