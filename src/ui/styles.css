@@ -2879,8 +2879,8 @@ body {
 
 .model-rates-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) repeat(3, 56px);
-  gap: 4px 6px;
+  grid-template-columns: minmax(0, 1fr) repeat(3, 48px) 60px;
+  gap: 4px 5px;
   align-items: center;
   margin-top: 6px;
 }

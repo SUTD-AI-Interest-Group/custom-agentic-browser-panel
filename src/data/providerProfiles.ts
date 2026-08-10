@@ -69,6 +69,19 @@ export interface ProviderProfile {
    * `supportsNativeDocuments`) rather than inlined as a bare kind check.
    */
   supportsPromptCaching: boolean
+  /**
+   * Fallback context window (in tokens) for this kind's models, used by
+   * proactive compaction when the user has set no per-model `contextLimit`.
+   *
+   * Deliberately **conservative** — a floor, not the largest model the kind
+   * offers. The two failure modes are asymmetric: guessing low folds a
+   * conversation slightly earlier than it strictly had to, which costs one
+   * cheap summarization call and is invisible; guessing high means the turn
+   * sails past the real window and dies on the 400 that compaction exists to
+   * prevent. The reactive backstop (`isContextOverflow`) catches that case, but
+   * only after the user has watched a request fail.
+   */
+  defaultContextLimit: number
 }
 
 const trimSlash = (s: string): string => s.replace(/\/+$/, '')
@@ -108,6 +121,7 @@ const PROFILES: Record<ProviderKind, ProviderProfile> = {
     // 50MB per-request cap on input_file → 35MB raw is ~47MB as base64.
     nativeDocMaxBytes: 35 * 1024 * 1024,
     supportsPromptCaching: false,
+    defaultContextLimit: 128000,
   },
 
   // Anthropic — native Messages API. This SDK models thinking as `adaptive`
@@ -145,6 +159,7 @@ const PROFILES: Record<ProviderKind, ProviderProfile> = {
     // provider reports any — that's how to tell, per install and per model,
     // whether the marker is doing anything, rather than trying to predict it.
     supportsPromptCaching: true,
+    defaultContextLimit: 200000,
   },
 
   // OpenRouter — compatible, but reasoning is one unified `reasoning` object;
@@ -165,6 +180,7 @@ const PROFILES: Record<ProviderKind, ProviderProfile> = {
     supportsNativeDocuments: false,
     nativeDocMaxBytes: 0,
     supportsPromptCaching: false,
+    defaultContextLimit: 128000,
   },
 
   // Groq — compatible. reasoning_effort controls depth; reasoning_format MUST be
@@ -182,6 +198,7 @@ const PROFILES: Record<ProviderKind, ProviderProfile> = {
     supportsNativeDocuments: false,
     nativeDocMaxBytes: 0,
     supportsPromptCaching: false,
+    defaultContextLimit: 64000,
   },
 
   // Ollama — compatible. Its /v1 endpoint ignores the native `think` field but
@@ -196,6 +213,7 @@ const PROFILES: Record<ProviderKind, ProviderProfile> = {
     supportsNativeDocuments: false,
     nativeDocMaxBytes: 0,
     supportsPromptCaching: false,
+    defaultContextLimit: 32000,
   },
 
   // LM Studio — compatible chat over /v1; reasoning_effort passthrough is
@@ -210,6 +228,7 @@ const PROFILES: Record<ProviderKind, ProviderProfile> = {
     supportsNativeDocuments: false,
     nativeDocMaxBytes: 0,
     supportsPromptCaching: false,
+    defaultContextLimit: 32000,
   },
 
   // Custom / unknown OpenAI-compatible endpoint: the generic behaviour that
@@ -226,6 +245,7 @@ const PROFILES: Record<ProviderKind, ProviderProfile> = {
     supportsNativeDocuments: false,
     nativeDocMaxBytes: 0,
     supportsPromptCaching: false,
+    defaultContextLimit: 32000,
   },
 }
 
@@ -247,4 +267,20 @@ export function isReasoningModel(provider: ProviderConfig, modelId: string): boo
 /** The slider's effort rungs for a model (faster → smarter). */
 export function reasoningLevelsFor(provider: ProviderConfig, modelId: string): ReasoningEffort[] {
   return profileFor(providerKind(provider)).reasoningLevels(modelId)
+}
+
+/**
+ * A model's effective context window: its per-model `contextLimit`, else the
+ * kind's conservative profile default. Same two-level shape as
+ * `resolveReasoningEffort`, with one addition — a stored value that is not a
+ * positive finite number is ignored rather than honoured.
+ *
+ * That guard matters more than it looks: this figure is a *divisor* for the
+ * compaction threshold, so a corrupted `0` would make every turn read as over
+ * budget and summarize a conversation away on its second message.
+ */
+export function resolveContextLimit(provider: ProviderConfig, modelId: string): number {
+  const override = provider.modelConfigs?.[modelId]?.contextLimit
+  if (typeof override === 'number' && Number.isFinite(override) && override > 0) return override
+  return profileFor(providerKind(provider)).defaultContextLimit
 }

@@ -50,25 +50,30 @@ const RATE_FIELDS: Array<{ key: keyof ModelPrice; label: string; title: string }
 function ModelRates({
   provider,
   onChange,
+  onChangeContext,
   onCommit,
 }: {
   provider: ProviderConfig
   onChange: (modelId: string, field: keyof ModelPrice, raw: string) => void
+  onChangeContext: (modelId: string, raw: string) => void
   onCommit: () => void
 }) {
   const [open, setOpen] = useState(false)
   const models = provider.models.filter((m) => m.trim())
   if (models.length === 0) return null
+  const fallbackContext = profileFor(providerKind(provider)).defaultContextLimit
   return (
     <div className="model-rates">
       <button className="link-btn tiny" aria-expanded={open} onClick={() => setOpen((o) => !o)}>
-        {open ? 'Hide token rates' : 'Token rates (optional)'}
+        {open ? 'Hide rates & limits' : 'Rates & context limits (optional)'}
       </button>
       {open && (
         <>
           <p className="hint">
-            Dollars per <strong>million</strong> tokens, copied from your provider's pricing page.
-            Leave blank to show token counts without a cost.
+            Rates are dollars per <strong>million</strong> tokens, copied from your provider's
+            pricing page — leave blank to show token counts without a cost. <strong>Context</strong>{' '}
+            is the model's window in tokens; older turns are summarized as it fills. Blank uses a
+            conservative default ({fallbackContext.toLocaleString()}).
           </p>
           <div className="model-rates-grid">
             <span />
@@ -77,6 +82,9 @@ function ModelRates({
                 {f.label}
               </span>
             ))}
+            <span className="model-rates-head" title="Context window, in tokens">
+              ctx
+            </span>
             {models.map((modelId) => {
               const price = resolveModelPrice(provider, modelId)
               return (
@@ -99,6 +107,18 @@ function ModelRates({
                       onBlur={onCommit}
                     />
                   ))}
+                  <input
+                    className="model-rate-input"
+                    type="number"
+                    min="1"
+                    step="1000"
+                    inputMode="numeric"
+                    aria-label={`${modelId} — Context window, in tokens`}
+                    value={provider.modelConfigs?.[modelId]?.contextLimit ?? ''}
+                    placeholder="—"
+                    onChange={(e) => onChangeContext(modelId, e.target.value)}
+                    onBlur={onCommit}
+                  />
                 </Fragment>
               )
             })}
@@ -187,6 +207,25 @@ export default function ProvidersTab({
     const configs = { ...target.modelConfigs }
     const { price: _dropped, ...rest } = configs[modelId] ?? {}
     const nextConfig = Object.keys(price).length > 0 ? { ...rest, price } : rest
+    if (Object.keys(nextConfig).length > 0) configs[modelId] = nextConfig
+    else delete configs[modelId]
+    updateProvider(providerId, { modelConfigs: configs })
+  }
+
+  /**
+   * Write a model's context-window override, keeping `modelConfigs` sparse the
+   * same way `updateModelPrice` does. A blank field clears the override and
+   * falls back to the provider profile's conservative default.
+   */
+  function updateContextLimit(providerId: string, modelId: string, raw: string) {
+    const target = draft.providers.find((p) => p.id === providerId)
+    if (!target) return
+    const trimmed = raw.trim()
+    const parsed = trimmed === '' ? undefined : Number(trimmed)
+    if (parsed !== undefined && (!Number.isFinite(parsed) || parsed <= 0)) return
+    const configs = { ...target.modelConfigs }
+    const { contextLimit: _dropped, ...rest } = configs[modelId] ?? {}
+    const nextConfig = parsed === undefined ? rest : { ...rest, contextLimit: parsed }
     if (Object.keys(nextConfig).length > 0) configs[modelId] = nextConfig
     else delete configs[modelId]
     updateProvider(providerId, { modelConfigs: configs })
@@ -356,6 +395,7 @@ export default function ProvidersTab({
                   <ModelRates
                     provider={p}
                     onChange={(modelId, field, raw) => updateModelPrice(p.id, modelId, field, raw)}
+                    onChangeContext={(modelId, raw) => updateContextLimit(p.id, modelId, raw)}
                     onCommit={commitDraft}
                   />
                   <Select

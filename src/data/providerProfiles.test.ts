@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest'
-import { isReasoningModel, profileFor, reasoningLevelsFor } from './providerProfiles'
+import {
+  isReasoningModel,
+  profileFor,
+  reasoningLevelsFor,
+  resolveContextLimit,
+} from './providerProfiles'
 import type { ProviderConfig } from './settings'
 
 const provider = (o: Partial<ProviderConfig> = {}): ProviderConfig => ({
@@ -153,5 +158,38 @@ describe('isReasoningModel / reasoningLevelsFor', () => {
     expect(reasoningLevelsFor(provider({ kind: 'openai' }), 'gpt-5.6-luna')).toEqual([
       'none', 'low', 'medium', 'high', 'xhigh', 'max',
     ])
+  })
+})
+
+describe('context limits', () => {
+  it('declares a positive default for every provider kind', () => {
+    // A missing or zero limit would make the proactive compaction check either
+    // never fire or fire on every turn — both worse than the 400 it prevents.
+    for (const kind of ['openai', 'anthropic', 'openrouter', 'groq', 'ollama', 'lmstudio', 'custom'] as const) {
+      expect(profileFor(kind).defaultContextLimit).toBeGreaterThan(0)
+    }
+  })
+
+  it('prefers a per-model limit over the profile default', () => {
+    const p = provider({ kind: 'openai', modelConfigs: { 'gpt-4o': { contextLimit: 12_345 } } })
+    expect(resolveContextLimit(p, 'gpt-4o')).toBe(12_345)
+  })
+
+  it('falls back to the profile default for a model with no override', () => {
+    const p = provider({ kind: 'openai', modelConfigs: { 'gpt-4o': { contextLimit: 12_345 } } })
+    expect(resolveContextLimit(p, 'o3')).toBe(profileFor('openai').defaultContextLimit)
+  })
+
+  it('keys the fallback off baseURL when kind is unset, like every other profile lookup', () => {
+    expect(
+      resolveContextLimit(provider({ baseURL: 'https://api.anthropic.com/v1' }), 'claude-sonnet-5'),
+    ).toBe(profileFor('anthropic').defaultContextLimit)
+  })
+
+  it('ignores a nonsensical stored limit rather than compacting on every turn', () => {
+    // A zero or negative limit could only come from a corrupted write; honouring
+    // it would make every turn look over budget and summarize the history away.
+    const p = provider({ kind: 'openai', modelConfigs: { m: { contextLimit: 0 } } })
+    expect(resolveContextLimit(p, 'm')).toBe(profileFor('openai').defaultContextLimit)
   })
 })

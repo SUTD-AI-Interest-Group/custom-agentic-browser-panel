@@ -57,6 +57,17 @@ export interface ModelConfig {
    * than no cost at all. Applied by `estimateCost` (src/agent/pricing.ts).
    */
   price?: ModelPrice
+  /**
+   * This model's context window in tokens, overriding the provider profile's
+   * conservative `defaultContextLimit`. Read by proactive compaction
+   * (`resolveContextLimit`), which folds the old half of a conversation once
+   * the last turn's reported input tokens pass a fraction of this.
+   *
+   * Worth setting when the profile default is well below what the model
+   * actually offers — the default errs low on purpose, so an unset value only
+   * ever compacts earlier than necessary, never later.
+   */
+  contextLimit?: number
 }
 
 export interface ProviderConfig {
