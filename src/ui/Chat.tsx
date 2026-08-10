@@ -96,6 +96,58 @@ import { ResearchLiveCard } from './ResearchLiveCard'
 // dropped into the chat by then, so the bar is just a brief completion cue.
 const DOCK_LINGER_MS = 15_000
 
+/**
+ * Which of `taskIds` currently have their transcript slot scrolled out of view.
+ *
+ * This is what demotes the research dock from a permanent fixture to an
+ * off-screen safety net. While a task's live card is visible, a bar above the
+ * composer repeating the same status is a second copy of what the user is
+ * already looking at — and showing both is how one task comes to look like two.
+ *
+ * `revision` re-arms the observer when the transcript grows: a slot's DOM node
+ * is appended by an effect that can land after this one, so the first pass may
+ * find nothing to observe.
+ */
+function useOffscreenSlots(taskIds: string[], revision: number): Set<string> {
+  // Joined so the effect's dependency is a value, not a fresh array identity.
+  const key = taskIds.join(',')
+  const [offscreen, setOffscreen] = useState<Set<string>>(() => new Set())
+  useEffect(() => {
+    const ids = key ? key.split(',') : []
+    if (ids.length === 0) {
+      setOffscreen((prev) => (prev.size > 0 ? new Set() : prev))
+      return
+    }
+    const obs = new IntersectionObserver((entries) => {
+      setOffscreen((prev) => {
+        const next = new Set(prev)
+        for (const e of entries) {
+          const id = e.target.id.replace(/^research-/, '')
+          if (e.isIntersecting) next.delete(id)
+          else next.add(id)
+        }
+        // Same membership → same Set, so a scroll that crosses no boundary does
+        // not re-render the entire transcript on every frame.
+        if (next.size === prev.size && [...next].every((id) => prev.has(id))) return prev
+        return next
+      })
+    })
+    // A slot with no node yet counts as off-screen until it mounts and reports
+    // otherwise. That direction is deliberate: the dock is the fallback, so
+    // erring toward showing it can only ever duplicate information, never hide
+    // a running task entirely.
+    const unmounted: string[] = []
+    for (const id of ids) {
+      const el = document.getElementById(`research-${id}`)
+      if (el) obs.observe(el)
+      else unmounted.push(id)
+    }
+    if (unmounted.length > 0) setOffscreen((prev) => new Set([...prev, ...unmounted]))
+    return () => obs.disconnect()
+  }, [key, revision])
+  return offscreen
+}
+
 /** System-prompt suffix naming the QueryBrowserData sources available this turn. */
 function browsingInsightsNote(granted: Set<BrowsingCapability>): string {
   const sources = (['history', 'bookmarks', 'topSites', 'downloads'] as const).filter((s) => granted.has(s))
@@ -1223,10 +1275,24 @@ export default function Chat({
     const lingering = researchTasks.some(
       (t) => !isActiveStatus(t.status) && now - t.updatedAt < DOCK_LINGER_MS,
     )
-    if (!lingering) return
+    // A RUNNING task needs the same tick for a different reason: its live card
+    // shows an elapsed clock, which would sit frozen at whatever `now` happened
+    // to be when the card mounted. The lingering condition alone never covers
+    // this — a task is either active or lingering, never both.
+    const running = researchTasks.some((t) => isActiveStatus(t.status))
+    if (!lingering && !running) return
     const id = setInterval(() => setNow(Date.now()), 1000)
     return () => clearInterval(id)
   }, [researchTasks, now, hidden])
+
+  // Which research slots are currently scrolled out of view — the input to the
+  // dock's demotion (see dockTasks). Keyed on this conversation's task ids, and
+  // re-armed when the transcript grows, since a slot's node can mount after the
+  // observer first attaches.
+  const offscreenSlots = useOffscreenSlots(
+    researchTasks.filter((t) => t.conversationId === conversationId).map((t) => t.id),
+    messages.length,
+  )
 
   // @all attaches every open tab; it's only honored when the user has granted
   // all-tabs visibility. The composer previews each attached page as a pill.
@@ -1505,19 +1571,19 @@ export default function Chat({
     postResearchMsg({ type: 'research.cancel', taskId })
   }
 
-  // Tapping a dock bar: an active task (running or paused/waiting) opens its
-  // live-workflow sheet; a finished one closes any sheet and scrolls the chat to the
-  // report card that dropped in (a cancelled task has no card, so this is a harmless
-  // no-op for it).
+  // Tapping a dock bar always scrolls to the task's slot, whatever its state.
+  //
+  // It used to open the live sheet for an active task, but the dock now only
+  // appears when that slot is off screen (see useOffscreenSlots), so "take me to
+  // the thing you're telling me about" is the only thing the tap can sensibly
+  // mean. The sheet is still one tap further in, from the live card itself —
+  // it stays the home of the full step log, just no longer the only way to see
+  // that anything is happening.
   function openDockTask(t: ResearchTask) {
-    if (isActiveStatus(t.status)) {
-      setOpenSheetTaskId(t.id)
-      return
-    }
     setOpenSheetTaskId(null)
     document
       .getElementById(`research-${t.id}`)
-      ?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+      ?.scrollIntoView({ behavior: 'smooth', block: 'center' })
   }
 
   // Arc/Dia-style snipe: tint the page, snap to hovered components, or drag
@@ -3041,9 +3107,14 @@ export default function Chat({
   const myTasks = researchTasks.filter((t) => t.conversationId === conversationId)
   // Tasks shown in the composer dock: everything still running, plus terminal
   // tasks still inside their linger window. Newest first (listTasks order).
-  const dockTasks = myTasks.filter(
-    (t) => isActiveStatus(t.status) || now - t.updatedAt < DOCK_LINGER_MS,
-  )
+  //
+  // DEMOTED (see useOffscreenSlots): a task whose slot is on screen is dropped
+  // here, because the live card already says everything the bar would and says
+  // it in the place the user asked. The dock is now purely the off-screen
+  // safety net — nothing is ever both duplicated and invisible.
+  const dockTasks = myTasks
+    .filter((t) => isActiveStatus(t.status) || now - t.updatedAt < DOCK_LINGER_MS)
+    .filter((t) => offscreenSlots.has(t.id))
   // Finished reports are injected into `messages` as research-report cards (see
   // the injection effect), so there's no separate overlay list here.
   const openSheetTask = researchTasks.find((t) => t.id === openSheetTaskId) ?? null
