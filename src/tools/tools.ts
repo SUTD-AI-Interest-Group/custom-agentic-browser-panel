@@ -8,6 +8,7 @@ import {
   getActiveTab,
   listOpenTabs,
   navigateTab,
+  probeTabDocument,
   readClosedStash,
   readTabContent,
   readTabDom,
@@ -509,6 +510,29 @@ export function createAgentTools(
         if (mode === 'dom') return await readTabDom(tab.id, MAX_DOM_CHARS)
         const content = await readTabContent(tab.id)
         if ('error' in content && content.error) return content
+        // The URL check above is deliberately kept to the tab's address so
+        // nothing touches the page before the user says yes. Now that the read
+        // has happened WITH permission, the page's own answer is available and
+        // is far better: it catches a PDF served from a path with no `.pdf`
+        // suffix (arxiv.org/pdf/<id>) and a PDF embedded in an ordinary page,
+        // both of which come back as a blank read with no clue attached.
+        const doc = content.document
+        if (doc.kind === 'pdf') {
+          return {
+            note:
+              'This tab is a PDF. Chrome shows PDFs in a plugin viewer with no readable page DOM, which is why the text above is empty. ' +
+              'Use the ReadPdf tool instead: mode "outline" to orient, "search" to find text, "pages" to read, "view" to look at a page.',
+          }
+        }
+        if (doc.kind === 'pdf-embedded') {
+          return {
+            ...content,
+            note:
+              `This page has a PDF embedded in it (${doc.pdfUrl}). The text above is only the page AROUND the PDF — ` +
+              'the document itself is not in it. To read the PDF, call ReadPdf with that exact url.' +
+              (doc.embedded.length > 1 ? ` ${doc.embedded.length} PDFs are embedded here: ${doc.embedded.join(', ')}` : ''),
+          }
+        }
         return {
           ...content,
           tip: 'When your answer comes from a specific passage on this page, call HighlightContent with that exact text to scroll to it and mark it for the user.',
@@ -695,10 +719,25 @@ export function createAgentTools(
         if (mode === 'search' && !query?.trim()) return { error: 'mode:"search" needs a `query`.' }
         if (mode === 'view' && !page) return { error: 'mode:"view" needs a `page` number.' }
         let target = url
+        // Resolved after approval, not before: finding an embedded PDF means
+        // injecting into the page, and nothing touches the page ahead of the
+        // card. The tab's own URL is enough to describe the request honestly
+        // ("the PDF you are viewing") either way.
+        let resolveFromTab: (() => Promise<string | undefined>) | null = null
         if (!target) {
           const tab = await resolveTab()
           target = tab?.url
           if (!target) return { error: 'No active tab and no `url` given.' }
+          const tabId = tab!.id
+          if (tabId !== undefined) {
+            resolveFromTab = async () => {
+              const doc = await probeTabDocument(tabId)
+              // 'pdf' means the tab IS the document, so its URL already is the
+              // target. 'pdf-embedded' is the case the URL cannot express: the
+              // tab is a wrapper page and the bytes live somewhere else.
+              return doc.kind === 'pdf-embedded' ? doc.pdfUrl : undefined
+            }
+          }
         }
         // The card names the document: the tab the user is viewing, or the host
         // it would be fetched from.
@@ -713,6 +752,11 @@ export function createAgentTools(
                 : `Look at page ${page} of ${docLabel}`
         const approved = await requestApproval({ toolName: 'ReadPdf', summary, reason })
         if (!approved) return DENIED
+
+        if (resolveFromTab) {
+          const embedded = await resolveFromTab().catch(() => undefined)
+          if (embedded) target = embedded
+        }
 
         // The foreground fetch rides the user's cookies so a PDF they can see
         // behind a login, the agent can read too. (Research's PDF path stays
@@ -883,9 +927,14 @@ export function createAgentTools(
           return { error: 'Pass either `text` (a quoted passage) or `region` (an [rN] number).' }
         const tab = await resolveTab()
         if (tab?.id === undefined) return { error: NO_TAB_ERROR }
-        const isPdf = looksLikePdfUrl(tab.url ?? '')
-        if (isPdf && region !== undefined)
-          return { error: 'The active tab is a PDF — regions do not exist there. Pass `text` (optionally with a `page` from ReadPdf search).' }
+        // Pre-approval this can only be the URL's shape — nothing may touch the
+        // page before the card. It decides the card's wording and rejects the
+        // obviously-wrong call early; the authoritative answer comes from the
+        // page itself once permission is in hand (see `isPdf` below).
+        const urlLooksPdf = looksLikePdfUrl(tab.url ?? '')
+        const NO_REGIONS_ON_PDF =
+          'The active tab is a PDF — regions do not exist there. Pass `text` (optionally with a `page` from ReadPdf search).'
+        if (urlLooksPdf && region !== undefined) return { error: NO_REGIONS_ON_PDF }
 
         // Same exemption as the other perception tools: an open control session
         // already covers pointing at the page it is driving.
@@ -895,14 +944,26 @@ export function createAgentTools(
           const summary =
             region !== undefined
               ? 'Highlight a region on this page'
-              : `Highlight “${text!.trim().slice(0, 60)}${text!.trim().length > 60 ? '…' : ''}” on ${isPdf ? 'the PDF' : 'this page'}`
+              : `Highlight “${text!.trim().slice(0, 60)}${text!.trim().length > 60 ? '…' : ''}” on ${urlLooksPdf ? 'the PDF' : 'this page'}`
           const approved = await requestApproval({ toolName: 'HighlightContent', summary, reason })
           if (!approved) return DENIED
         }
 
+        // Now ask the page. This is what makes a PDF served from an
+        // extension-less path (arxiv.org/pdf/<id>) take the PDF route instead
+        // of a DOM highlight that could never find anything: Chrome's PDF
+        // viewer has no text to search.
+        //
+        // A PDF merely EMBEDDED in a page deliberately stays on the DOM path —
+        // the wrapper is real, scriptable HTML, and the passage the model is
+        // pointing at is as likely to be in the surrounding page as in the file.
+        const doc = await probeTabDocument(tab.id).catch(() => null)
+        const isPdf = doc ? doc.kind === 'pdf' : urlLooksPdf
+        if (isPdf && region !== undefined) return { error: NO_REGIONS_ON_PDF }
+
         if (isPdf) {
           const creds = { credentials: 'include' as const }
-          const target = tab.url!
+          const target = doc?.pdfUrl ?? tab.url!
           try {
             let targetPage = page
             if (!targetPage) {

@@ -33,6 +33,14 @@ describe('isProbeableUrl', () => {
     }
   })
 
+  it('accepts a local file once file-scheme access is granted', () => {
+    expect(isProbeableUrl('file:///Users/x/notes.txt', { fileAccess: true })).toBe(true)
+    // Still rejects the schemes no toggle reaches.
+    expect(isProbeableUrl('chrome://extensions', { fileAccess: true })).toBe(false)
+    // And exotic schemes stay out whatever the toggle says.
+    expect(isProbeableUrl('ftp://files.test/a.txt', { fileAccess: true })).toBe(false)
+  })
+
   it('rejects the Chrome Web Store, which blocks injection', () => {
     expect(isProbeableUrl('https://chromewebstore.google.com/detail/abc')).toBe(false)
     expect(isProbeableUrl('https://chrome.google.com/webstore/category/extensions')).toBe(false)
@@ -78,7 +86,26 @@ describe('planTabProbe', () => {
     ])
     expect(plan.probe).toEqual([3])
     expect(plan.skip[0].reason).toContain('Blank tab')
-    expect(plan.skip[1].reason).toContain('Browser-internal')
+    expect(plan.skip[1].reason).toContain('browser-internal page')
+  })
+
+  it('probes local files only once the user has granted file access', () => {
+    const tabs = [{ tabId: 1, url: 'file:///Users/x/quiz.html', discarded: false }]
+    expect(planTabProbe(tabs).probe).toEqual([])
+    expect(planTabProbe(tabs, 100, { fileAccess: false }).probe).toEqual([])
+    expect(planTabProbe(tabs, 100, { fileAccess: true }).probe).toEqual([1])
+  })
+
+  it('tells the user how to unlock a local file instead of calling it internal', () => {
+    // The distinction is the point: one of these the user can fix in ten
+    // seconds, the other is closed forever.
+    const [skip] = planTabProbe(
+      [{ tabId: 1, url: 'file:///Users/x/quiz.html', discarded: false }],
+      100,
+      { fileAccess: false },
+    ).skip
+    expect(skip.reason).toContain('Allow access to file URLs')
+    expect(skip.reason).not.toContain('browser-internal')
   })
 
   it('stops probing past the limit but still lists the overflow', () => {

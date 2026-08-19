@@ -16,6 +16,7 @@
 // exists and that it was asleep, and ask the user to wake it if it matters.
 
 import { TAB_GROUP_ID_NONE, type TabFacts } from '../tools/tabPolicy'
+import { classifyPageAccess, fileAccessGranted } from './pageAccess'
 
 /** How much of a page's self-description is worth carrying per tab. */
 export const GIST_CHARS = 180
@@ -50,12 +51,6 @@ export interface TabIndex {
   probeLimitHit: boolean
 }
 
-/** URL schemes and hosts that cannot be scripted, whatever their state. */
-const UNSCRIPTABLE = /^(chrome|edge|brave|about|devtools|view-source|file|data|blob|chrome-extension|moz-extension):/i
-
-/** Chrome blocks injection into its own store, on any of its hostnames. */
-const WEB_STORE = /^(chromewebstore\.google\.com|chrome\.google\.com\/webstore)/i
-
 /** A tab with nothing in it. */
 const BLANK = /^(about:blank|about:newtab|chrome:\/\/newtab|chrome:\/\/new-tab-page|edge:\/\/newtab)\/?$/i
 
@@ -63,14 +58,22 @@ export function isBlankUrl(url: string): boolean {
   return !url || BLANK.test(url)
 }
 
-/** Can a gist be extracted from this URL at all, ignoring tab state? */
-export function isProbeableUrl(url: string): boolean {
+/**
+ * Can a gist be extracted from this URL at all, ignoring tab state?
+ *
+ * `file://` is the one answer that depends on state outside the URL: it is
+ * unreadable by default and readable once the user grants file-scheme access,
+ * so callers that know (buildTabIndex asks pageAccess.ts) pass it in. The
+ * default is `false`, which is both the safe answer and the old behavior.
+ */
+export function isProbeableUrl(url: string, opts: { fileAccess?: boolean } = {}): boolean {
   if (!url || isBlankUrl(url)) return false
-  if (UNSCRIPTABLE.test(url)) return false
+  if (classifyPageAccess(url, { fileAccess: opts.fileAccess ?? false }).kind !== 'ok') return false
   try {
-    const u = new URL(url)
-    if (WEB_STORE.test(`${u.host}${u.pathname}`)) return false
-    return u.protocol === 'http:' || u.protocol === 'https:'
+    // An allowlist rather than "whatever pageAccess did not reject" — exotic
+    // schemes (ftp:, ws:) are not injectable either and are not worth probing.
+    const { protocol } = new URL(url)
+    return protocol === 'http:' || protocol === 'https:' || protocol === 'file:'
   } catch {
     return false
   }
@@ -94,9 +97,14 @@ export interface ProbePlan {
  * pure is what makes the discarded-tab rule testable — the expensive mistake
  * (waking sixty sleeping tabs) is one this function exists to prevent.
  */
-export function planTabProbe(candidates: ProbeCandidate[], limit = TAB_GIST_LIMIT): ProbePlan {
+export function planTabProbe(
+  candidates: ProbeCandidate[],
+  limit = TAB_GIST_LIMIT,
+  opts: { fileAccess?: boolean } = {},
+): ProbePlan {
   const probe: number[] = []
   const skip: { tabId: number; reason: string }[] = []
+  const fileAccess = opts.fileAccess ?? false
   let limitHit = false
 
   for (const c of candidates) {
@@ -108,8 +116,18 @@ export function planTabProbe(candidates: ProbeCandidate[], limit = TAB_GIST_LIMI
       skip.push({ tabId: c.tabId, reason: 'Blank tab — nothing to read.' })
       continue
     }
-    if (!isProbeableUrl(c.url)) {
-      skip.push({ tabId: c.tabId, reason: 'Browser-internal page; extensions cannot read it.' })
+    if (!isProbeableUrl(c.url, { fileAccess })) {
+      // Say WHICH obstacle it is: a local file is one switch away from being
+      // readable, and calling that "browser-internal" tells the user (and the
+      // model) to give up on something they could fix in ten seconds.
+      const access = classifyPageAccess(c.url, { fileAccess })
+      skip.push({
+        tabId: c.tabId,
+        reason:
+          access.kind === 'ok'
+            ? 'Browser-internal page; extensions cannot read it.'
+            : access.reason,
+      })
       continue
     }
     if (probe.length >= limit) {
@@ -274,8 +292,12 @@ export async function buildTabIndex(): Promise<TabIndex> {
     // No tabGroups permission, or the API is unavailable — records omit `group`.
   }
 
+  // One probe for the whole index, not one per tab.
+  const fileAccess = await fileAccessGranted()
   const plan = planTabProbe(
     tabs.map((t) => ({ tabId: t.id!, url: t.url ?? '', discarded: t.discarded ?? false })),
+    TAB_GIST_LIMIT,
+    { fileAccess },
   )
   const skipReason = new Map(plan.skip.map((s) => [s.tabId, s.reason]))
 

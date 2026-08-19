@@ -15,6 +15,7 @@
 
 import { SEMANTIC_TAG_SOURCE } from './regionIndex'
 import { throttledCaptureVisibleTab } from './screenshot'
+import { classifyPageAccess, fileAccessGranted, PageAccessError } from './pageAccess'
 
 export interface CapturedImage {
   id: string
@@ -39,6 +40,14 @@ interface SelectedRegion {
 export async function captureRegion(): Promise<CapturedImage | null> {
   const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true })
   if (tab?.id === undefined) throw new Error('No active tab to capture.')
+
+  // Ask BEFORE injecting. Chrome's own refusal ("Extension manifest must
+  // request permission to access this host") is misleading for a local file —
+  // the manifest is fine, `<all_urls>` already covers file://, and the missing
+  // piece is a switch only the user can flip. Failing early with the real
+  // instruction beats failing late with the wrong one.
+  const access = classifyPageAccess(tab.url, { fileAccess: await fileAccessGranted() })
+  if (access.kind !== 'ok') throw new PageAccessError(access)
 
   const [injection] = await chrome.scripting.executeScript({
     target: { tabId: tab.id },

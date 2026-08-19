@@ -11,6 +11,7 @@ import { runAgentTurn, type Checkpoint, type MessageSource, type QueuedImage, ty
 import { hasUncompilableMath } from './mathRepairFilter'
 import { repairMessageText, type Complete } from '../agent/mathRepair'
 import { cancelRegionCapture, captureRegion, type CapturedImage } from '../platform/capture'
+import { PageAccessError } from '../platform/pageAccess'
 import { ensureVisionCapability } from '../agent/vision'
 import { copyElementAsPng } from '../platform/domImage'
 import { getConversation, renameConversation, saveConversation, type RegenTarget } from '../data/conversations'
@@ -91,7 +92,6 @@ import { isContextOverflow } from '../agent/resilience'
  */
 const COMPACT_AT_FRACTION = 0.75
 import { getActiveTab, listOpenTabs, openPdfAtPage, readTabContent, type TabContent, type TabSummary } from '../platform/tabs'
-import { looksLikePdfUrl } from '../platform/pdfText'
 import { OFFICE_ACCEPT } from '../platform/officeText'
 import { loadPdf } from '../platform/pdf'
 import { createAgentTools, type ApprovalRequest, type PageControlGate } from '../tools/tools'
@@ -386,10 +386,20 @@ function hostOf(url: string): string {
 // so "summarize this pdf" carries real context instead of an error block, and
 // point the model at ReadPdf for the rest. User-initiated (the user shared the
 // tab), so no approval card — same consent story as readTabContent itself.
+//
+// Which PDF is decided by readTabContent's classification, not by the URL
+// ending in `.pdf`: that keeps this working for a PDF served from an
+// extension-less path (arxiv.org/pdf/<id>), and lets an @mentioned course page
+// summarize the PDF it embeds rather than the two lines of prose around it.
 async function pdfAwareTabContent(c: TabContent): Promise<TabContent> {
-  if (!looksLikePdfUrl(c.url) || (!c.error && c.text.trim())) return c
+  const target = c.document.pdfUrl
+  if (!target) return c
+  // A wrapper page whose own text came through fine is still worth enriching —
+  // the embedded document is the part the user means. A plain PDF tab is only
+  // worth re-reading when the scripted read came back empty or failed.
+  if (c.document.kind === 'pdf' && !c.error && c.text.trim()) return c
   try {
-    const { info, pages } = await loadPdf(c.url, { credentials: 'include' })
+    const { info, pages } = await loadPdf(target, { credentials: 'include' })
     // The snippet is collapsed to one line anyway, so take the stripped form —
     // flattening Markdown here would just spend the budget on `##` and `**`.
     const first = (pages[0]?.plain ?? pages[0]?.text ?? '').replace(/\s+/g, ' ').trim().slice(0, 1500)
@@ -401,14 +411,22 @@ async function pdfAwareTabContent(c: TabContent): Promise<TabContent> {
       ...c,
       error: undefined,
       title: info.title || c.title,
-      text: `[This tab is a PDF: "${info.title}", ${info.pageCount} page${info.pageCount === 1 ? '' : 's'}.${scanned ? ' It is a scanned document with no text layer — use ReadPdf mode:"view" to look at a page.' : ' Use the ReadPdf tool to search or read the rest.'}]\n\nFirst page:\n${first}`,
+      text:
+        `[${c.document.kind === 'pdf-embedded' ? `This tab embeds a PDF (${target})` : 'This tab is a PDF'}: ` +
+        `"${info.title}", ${info.pageCount} page${info.pageCount === 1 ? '' : 's'}.` +
+        `${scanned ? ' It is a scanned document with no text layer — use ReadPdf mode:"view" to look at a page.' : ` Use the ReadPdf tool${c.document.kind === 'pdf-embedded' ? ` with url "${target}"` : ''} to search or read the rest.`}]` +
+        `\n\nFirst page:\n${first}` +
+        (c.document.kind === 'pdf-embedded' && c.text.trim() ? `\n\nText of the page around it:\n${c.text}` : ''),
       truncated: info.pageCount > 1,
     }
   } catch {
     return {
       ...c,
       error: undefined,
-      text: '[This tab is a PDF. Chrome PDFs cannot be read as page text — use the ReadPdf tool to read, search, or view it.]',
+      text:
+        c.document.kind === 'pdf-embedded'
+          ? `[This tab embeds a PDF (${target}) that could not be read here — use the ReadPdf tool with that url.]${c.text.trim() ? `\n\n${c.text}` : ''}`
+          : '[This tab is a PDF. Chrome PDFs cannot be read as page text — use the ReadPdf tool to read, search, or view it.]',
       truncated: false,
     }
   }
@@ -749,6 +767,9 @@ export default function Chat({
   const [attachments, setAttachments] = useState<ComposerAttachment[]>([])
   const [capturing, setCapturing] = useState(false)
   const [captureError, setCaptureError] = useState<string | null>(null)
+  // Set only for the one failure the user can lift themselves: a local file
+  // with file-scheme access off. Drives the button beside the message.
+  const [captureNeedsFileAccess, setCaptureNeedsFileAccess] = useState(false)
   // True while a file drag from outside the browser hovers the panel — drives
   // the full-panel "Drop files to attach" overlay.
   const [dropTarget, setDropTarget] = useState(false)
@@ -1776,6 +1797,7 @@ export default function Chat({
   async function capture() {
     if (capturing) return
     setCaptureError(null)
+    setCaptureNeedsFileAccess(false)
     setCapturing(true)
     try {
       const img = await captureRegion()
@@ -1784,9 +1806,17 @@ export default function Chat({
         setAttachments((a) => [...a, att])
       }
     } catch (err) {
-      setCaptureError(
-        `Couldn't capture this page: ${err instanceof Error ? err.message : String(err)}`,
-      )
+      // A PageAccessError already says the useful thing in the user's terms;
+      // prefixing it with "Couldn't capture this page" would bury the
+      // instruction behind a restatement of what they can already see.
+      if (err instanceof PageAccessError) {
+        setCaptureError(err.message)
+        setCaptureNeedsFileAccess(err.kind === 'needs-file-access')
+      } else {
+        setCaptureError(
+          `Couldn't capture this page: ${err instanceof Error ? err.message : String(err)}`,
+        )
+      }
     } finally {
       setCapturing(false)
     }
@@ -1801,6 +1831,7 @@ export default function Chat({
   async function addFiles(files: File[]) {
     if (files.length === 0) return
     setCaptureError(null)
+    setCaptureNeedsFileAccess(false)
     setCapturing(true)
     // Reserve this batch's files immediately (before the await below) so a
     // second, overlapping addFiles call — a paste landing while an earlier
@@ -2263,6 +2294,7 @@ export default function Chat({
     setSlashQuery(null)
     if (consumedSelection) setDismissedSelection(consumedSelection)
     setCaptureError(null)
+    setCaptureNeedsFileAccess(false)
     if (inputRef.current) inputRef.current.style.height = 'auto'
     // A send starts the next draft (3a) and history-recall walk (3b) fresh.
     void clearDraft(conversationId)
@@ -2359,6 +2391,7 @@ export default function Chat({
     // an earlier failure would sit there indefinitely through a later,
     // otherwise-successful proposal.
     setCaptureError(null)
+    setCaptureNeedsFileAccess(false)
     const taskId = `r-${Date.now()}-${Math.floor(performance.now())}`
     const context = recentContext(messages)
     // Persist the composer's attachments so the offscreen research host can read
@@ -3775,7 +3808,25 @@ export default function Chat({
             </button>
           </div>
         )}
-        {captureError && <div className="capture-error">{captureError}</div>}
+        {captureError && (
+          <div className="capture-error">
+            {captureError}
+            {captureNeedsFileAccess && (
+              <button
+                type="button"
+                className="capture-error-fix"
+                onClick={() => {
+                  // Deep-links to Lychee's own card, where the switch lives.
+                  // Chrome refuses to let an extension focus the toggle itself,
+                  // so landing the user on the right card is as far as this goes.
+                  chrome.tabs.create({ url: `chrome://extensions/?id=${chrome.runtime.id}` })
+                }}
+              >
+                Open Lychee’s extension settings
+              </button>
+            )}
+          </div>
+        )}
         {mcpPromptError && <div className="capture-error">{mcpPromptError}</div>}
         {mcpPromptForm && (
           <div className="mcp-prompt-form">

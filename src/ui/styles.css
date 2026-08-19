@@ -3532,6 +3532,26 @@ body {
   margin: 0 4px 6px;
 }
 
+/* Shown only when the failure is one the user can lift (file-scheme access).
+   Deliberately understated: it sits inside an error line, so it reads as the
+   next step rather than a second alarm. */
+.capture-error-fix {
+  display: block;
+  margin-top: 5px;
+  padding: 3px 8px;
+  font: inherit;
+  font-size: 11px;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.capture-error-fix:hover {
+  background: var(--user-bubble);
+}
+
 /* Full-panel target shown while a file drag hovers the panel. pointer-events
    stays off so the drop lands on the window listeners underneath. */
 .drop-overlay {

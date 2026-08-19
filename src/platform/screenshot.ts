@@ -14,6 +14,7 @@
 // pure and tested rather than inlined here.
 
 import { setPresenceHidden } from './presence'
+import { classifyPageAccess, fileAccessGranted } from './pageAccess'
 
 /** A finished capture: a PNG data URL and its pixel size. */
 export interface Shot {
@@ -432,6 +433,12 @@ export async function capture(
   if (live?.id !== tabId) {
     throw new ShotError('That tab is no longer the active tab, so it cannot be captured.')
   }
+
+  // A local file, a chrome:// page and the Web Store all fail the injection
+  // below with the same opaque manifest error. Name the real obstacle first —
+  // for a local file it is a switch the user can flip, not a dead end.
+  const access = classifyPageAccess(live?.url ?? tab.url, { fileAccess: await fileAccessGranted() })
+  if (access.kind !== 'ok') throw new ShotError(access.reason)
 
   await setPresenceHidden(tabId, true).catch(() => {})
   let restore: (() => Promise<void>) | null = null

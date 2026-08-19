@@ -2,6 +2,9 @@
 // chrome.scripting.executeScript function injection, so no content script
 // bundle is needed.
 
+import { classifyPageAccess, fileAccessGranted } from './pageAccess'
+import { classifyTabDocument, type EmbedRef, type TabDocument } from './tabDocument'
+
 export interface TabSummary {
   tabId: number
   title: string
@@ -18,6 +21,14 @@ export interface TabContent {
   /** Visible text of the page, truncated. */
   text: string
   truncated: boolean
+  /**
+   * What this tab actually holds — an HTML page, a PDF, or an HTML page with a
+   * PDF embedded in it. Decided from `document.contentType` and the page's own
+   * embeds (see tabDocument.ts), so it is right for PDFs served from paths that
+   * do not end in `.pdf`. Falls back to a URL-shaped guess when the page could
+   * not be injected into.
+   */
+  document: TabDocument
   error?: string
 }
 
@@ -50,29 +61,64 @@ export async function listOpenTabs(): Promise<TabSummary[]> {
     }))
 }
 
+/**
+ * Turn a failed injection into a sentence the user can act on.
+ *
+ * Chrome reports every refusal with the same manifest-shaped string, which is
+ * wrong-and-unhelpful for the one case the user can actually fix: a local file
+ * needs a switch in chrome://extensions, not a different manifest. Ask the
+ * classifier what is really in the way before falling back to Chrome's words.
+ */
+async function readFailure(url: string, what: string, err: unknown): Promise<string> {
+  const access = classifyPageAccess(url, { fileAccess: await fileAccessGranted() })
+  if (access.kind !== 'ok') return `Cannot ${what} this tab. ${access.reason}`
+  return `Cannot ${what} this tab (${err instanceof Error ? err.message : String(err)}).`
+}
+
 // Runs inside the target page. Must be self-contained (it is serialized).
+//
+// `contentType` and `embeds` ride along with the text because they are what
+// tabDocument.ts needs to spot a PDF, and getting them here costs nothing —
+// a second injection would be a second round trip on every tab attach. The
+// embed scan reads the live `.src`/`.data` properties rather than
+// getAttribute, since the DOM resolves those against the document's base URL
+// and a course page's `src="notes.pdf"` has to come back absolute.
 function extractPageContent() {
   const meta = document.querySelector('meta[name="description"]')
   const text = document.body?.innerText ?? ''
+  const embeds = Array.from(document.querySelectorAll('embed, object, iframe')).map((n) => ({
+    tag: n.tagName,
+    type: n.getAttribute('type'),
+    src:
+      (n as HTMLEmbedElement).src ||
+      (n as HTMLObjectElement).data ||
+      (n as HTMLIFrameElement).src ||
+      null,
+  }))
   return {
     title: document.title,
     url: location.href,
     description: meta?.getAttribute('content') ?? '',
     selection: window.getSelection()?.toString() ?? '',
     text,
+    contentType: document.contentType,
+    embeds,
   }
 }
 
 export async function readTabContent(tabId: number): Promise<TabContent> {
   const tab = await chrome.tabs.get(tabId).catch(() => undefined)
+  const url = tab?.url ?? ''
   const base = {
     tabId,
     title: tab?.title ?? '(unknown)',
-    url: tab?.url ?? '',
+    url,
     description: '',
     selection: '',
     text: '',
     truncated: false,
+    // No injection yet, so the URL's own shape is all we have to go on.
+    document: classifyTabDocument({ url, embeds: [] }),
   }
   try {
     const [result] = await chrome.scripting.executeScript({
@@ -90,14 +136,63 @@ export async function readTabContent(tabId: number): Promise<TabContent> {
       selection: page.selection.slice(0, 2000),
       text: truncated ? page.text.slice(0, MAX_TEXT_CHARS) : page.text,
       truncated,
+      document: classifyTabDocument({
+        url: page.url || base.url,
+        contentType: page.contentType,
+        textLength: page.text.length,
+        embeds: page.embeds as EmbedRef[],
+      }),
     }
   } catch (err) {
-    // chrome:// pages, the Web Store, and some PDFs cannot be scripted.
-    return {
-      ...base,
-      error: `Cannot read this tab (${err instanceof Error ? err.message : String(err)}). It may be a browser-internal page.`,
-    }
+    // chrome:// pages, the Web Store, local files without the file-access
+    // switch, and some PDFs cannot be scripted.
+    return { ...base, error: await readFailure(base.url, 'read', err) }
   }
+}
+
+/**
+ * Just the document classification, without paying for a page's worth of text.
+ *
+ * `readTabContent` already carries this, so use that where a read is happening
+ * anyway; this is for the tools that only need to know WHICH file to open
+ * (ReadPdf resolving the tab's PDF, HighlightContent choosing its path).
+ */
+export async function probeTabDocument(tabId: number): Promise<TabDocument> {
+  const tab = await chrome.tabs.get(tabId).catch(() => undefined)
+  const url = tab?.url ?? ''
+  try {
+    const [result] = await chrome.scripting.executeScript({
+      target: { tabId },
+      func: () => ({
+        url: location.href,
+        contentType: document.contentType,
+        textLength: document.body?.innerText?.length ?? 0,
+        embeds: Array.from(document.querySelectorAll('embed, object, iframe')).map((n) => ({
+          tag: n.tagName,
+          type: n.getAttribute('type'),
+          src:
+            (n as HTMLEmbedElement).src ||
+            (n as HTMLObjectElement).data ||
+            (n as HTMLIFrameElement).src ||
+            null,
+        })),
+      }),
+    })
+    const p = result?.result
+    if (p) {
+      return classifyTabDocument({
+        url: p.url || url,
+        contentType: p.contentType,
+        textLength: p.textLength,
+        embeds: p.embeds as EmbedRef[],
+      })
+    }
+  } catch {
+    // An unscriptable tab still has a URL, and a `.pdf` one is still worth
+    // routing to ReadPdf — pdf.ts fetches the bytes itself and does not need
+    // the page to be scriptable.
+  }
+  return classifyTabDocument({ url, embeds: [] })
 }
 
 // Runs inside the target page. Must be self-contained (it is serialized).
@@ -169,11 +264,9 @@ export async function readTabDom(tabId: number, maxChars: number): Promise<TabDo
       truncated,
     }
   } catch (err) {
-    // chrome:// pages, the Web Store, and some PDFs cannot be scripted.
-    return {
-      ...base,
-      error: `Cannot read this tab (${err instanceof Error ? err.message : String(err)}). It may be a browser-internal page.`,
-    }
+    // chrome:// pages, the Web Store, local files without the file-access
+    // switch, and some PDFs cannot be scripted.
+    return { ...base, error: await readFailure(base.url, 'read', err) }
   }
 }
 
