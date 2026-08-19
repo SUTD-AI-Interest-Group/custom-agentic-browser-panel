@@ -107,6 +107,56 @@ SVG elements are XML-cased. Every inline-SVG chart on the web — which is to sa
 most charts — had been invisible to component detection, and nobody noticed until
 two consumers shared one predicate. **Deduplication is a bug-finding technique.**
 
+### Both registries paid for the whole page before the cap got a say
+
+Both registries cap what they return — 200 elements for `domIndex`, 60 regions
+(off a pool of up to 240 raw candidates) for `regionIndex` — but until `668f8c5`
+that cap only bounded the *classification* loop, not the walk feeding it. Both
+injected walkers built their candidate list with
+`Array.from(root.querySelectorAll('*'))`, which materializes **every element in
+the document** — recursing into every open shadow root — before either cap was
+ever consulted. A huge or adversarial page paid a full-document allocation on
+every single `ReadPage`, cap or no cap.
+
+The fix looks the same on the surface for both files — walk children directly
+and stop the instant the cap is hit, `false` propagating back up through every
+enclosing call (shadow-root recursion included) so the *entire* walk halts, not
+just the current node's siblings — but only `regionIndex` gets to do it in one
+pass. `regionIndex` fuses walking with classification: nothing downstream of a
+region depends on regions past the cap, so bailing early loses nothing.
+`domIndex` cannot do the same thing, and the reason is a security one, not a
+performance one: a `<label for="x">` routinely appears **after** its
+`<input id="x">` in the markup — every checkbox/radio pattern is written that
+way — and that label feeds the `sensitive` flag
+([Page Control](Page-Control)'s point-of-no-return gate reads it directly). A
+single fused walk that stopped at the element cap would classify an early
+input before ever discovering the later label naming it, silently losing a
+sensitivity detection for a field that was well inside the cap — exactly the
+kind of gap [Page Control](Page-Control) documents `3bdd228` closing on the
+detection side; capping the walk carelessly would have reopened it from the
+other direction. So `domIndex`'s two passes split: an exhaustive label sweep
+first (a tagName check plus two attribute reads per node — cheap, and never
+triggers layout), *then* the capped, `getComputedStyle`/`getBoundingClientRect`
+classification pass that actually stops at 200. Document order and
+shadow-splice order are unchanged in both files, since correctness depends on
+ancestors being visited before descendants either way.
+
+### The stamps that outlived the session
+
+`clearRegions()` — the `regionIndex.ts` counterpart to `domIndex.ts`'s
+`clearIndex()`, stripping every `data-agent-region` stamp from the page —
+existed from the moment `6f0249a` shipped element-level screenshots, but
+nothing ever called it. Page control's `teardownSession()` stripped
+`data-agent-idx` (that part of the fence is [Page Control](Page-Control)'s
+own `76467a0` hardening pass) but never `data-agent-region`, and `ReadPage`
+mode:`'regions'` deliberately skips
+its own approval card whenever a page-control session already owns the tab —
+so a session that read any regions left those stamps on the user's live page
+indefinitely after the agent was done with it. `371b2a1` wired `clearRegions`
+into `teardownSession` alongside `clearIndex`, found incidentally while
+auditing dead code for an unrelated attachment-delivery fix. Both registries
+now clean up after themselves the same way.
+
 ## Tall pages: one strip for you, tiles for the model
 
 `captureVisibleTab` only ever returns the visible viewport of the *active* tab, so

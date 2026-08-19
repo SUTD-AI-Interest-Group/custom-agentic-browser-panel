@@ -28,26 +28,24 @@ research agent *cannot* touch your tabs, cookies, or data, because the runtime
 denies it the APIs. That is why its ten tools are **ungated**: unlike the
 foreground toolset, there is no approval card on `WebSearch` or `FetchUrl`. There
 is no human present to click one, and — more importantly — nothing to protect.
-Your single human decision happens once, at the **launch card**, and the design
-spec calls this out as the reason the two halves of the product could be built
+Your single human decision happens once, at `StartResearch`, and the design spec
+calls this out as the reason the two halves of the product could be built
 independently: research is *headless by construction*.
-
-That decision point used to be an approval card on the model's own
-`StartResearch` call — a yes/no on a question you never saw. It is now an
-editable card you open yourself (by arming **◈ Deep research**, or by clicking
-the chip the agent leaves when it *proposes* research — it can no longer start
-any). The card shows the question research will actually run, what the
-conversation already established, the sites to stay within, and a flag when you
-asserted something the context contradicts. `ProposeResearch` is ungated for the
-same reason the rest of this surface is: it starts nothing. **The gate moved; it
-did not disappear** — and it moved to the only place that can catch the failure
-that matters. Verification asks whether each claim rests on its source. It cannot
-ask whether the question was right, and a real page researched under a false
-premise grounds perfectly while still being wrong.
 
 **The expensive one — all state must round-trip through the service worker** via
 message passing. Every race condition below is the tax we paid for that
 isolation.
+
+The same constraint resurfaced in an unrelated feature and got the identical
+fix. Memory dreaming's generation step (`2e438f9`) used to run inside the
+service worker's `chrome.alarms` handler; a real-browser test against a slow
+provider found a 6-minute generation crossing the 5-minute processing cap and
+taking the whole cycle down with it — nothing recorded, the episode left
+pending, and the dream lock held until its 16-minute TTL expired, blocking
+every retry and every "Dream now" click in between. `runDreamCycle` touches no
+`chrome.*` API at all, so it now runs in the same offscreen document research
+already established — the fix wasn't a second exemption, just noticing the
+room already existed. See [Memory and Dreaming](Memory-and-Dreaming).
 
 ## The pipeline
 
@@ -109,6 +107,19 @@ Two passes to get one hostname normalisation right. The honest lesson isn't
 adversarial tests is a guess.** Every bypass above arrived as a failing test
 first; the tests are in `webFetch.test.ts` and they are the reason we found the
 second bug at all.
+
+A third pass, later, over different code, made a related but distinct point:
+`isFetchableUrl` doesn't help if a call site never calls it. `harvestImages` —
+the fetch behind `SearchImages`/`HarvestImages` — had no guard on its request
+at all (`19412c7`), the one network path on the whole research surface that
+lacked one; every sibling (`fetchReadable` here, `renderPage`, the browse
+policy's navigate/click cases) already had it. The fix mirrors `fetchReadable`
+exactly: guard the input URL, then re-check `res.url` after
+`redirect:'follow'`, since a redirect walks a hop to a private target before
+the response ever reaches this code. The same commit closed a deeper version of
+this bug class in the tab-navigation paths — a TOCTOU, not a missing check —
+which is the more interesting half and lives on [Autonomous
+Browsing](Autonomous-Browsing).
 
 ### Check-then-act is not atomic (the offscreen race)
 
@@ -180,6 +191,82 @@ the same as a promise that succeeded.**
 was real but useless: a 2GB response was fully buffered into memory *and then*
 truncated. Replaced with `readCapped()`, a streaming reader that stops at the
 cap. **A limit enforced after the damage is not a limit.**
+
+### 700 attempts to ask a model for JSON it cannot produce
+
+`ede0fff`. `extractStructured` tries `generateObject` first, then falls back to
+`generateText` + `parseJsonLoose`. When the free-text fallback also isn't valid
+JSON, `parseJsonLoose` throws a plain `Error` with no status field.
+`classifyError`'s `statusOf()` finds nothing to key off, so the failure falls
+through every branch to the transient catch-all — and `withResilience` backs
+off and retries an identical, identically-failing request until the task's
+24-hour deadline: roughly 700 attempts at the 120-second backoff cap. The SDK's
+own `NoObjectGeneratedError` carried the same problem — no status code either.
+
+This directly contradicted what the callers already believed about their own
+code: `planResearch` and `reflect` both carry comments about falling back to
+free-text "rather than burning retries on something that can never succeed" —
+a plan that only worked for errors `classifyError` already recognised as
+permanent (400/404/422, read off `APICallError.statusCode`), and a JSON-shape
+failure never carries one of those. Who actually paid for this: anyone running
+research on a small local model — Ollama, LM Studio, both supported provider
+kinds — that can't reliably emit schema-conforming JSON. Every Plan/Reflect
+round burned its full budget in silent backoff before finally emitting a
+partial report.
+
+The fix is a typed `StructuredOutputError`, classified as permanent alongside
+the SDK's `NoObjectGeneratedError` (checked via its own `.isInstance()`, the
+same pattern `agent.ts` already uses for `NoSuchToolError`) — typed rather than
+message-matched, because a string test silently stops working the day the
+SDK's wording changes. The wrap is deliberately narrow: only the
+`parseJsonLoose` call inside the fallback is wrapped, not the whole
+`generateText` catch, so a genuine request failure — 429, 5xx, a network error
+— keeps its own shape and still retries normally. No retry-once-before-permanent
+was added either: `extractStructured` already gets two independent attempts
+through `generateObject` and the text fallback, `reflect` re-runs every gather
+round regardless, and one more retry would just double the wasted calls for
+exactly the model population this fixes.
+
+### Report images were never screened, and a live hazard nobody had wired up
+
+`469e6e0`. `notebook.addImage` stored whatever URL `SearchImages`/`HarvestImages`
+handed it — content sourced from the pages the research agent reads, i.e.
+attacker-influenced — and `synthesize()` later tells the model to embed up to 12
+of them in the report as `![caption](url)`, which the panel renders straight to
+`<img src>` with no approval gate. The only screening lived in the UI, and only
+for markdown matching `blocks.ts`'s strict single-line shape; anything else fell
+through to the `marked` + DOMPurify path, which screens no URLs at all. Nothing
+here ever fetches the image bytes through the extension's own privileged fetch,
+so this was never SSRF — the harm is narrower: an internal-network probe URL
+harvested from a page could end up as a passive image load in the user's own
+browser, from the user's own report.
+
+The fix moves screening to write time: `addImage` now runs every URL through
+`isSafeRenderUrl` (`src/platform/safeRenderUrl.ts`) before it ever enters the
+notebook, refusing silently and dropping the image exactly like a dedup miss —
+the model didn't author this URL, so there's nothing for it to retry.
+`isSafeRenderUrl` isn't new logic invented for this fix; it already covered the
+two other places a URL turns into an unattended `<img src>` (`linkPreview.ts`'s
+extracted `og:image`, `blocks.ts`'s own model-authored image blocks), layering
+`isFetchableUrl`'s private/loopback checks with extra exclusions an unattended
+render should hold to that the general-purpose guard doesn't need
+(`*.localhost`/`.internal`, and the CGNAT range). One guard now covers every
+render surface, present and future, instead of each one re-deriving its own
+check.
+
+The same commit deleted, rather than fixed, a capability that had never
+actually shipped: `RenderBroker`'s `'screenshot'`/`'both'` modes were wired end
+to end but never called — both `FetchUrl` call sites hardcoded `'text'` — and
+they carried a real hazard. `captureVisibleTab` composites cross-origin iframe
+content, while every guard on that path inspects only the top frame's
+`location.href`. A page could sit on a permanently safe URL while framing
+`http://169.254.169.254/latest/meta-data/iam/security-credentials/` in an
+invisible iframe (many internal services send no `X-Frame-Options`), and the
+screenshot would carry that content with nothing ever checking the frame's
+`src` — no race, no redirect needed, unlike the TOCTOU on the text path (see
+[Autonomous Browsing](Autonomous-Browsing)). A warning comment had guarded the
+capability for a while; it was deleted instead, on the reasoning that a comment
+cannot stop someone who doesn't read it.
 
 ## Decisions we defend
 

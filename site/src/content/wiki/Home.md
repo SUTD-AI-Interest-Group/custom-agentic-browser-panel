@@ -16,15 +16,15 @@ bug, there's a commit, a comment, or a regression test behind it.
 
 | | |
 | --- | --- |
-| **Span** | 10 July–2 August 2026 |
-| **Commits** | 387 |
-| **`feat`** | 165 |
-| **`docs`** | 75 |
-| **`fix` / `harden`** | 80 |
+| **Span** | 10 July–10 August 2026 |
+| **Commits** | 432 |
+| **`feat`** | 173 |
+| **`docs`** | 86 |
+| **`fix` / `harden`** | 93 |
 
 That ratio is the most honest summary of how this was built. **More than a third of
-the commits produced no feature code at all** — the repository now contains 38 design
-specs and 20 implementation plans, and another 80 fixes and hardening commits landed
+the commits produced no feature code at all** — the repository now contains 41 design
+specs and 21 implementation plans, and another 93 fixes and hardening commits landed
 *after* features already "worked." Almost every
 capability in the codebase landed as the same three-beat sequence:
 
@@ -59,6 +59,17 @@ patterns rather than changing the architecture:
   and erase-all key destruction.
 - **Prompt attachments and hardening (2 August)** — provider-aware image/PDF/text delivery,
   capped attachment storage, and the adversarial-review fixes are now part of the shipped path.
+- **Office documents (8 August)** — Word, PowerPoint, Excel, OpenDocument, RTF and EPUB are
+  converted to a normalized document model with budgeted text, behind a lazily loaded parser.
+- **Dreaming in the offscreen host (9 August)** — memory consolidation no longer races the
+  service-worker lifetime; the alarm still fires in the worker, the model call runs where it can
+  finish.
+- **A second adversarial audit (9–10 August)** — nine parallel reviewers over the whole codebase,
+  then a fix wave in which every fix was re-reviewed by someone who had not written it. Four
+  criticals, three highs, and the rest. Notably it found that **`RunCode` had never worked in a
+  real browser**: a CSP missing one token meant QuickJS never instantiated, and every test passed
+  regardless because tests run the engine in Node, where no CSP applies. See
+  [Lessons Learned](Lessons-Learned) for what generalized.
 
 The detailed, commit-linked release notes live in the repository [changelog](https://github.com/SUTD-AI-Interest-Group/custom-agentic-browser-panel/blob/main/CHANGELOG.md).
 

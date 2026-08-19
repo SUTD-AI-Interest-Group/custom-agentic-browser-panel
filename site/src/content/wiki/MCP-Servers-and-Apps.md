@@ -28,6 +28,17 @@ because the credentials were never in it.
 greyed-out — a browser cannot spawn processes, and pretending otherwise helps
 nobody. The row says so and points at a local HTTP bridge instead.
 
+A stdio server's `env` map is a different case from OAuth tokens: it
+legitimately belongs *in* the file — that's what `env` is for in the standard
+shape — so it can't be sidecar'd out. Until `21eec68` it was also the one
+secret surface the vault never swept (provider `apiKey`s, Langfuse keys, MCP
+`headers` were already sealed). It's sealed at rest now too, and uniformly —
+every value, not just names that pattern-match a sensitivity heuristic, since
+a heuristic is guessable and one miss (a token in a var called `AUTH` or
+`CREDS`) is the exact plaintext-credential failure this closes. In-memory
+settings stay plaintext, so Settings → Copy JSON still emits a usable config
+with real values, no `lysec1.` ciphertext.
+
 ## Riding the existing machinery instead of building new machinery
 
 The whole tool integration is one parameter. MCP tools become AI-SDK dynamic
@@ -55,6 +66,15 @@ that isn't coming), and audio/video/HTML/binary into an IndexedDB artifact store
 the composer's `/` menu as `/mcp:server:prompt`, and a prompt's fetched text
 lands **as a composer draft the user reviews** — never auto-sent (`a066b72`).
 
+The catalog cache paid for the "zero schema tokens until loaded" trick with
+O(servers) writes on the way back: `persistCatalogCache()` re-serializes and
+stores *every* connected server's catalog on *any one* server's change, since
+a single `mcpCatalog` storage key holds the whole map with no partial update.
+A `refresh()` reconnecting several servers at once, or a chatty `listChanged`
+stream from one server, paid one full write per server instead of one for the
+batch. `469e6e0` coalesces writes behind a 250ms debounce — still a display
+cache, never the source of truth for a live connection's own catalog.
+
 ## OAuth without a backend
 
 The SDK's `OAuthClientProvider` interface meant we wrote none of the OAuth 2.1
@@ -69,6 +89,21 @@ non-interactive provider whose `redirectToAuthorization` refuses, parking the
 server at *needs auth* until the user presses Authorize. A browser extension
 that pops OAuth windows uninvited is indistinguishable from malware.
 
+A second rule had to be *added*, not designed in: a token is only ever valid
+for the URL it was issued for, but storage was keyed solely by the server's
+mutable display name (`mcpAuth:<name>`) and never purged. Since the SDK
+attaches `Authorization: Bearer <token>` before any handshake or audience
+check, editing an entry's `url` — or importing a shared `mcpServers.json`
+that happens to reuse a familiar name — silently replayed a live token as the
+*very first request* to a different host. `a701255` stamps every stored
+record with the `boundUrl` it was issued for; every read refuses and
+self-evicts on a mismatch, including a record written before the fix that
+carries no `boundUrl` at all — so there's no migration pass, and no window
+where an install stays exposed just because it predates the patch.
+`manager.ts` additionally purges auth on removal and on a URL edit, so
+"remove a server, re-add the same name" is a clean slate rather than an
+inherited credential.
+
 ## MCP Apps: running someone else's HTML in your extension
 
 MV3 extension pages forbid inline scripts, so app HTML runs in a
@@ -80,7 +115,14 @@ agent's own calls, scoped to the app's producing server**. An app can render
 whatever it likes; it cannot reach another server's tools, and it cannot speak
 as the user (`ui/message` text becomes a composer draft).
 
-Two platform landmines shaped the sandbox:
+Not every app goes through that relay. A `text/uri-list` template — a plain
+external `https://` URL instead of returned HTML — skips the sandboxed page
+entirely: `McpAppCard.tsx` iframes it directly in the panel's own React tree,
+with a plain "Open in a tab" link for sites that refuse framing. It has its
+own, separate containment story, below.
+
+Four platform landmines shaped the sandbox — two from the start, two found
+later by a security review:
 
 - **Module scripts don't load in sandboxed pages.** A sandboxed page has an
   opaque origin, so fetching a module from `chrome-extension://` fails CORS.
@@ -88,6 +130,37 @@ Two platform landmines shaped the sandbox:
   `public/sandbox.html`, shipped verbatim outside the Vite build.
 - **The nested app iframe gets `allow-scripts` and never `allow-same-origin`** —
   the app runs, and stays in an origin of its own.
+- **`sandbox.html` itself carried no CSP at all, for the whole life of the
+  feature, until `23563b6`.** `manifest.json` declares the page as sandboxed
+  but sets no `content_security_policy.sandbox` override, so absent an
+  explicit meta tag it ran under Chrome's permissive MV3 default — which pins
+  only `script-src`/`child-src` and leaves `connect-src`/`img-src`
+  unrestricted, unlike an explicit `default-src`. Verified against a real
+  Chromium instance with a local HTTP listener as ground truth: an app's
+  `fetch`, `XMLHttpRequest`, and `<img src>` all reached the listener as
+  genuine requests, no CSP violation logged. Only form submission was
+  incidentally blocked — by `child-src`'s framing restriction, not
+  `form-action`. The impact is bounded and worth stating precisely: an app
+  only ever sees its own server's `toolInput`/`toolResult`, which that server
+  already has, so this was a tracking/fingerprinting surface, not an
+  exfiltration path — but it contradicted the artifact sandbox's advertised
+  default-deny (see [Security and the Permission
+  Model](Security-and-the-Permission-Model)). Now `default-src 'none'` with
+  `script-src 'unsafe-inline'` (no `'self'` — the relay is inline-only by
+  design). A full `ui/initialize` round trip was re-run afterward to confirm
+  apps still render under the tightened policy.
+- **The external-URL card's own iframe carried `allow-same-origin`,
+  contradicting the rule stated right above it** (`c2edc53`). A
+  `text/uri-list` app's URL is entirely server-chosen, so granting it the
+  real panel origin's cookies and storage was never a path *into* the panel —
+  cross-origin SOP still applies, the framed origin can never be
+  `chrome-extension://`, and there's no `allow-top-navigation` — but it was
+  full-capability embedded browsing of a server-chosen page (its cookies,
+  its storage, its credentialed requests) with nothing telling the user this
+  card behaves differently from a sandboxed `ui://` app. Removed;
+  `allow-popups` stays, so a page that genuinely needs a real login still
+  works via a normal top-level window, or the "Open in a tab" fallback next
+  to the card.
 
 ## What broke, in order
 

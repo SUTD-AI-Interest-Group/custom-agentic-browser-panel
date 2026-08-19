@@ -54,6 +54,29 @@ varies"* — with hard caps (`MAX_ADDS_PER_DREAM = 12`, `MAX_MEMORY_CHARS = 600`
 write unbounded garbage into durable storage is a memory system that eventually
 poisons every future conversation.
 
+### Where the dream actually runs
+
+For most of the project the whole cycle ran in the MV3 service worker, which is
+the one context Chrome is free to kill whenever it likes. A dream is a single long
+model call — precisely the shape of work a worker that can be terminated
+mid-flight should not be doing. `2e438f9` moved the generation into the offscreen
+document: the alarm still fires in the worker, because that is where alarms live,
+but the model call is dispatched over a typed message channel to a context that
+can see it through. The storage-backed reentrancy lock is unchanged and still does
+the job it was built for — the worker and the panel's "Dream now" are two JS
+realms that share no memory, and the worker can be restarted mid-dream, so the
+lock never could have been an in-memory flag.
+
+The bookkeeping either side of that call was quietly expensive. Marking episodes
+consolidated and pruning the aged-out ones each ran a sequential loop of one
+IndexedDB round trip per id — up to roughly a thousand of them per cycle against a
+lock whose 60-second TTL is written on the assumption that this step is fast local
+work. `668f8c5` batched both into single transactions. Not parallel ones:
+IndexedDB serializes overlapping readwrite transactions against the same store
+anyway, so N parallel transactions queue at the engine while each pays its own
+open and commit. One transaction is also atomic, where the old loop could leave
+half the episodes marked if it threw partway.
+
 ## No embeddings — on purpose
 
 `searchMemories()` is keyword matching plus a recency boost with a ~30-day
@@ -72,8 +95,11 @@ then, it shouldn't.
 
 ## The one real bug: PII following a navigation
 
-Memory has no bug story of its own — every commit to `memory.ts` and `dream.ts` is
-additive, never a fix. But its most sensitive *consumer* does.
+For a long time memory had no bug story of its own — every commit to `memory.ts`
+and `dream.ts` was additive. That stopped being true in August, though both
+exceptions are about *where and how* the work runs rather than what it stores (the
+offscreen move and the batched bookkeeping, above). The store itself has still
+never had a correctness fix. Its most sensitive *consumer* is another matter.
 
 `07edf4d` — *"fix: re-fence session origin in AutofillForm (block cross-origin PII
 drift)."*
@@ -93,3 +119,20 @@ The generalisable lesson is the one that also produced the origin re-fencing in
 not a check.** Anything that can change under you must be re-verified at the point
 of use — and "the page navigated" is the single most likely thing to change under
 a browser agent.
+
+We learned it again in the same function a month later. `c2edc53` found that
+`AutofillForm` checked whether its tab was still frontmost exactly once, at entry,
+and then filled an entire batch of fields — so a user who switched tabs partway
+had the rest typed into a page they were no longer watching. Same tool, same
+shape, a different variable: the first time it was the origin that could change
+under the loop, the second time it was whether anyone was looking. The origin
+re-fence had been added per-field precisely because of `07edf4d`, and the
+foreground check sitting three lines away was still hoisted out of the loop.
+
+Worth being blunt about why that happened, because it is the part that
+generalises: fixing one instance of a class does not fix the class. The
+`07edf4d` fix was written against *origin drift*, so it re-checked the origin.
+Nobody went back and asked which other preconditions that loop had also
+established once and then assumed forever. If you find a
+check-hoisted-out-of-a-loop bug, the useful next move is not to fix it — it is to
+enumerate every other precondition in that same loop and check them all.

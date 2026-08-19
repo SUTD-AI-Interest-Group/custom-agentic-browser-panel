@@ -41,6 +41,69 @@ and hoping.
 prompt-injected.** This policy is the entire security model for this feature, so
 it is kept pure and it is tested like it matters.
 
+## The policy checks the request. A redirect happens after.
+
+`browsePolicy.ts` decides whether an action is safe before the page is touched —
+but it only ever sees the target the model *asked for*: a click's `el.href`, an
+explicit `navigate`'s `url`. It has no way to see where a redirect actually
+lands, because Chrome follows an HTTP redirect transparently and the extension
+declares no `webNavigation`/`webRequest` permission to intercept the hop. A
+`click` on an `<a href>` or a `navigate` action can therefore land the tab
+somewhere the policy never approved: a public URL that 302s to
+`169.254.169.254`, a LAN admin panel, or `localhost:<port>` — and the landed
+page would be scraped into the notebook and reported to the user under the
+original, safe-looking URL (`19412c7`).
+
+The fix that shipped documents its own false starts rather than hiding them.
+Re-checking the tab's URL once navigation completes was tried first, through an
+intermediate helper the commit's own review history calls `checkLandedUrl` —
+and it failed open on a URL it couldn't determine, silently waving a navigation
+through whenever `chrome.tabs.get` itself hiccuped. Fixing *that* still left a
+race: `renderPage` (the render escalation this page and [Deep
+Research](Deep-Research) both drive through the same leased tab) scrolls and
+sleeps 900ms after the check, to let lazy content load — and a page that passed
+the check a moment earlier can redirect itself inside that window with a
+delayed `location.href = ...`. Check-then-read is racy no matter how short the
+gap between the two calls.
+
+The fix that actually holds has no gap to race, because checking and reading
+are the same call. `injExtractReadable` — the function injected into the page
+to pull its readable text — now returns `location.href` alongside the content,
+both captured in the same synchronous page-world execution. That's what gets
+validated, never a URL sampled before or after. `observe()` (`researchBrowse.ts`)
+applies the identical rule to its own two injections — `snapshotPage`'s element
+registry and `readReadableText`'s excerpt — and refuses outright if the two
+disagree, because elements pulled from one page and text pulled from another is
+a wrong-URL citation even when both pages are individually public.
+
+`navigateAndWait`'s own post-navigation check survives, demoted: it's now
+documented as a fast path allowed to be optimistic (falling back to the
+*requested* URL, not refusing outright, when `chrome.tabs.get` itself fails)
+precisely *because* the atomic check downstream is what actually closes the
+hole. The two are written to be read and changed together — weaken the atomic
+check without noticing the fast path depends on it, and the race reopens. The
+regression test names the exact bug it reproduces:
+`TOCTOU: renderPage refuses when the page redirects DURING the scroll/settle
+window, after navigateAndWait already passed` (`researchRender.test.ts`). None
+of the previous suite could have caught this — every mock returned one static
+URL, so the failing state (safe at check-time, unsafe at read-time) was
+unrepresentable until the tests were rewritten to stage a *changing* URL across
+successive injections.
+
+One more property is what makes `location.href` trustworthy here at all: every
+injected function on this surface runs with no `world` argument (the default,
+isolated world — never the page's own JS realm) and no `allFrames` (top frame
+only). A page's own script cannot shadow `location`, and an iframe's URL is
+never what gets checked. (`captureVisibleTab` *does* composite cross-origin
+iframe content that no top-frame check can see — which is why the render
+escalation's screenshot mode never shipped; see [Deep Research](Deep-Research).)
+
+The same commit closed an unrelated gap on the wider research surface:
+`harvestImages` (behind the `SearchImages`/`HarvestImages` tools, called by the
+main gather loop rather than the browse sub-agent) had no `isFetchableUrl`
+guard on its request at all — the one network path on the whole surface that
+lacked one. See [Deep Research](Deep-Research) for that side of the fix.
+
 ## A sub-agent, so the page walk doesn't poison the research
 
 `BrowseSite` runs a **nested sub-agent** (`browseAgent.ts`) in its own context,

@@ -84,6 +84,14 @@ only bundle archaeology (grep the minified output for the fix) settled it. Bump
 the version on every meaningful build; humans need to know which build they're
 arguing with.
 
+**`tsc` cannot see execution-order hazards.** A watchdog's mutex lock was
+declared as a module-scope `let`, read by code that runs at import time in
+`background.ts` — the service-worker entry point. A `let` sits in its temporal
+dead zone until its own initializer line runs; referencing it before that
+throws during module evaluation, which kills the service worker outright and
+takes the extension with it. It typechecks perfectly clean: `tsc` verifies
+types, not the order your module actually executes in.
+
 ## On process
 
 **Design that cannot say no is paperwork.** A third of our commits produced no
@@ -106,10 +114,49 @@ paths onto one predicate immediately surfaced a bug that had been in the origina
 for its entire life: `svg.tagName` is `'svg'`, not `'SVG'` — so every inline-SVG
 chart on the web had been invisible.
 
+**A review that executes something finds real bugs; a review that reads the diff
+finds none.** A jsdom re-run of the actual injected `domIndex` function — not a
+description of it — found the sensitive-field regex missing every label source
+but `name`/`id`. A reviewer who *built* a malicious `.xlsx` and ran it through the
+real parser found a path-based worksheet guard that an unanchored parser routed
+straight around. A Playwright session against real Chromium, with a local HTTP
+listener as ground truth, found `RunCode` completely dead — reasoning about the
+CSP from the code predicted the opposite of what Chromium actually enforced. None
+of these are visible to a reviewer reading the diff and reasoning about what
+"should" happen.
+
+**Mutation testing proves a test catches the bug you knew about — not that the
+harness can express the one next to it.** The research browser's SSRF fix was
+mutation-verified by its own author and still shipped a TOCTOU: every mock in the
+existing suite returned one static URL, so "the URL changes between the check and
+the read" had no fixture able to represent it. Ask what state your fixtures
+*cannot* produce, not just whether your tests catch what they can.
+
+**A test can name a cross-file invariant while only exercising one side of it.**
+`pageControl.test.ts` had a case titled "flags the full committing-name
+vocabulary, mirroring browsePolicy intent," listing both files' terms, and it
+passed continuously — because it only ever drove `pageControl`'s own copy.
+`browsePolicy`'s copy had silently missed two of those terms for as long as the
+file existed. The test was worse than no test: it made a parity that didn't exist
+look verified.
+
+**Hardening can silently disable the thing it's protecting.** At some point
+`sandbox-exec.html`'s CSP was tightened without `wasm-unsafe-eval`, and QuickJS
+simply stopped instantiating — every `RunCode` call failed with "engine not
+initialized." The entire test suite kept passing, because Vitest runs the same
+engine in Node, where no CSP exists at all — the one environment that enforces
+the policy was the one nothing was exercising.
+
 **A check performed once at the start of a loop is not a check.** `AutofillForm`
 verified the page origin, then typed your name, email, and address field by field
 without looking again. For a browser agent, "the page changed under you" is not an
-edge case.
+edge case. We got a version of this wrong twice: `AutofillForm` (and `ControlPage`
+alongside it) later turned out to check whether the human was still *watching* —
+`isForeground` — exactly once, before the approval card was even shown, ignoring
+that the card sits open for as long as the human takes to react. Tab away, then
+click Allow on autopilot, and the action fires against a tab nobody is watching.
+Different signal, same shape of gap: a check placed ahead of something you don't
+control isn't protecting the moment that matters.
 
 **When your bug writes to durable storage, fixing the writer is only half the fix.**
 A nested `undefined` in a tool result permanently poisoned saved conversations —

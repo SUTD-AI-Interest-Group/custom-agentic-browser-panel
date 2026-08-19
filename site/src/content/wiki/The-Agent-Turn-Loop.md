@@ -24,7 +24,7 @@ boundary was drawn precisely, and we've held it.
 
 ---
 
-## Three bugs that taught us how the SDK actually behaves
+## Four bugs that taught us how the SDK actually behaves
 
 Each of these is the kind of bug you cannot design your way out of. You have to
 run the thing.
@@ -100,6 +100,38 @@ exactly right, all now locked down by tests in `agent.test.ts`:
 
 That last one is the kind of detail that only shows up when you write the
 adversarial test.
+
+### 4. Tool order matters, and `activeTools` doesn't control it
+
+`c549e07` added [Anthropic prompt
+caching](Providers-and-Reasoning#prompt-caching-anthropic-only), which needs
+every step *after* a `GetTool` load to send the exact same tool array as the
+step that loaded it — Anthropic's cache is a byte-for-byte prefix match, so
+growing `activeNames` mid-turn has to be a strict **append**, never a
+reorder.
+
+`activeTools` doesn't give you that for free. The AI SDK's own filter —
+`filterActiveTools`/`orderToolEntries` in the `ai` package — walks the *full*
+ToolSet's fixed object-key order (whatever order `createAgentTools()` happens
+to list its tools in) and uses the `activeTools` array purely as a membership
+test, discarding the order it was given entirely. A tool loaded
+chronologically *second* but sorting *before* a chronologically-first tool in
+that fixed key order renders **ahead** of it on the wire — a silent reorder,
+not an append, invalidating every cache prefix from that step on.
+
+The fix: `prepareStep` now pins wire order explicitly via the AI SDK v7
+`toolOrder` field, set to the same array as `activeTools`. `Checkpoint` —
+permanently active from step 1, never removed — moved to a **fixed early
+slot** instead of being appended after the (growing) dynamic list, so a new
+tool loading doesn't push it back a slot every time. The regression test in
+`agent.test.ts` is deliberately adversarial: a tool named `Beta` sorts before
+`Zebra` in the ToolSet's own key order, but the script loads `Zebra` first —
+proving the fix holds to load order and doesn't quietly fall back to key
+order under the hood.
+
+This doesn't change what the model can call, only the order its schema is
+transmitted in — but for a cache that only credits an exact prefix, order is
+data.
 
 ---
 
