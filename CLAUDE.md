@@ -31,7 +31,7 @@ Load the extension: `chrome://extensions` → Developer mode → Load unpacked �
 
 ## Verifying a change
 
-There is a growing **Vitest** suite (`npm test`, or `npm run test:watch`) — 104 `*.test.ts` files (~1,100 tests) sitting beside the pure, Chrome-independent modules they cover (tool discovery, provider profiles, screenshot/stitch planning, browse policy, region indexing, math repair, citations, the approval queue, the sandbox CSP, …). Add unit tests for new pure logic. Most of the codebase is Chrome-coupled, though: to confirm a change works end to end, run `npm run build`, reload the unpacked extension in `chrome://extensions`, then open the side panel and exercise the affected flow. The `/verify-extension` skill runs this end to end.
+There is a growing **Vitest** suite (`npm test`, or `npm run test:watch`) — 136 `*.test.ts` files (~1,800 tests) sitting beside the pure, Chrome-independent modules they cover (tool discovery, provider profiles, screenshot/stitch planning, browse policy, region indexing, math repair, citations, the approval queue, the sandbox CSP, …). Add unit tests for new pure logic. Most of the codebase is Chrome-coupled, though: to confirm a change works end to end, run `npm run build`, reload the unpacked extension in `chrome://extensions`, then open the side panel and exercise the affected flow. The `/verify-extension` skill runs this end to end.
 
 ## Code style
 

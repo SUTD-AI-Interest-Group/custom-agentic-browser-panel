@@ -1,11 +1,17 @@
 # Chrome Web Store Listing — Lychee AI
 
-> Last Updated: 2026-08-03 · Manifest version 0.3.0 · **Status: 0.3.0 is an update
-> to a published listing**
+> Last Updated: 2026-08-20 · Manifest version 0.4.0 · **Status: 0.4.0 is packaged,
+> not yet submitted**
 >
 > **Item ID:** `jijmdjncddemapjkbidjdbfbjmonagpn` ·
 > [listing](https://chromewebstore.google.com/detail/jijmdjncddemapjkbidjdbfbjmonagpn)
-> · published as `angkahshin`, v0.2.0, live since 2026-08-01.
+> · published as `angkahshin`. **Live on the store: 0.3.0, published 2026-08-04.**
+>
+> ⚠️ **This status line is written before a submission and is therefore wrong the
+> moment one succeeds.** It sat at "0.3.0 is an update to a published listing" for
+> sixteen days after 0.3.0 went live, so the repo disagreed with the store about
+> which version users were running. Update this line and the Version History table
+> *when the dashboard says Published*, not when the ZIP is built.
 >
 > This ID is load-bearing beyond the listing: MCP OAuth redirects resolve to
 > `https://jijmdjncddemapjkbidjdbfbjmonagpn.chromiumapp.org/`, so an unpacked build
@@ -44,13 +50,13 @@ WORKS WITH THE PAGE IN FRONT OF YOU
 Ask about the article you're reading, and Lychee reads it. Ask it to pull the pricing table out of a page, and you get clean structured data. Open a PDF and ask questions about page 40. Point at a chart and Lychee looks at it. It can read other open tabs when you ask, so you can compare two products side by side without copying anything.
 
 BRING YOUR OWN FILES
-Drag an image, a PDF, or a text file straight into the message box, paste a screenshot from your clipboard, or pick one with the paperclip. Ask about a chart someone sent you, a contract you downloaded, or a log file, without uploading it anywhere first.
+Drag an image, a PDF, a Word document, a spreadsheet, a slide deck, or a text file straight into the message box, paste a screenshot from your clipboard, or pick one with the paperclip. Ask about a chart someone sent you, a contract you downloaded, or a log file, without uploading it anywhere first.
 
 A CHAT PER TAB
 Each tab keeps its own conversation, so switching tabs no longer drops you into an unrelated thread. A chat you walk away from carries on working in the background and tells you when it has finished or needs your permission, and any past chat can be reopened on any tab.
 
 LET IT DRIVE, WHEN YOU SAY SO
-Lychee can click, type, scroll, and fill in forms for you. Every session starts with your explicit approval, you watch each step happen on the page, and anything you can't take back — submitting a form, leaving for another site, touching a password or payment field — stops and asks you again first. Nothing is submitted on your behalf without a confirmation.
+Lychee can click, type, scroll, and fill in forms for you. Every session starts with your explicit approval, you watch each step happen on the page, and anything you can't take back — submitting a form, leaving for another site, touching a password or payment field — stops and asks you again first. Nothing is submitted on your behalf without a confirmation. When it is done you get a list of exactly what it changed on the page, and a button to put it back.
 
 TIDY UP YOUR TABS
 Ask Lychee what you have open and it reads a one-line gist of each tab instead of loading them all, so it can tell you which forty tabs are actually the same three projects. It can then sort them into named groups or close the ones you are done with — always showing you the exact list of tabs first, never touching the tab you are on or a pinned one, and keeping the last batch it closed so you can put them back.
@@ -223,10 +229,13 @@ the window, Quartz `CGEvent`s type into the panel and click the approval cards, 
 Paste each cell into the matching field in the Developer Dashboard. Each one names
 the user-facing feature that requires it.
 
-**0.3.0 changes nothing in this table.** The permission set is identical to the
-published 0.2.0 — the only manifest change since is an added
-`content_security_policy` entry, which *narrows* what extension pages may load.
-These justifications carry over untouched.
+**0.4.0 changes nothing in this table.** `public/manifest.json` differs from the
+published 0.3.0 in the version string and nothing else — `git diff
+ed79e6d..HEAD -- public/manifest.json` (0.3.0's release commit) reports the
+version line alone. No
+permission is added, so this update avoids both the extra permission-change
+scrutiny and the disable-until-re-accepted behaviour a newly *required* permission
+inflicts on every existing install. These justifications carry over untouched.
 
 | Permission | Type | Justification |
 |------------|------|---------------|
@@ -283,7 +292,7 @@ receives no data and operates no server.
 | Web history | Optional — only if the user enables browsing insights and grants the permission | Yes — the matching results are included in the request to the user's provider when they ask | Answering questions about pages the user visited | No |
 | User activity | Yes — which pages the user asks the assistant to read or act on, and, when the user asks about their open tabs, the title, URL, and a short self-description of each tab in that window | Yes — to the user's configured AI provider | Carrying out the user's request on that page; grouping or closing tabs the user asked to tidy | No |
 | Website content | Yes — text, structure, and screenshots of pages the user asks about | Yes — to the user's configured AI provider | The assistant cannot summarise or act on a page it is not shown | No |
-| Files the user attaches | Yes — images, PDFs, and text files the user drags in, pastes, or picks with the paperclip, stored on device so the chat still renders them when reopened | Yes — to the user's configured AI provider | The user attached the file in order to ask about it | No |
+| Files the user attaches | Yes — images, PDFs, text files, and office documents (Word, PowerPoint, Excel, OpenDocument, RTF, EPUB) the user drags in, pastes, or picks with the paperclip, stored on device so the chat still renders them when reopened | Yes — to the user's configured AI provider, as rendered pages or extracted text | The user attached the file in order to ask about it | No |
 
 **Not used:** `chrome.storage.sync` — nothing is uploaded to the user's Google
 account. No analytics, telemetry, crash reporting, or advertising SDK of any kind
@@ -316,7 +325,7 @@ https://lychee-ai.netlify.app/privacy
 generated from `PRIVACY.md` by `site/scripts/sync-content.mjs`, so the policy the
 store links to and the policy in the repo cannot drift apart.
 
-⚠️ **0.3.0 changes the policy, so this page must be redeployed before you submit.**
+⚠️ **0.4.0 changes the policy, so this page must be redeployed before you submit.**
 Editing `PRIVACY.md` is not sufficient on its own: run `npm run sync:content` in
 `site/` (done — `site/src/content/privacy.md` is regenerated and committed), then
 deploy the site. A listing whose linked policy still describes the previous
@@ -402,24 +411,28 @@ points somewhere else looks like a mismatch to a reviewer.
 
 ## Submission Process
 
-### Publishing an update — this is what 0.3.0 is
+### Publishing an update — this is what 0.4.0 is
 
 The account steps below are already done. For an update the flow is much shorter:
 
 1. **The version must increase.** The dashboard refuses a package whose manifest
-   version is not higher than the published one. 0.3.0 > 0.2.0 ✅
+   version is not higher than the published one. 0.4.0 > 0.3.0 ✅
 2. **Upload the new ZIP** under Package → Upload new package. Listing copy,
    screenshots, and privacy answers all carry over — edit only what changed.
 3. **Re-check the Privacy tab even though it is prefilled.** The data-use answers
-   persist from 0.2.0, and 0.3.0 adds a data type (files the user attaches). An
-   update whose disclosures no longer match the code is a rejection, and nothing in
-   the dashboard prompts you to revisit them. This is the single easiest way to
+   persist from 0.3.0, and 0.4.0 *widens* an existing data type: "files the user
+   attaches" now includes Word, PowerPoint, Excel, OpenDocument, RTF and EPUB
+   documents, which shipped on 2026-08-08 and went undisclosed until this release.
+   An update whose disclosures no longer match the code is a rejection, and nothing
+   in the dashboard prompts you to revisit them. This is the single easiest way to
    fail an update that would otherwise sail through.
-4. **No new permissions in 0.3.0**, so this update avoids both the extra
+4. **No new permissions in 0.4.0**, so this update avoids both the extra
    permission-change scrutiny and the disable-until-re-accepted behaviour that a
    newly *required* permission inflicts on every existing install.
-5. **Submit for review.** The published 0.2.0 keeps serving users throughout; a
+5. **Submit for review.** The published 0.3.0 keeps serving users throughout; a
    rejected update does not take the live version down.
+6. **When the dashboard says Published**, update the status line at the top of this
+   file and flip the 0.4.0 Version History row from *Preparing* to the publish date.
 
 Update reviews are usually faster than the first, but the same slow-down triggers
 apply — `<all_urls>`, sensitive permissions, code volume — so budget days, not hours.
@@ -473,7 +486,8 @@ no response, that is the point to contact developer support.
 
 | Version | Date | Changes | Status |
 |---------|------|---------|--------|
-| 0.3.0 | 2026-08-03 | Update. Prompt attachments — drag, paste, or pick images, PDFs, and text files into the composer. A separate chat per tab, with background chats that keep working and announce themselves when they finish or need permission. Every stored secret encrypted at rest, with a live status indicator in Settings. A whole-codebase adversarial security review closing defects across tool authorisation, browse policy, service-worker lifetime, dream re-entrancy, and page-control classification. **No permission changes.** | Preparing |
+| 0.4.0 | 2026-08-20 | Update. Attach Word, PowerPoint, Excel, OpenDocument, RTF and EPUB documents alongside images, PDFs and text. Token counts and running cost on every reply. Long conversations fold older turns into a summary instead of dying once the model's context fills. A turn interrupted by closing the panel can be resumed. Page control now keeps a list of what it changed, with undo. Opt-in local turn traces for debugging. Memory consolidation moved off the background worker so a long pass can finish. A second whole-codebase adversarial audit closing four criticals — MCP OAuth token replay, two SSRF holes in unattended research, half-blind sensitive-field detection, and a spreadsheet memory-exhaustion path — plus `RunCode`, which had never once worked in a real browser. **No permission changes.** | Preparing |
+| 0.3.0 | 2026-08-03 | Update. Prompt attachments — drag, paste, or pick images, PDFs, and text files into the composer. A separate chat per tab, with background chats that keep working and announce themselves when they finish or need permission. Every stored secret encrypted at rest, with a live status indicator in Settings. A whole-codebase adversarial security review closing defects across tool authorisation, browse policy, service-worker lifetime, dream re-entrancy, and page-control classification. **No permission changes.** | ✅ Published 2026-08-04 |
 | 0.2.0 | 2026-07-28 | First store submission. Side-panel assistant with bring-your-own-model support, page reading, approved page control, tab organising (grouping and closing, with undo), background research with citations, long-term memory, skills, MCP tool servers, and sandboxed code execution. | ✅ Published 2026-08-01 — passed review first time |
 
 ---
@@ -602,7 +616,8 @@ email and we will provide one.
 
 ### Rejection history
 
-None. 0.2.0 passed review first time and published on 2026-08-01.
+None. 0.2.0 passed review first time and published on 2026-08-01; 0.3.0 passed as
+an update and published on 2026-08-04.
 
 | Date | Reason | Fix Applied | Resubmitted |
 |------|--------|-------------|-------------|
