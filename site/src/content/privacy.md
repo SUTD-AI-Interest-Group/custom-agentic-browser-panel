@@ -1,7 +1,7 @@
 # Privacy Policy for Lychee AI
 
-**Last updated: 3 August 2026**
-**Applies to: Lychee AI Chrome Extension, version 0.3.0 and later**
+**Last updated: 20 August 2026**
+**Applies to: Lychee AI Chrome Extension, version 0.4.0 and later**
 
 Lychee AI is a Chrome side-panel AI assistant. It has **no backend server of its
 own**. Everything it stores stays on your computer, and everything it sends goes
@@ -32,7 +32,8 @@ sync storage, so none of this is uploaded to your Google account.
 | Your conversation history | Lets you reopen past chats |
 | Long-term memories, including any personal profile details you save (such as your name, email, or address) | Personalises replies and fills forms when you ask it to |
 | Screenshots the assistant captured | Shown in the panel so you can see what the assistant looked at |
-| Files you attach to a message (images, PDFs, text files) | Kept so the attachment still displays when you reopen that chat |
+| Files you attach to a message (images, PDFs, text files, and documents such as Word, PowerPoint, Excel, OpenDocument, RTF and EPUB) | Kept so the attachment still displays when you reopen that chat |
+| A step-by-step trace of a turn, if you switch traces on | Lets you see locally what the assistant did and how long it took. Off by default, stored only on your device, and never transmitted anywhere |
 | Generated artifacts, tables and cards | Rendered in the conversation |
 | Skills you write or import | Reusable instructions you invoke by name |
 
@@ -57,8 +58,10 @@ LM Studio). That request can contain:
 
 - your messages and the conversation so far,
 - **the text, structure, and screenshots of web pages you ask it to read or act on**,
-- any file you attach to a message — an image, a PDF, or a text file you drag in,
-  paste, or pick with the paperclip,
+- any file you attach to a message — an image, a PDF, a text file, or a document
+  such as a Word file, spreadsheet or slide deck — that you drag in, paste, or pick
+  with the paperclip. Documents are converted to text on your device and it is that
+  text, not the original file, that is sent,
 - when you ask about your open tabs, the title, address, and a one-line
   self-description of each tab in that window,
 - relevant saved memories,
@@ -111,6 +114,12 @@ Lychee AI can send conversation traces to **Langfuse** for debugging, using *you
 own* Langfuse account and keys. This is **disabled by default**. Nothing is sent,
 and no key is stored, unless you explicitly enable it and enter your credentials.
 See the [Langfuse privacy policy](https://langfuse.com/privacy).
+
+If you only want to see what the assistant did, **Settings → General → turn traces**
+records the same kind of step-by-step detail entirely on your device and sends
+nothing anywhere. It is also off by default, and it deliberately never records the
+*inputs* a tool was called with, so a password typed into a page during a page-control
+session cannot end up in the trace.
 
 ---
 
