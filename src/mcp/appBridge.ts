@@ -100,7 +100,7 @@ export async function handleAppMessage(msg: unknown, host: AppBridgeHost): Promi
           // pure (no chrome.*). It exists so a human debugging an app widget can
           // tell which build they're arguing with, which only works if it is
           // bumped alongside manifest.json on every release.
-          hostInfo: { name: 'lychee-ai', version: '0.3.0' },
+          hostInfo: { name: 'lychee-ai', version: '0.4.0' },
           hostCapabilities: {
             openLinks: {},
             serverTools: { listChanged: false },

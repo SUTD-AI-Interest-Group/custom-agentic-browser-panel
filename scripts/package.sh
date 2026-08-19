@@ -24,6 +24,17 @@ if [ "$VERSION" != "$PKG_VERSION" ]; then
   exit 1
 fi
 
+# The MCP host announces its version to every connected app widget, so a human
+# debugging one can tell which build it is arguing with. It is a third hand-typed
+# copy of the version and it has already drifted a full release behind once
+# (fixed in 0.3.0's release commit), which nothing caught — so check it here.
+HOST_VERSION=$(sed -n "s/.*hostInfo: { name: 'lychee-ai', version: '\([^']*\)' }.*/\1/p" src/mcp/appBridge.ts)
+if [ "$HOST_VERSION" != "$VERSION" ]; then
+  echo "✗ version mismatch: manifest.json is $VERSION, src/mcp/appBridge.ts hostInfo is ${HOST_VERSION:-<unreadable>}" >&2
+  echo "  Bump it too — MCP app widgets report this version when something misbehaves." >&2
+  exit 1
+fi
+
 echo "→ Building Lychee AI v${VERSION} (typecheck + panel build + sandbox build)"
 npm run build
 

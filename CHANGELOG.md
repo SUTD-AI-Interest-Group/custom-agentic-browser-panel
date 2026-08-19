@@ -17,6 +17,31 @@ for that history.
 
 ---
 
+## [0.4.0] — 2026-08-20 — *Chrome Web Store update*
+
+The third store release, and the first whose headline is durability rather than reach. A turn
+can now be *seen* (token counts, cost, an optional local step trace), *survived* (a long chat
+folds instead of dying on a context-length rejection; a turn interrupted by closing the panel
+can be resumed), and *taken back* (page control keeps a list of what it changed and offers
+undo). Alongside that, the composer accepts office documents, memory consolidation moved
+somewhere it can actually finish, and a second whole-codebase adversarial audit closed four
+criticals — including a shipped feature, `RunCode`, that had never once run in a real browser.
+
+**No permission changes.** `public/manifest.json` differs from the published `0.3.0` in the
+version string and nothing else, so existing installs update without being disabled for a
+re-grant.
+
+**One disclosure caught up with the code.** Office-document attachments shipped on 2026-08-08
+and were not reflected in `PRIVACY.md` or the store listing's data-use table, both of which
+still said "images, PDFs, and text files". Corrected in this release, along with the composer's
+own file picker, whose `accept` filter had never listed the office formats — dragging a `.docx`
+in worked, but the **+** button's dialog hid it.
+
+Contents: the four milestones below dated 2026-08-08, 2026-08-09, 2026-08-10 and 2026-08-11, in
+full.
+
+---
+
 ## [2026-08-11] — Turns you can see, survive, and take back
 
 Five features around one theme: a turn should be legible, survivable, and reversible.
