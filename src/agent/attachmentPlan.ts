@@ -97,7 +97,7 @@ export function classifyIncomingFile(
       ? { error: `"${name}" is larger than the 2 MB text-file limit.` }
       : { kind: 'text' }
   }
-  return { error: `"${name}" is not a supported type (images, PDFs, and text files only).` }
+  return { error: `"${name}" is not a supported type (images, PDFs, documents, and text files only).` }
 }
 
 /**

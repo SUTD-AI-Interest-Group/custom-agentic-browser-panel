@@ -92,6 +92,7 @@ import { isContextOverflow } from '../agent/resilience'
 const COMPACT_AT_FRACTION = 0.75
 import { getActiveTab, listOpenTabs, openPdfAtPage, readTabContent, type TabContent, type TabSummary } from '../platform/tabs'
 import { looksLikePdfUrl } from '../platform/pdfText'
+import { OFFICE_ACCEPT } from '../platform/officeText'
 import { loadPdf } from '../platform/pdf'
 import { createAgentTools, type ApprovalRequest, type PageControlGate } from '../tools/tools'
 import type { ChatStatus } from './tabChats'
@@ -4133,7 +4134,7 @@ export default function Chat({
                 sitting in the .composer-btns cluster on the right. */}
             <button
               className="attach-btn"
-              title="Attach files (images, PDFs, text)"
+              title="Attach files (images, PDFs, documents, text)"
               aria-label="Attach files"
               disabled={!selected || capturing}
               onClick={() => fileInputRef.current?.click()}
@@ -4144,7 +4145,7 @@ export default function Chat({
               ref={fileInputRef}
               type="file"
               multiple
-              accept="image/png,image/jpeg,image/webp,image/gif,application/pdf,text/*,.md,.markdown,.csv,.tsv,.json,.jsonl,.yaml,.yml,.xml,.html,.css,.js,.jsx,.ts,.tsx,.py,.rb,.go,.rs,.java,.kt,.c,.h,.cpp,.hpp,.sh,.toml,.ini,.log,.sql"
+              accept={`image/png,image/jpeg,image/webp,image/gif,application/pdf,${OFFICE_ACCEPT},text/*,.md,.markdown,.csv,.tsv,.json,.jsonl,.yaml,.yml,.xml,.html,.css,.js,.jsx,.ts,.tsx,.py,.rb,.go,.rs,.java,.kt,.c,.h,.cpp,.hpp,.sh,.toml,.ini,.log,.sql`}
               style={{ display: 'none' }}
               onChange={(e) => {
                 const files = Array.from(e.target.files ?? [])

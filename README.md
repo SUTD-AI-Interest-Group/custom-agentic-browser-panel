@@ -93,7 +93,8 @@ is why no proxy server is needed.
   the cursor becomes a sniper that snaps to the component under it, click to
   capture or drag for an arbitrary area. The shot lands as a thumbnail on the
   composer and rides along as an image part of your next message.
-- **Attach files** — images, PDFs, and text files — by dragging them onto the
+- **Attach files** — images, PDFs, office documents (Word, PowerPoint, Excel,
+  OpenDocument, RTF, EPUB) and text files — by dragging them onto the
   panel, pasting into the composer, or the composer's **+** button. Delivery adapts to
   the provider: native PDF parts on OpenAI/Anthropic, rendered page images on
   vision-capable models elsewhere, extracted text for text-only models.

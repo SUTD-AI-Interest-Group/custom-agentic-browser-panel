@@ -190,16 +190,27 @@ export interface FormattedDoc {
   note: string | null
 }
 
-const EXT_FORMATS: [RegExp, OfficeFormat][] = [
-  [/\.docx$/i, 'docx'],
-  [/\.pptx$/i, 'pptx'],
-  [/\.xlsx$/i, 'xlsx'],
-  [/\.odt$/i, 'odt'],
-  [/\.odp$/i, 'odp'],
-  [/\.ods$/i, 'ods'],
-  [/\.rtf$/i, 'rtf'],
-  [/\.epub$/i, 'epub'],
+/**
+ * The extensions we parse, as plain strings, so the same list can drive both
+ * `officeFormatFor`'s matching and the composer's file-picker filter. They were
+ * previously only ever regexes, which is why the picker's `accept` list was
+ * hand-written and silently omitted every office format for a whole release:
+ * dragging a .docx in worked, but the "+" button's dialog would not show it.
+ */
+const OFFICE_EXTENSIONS: [string, OfficeFormat][] = [
+  ['.docx', 'docx'],
+  ['.pptx', 'pptx'],
+  ['.xlsx', 'xlsx'],
+  ['.odt', 'odt'],
+  ['.odp', 'odp'],
+  ['.ods', 'ods'],
+  ['.rtf', 'rtf'],
+  ['.epub', 'epub'],
 ]
+
+const EXT_FORMATS: [RegExp, OfficeFormat][] = OFFICE_EXTENSIONS.map(
+  ([ext, format]) => [new RegExp(`\\${ext}$`, 'i'), format],
+)
 
 const MIME_FORMATS: Record<string, OfficeFormat> = {
   'application/vnd.openxmlformats-officedocument.wordprocessingml.document': 'docx',
@@ -212,6 +223,18 @@ const MIME_FORMATS: Record<string, OfficeFormat> = {
   'text/rtf': 'rtf',
   'application/epub+zip': 'epub',
 }
+
+/**
+ * The `accept` fragment an `<input type="file">` needs to offer office
+ * documents, derived from the very tables `officeFormatFor` matches on so the
+ * picker can never again advertise a different set from the one ingestion
+ * actually accepts. Both halves are needed: some platforms filter the dialog by
+ * extension and some by MIME type.
+ */
+export const OFFICE_ACCEPT: string = [
+  ...OFFICE_EXTENSIONS.map(([ext]) => ext),
+  ...Object.keys(MIME_FORMATS),
+].join(',')
 
 // Binary Office 97 formats. officeParser cannot read them at all, so they get a
 // dedicated message — "unsupported type" is baffling when .docx works.

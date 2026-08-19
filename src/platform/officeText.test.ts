@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import {
+  OFFICE_ACCEPT,
   officeFormatFor,
   isLegacyOfficeName,
   formatProse,
@@ -49,6 +50,27 @@ describe('officeFormatFor', () => {
     expect(officeFormatFor('a.csv', 'text/csv')).toBeNull()
     expect(officeFormatFor('a.md', '')).toBeNull()
     expect(officeFormatFor('a.html', 'text/html')).toBeNull()
+  })
+})
+
+describe('OFFICE_ACCEPT', () => {
+  it('offers every extension the parser accepts', () => {
+    for (const ext of ['.docx', '.pptx', '.xlsx', '.odt', '.odp', '.ods', '.rtf', '.epub']) {
+      expect(OFFICE_ACCEPT.split(',')).toContain(ext)
+    }
+  })
+
+  it('offers the MIME types too — some platforms filter the dialog by type, not name', () => {
+    expect(OFFICE_ACCEPT.split(',')).toContain('application/epub+zip')
+    expect(OFFICE_ACCEPT.split(',')).toContain('application/vnd.oasis.opendocument.text')
+  })
+
+  // EXT_FORMATS builds its regexes from the same string list this is derived
+  // from. Escaping is easy to lose in that construction, and an unescaped dot
+  // is a wildcard, which would quietly widen every format match.
+  it('the extension patterns treat the dot literally', () => {
+    expect(officeFormatFor('reportXdocx', '')).toBeNull()
+    expect(officeFormatFor('report.docx', '')).toBe('docx')
   })
 })
 
