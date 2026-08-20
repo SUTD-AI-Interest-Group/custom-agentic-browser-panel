@@ -92,6 +92,7 @@ import { isContextOverflow } from '../agent/resilience'
  */
 const COMPACT_AT_FRACTION = 0.75
 import { getActiveTab, listOpenTabs, openPdfAtPage, readTabContent, type TabContent, type TabSummary } from '../platform/tabs'
+import { isTabShowing, splitPartnerOf } from '../platform/splitView'
 import { OFFICE_ACCEPT } from '../platform/officeText'
 import { loadPdf } from '../platform/pdf'
 import { createAgentTools, type ApprovalRequest, type PageControlGate } from '../tools/tools'
@@ -3053,9 +3054,16 @@ export default function Chat({
               // turn the user walked away from keeps acting on the page they
               // asked about. Falls back to the active tab for a chat with no
               // binding yet (the very first turn of a freshly opened panel).
+              // `pane: 'partner'` is how the agent reaches the OTHER half of a
+              // split view. It resolves off the bound tab rather than off the
+              // focused one, so which pane the user happens to be clicking in
+              // never changes what "partner" means mid-turn.
               resolveTab: boundTabId === undefined
                 ? undefined
-                : () => chrome.tabs.get(boundTabId).catch(() => undefined),
+                : async (pane) => {
+                    const tab = await chrome.tabs.get(boundTabId).catch(() => undefined)
+                    return pane === 'partner' ? await splitPartnerOf(tab) : tab
+                  },
               park: (reason) => { parked = reason },
             },
           ),
@@ -3484,8 +3492,10 @@ export default function Chat({
       if (cancelled) return
       try {
         const tab = await chrome.tabs.get(boundTabId)
-        const [live] = await chrome.tabs.query({ active: true, windowId: tab.windowId })
-        if (!cancelled && live?.id === boundTabId) void resumeFromPark()
+        // "Showing", not "is the active tab": in a split view the bound tab can
+        // be the half that does not hold focus and still be right in front of
+        // the user, and a turn parked on it must resume rather than sit there.
+        if (!cancelled && (await isTabShowing(tab))) void resumeFromPark()
       } catch {
         // The tab was closed while parked. Leave the chat parked rather than
         // resuming into a turn whose every page tool would fail; the transcript

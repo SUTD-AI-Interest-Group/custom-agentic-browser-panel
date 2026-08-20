@@ -15,6 +15,7 @@
 
 import { setPresenceHidden } from './presence'
 import { classifyPageAccess, fileAccessGranted } from './pageAccess'
+import { activeTabsIn, focusPaneForCapture } from './splitView'
 
 /** A finished capture: a PNG data URL and its pixel size. */
 export interface Shot {
@@ -428,11 +429,14 @@ export async function capture(
   if (tabId === undefined || windowId === undefined) throw new ShotError('No active tab to capture.')
 
   // captureVisibleTab shoots whatever is frontmost in the window, so a tab that
-  // is no longer active would silently yield someone else's page.
-  const [live] = await chrome.tabs.query({ active: true, windowId })
-  if (live?.id !== tabId) {
+  // is no longer active would silently yield someone else's page. In a split
+  // view two tabs are frontmost at once, so rather than guess which half Chrome
+  // considers "the active tab", make this one the focused pane and then shoot it
+  // (see focusPaneForCapture — within a split the user sees no change).
+  if (!(await focusPaneForCapture(tab))) {
     throw new ShotError('That tab is no longer the active tab, so it cannot be captured.')
   }
+  const live = (await activeTabsIn(windowId)).find((t) => t.id === tabId)
 
   // A local file, a chrome:// page and the Web Store all fail the injection
   // below with the same opaque manifest error. Name the real obstacle first —

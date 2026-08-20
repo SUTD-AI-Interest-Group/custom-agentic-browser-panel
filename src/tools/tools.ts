@@ -30,6 +30,7 @@ import { saveShot } from '../data/screenshots'
 import type { QueuedImage } from '../agent/agent'
 import { mountPresence, setTint, focusOn, pulse, setPresenceHidden, animateNavIntent, unmountPresence } from '../platform/presence'
 import { captureWithMarks } from '../platform/marks'
+import { focusPaneForCapture, isTabShowing, splitPartnerOf } from '../platform/splitView'
 import { createModel } from '../agent/provider'
 import { extractStructured } from '../agent/extract'
 import { getMcpManager } from '../mcp/manager'
@@ -71,9 +72,21 @@ import {
  * switch tabs, and the turn keeps going. Without a pin, its next `ReadPage`
  * would quietly describe whatever page they moved to.
  */
+/**
+ * Which half of a split view a page tool means.
+ *
+ * `focused` is the tab the chat is bound to and is the default everywhere — a
+ * tool that never mentions a pane behaves exactly as it always did. `partner` is
+ * the tab sharing its split view, which exists precisely so the user can read
+ * two pages side by side; being unable to see it is being unable to answer
+ * "compare these two". Undefined outside a split, where `partner` resolves to
+ * nothing and the tool says so.
+ */
+export type PaneTarget = 'focused' | 'partner'
+
 export interface PageTarget {
   /** Defaults to the active tab — right for any caller that isn't tab-bound. */
-  resolveTab?: () => Promise<chrome.tabs.Tab | undefined>
+  resolveTab?: (pane?: PaneTarget) => Promise<chrome.tabs.Tab | undefined>
   /**
    * Raised by a tool that cannot proceed while its tab is in the background.
    * The caller ends the turn at this step boundary and resumes it when the user
@@ -83,20 +96,21 @@ export interface PageTarget {
 }
 
 /**
- * Is this tab the one its window is currently showing? Captures and page-control
- * steps need it to be: chrome.tabs.captureVisibleTab only ever returns the
- * *active* tab's viewport, and clicking a background tab shows the user nothing.
- * Window focus is deliberately not part of the test — an unfocused window's
- * active tab still captures fine.
+ * Is this tab one of the tabs its window is currently showing? Captures and
+ * page-control steps need it to be: chrome.tabs.captureVisibleTab only ever
+ * returns an *active* tab's viewport, and clicking a background tab shows the
+ * user nothing. Window focus is deliberately not part of the test — an unfocused
+ * window's active tab still captures fine.
+ *
+ * "Showing" rather than "the active tab" because of split view: a window can
+ * display two tabs at once, and the half that does not hold focus is still very
+ * much in front of the user. This used to read `const [live] = query(...)` and
+ * compare one id, which picked arbitrarily between two equally-active tabs and
+ * parked the turn whenever it picked the wrong one — the whole turn stopping
+ * because the user glanced at the other pane. See src/platform/splitView.ts.
  */
 async function isForeground(tab: chrome.tabs.Tab): Promise<boolean> {
-  if (tab.id === undefined || tab.windowId === undefined) return false
-  try {
-    const [live] = await chrome.tabs.query({ active: true, windowId: tab.windowId })
-    return live?.id === tab.id
-  } catch {
-    return false
-  }
+  return isTabShowing(tab)
 }
 
 /**
@@ -198,8 +212,9 @@ async function lookResult(
   if (!selected || !vision || tab.id === undefined || tab.windowId === undefined) return value
   try {
     await setPresenceHidden(tab.id, true)
-    const [live] = await chrome.tabs.query({ active: true, windowId: tab.windowId })
-    if (live?.id !== tab.id) {
+    // Split view: the marks shot must come from THIS pane, so make it the focused
+    // one first rather than trusting captureVisibleTab to pick the right half.
+    if (!(await focusPaneForCapture(tab))) {
       await setPresenceHidden(tab.id, false).catch(() => {})
       return value
     }
@@ -266,7 +281,67 @@ export function createAgentTools(
   /** Which tab this turn acts on, and what to do when it isn't in front. */
   pageTarget?: PageTarget,
 ): ToolSet {
-  const resolveTab = pageTarget?.resolveTab ?? getActiveTab
+  const resolveTab: (pane?: PaneTarget) => Promise<chrome.tabs.Tab | undefined> =
+    pageTarget?.resolveTab ??
+    (async (pane) => {
+      const tab = await getActiveTab()
+      return pane === 'partner' ? await splitPartnerOf(tab) : tab
+    })
+
+  /**
+   * What a tool says when the model asked for the other split pane and there is
+   * no split. Distinct from NO_TAB_ERROR on purpose: "its tab was closed" would
+   * send the model retrying against a tab that never existed, when the real
+   * answer is simply that this window is showing one page.
+   */
+  const NO_PARTNER_PANE =
+    'This window is not split, so there is no second pane to read. Drop the `pane` argument to act on the page the user is looking at.'
+
+  /** Resolve a pane target, or the message explaining why it could not be. */
+  const resolvePane = async (pane: PaneTarget | undefined) => {
+    const tab = await resolveTab(pane)
+    if (tab?.id === undefined) {
+      return { error: pane === 'partner' ? NO_PARTNER_PANE : NO_TAB_ERROR } as const
+    }
+    return { tab } as const
+  }
+
+  /**
+   * How a pane is named on an approval card. Naming the actual host is the whole
+   * point of the card for a partner pane: the user granted "the tab you're
+   * looking at", and in a split that is two pages, so the one being read has to
+   * be identifiable before they click Allow.
+   */
+  const paneSuffix = (pane: PaneTarget | undefined, tab: chrome.tabs.Tab) =>
+    pane === 'partner' ? ` (the other split pane — ${hostLabel(tab.url ?? '')})` : ''
+
+  /**
+   * How the model finds out there is a second page on screen.
+   *
+   * Deliberately attached to a page read rather than announced in the system
+   * prompt: whether a window is split changes whenever the user drags a tab, so
+   * it is volatile context, and the system prompt is split stable/volatile for
+   * Anthropic's prompt cache (see src/ui/systemPrompt.ts) — a note that changed
+   * shape mid-conversation would either miss the cache or need threading through
+   * that whole seam. Here it costs one query on a path that was already touching
+   * the page, appears exactly when it is actionable, and is absent entirely when
+   * the window is not split. Suppressed when the model is already reading the
+   * partner, which would otherwise be told to look at the pane it is looking at.
+   */
+  const splitViewNote = async (
+    tab: chrome.tabs.Tab,
+    pane: PaneTarget | undefined,
+  ): Promise<string | undefined> => {
+    if (pane === 'partner') return undefined
+    const other = await splitPartnerOf(tab)
+    if (!other) return undefined
+    return (
+      `This window is SPLIT — the user has a second page on screen beside this one: ` +
+      `"${other.title || '(untitled)'}" (${other.url ?? ''}). ` +
+      `They can see both at once, so a question like "compare these" or "does this match that" means both pages. ` +
+      `Pass pane:"partner" to ReadPage, GetScreenshot or GetElementScreenshot to read it; the user approves it by name.`
+    )
+  }
 
   /**
    * Park the turn: this chat's tab is in the background, and the action needs it
@@ -305,9 +380,13 @@ export function createAgentTools(
     spec: { kind: 'viewport' | 'element' | 'fullpage'; region?: number; selector?: string },
     summary: string,
     reason: string,
+    pane?: PaneTarget,
   ) => {
-    const tab = await resolveTab()
-    if (tab?.id === undefined) return { error: NO_TAB_ERROR }
+    const got = await resolvePane(pane)
+    if ('error' in got) return got
+    const { tab } = got
+    if (tab.id === undefined) return { error: NO_TAB_ERROR }
+    summary += paneSuffix(pane, tab)
 
     // Checked BEFORE the approval card: asking the user to approve a capture that
     // then can't happen would spend their attention on nothing.
@@ -428,13 +507,21 @@ export function createAgentTools(
           .describe(
             'text = visible text; dom = HTML structure; elements = indexed interactive elements to act on; regions = indexed visual regions to screenshot',
           ),
+        pane: z
+          .enum(['focused', 'partner'])
+          .optional()
+          .describe(
+            'Which half of a split view to act on. Omit (or "focused") for the page the user is looking at. Use "partner" for the page in the OTHER pane when the window is split — that is how you compare, cross-reference, or copy between two side-by-side pages. The user is asked to approve the other pane by name.',
+          ),
         reason: z
           .string()
           .describe('Short reason shown to the user, e.g. "To summarize this article"'),
       }),
-      execute: async ({ mode, reason }) => {
-        const tab = await resolveTab()
-        if (tab?.id === undefined) return { error: NO_TAB_ERROR }
+      execute: async ({ mode, pane, reason }) => {
+        const got = await resolvePane(pane)
+        if ('error' in got) return got
+        const { tab } = got
+        if (tab.id === undefined) return { error: NO_TAB_ERROR }
         // Chrome renders PDFs in a plugin with no scriptable DOM — every ReadPage
         // mode would come back empty or error. Redirect the model to ReadPdf
         // before asking the user anything (this touches nothing but the tab URL,
@@ -452,7 +539,7 @@ export function createAgentTools(
           if (!open || !open.active || open.tabId !== tab.id) {
             const approved = await requestApproval({
               toolName: 'ReadPage',
-              summary: 'List the visual regions on this page (charts, tables, figures)',
+              summary: `List the visual regions on this page (charts, tables, figures)${paneSuffix(pane, tab)}`,
               reason,
             })
             if (!approved) return DENIED
@@ -463,6 +550,7 @@ export function createAgentTools(
               url: snap.url,
               title: snap.title,
               regions: snap.text,
+              splitView: await splitViewNote(tab, pane),
               note:
                 'Pass a region number to GetElementScreenshot as `region` (e.g. region: 2 for [r2]) to look at it. ' +
                 'This list is only the page\'s visual blocks — charts, tables, figures, sections. Most of the page is ' +
@@ -479,7 +567,7 @@ export function createAgentTools(
           if (!open || !open.active || open.tabId !== tab.id) {
             const approved = await requestApproval({
               toolName: 'ReadPage',
-              summary: 'Read the interactive elements on this page',
+              summary: `Read the interactive elements on this page${paneSuffix(pane, tab)}`,
               reason,
             })
             if (!approved) return DENIED
@@ -493,7 +581,7 @@ export function createAgentTools(
           if (open && open.active && open.tabId === tab.id) await setTint(tab.id, true)
           try {
             const snap = await snapshotPage(tab.id)
-            return await lookResult(tab, snap, {}, selected, visionCapable, imageQueue)
+            return await lookResult(tab, snap, { splitView: await splitViewNote(tab, pane) }, selected, visionCapable, imageQueue)
           } catch (err) {
             return { error: `Cannot read this page (${err instanceof Error ? err.message : String(err)}).` }
           }
@@ -501,13 +589,14 @@ export function createAgentTools(
         const approved = await requestApproval({
           toolName: 'ReadPage',
           summary:
-            mode === 'dom'
+            (mode === 'dom'
               ? 'Read the DOM/HTML structure of the tab you are on'
-              : 'View the tab you are currently on',
+              : 'View the tab you are currently on') + paneSuffix(pane, tab),
           reason,
         })
         if (!approved) return DENIED
-        if (mode === 'dom') return await readTabDom(tab.id, MAX_DOM_CHARS)
+        const splitView = await splitViewNote(tab, pane)
+        if (mode === 'dom') return { ...(await readTabDom(tab.id, MAX_DOM_CHARS)), splitView }
         const content = await readTabContent(tab.id)
         if ('error' in content && content.error) return content
         // The URL check above is deliberately kept to the tab's address so
@@ -527,6 +616,7 @@ export function createAgentTools(
         if (doc.kind === 'pdf-embedded') {
           return {
             ...content,
+            splitView,
             note:
               `This page has a PDF embedded in it (${doc.pdfUrl}). The text above is only the page AROUND the PDF — ` +
               'the document itself is not in it. To read the PDF, call ReadPdf with that exact url.' +
@@ -535,6 +625,7 @@ export function createAgentTools(
         }
         return {
           ...content,
+          splitView,
           tip: 'When your answer comes from a specific passage on this page, call HighlightContent with that exact text to scroll to it and mark it for the user.',
         }
       },
@@ -548,15 +639,21 @@ export function createAgentTools(
           .boolean()
           .optional()
           .describe('Capture the whole scrolled page instead of just the visible viewport. Costs several images — prefer the default.'),
+        pane: z
+          .enum(['focused', 'partner'])
+          .optional()
+          .describe(
+            'Which half of a split view to act on. Omit (or "focused") for the page the user is looking at. Use "partner" for the page in the OTHER pane when the window is split — that is how you compare, cross-reference, or copy between two side-by-side pages. The user is asked to approve the other pane by name.',
+          ),
         reason: z
           .string()
           .describe('Short reason shown to the user, e.g. "To read the revenue chart"'),
       }),
-      execute: async ({ fullPage, reason }) => {
+      execute: async ({ fullPage, pane, reason }) => {
         const summary = fullPage
           ? 'Take a screenshot of this whole page'
           : 'Take a screenshot of this page'
-        return runScreenshot('GetScreenshot', { kind: fullPage ? 'fullpage' : 'viewport' }, summary, reason)
+        return runScreenshot('GetScreenshot', { kind: fullPage ? 'fullpage' : 'viewport' }, summary, reason, pane)
       },
     }),
 
@@ -572,16 +669,23 @@ export function createAgentTools(
           .string()
           .optional()
           .describe('A CSS selector, if you have no region number.'),
+        pane: z
+          .enum(['focused', 'partner'])
+          .optional()
+          .describe(
+            'Which half of a split view to act on. Omit (or "focused") for the page the user is looking at. Use "partner" for the page in the OTHER pane when the window is split — that is how you compare, cross-reference, or copy between two side-by-side pages. The user is asked to approve the other pane by name.',
+          ),
         reason: z
           .string()
           .describe('Short reason shown to the user, e.g. "To read the revenue chart"'),
       }),
-      execute: async ({ region, selector, reason }) =>
+      execute: async ({ region, selector, pane, reason }) =>
         runScreenshot(
           'GetElementScreenshot',
           { kind: 'element', region, selector },
           'Take a screenshot of one element on this page',
           reason,
+          pane,
         ),
     }),
 

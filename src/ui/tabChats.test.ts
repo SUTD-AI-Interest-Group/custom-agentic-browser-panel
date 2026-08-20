@@ -97,6 +97,64 @@ test('resolveBinding mints a fresh chat for an unknown tab', () => {
   expect(resolveBinding(MAP, 99, 'https://github.com/foo')).toEqual({ kind: 'fresh' })
 })
 
+// Split view: the pane beside this one already has a chat, so this pane joins it
+// rather than minting its own. Without this, focusing the other half of a split
+// looked exactly like switching to an unknown tab.
+test('resolveBinding adopts the split partner chat for an unbound pane', () => {
+  expect(
+    resolveBinding(MAP, 99, 'https://news.example.com/a', { tabId: 7, url: 'https://github.com/x' }),
+  ).toEqual({ kind: 'adopted', conversationId: 'conv-a' })
+})
+
+// The adopting pane's own URL is irrelevant — a split exists precisely so two
+// unrelated pages can be looked at together, so the shared chat must survive
+// them being on different origins.
+test('resolveBinding adopts across origins', () => {
+  expect(
+    resolveBinding(MAP, 99, 'file:///tmp/notes.txt', { tabId: 7, url: 'https://github.com/x' }),
+  ).toEqual({ kind: 'adopted', conversationId: 'conv-a' })
+})
+
+// Own binding wins: two tabs that each had a chat before Chrome paired them into
+// a split keep them. Adoption is for a pane with nothing to lose.
+test('resolveBinding prefers this pane own live binding over the partner', () => {
+  const map: TabChatMap = {
+    ...MAP,
+    8: { conversationId: 'conv-b', originKey: 'https://news.example.com', boundAt: 200 },
+  }
+  expect(
+    resolveBinding(map, 8, 'https://news.example.com/a', { tabId: 7, url: 'https://github.com/x' }),
+  ).toEqual({ kind: 'existing', conversationId: 'conv-b' })
+})
+
+// A stale own binding is not a binding, so the partner still gets to donate.
+test('resolveBinding adopts when this pane own binding went stale', () => {
+  const map: TabChatMap = {
+    ...MAP,
+    8: { conversationId: 'conv-b', originKey: 'https://news.example.com', boundAt: 200 },
+  }
+  expect(
+    resolveBinding(map, 8, 'https://elsewhere.example.org/a', { tabId: 7, url: 'https://github.com/x' }),
+  ).toEqual({ kind: 'adopted', conversationId: 'conv-a' })
+})
+
+test('resolveBinding does not adopt a partner whose own binding went stale', () => {
+  expect(
+    resolveBinding(MAP, 99, 'https://news.example.com/a', { tabId: 7, url: 'https://youtube.com/watch' }),
+  ).toEqual({ kind: 'fresh' })
+})
+
+test('resolveBinding does not adopt from a partner that has no binding', () => {
+  expect(
+    resolveBinding(MAP, 99, 'https://news.example.com/a', { tabId: 42, url: 'https://github.com/x' }),
+  ).toEqual({ kind: 'fresh' })
+})
+
+// Chrome < 140 reports no split, so App passes no partner and nothing changes.
+test('resolveBinding without a partner behaves exactly as before', () => {
+  expect(resolveBinding(MAP, 99, 'https://github.com/foo', undefined)).toEqual({ kind: 'fresh' })
+})
+
 // --- bindTab / unbindTab --------------------------------------------------
 
 test('bindTab is pure and records the origin it bound against', () => {

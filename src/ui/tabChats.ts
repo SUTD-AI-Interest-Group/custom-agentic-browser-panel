@@ -3,6 +3,14 @@
 // to another site, gives you a fresh chat, while navigating within the same site
 // keeps the one you were using.
 //
+// A split view is the one case where two tab ids share a chat: the halves are on
+// screen together, so they are one place to the user and must be one chat. That
+// is resolved on the read side (see resolveBinding's `partner`), which means both
+// panes simply end up holding the same conversation id — the "two tabs, one chat"
+// case boundTabFor and liveChatIds were already written for. Nothing has to be
+// undone when the split is dissolved: the bindings just persist, and each tab
+// keeps the chat it was showing.
+//
 // The map is mirrored to chrome.storage.session rather than .local on purpose —
 // that area is wiped on browser restart, which is exactly when tab ids stop
 // meaning anything. The keys and the thing they key expire together, so a stale
@@ -69,20 +77,60 @@ export function originKey(url: string): string {
 }
 
 export type BindingResolution =
+  /** This tab's own binding, still valid. */
   | { kind: 'existing'; conversationId: string }
+  /** Inherited from the tab sharing this tab's split view. */
+  | { kind: 'adopted'; conversationId: string }
   | { kind: 'fresh' }
+
+/** The tab sharing a split view with the one being resolved, if there is one. */
+export interface SplitPartner {
+  tabId: number
+  url: string
+}
 
 /**
  * Which chat a tab should show. `existing` only when this tab has a binding AND
  * it is still on the origin that binding was made against — a cross-origin
  * navigation is treated exactly like switching to a new tab.
+ *
+ * `partner` is the other half of this tab's split view (src/platform/splitView.ts),
+ * and is how a split comes to share one chat: a pane with no live binding of its
+ * own inherits the pane beside it instead of minting a fresh chat. Without it,
+ * clicking from one half of a split to the other was indistinguishable from
+ * switching to a tab never seen before, which is what blanked the conversation.
+ *
+ * Two properties of that fallback are deliberate:
+ *
+ * - The adopting pane's OWN url is not tested. A split exists so two unrelated
+ *   pages can be read together, so the shared chat has to survive the halves
+ *   being on different origins. What is tested is that the *partner's* binding
+ *   is still live against the partner's own url — an expired donation is not one.
+ * - This tab's own live binding wins over the partner's. Two tabs that each
+ *   already had a chat before Chrome paired them into a split keep them;
+ *   adoption is for a pane with nothing to lose, never a way to silently discard
+ *   a conversation that has history in it.
+ *
+ * On Chrome < 140 there is no split to detect, so callers pass no partner and
+ * this behaves exactly as it did before.
  */
-export function resolveBinding(map: TabChatMap, tabId: number, url: string): BindingResolution {
-  const found = map[tabId]
-  if (!found) return { kind: 'fresh' }
-  return found.originKey === originKey(url)
-    ? { kind: 'existing', conversationId: found.conversationId }
-    : { kind: 'fresh' }
+export function resolveBinding(
+  map: TabChatMap,
+  tabId: number,
+  url: string,
+  partner?: SplitPartner,
+): BindingResolution {
+  const own = map[tabId]
+  if (own && own.originKey === originKey(url)) {
+    return { kind: 'existing', conversationId: own.conversationId }
+  }
+  if (partner) {
+    const beside = map[partner.tabId]
+    if (beside && beside.originKey === originKey(partner.url)) {
+      return { kind: 'adopted', conversationId: beside.conversationId }
+    }
+  }
+  return { kind: 'fresh' }
 }
 
 /**

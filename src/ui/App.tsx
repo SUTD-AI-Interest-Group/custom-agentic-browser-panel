@@ -6,6 +6,7 @@ import { loadSettings, saveSettings, type Settings } from '../data/settings'
 import { getMcpManager } from '../mcp/manager'
 import type { ResearchTask } from '../data/researchTasks'
 import { relativeTime } from '../platform/time'
+import { splitPartnerOf } from '../platform/splitView'
 import { conversationTitle } from './conversationTitle'
 import { shouldAdoptExternalSettings } from './settingsSync'
 import Chat from './Chat'
@@ -142,6 +143,11 @@ export default function App() {
   // Mirrored into refs so the tab listeners — registered once, never re-bound —
   // read current values without being torn down on every state change.
   const tabChatsRef = useRef<TabChatMap>({})
+  // Bumped by every showChatForTab call. That function now awaits a split-view
+  // lookup before it decides anything, and two fast tab switches would otherwise
+  // race: the slower lookup could resolve second and leave the panel showing the
+  // chat for the tab the user already left.
+  const showGenRef = useRef(0)
   const statusesRef = useRef<Record<string, ChatStatus>>({})
   const conversationIdRef = useRef(conversationId)
   // Mirrors `settings` for the cross-window sync listener below, registered
@@ -240,17 +246,35 @@ export default function App() {
    * own chat — the running one simply keeps the tab it already had.
    */
   const showChatForTab = useCallback(
-    (tab: chrome.tabs.Tab) => {
+    async (tab: chrome.tabs.Tab) => {
       if (tab.id === undefined) return
       const tabId = tab.id
       const url = tab.url ?? ''
-      const found = resolveBinding(tabChatsRef.current, tabId, url)
-      const id = found.kind === 'existing' ? found.conversationId : crypto.randomUUID()
+      const gen = ++showGenRef.current
+      // The other half of a split view, when there is one. Both halves are on
+      // screen at once, so they are one place to the user and must resolve to
+      // one chat — without this, clicking the other pane looked exactly like
+      // switching to a tab we had never seen and minted a fresh conversation.
+      // Undefined on Chrome < 140 and for any ordinary tab, which is what makes
+      // every line below collapse to the single-tab behaviour it always had.
+      const beside = await splitPartnerOf(tab)
+      // A newer tab switch started while that lookup was in flight; it owns the
+      // panel now, and finishing here would show the chat for the tab we left.
+      if (gen !== showGenRef.current) return
+      const partner =
+        beside?.id !== undefined ? { tabId: beside.id, url: beside.url ?? '' } : undefined
+      const found = resolveBinding(tabChatsRef.current, tabId, url, partner)
+      const id = found.kind === 'fresh' ? crypto.randomUUID() : found.conversationId
       setConversationId(id)
       // Re-binding an existing match would only rewrite boundAt, which matters
       // solely for the reverse lookup — and doing it while that chat is running
-      // is exactly the mid-turn move described above.
-      if (found.kind === 'existing' && statusesRef.current[id] === 'running') return
+      // is exactly the mid-turn move described above. An adopted chat is held to
+      // the same rule for the same reason: re-pointing it at this pane would
+      // move boundTabFor onto the pane the running turn did not start on, and
+      // its next ReadPage would describe the wrong half of the split. Skipping
+      // the write is safe because adoption is idempotent — the next focus change
+      // resolves through the partner again and lands on the same conversation.
+      if (found.kind !== 'fresh' && statusesRef.current[id] === 'running') return
       commitTabChats(bindTab(tabChatsRef.current, tabId, id, url, Date.now()))
     },
     [commitTabChats],
@@ -274,7 +298,7 @@ export default function App() {
       tabChatsRef.current = map
       setTabChats(map)
       const [tab] = await chrome.tabs.query({ active: true, windowId: win?.id })
-      if (!cancelled && tab) showChatForTab(tab)
+      if (!cancelled && tab) void showChatForTab(tab)
     })()
     return () => {
       cancelled = true
@@ -293,11 +317,17 @@ export default function App() {
     // showing. Firing on every onUpdated (title, favicon, loading state) would
     // re-resolve constantly, and firing for background tabs would swap the
     // visible chat because some other tab navigated.
+    //
+    // A splitViewId change counts as well: Chrome reports one when a tab joins or
+    // leaves a split, and pairing the tab you are already looking at with another
+    // one produces no activation event at all — so without this the panel would
+    // not notice it now has a pane beside it until the next time focus moved.
     const onUpdated = (tabId: number, info: chrome.tabs.TabChangeInfo, tab: chrome.tabs.Tab) => {
-      if (!info.url) return
+      const split = (info as { splitViewId?: number }).splitViewId !== undefined
+      if (!info.url && !split) return
       if (windowIdRef.current !== null && tab.windowId !== windowIdRef.current) return
       if (!tab.active) return
-      showChatForTab(tab)
+      void showChatForTab(tab)
     }
     const onRemoved = (tabId: number) => {
       const next = unbindTab(tabChatsRef.current, tabId)
