@@ -945,6 +945,28 @@ export default function Chat({
   // which case the check falls back to a character estimate.
   const lastInputTokensRef = useRef<number | undefined>(undefined)
 
+  // How many earlier turns compaction has folded away in this conversation, and
+  // the hand-off the model wrote at its last checkpoint. Both feed the per-step
+  // agent-state block (src/agent/agentState.ts) and both are refs for the same
+  // reason lastInputTokensRef is: read inside runTurnChain's loop, must never
+  // cause a render.
+  const compactedTurnsRef = useRef(0)
+  const lastCheckpointRef = useRef<Checkpoint | null>(null)
+
+  // Live screen state for the agent-state block, in a ref so `prepareStep` can
+  // read it synchronously on every step without a chrome.tabs round-trip.
+  const screenRef = useRef<{
+    onScreen: CurrentTabInfo[]
+    boundTab: CurrentTabInfo | null
+    boundOnScreen: boolean
+  }>({ onScreen: [], boundTab: null, boundOnScreen: true })
+
+  // What the most recent user message's "[Open on screen right now: …]" line
+  // claimed — the baseline the agent-state block measures drift against. Written
+  // by buildUserTurn, which is the only place that line is built. See the
+  // comment there for why this cannot be re-read at chain start instead.
+  const lastSendScreenRef = useRef<CurrentTabInfo[]>([])
+
   const selected = getSelectedProvider(settings)
 
   // The active model's token rates, resolved once per model change rather than
@@ -1472,6 +1494,72 @@ export default function Chat({
       chrome.tabs.onAttached.removeListener(onActivated)
     }
   }, [hidden])
+
+  // Live screen state for the per-step agent-state block (src/agent/agentState.ts):
+  // what is on screen right now, and whether the tab this chat's page tools are
+  // pinned to is among it.
+  //
+  // Deliberately NOT gated on `hidden`, unlike the context-pill effect above.
+  // That guard exists so a background chat never DISPLAYS — or silently attaches
+  // — a page this conversation was never about. Neither risk applies here: this
+  // ref is never rendered and never attached, and it exists precisely to tell a
+  // RUNNING turn where its bound tab actually is. A hidden chat is the case that
+  // matters most, because "the user walked away mid-turn" is what hides it.
+  //
+  // Written to a ref rather than state on purpose: it changes on every tab
+  // switch, and re-rendering the whole transcript for a fact only prepareStep
+  // reads would be a needless render storm during a long turn.
+  useEffect(() => {
+    let cancelled = false
+    const info = (t: chrome.tabs.Tab): CurrentTabInfo => ({
+      tabId: t.id as number,
+      title: t.title ?? '(untitled)',
+      url: t.url ?? '',
+      favIconUrl: t.favIconUrl,
+    })
+    const refresh = async () => {
+      const [focused] = await chrome.tabs.query({ active: true, lastFocusedWindow: true })
+      const showing =
+        focused?.windowId === undefined ? [] : await showingTabsIn(focused.windowId)
+      if (cancelled) return
+      const listed = showing.filter((t) => t.id !== undefined).map(info)
+      // showingTabsIn collapses to the active tab on Chrome < 140; fall back to
+      // the focused tab so a pre-split browser still reports one page rather than
+      // none, which would read as "nothing on screen".
+      const onScreen =
+        listed.length > 0 ? listed : focused?.id !== undefined ? [info(focused)] : []
+      const boundOnScreen =
+        boundTabId === undefined || onScreen.some((t) => t.tabId === boundTabId)
+      // Resolved only when the bound tab is NOT on screen — that is the only case
+      // the block reports, so the common path costs no extra tabs call at all.
+      let boundTab: CurrentTabInfo | null = null
+      if (boundTabId !== undefined && !boundOnScreen) {
+        const t = await chrome.tabs.get(boundTabId).catch(() => undefined)
+        if (cancelled) return
+        boundTab = t?.id !== undefined ? info(t) : null
+      }
+      screenRef.current = { onScreen, boundTab, boundOnScreen }
+    }
+    void refresh()
+    const on = () => void refresh()
+    const onUpdated = (_id: number, ci: chrome.tabs.TabChangeInfo) => {
+      const split = (ci as { splitViewId?: number }).splitViewId !== undefined
+      if (ci.title || ci.status === 'complete' || split) void refresh()
+    }
+    chrome.tabs.onActivated.addListener(on)
+    chrome.tabs.onUpdated.addListener(onUpdated)
+    chrome.tabs.onRemoved.addListener(on)
+    chrome.tabs.onDetached.addListener(on)
+    chrome.tabs.onAttached.addListener(on)
+    return () => {
+      cancelled = true
+      chrome.tabs.onActivated.removeListener(on)
+      chrome.tabs.onUpdated.removeListener(onUpdated)
+      chrome.tabs.onRemoved.removeListener(on)
+      chrome.tabs.onDetached.removeListener(on)
+      chrome.tabs.onAttached.removeListener(on)
+    }
+  }, [boundTabId])
 
   // Research task cards: load persisted tasks on mount (so a task that
   // finished while the panel was closed still shows), then refresh from
@@ -2282,6 +2370,21 @@ export default function Chat({
     // The supersede clause is what makes replay safe: every one of these lines
     // is true of its own message, and the newest is the current state.
     const onScreenNow = currentTab ? [currentTab, ...companionTabs] : []
+    // The agent-state block reports on-screen tabs only when they have DRIFTED
+    // from what this line claims, so its baseline has to be this exact value.
+    //
+    // Recorded here, in the same statement that builds the line, rather than
+    // read again when the chain starts — those are not the same moment. Between
+    // the user pressing Enter and runTurnChain's first step, startFreshTurn
+    // looks up a skill, reads every attached tab and plans attachments, all of
+    // it awaited; a tab switch inside that window made the chain record a screen
+    // the message never claimed, and the block then stayed silent about a drift
+    // that had genuinely happened. Measured in a real browser — the block came
+    // back naming the tab the user had just switched TO as the baseline.
+    //
+    // A ref because buildUserTurn serves both the opening message and every
+    // steer, so each new user message re-baselines the chain automatically.
+    lastSendScreenRef.current = onScreenNow
     if (onScreenNow.length > 0) {
       const list = onScreenNow.map((t) => `${JSON.stringify(t.title)} (${t.url})`).join(', ')
       const how = onScreenNow.length > 1 ? ', shown side by side in a split view' : ''
@@ -2417,6 +2520,10 @@ export default function Chat({
     // Drop any orphaned steer that raced a just-ended chain (see the finally in
     // runTurnChain) so it can't leak into this new turn.
     steerQueueRef.current = []
+    // A new question is a new task, so the previous task's hand-off is no longer
+    // the next action. Cleared here rather than in runTurnChain, which is also
+    // entered by continueTask — where resuming that very hand-off is the point.
+    lastCheckpointRef.current = null
     // A fresh question starts from a clean page: sweep any passage highlights
     // the previous turn left behind. Deliberately here and NOT in runTurnChain's
     // finally — unlike the presence overlay, highlights must OUTLIVE their turn
@@ -3027,6 +3134,18 @@ export default function Chat({
     // cycle: a park ends one cycle, and the cycle that resumes when the user
     // comes back must start unparked or it would halt on its very first step.
     let parked: string | null = null
+    // What the newest user message in this chain claimed was on screen. The
+    // agent-state block reports on-screen tabs ONLY when they have since drifted
+    // from this — Chat.tsx already stamps an "[Open on screen right now: …]"
+    // line onto every user message, and two channels asserting one fact would go
+    // contradictory the moment one of them went stale.
+    //
+    // Captured here rather than read live because that line is FROZEN into
+    // history at send time, and a long tool-using turn has exactly one user
+    // message at the top: for the remaining steps it keeps asserting a screen
+    // layout that may be several tab-switches out of date. Reassigned when a
+    // steer splices a fresh user message (and so a fresh line) into the chain.
+    let onScreenAtSend: CurrentTabInfo[] = lastSendScreenRef.current
     // Messages pushed into historyRef.current since the last cycle that completed
     // successfully (steer messages spliced in below). If the NEXT cycle throws
     // (abort/error) before answering them, they're dangling user turns with no
@@ -3102,6 +3221,11 @@ export default function Chat({
       const summary = await summarizeSpan(summarizer, plan.fold)
       historyRef.current = applyCompaction(plan, summary)
       const folded = plan.fold.length
+      // Cumulative across the conversation, not per chain: the model-facing
+      // history keeps whatever earlier folds already removed, so the honest
+      // number is the running total. Feeds the agent-state block's "detail above
+      // this point is lossy" line.
+      compactedTurnsRef.current += folded
       const id = assistantId
       setMessages((m) => m.map((msg) => (msg.id === id ? { ...msg, compacted: folded } : msg)))
       // The previous reading described a history that no longer exists, so the
@@ -3178,6 +3302,28 @@ export default function Chat({
           activeNames,
           trace,
           sink,
+          // Situational awareness, re-read on every step (see agentState.ts).
+          // Everything here is a synchronous ref read: prepareStep runs before
+          // each model step, so a chrome.* call here would tax every step of
+          // every turn.
+          agentState: () => {
+            const session = pageControl.session()
+            return {
+              autoContinue: { used: autoContinuesRef.current, max: MAX_AUTO_CONTINUES },
+              onScreen: screenRef.current.onScreen,
+              onScreenAtSend,
+              boundTab: screenRef.current.boundTab ?? undefined,
+              boundTabOnScreen: screenRef.current.boundOnScreen,
+              control:
+                session && session.active
+                  ? { plan: session.plan, actions: session.journal?.length ?? 0 }
+                  : undefined,
+              compactedTurns: compactedTurnsRef.current,
+              checkpoint: lastCheckpointRef.current
+                ? { nextAction: lastCheckpointRef.current.nextAction }
+                : undefined,
+            }
+          },
           // Agent steering: halt this cycle at the next step boundary when the user
           // has queued a mid-task steer, so the drain below can splice it into
           // history and continue the chain.
@@ -3209,6 +3355,12 @@ export default function Chat({
         patch(assistantId, base)(result.parts)
         historyRef.current.push(...result.responseMessages)
         pushedAny = true
+        // The model's own hand-off, carried into the next cycle's agent-state
+        // block so a continuation knows what it said it would do next. Cleared
+        // on a completed cycle below: a finished task has no pending next action,
+        // and leaving one set would have the next turn announce it is resuming
+        // work that is already done.
+        if (result.stop.checkpoint) lastCheckpointRef.current = result.stop.checkpoint
         // This cycle answered everything pushed since the last one succeeded
         // (including any steers spliced in below), so nothing is at-risk anymore.
         pendingSinceCycle = 0
@@ -3257,6 +3409,13 @@ export default function Chat({
               turnAllowed.current.add('SearchMemory')
             }
           }
+          // The steer is a fresh user message, so it carries its own "[Open on
+          // screen right now: …]" line — that is the claim later steps must drift
+          // from, not the one the opening message made. And it redirects the
+          // task, so whatever the model last checkpointed toward is no longer the
+          // next action.
+          onScreenAtSend = lastSendScreenRef.current
+          lastCheckpointRef.current = null
           assistantId = uid()
           mergedParts = []
           setMessages((m) => [
@@ -3280,7 +3439,10 @@ export default function Chat({
           break
         }
 
-        if (result.stop.reason === 'completed') break
+        if (result.stop.reason === 'completed') {
+          lastCheckpointRef.current = null
+          break
+        }
         // 'checkpoint' | 'budget' — the task is not done. Auto-continue until the
         // ceiling, then hand off to the user via the Continue card.
         if (autoContinuesRef.current >= MAX_AUTO_CONTINUES) {

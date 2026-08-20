@@ -13,6 +13,7 @@ import {
 } from 'ai'
 import { z } from 'zod'
 import { resolveActiveTools } from '../tools/toolDiscovery'
+import { renderAgentState, type AgentStateFacts } from './agentState'
 import { toModelUsage } from './usage'
 import type { ModelUsage, Trace } from './observability'
 import type { TraceStep } from '../data/traces'
@@ -436,6 +437,22 @@ export async function runAgentTurn(options: {
    * Never awaited and never allowed to throw — see `emitStep`.
    */
   sink?: TraceSink
+  /**
+   * Live situational-awareness facts for this turn, rendered into a small block
+   * and injected ahead of each step (see src/agent/agentState.ts).
+   *
+   * A thunk for the same reason `steerPending`/`parkPending` are: what is on
+   * screen, which tab is bound and whether a control session is open all change
+   * *during* a turn, and only the caller can see them. It MUST be synchronous
+   * and cheap — `prepareStep` runs before every model step, so the caller reads
+   * refs it already maintains rather than doing any `chrome.*` work here.
+   *
+   * `step`/`maxSteps` are supplied by prepareStep itself, which is the only
+   * place that knows them. Omit the option entirely to inject nothing — which is
+   * what the research pipeline and the browse sub-agent do, having no user, no
+   * bound tab and no on-screen state to report.
+   */
+  agentState?: () => Omit<AgentStateFacts, 'step' | 'maxSteps'>
 }): Promise<AgentTurnResult> {
   const { model, system, history, tools, abortSignal, onUpdate } = options
   const wrapUpNudge = options.wrapUpNudge ?? DEFAULT_WRAP_UP_NUDGE
@@ -734,6 +751,29 @@ export async function runAgentTurn(options: {
       // wrong after an action), and so the wrap-up nudge below never lingers.
       const base = [...initialMessages, ...responseMessages]
       const injected: ModelMessage[] = []
+      // Where the model currently stands (see agentState.ts). FIRST in `injected`
+      // so a queued image stays adjacent to nothing but its own caption, and so
+      // the wrap-up nudge below stays last and therefore most salient.
+      //
+      // stepNumber is 0-based; the block reads 1-based because it is prose the
+      // model is meant to act on ("step 7 of 24"), not an array index.
+      //
+      // Rendered fresh every step and never retained: `base` is rebuilt from
+      // initialMessages + responseMessages above, so this cannot stack, and a
+      // stale snapshot can never outlive the step it described.
+      if (options.agentState) {
+        try {
+          const block = renderAgentState({
+            ...options.agentState(),
+            step: stepNumber + 1,
+            maxSteps,
+          })
+          if (block) injected.push({ role: 'user', content: block })
+        } catch {
+          // Situational awareness is a nicety; a turn must never fail for its
+          // absence. Same posture as the trace hooks around it.
+        }
+      }
       // Drain any queued images (see imageQueue / QueuedImage docs). Each carries
       // its own caption — what the image IS differs per producer, and telling the
       // model the wrong thing about a picture is worse than showing it none.

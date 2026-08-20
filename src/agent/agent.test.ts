@@ -1008,3 +1008,148 @@ describe('toValidModelMessages strips reasoning from replay', () => {
     expect(result.output.value).toEqual({ ok: true })
   })
 })
+
+// The agent-state block (src/agent/agentState.ts) is rendered by prepareStep and
+// injected as an ordinary user message. agentState.test.ts covers WHAT it says;
+// these cover that it actually reaches the wire, refreshes per step, and never
+// stacks — the three properties only the injection site can get wrong.
+describe('agent-state block injection', () => {
+  /** A model that takes one no-op tool call, then finishes: three requests. */
+  function twoStepModel() {
+    let call = 0
+    return new MockLanguageModelV3({
+      doStream: async () => {
+        call += 1
+        return {
+          stream: new ReadableStream({
+            start(controller: any) {
+              controller.enqueue({ type: 'stream-start', warnings: [] })
+              if (call === 1) {
+                controller.enqueue({
+                  type: 'tool-call',
+                  toolCallId: 'c1',
+                  toolName: 'Noop',
+                  input: '{}',
+                })
+              } else {
+                controller.enqueue({ type: 'text-start', id: 't1' })
+                controller.enqueue({ type: 'text-delta', id: 't1', delta: 'done' })
+                controller.enqueue({ type: 'text-end', id: 't1' })
+              }
+              controller.enqueue({
+                type: 'finish',
+                finishReason: call === 1 ? 'tool-calls' : 'stop',
+                usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+              })
+              controller.close()
+            },
+          }),
+        }
+      },
+    })
+  }
+
+  const noop = {
+    Noop: tool({ description: 'does nothing', inputSchema: z.object({}), execute: async () => ({ ok: true }) }),
+  }
+
+  /** Every user message in a captured request whose text carries the block. */
+  const blocks = (prompt: unknown) =>
+    (prompt as Array<{ role: string; content: unknown }>).filter(
+      (m) =>
+        m.role === 'user' &&
+        Array.isArray(m.content) &&
+        m.content.some((p: any) => typeof p.text === 'string' && p.text.includes('<agent-state>')),
+    )
+
+  it('injects the block into the model request', async () => {
+    const model = twoStepModel()
+    await runAgentTurn({
+      model,
+      system: 's',
+      history: [{ role: 'user', content: 'go' }],
+      tools: noop,
+      abortSignal: new AbortController().signal,
+      onUpdate: () => {},
+      agentState: () => ({ control: { plan: 'check my order status', actions: 2 } }),
+    })
+    expect(blocks(model.doStreamCalls[0].prompt)).toHaveLength(1)
+  })
+
+  it('injects nothing when the caller supplies no agentState thunk', async () => {
+    // The research pipeline and the browse sub-agent take this path: no user, no
+    // bound tab, nothing to report.
+    const model = twoStepModel()
+    await runAgentTurn({
+      model,
+      system: 's',
+      history: [{ role: 'user', content: 'go' }],
+      tools: noop,
+      abortSignal: new AbortController().signal,
+      onUpdate: () => {},
+    })
+    for (const c of model.doStreamCalls) expect(blocks(c.prompt)).toHaveLength(0)
+  })
+
+  it('re-reads the facts every step instead of freezing the first snapshot', async () => {
+    // The whole point: a long turn has ONE user message at the top, so a block
+    // captured once would go stale exactly like the line it supplements.
+    const model = twoStepModel()
+    let actions = 0
+    await runAgentTurn({
+      model,
+      system: 's',
+      history: [{ role: 'user', content: 'go' }],
+      tools: {
+        Noop: tool({
+          description: 'does nothing',
+          inputSchema: z.object({}),
+          execute: async () => {
+            actions += 1
+            return { ok: true }
+          },
+        }),
+      },
+      abortSignal: new AbortController().signal,
+      onUpdate: () => {},
+      agentState: () => ({ control: { plan: 'p', actions } }),
+    })
+    const textOf = (prompt: unknown) =>
+      blocks(prompt)
+        .map((m) => (m.content as Array<{ text?: string }>).map((p) => p.text ?? '').join(''))
+        .join('')
+    expect(textOf(model.doStreamCalls[0].prompt)).toContain('no actions yet')
+    expect(textOf(model.doStreamCalls[1].prompt)).toContain('1 action taken')
+  })
+
+  it('never stacks: each request carries exactly one block', async () => {
+    const model = twoStepModel()
+    await runAgentTurn({
+      model,
+      system: 's',
+      history: [{ role: 'user', content: 'go' }],
+      tools: noop,
+      abortSignal: new AbortController().signal,
+      onUpdate: () => {},
+      agentState: () => ({ compactedTurns: 4 }),
+    })
+    for (const c of model.doStreamCalls) expect(blocks(c.prompt)).toHaveLength(1)
+  })
+
+  it('survives a throwing agentState thunk rather than failing the turn', async () => {
+    const model = twoStepModel()
+    const result = await runAgentTurn({
+      model,
+      system: 's',
+      history: [{ role: 'user', content: 'go' }],
+      tools: noop,
+      abortSignal: new AbortController().signal,
+      onUpdate: () => {},
+      agentState: () => {
+        throw new Error('ref read blew up')
+      },
+    })
+    expect(result.stop.reason).toBe('completed')
+    for (const c of model.doStreamCalls) expect(blocks(c.prompt)).toHaveLength(0)
+  })
+})
