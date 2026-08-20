@@ -1,6 +1,6 @@
 # Chrome Web Store Listing — Lychee AI
 
-> Last Updated: 2026-08-20 · Manifest version 0.4.0 · **Status: 0.4.0 is packaged,
+> Last Updated: 2026-08-21 · Manifest version 0.4.0 · **Status: 0.4.0 is packaged,
 > not yet submitted**
 >
 > **Item ID:** `jijmdjncddemapjkbidjdbfbjmonagpn` ·
@@ -47,7 +47,7 @@ BRING YOUR OWN MODEL
 Connect OpenAI, Anthropic, OpenRouter, Groq, or any OpenAI-compatible endpoint using your own API key. Prefer to keep everything on your machine? Point Lychee at a local model through Ollama or LM Studio and nothing leaves your computer at all. There is no subscription and no account to create — Lychee talks to your provider directly.
 
 WORKS WITH THE PAGE IN FRONT OF YOU
-Ask about the article you're reading, and Lychee reads it. Ask it to pull the pricing table out of a page, and you get clean structured data. Open a PDF and ask questions about page 40. Point at a chart and Lychee looks at it. It can read other open tabs when you ask, so you can compare two products side by side without copying anything.
+Ask about the article you're reading, and Lychee reads it. Ask it to pull the pricing table out of a page, and you get clean structured data. Open a PDF and ask questions about page 40 — including a PDF embedded in a course page or served from a link that never says ".pdf". Point at a chart and Lychee looks at it. It can read other open tabs when you ask, so you can compare two products side by side without copying anything. Turn on "Allow access to file URLs" in Chrome and it can read a file you opened straight from your own disk too.
 
 BRING YOUR OWN FILES
 Drag an image, a PDF, a Word document, a spreadsheet, a slide deck, or a text file straight into the message box, paste a screenshot from your clipboard, or pick one with the paperclip. Ask about a chart someone sent you, a contract you downloaded, or a log file, without uploading it anywhere first.
@@ -237,6 +237,16 @@ permission is added, so this update avoids both the extra permission-change
 scrutiny and the disable-until-re-accepted behaviour a newly *required* permission
 inflicts on every existing install. These justifications carry over untouched.
 
+**On local files, which 0.4.0 can now read:** this is not a new permission and does
+not belong in the table. `<all_urls>` already covers `file://`; what gates it is
+Chrome's per-extension **"Allow access to file URLs"** switch, which is off by
+default, cannot be requested through `chrome.permissions.request`, and can only be
+turned on by the user in `chrome://extensions`. Until they do, the extension names
+that obstacle and offers a button to the right page rather than attempting the read.
+It is disclosed in the data-use table and in `PRIVACY.md` regardless, because what
+matters to a reviewer is that file contents can reach the provider — not which
+mechanism authorised it.
+
 | Permission | Type | Justification |
 |------------|------|---------------|
 | `sidePanel` | permissions | The entire user interface is Chrome's side panel. The extension has no popup — the panel is where the user reads replies, approves actions, and changes settings. |
@@ -292,6 +302,7 @@ receives no data and operates no server.
 | Web history | Optional — only if the user enables browsing insights and grants the permission | Yes — the matching results are included in the request to the user's provider when they ask | Answering questions about pages the user visited | No |
 | User activity | Yes — which pages the user asks the assistant to read or act on, and, when the user asks about their open tabs, the title, URL, and a short self-description of each tab in that window | Yes — to the user's configured AI provider | Carrying out the user's request on that page; grouping or closing tabs the user asked to tidy | No |
 | Website content | Yes — text, structure, and screenshots of pages the user asks about | Yes — to the user's configured AI provider | The assistant cannot summarise or act on a page it is not shown | No |
+| Local file contents | Only if the user both turns on Chrome's per-extension "Allow access to file URLs" switch and then asks about a `file://` page they have opened | Yes — to the user's configured AI provider, same as a web page | Answering a question about a document the user opened from their own disk | No |
 | Files the user attaches | Yes — images, PDFs, text files, and office documents (Word, PowerPoint, Excel, OpenDocument, RTF, EPUB) the user drags in, pastes, or picks with the paperclip, stored on device so the chat still renders them when reopened | Yes — to the user's configured AI provider, as rendered pages or extracted text | The user attached the file in order to ask about it | No |
 
 **Not used:** `chrome.storage.sync` — nothing is uploaded to the user's Google
@@ -486,7 +497,7 @@ no response, that is the point to contact developer support.
 
 | Version | Date | Changes | Status |
 |---------|------|---------|--------|
-| 0.4.0 | 2026-08-20 | Update. Attach Word, PowerPoint, Excel, OpenDocument, RTF and EPUB documents alongside images, PDFs and text. Token counts and running cost on every reply. Long conversations fold older turns into a summary instead of dying once the model's context fills. A turn interrupted by closing the panel can be resumed. Page control now keeps a list of what it changed, with undo. Opt-in local turn traces for debugging. Memory consolidation moved off the background worker so a long pass can finish. A second whole-codebase adversarial audit closing four criticals — MCP OAuth token replay, two SSRF holes in unattended research, half-blind sensitive-field detection, and a spreadsheet memory-exhaustion path — plus `RunCode`, which had never once worked in a real browser. **No permission changes.** | Preparing |
+| 0.4.0 | 2026-08-21 | Update. Attach Word, PowerPoint, Excel, OpenDocument, RTF and EPUB documents alongside images, PDFs and text. Read local files opened from disk, PDFs served from a URL that never says `.pdf`, and PDFs embedded inside an ordinary page. Token counts and running cost on every reply. Long conversations fold older turns into a summary instead of dying once the model's context fills. A turn interrupted by closing the panel can be resumed. Page control now keeps a list of what it changed, with undo. Opt-in local turn traces for debugging. Memory consolidation moved off the background worker so a long pass can finish. A second whole-codebase adversarial audit closing four criticals — MCP OAuth token replay, two SSRF holes in unattended research, half-blind sensitive-field detection, and a spreadsheet memory-exhaustion path — plus `RunCode`, which had never once worked in a real browser. **No permission changes.** | Preparing |
 | 0.3.0 | 2026-08-03 | Update. Prompt attachments — drag, paste, or pick images, PDFs, and text files into the composer. A separate chat per tab, with background chats that keep working and announce themselves when they finish or need permission. Every stored secret encrypted at rest, with a live status indicator in Settings. A whole-codebase adversarial security review closing defects across tool authorisation, browse policy, service-worker lifetime, dream re-entrancy, and page-control classification. **No permission changes.** | ✅ Published 2026-08-04 |
 | 0.2.0 | 2026-07-28 | First store submission. Side-panel assistant with bring-your-own-model support, page reading, approved page control, tab organising (grouping and closing, with undo), background research with citations, long-term memory, skills, MCP tool servers, and sandboxed code execution. | ✅ Published 2026-08-01 — passed review first time |
 
@@ -609,9 +620,13 @@ email and we will provide one.
 - Requires a user-supplied API key; there is no free bundled tier.
 - Cannot operate on `chrome://` pages, the Web Store, or other extension pages —
   Chrome forbids injection there. The panel reports this rather than failing silently.
+- Local `file://` pages are readable only after the user turns on "Allow access to
+  file URLs" on the extension's own card. Off by default, and the extension cannot
+  grant it to itself; until then the panel names that specific obstacle and offers a
+  button to the page where it is switched on.
 - PDFs are handled by reading the file directly, since Chrome's PDF viewer exposes
   no page structure to extensions.
-- The packaged extension is ~5.3 MB, mostly the bundled interpreter, PDF reader,
+- The packaged extension is ~5.1 MB, mostly the bundled interpreter, PDF reader,
   and maths fonts. Well within limits.
 
 ### Rejection history

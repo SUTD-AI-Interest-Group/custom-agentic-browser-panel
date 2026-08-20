@@ -1,6 +1,6 @@
 # Privacy Policy for Lychee AI
 
-**Last updated: 20 August 2026**
+**Last updated: 21 August 2026**
 **Applies to: Lychee AI Chrome Extension, version 0.4.0 and later**
 
 Lychee AI is a Chrome side-panel AI assistant. It has **no backend server of its
@@ -57,7 +57,9 @@ example OpenAI, Anthropic, OpenRouter, Groq, or a local server such as Ollama or
 LM Studio). That request can contain:
 
 - your messages and the conversation so far,
-- **the text, structure, and screenshots of web pages you ask it to read or act on**,
+- **the text, structure, and screenshots of pages you ask it to read or act on** — including
+  a local file you have opened in a tab, if you have switched on the Chrome setting described
+  under Permissions below,
 - any file you attach to a message — an image, a PDF, a text file, or a document
   such as a Word file, spreadsheet or slide deck — that you drag in, paste, or pick
   with the paperclip. Documents are converted to text on your device and it is that
@@ -149,6 +151,14 @@ you switch those features on in Settings. You can revoke them at any time.
 Permission to manage tab groups is **optional** in the same way: Chrome asks for it
 the first time you approve a request to sort your tabs into groups, and declining
 it leaves every other feature working.
+
+Reading **local files** — a PDF or document you have opened from your own disk, at a
+`file://` address — is switched **off** until you turn on "Allow access to file URLs"
+on Lychee's card in `chrome://extensions`. That switch belongs to Chrome, not to us:
+the extension cannot grant it to itself, and no update can turn it on. Until you do,
+Lychee tells you it cannot read the page instead of reading it. When you do turn it
+on, a local file you ask about is treated exactly like a web page — its contents go to
+the AI provider you configured, and nowhere else.
 
 ---
 
