@@ -148,3 +148,51 @@ export async function focusPaneForCapture(tab: SplitTabLike | undefined | null):
     return false
   }
 }
+
+/**
+ * Every tab a window is showing, given its active tabs and its full tab list.
+ *
+ * A split puts two pages on screen at once, and both are "the tab you're looking
+ * at" as far as the user is concerned — so anything that gathers on-screen
+ * context has to gather both. Correct under either reading of how Chrome reports
+ * a split (see `isShowing`): if `query({active:true})` already returned both
+ * halves they are simply deduped here, and if it returned only the focused half
+ * the split lookup adds the other.
+ *
+ * Order is meaningful and deliberate: the active tabs come first, in the order
+ * Chrome gave them, so callers can keep treating `[0]` as the primary and treat
+ * the rest as companions. Outside a split this returns exactly the active tabs,
+ * so nothing changes.
+ */
+export function collectShowing<T extends SplitTabLike>(
+  activeTabs: readonly T[],
+  windowTabs: readonly T[],
+): T[] {
+  const out: T[] = []
+  const seen = new Set<number>()
+  const push = (t: T) => {
+    if (t.id === undefined || seen.has(t.id)) return
+    seen.add(t.id)
+    out.push(t)
+  }
+  for (const t of activeTabs) push(t)
+  // Second pass, not interleaved: a companion must never displace an active tab
+  // from the front, or `[0]` would stop meaning "the pane holding focus".
+  for (const active of activeTabs) {
+    const split = splitIdOf(active)
+    if (split === undefined) continue
+    for (const t of windowTabs) if (splitIdOf(t) === split) push(t)
+  }
+  return out
+}
+
+/** `collectShowing` against the live window — every pane currently on screen. */
+export async function showingTabsIn(windowId: number): Promise<chrome.tabs.Tab[]> {
+  const active = await activeTabsIn(windowId)
+  if (!active.some((t) => splitIdOf(t) !== undefined)) return active
+  try {
+    return collectShowing(active, await chrome.tabs.query({ windowId }))
+  } catch {
+    return active
+  }
+}

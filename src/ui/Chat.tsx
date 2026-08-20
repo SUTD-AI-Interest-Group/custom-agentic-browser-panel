@@ -1,4 +1,4 @@
-import { Fragment, memo, useEffect, useMemo, useRef, useState } from 'react'
+import { Fragment, memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { ModelMessage } from 'ai'
 import { generateText } from 'ai'
 import Markdown from './Markdown'
@@ -92,7 +92,7 @@ import { isContextOverflow } from '../agent/resilience'
  */
 const COMPACT_AT_FRACTION = 0.75
 import { getActiveTab, listOpenTabs, openPdfAtPage, readTabContent, type TabContent, type TabSummary } from '../platform/tabs'
-import { isTabShowing, splitPartnerOf } from '../platform/splitView'
+import { isTabShowing, showingTabsIn, splitPartnerOf } from '../platform/splitView'
 import { OFFICE_ACCEPT } from '../platform/officeText'
 import { loadPdf } from '../platform/pdf'
 import { createAgentTools, type ApprovalRequest, type PageControlGate } from '../tools/tools'
@@ -296,6 +296,8 @@ interface MessageSpec {
   includeCurrentTab: boolean
   includeDeicticTab: boolean
   activeSelection: string | null
+  /** Other panes on screen (split view), auto-attached alongside the current tab. */
+  companions: CurrentTabInfo[]
 }
 
 /** A tab the user @mentioned in the composer; its content syncs on send. */
@@ -765,6 +767,11 @@ export default function Chat({
   const [parkedReason, setParkedReason] = useState<string | null>(null)
   const [approval, setApproval] = useState<PendingApproval | null>(null)
   const [currentTab, setCurrentTab] = useState<CurrentTabInfo | null>(null)
+  // The OTHER panes on screen. Chrome's split view shows two tabs at once, and
+  // both are "the tab you're looking at" — attaching only the focused one meant
+  // asking about a split and having half of what you can see be invisible to the
+  // agent. Empty for an ordinary window, so nothing changes outside a split.
+  const [companionTabs, setCompanionTabs] = useState<CurrentTabInfo[]>([])
   const [attachments, setAttachments] = useState<ComposerAttachment[]>([])
   const [capturing, setCapturing] = useState(false)
   const [captureError, setCaptureError] = useState<string | null>(null)
@@ -794,7 +801,14 @@ export default function Chat({
   const [mcpPromptError, setMcpPromptError] = useState<string | null>(null)
   // The active tab is attached to the first message of a fresh chat so the user
   // can start talking about the page right away; they can dismiss it.
-  const [tabDismissed, setTabDismissed] = useState(false)
+  // Which auto-attached panes the user has removed, by tab id. A single boolean
+  // sufficed when only one tab could ever be attached; with a split there are
+  // two chips and dismissing one must not silently drop the other.
+  const [dismissedTabs, setDismissedTabs] = useState<ReadonlySet<number>>(new Set())
+  const dismissTab = useCallback(
+    (tabId: number) => setDismissedTabs((prev) => new Set(prev).add(tabId)),
+    [],
+  )
   // Text the user has highlighted on the active tab, offered as removable
   // context. `dismissedSelection` holds the last selection they removed or sent
   // so it isn't re-attached until they highlight something different.
@@ -1410,20 +1424,31 @@ export default function Chat({
     if (hidden) return
     let cancelled = false
     const refresh = async () => {
-      const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true })
-      if (!cancelled && tab && tab.id !== undefined) {
-        setCurrentTab({
-          tabId: tab.id,
-          title: tab.title ?? '(untitled)',
-          url: tab.url ?? '',
-          favIconUrl: tab.favIconUrl,
-        })
-      }
+      const [focused] = await chrome.tabs.query({ active: true, lastFocusedWindow: true })
+      if (cancelled || !focused || focused.id === undefined) return
+      const info = (t: chrome.tabs.Tab): CurrentTabInfo => ({
+        tabId: t.id as number,
+        title: t.title ?? '(untitled)',
+        url: t.url ?? '',
+        favIconUrl: t.favIconUrl,
+      })
+      setCurrentTab(info(focused))
+      // Everything else the window is showing — the other half of a split, and
+      // nothing at all otherwise. Resolved off the window rather than off the
+      // active query alone, because Chrome does not document whether a split
+      // reports one active tab or two (see src/platform/splitView.ts).
+      const showing =
+        focused.windowId === undefined ? [] : await showingTabsIn(focused.windowId)
+      if (cancelled) return
+      setCompanionTabs(showing.filter((t) => t.id !== undefined && t.id !== focused.id).map(info))
     }
     void refresh()
     const onActivated = () => void refresh()
     const onUpdated = (_id: number, info: chrome.tabs.TabChangeInfo) => {
-      if (info.title || info.status === 'complete') void refresh()
+      // splitViewId: a pane joining or leaving a split changes what is on screen
+      // without any navigation or activation to notice it by.
+      const split = (info as { splitViewId?: number }).splitViewId !== undefined
+      if (info.title || info.status === 'complete' || split) void refresh()
     }
     chrome.tabs.onActivated.addListener(onActivated)
     chrome.tabs.onUpdated.addListener(onUpdated)
@@ -2150,13 +2175,15 @@ export default function Chat({
     includeCurrentTab: boolean
     includeDeicticTab: boolean
     activeSelection: string | null
+    /** Other panes on screen (split view), auto-attached alongside the current tab. */
+    companions?: CurrentTabInfo[]
   }): Promise<{
     message: ModelMessage
     attachedSources: MessageSource[]
     notes: string[]
     syncedTabs: TabContent[]
   }> {
-    const { text, attachments: turnAttachments, activeMentions, useMemory, useAll, includeCurrentTab, includeDeicticTab, activeSelection } = o
+    const { text, attachments: turnAttachments, activeMentions, useMemory, useAll, includeCurrentTab, includeDeicticTab, activeSelection, companions } = o
     // Sync shared tab contents into the model-facing message: any @mentioned
     // tabs, plus the current tab when auto-attached (first message) or pulled in
     // by a deictic reference, de-duplicated by id.
@@ -2164,6 +2191,7 @@ export default function Chat({
     for (const m of activeMentions) if (!tabIds.includes(m.tabId)) tabIds.push(m.tabId)
     if ((includeCurrentTab || includeDeicticTab) && currentTab && !tabIds.includes(currentTab.tabId))
       tabIds.push(currentTab.tabId)
+    for (const t of companions ?? []) if (!tabIds.includes(t.tabId)) tabIds.push(t.tabId)
     let allTabsOmitted = 0
     if (useAll) {
       // Unlike its neighbors below (readTabContent/assembleAttachments are
@@ -2204,7 +2232,16 @@ export default function Chat({
         allTabsOmitted > 0
           ? `\n\n[Note: ${allTabsOmitted} more open tab${allTabsOmitted > 1 ? 's were' : ' was'} omitted to keep this message manageable.]`
           : ''
-      modelText = `${text}\n\n[Current content of the tab${syncedTabs.length > 1 ? 's' : ''} shared with you, synced at send time:]\n${blocks.join('\n\n')}${omit}`
+      // Say that two of these are on screen together, not merely that two were
+      // shared. Without it the model sees an unexplained second page and treats
+      // it as background material, when the reason it is here is that the user
+      // is looking at both at once — which is what makes "compare these" or
+      // "does this match that" answerable at all.
+      const split =
+        (companions?.length ?? 0) > 0
+          ? `\n[The user has these open side by side in a split view and can see them both right now.]`
+          : ''
+      modelText = `${text}\n\n[Current content of the tab${syncedTabs.length > 1 ? 's' : ''} shared with you, synced at send time:]${split}\n${blocks.join('\n\n')}${omit}`
     }
     if (activeSelection) {
       const snippet = activeSelection.slice(0, SELECTION_MAX)
@@ -2271,7 +2308,8 @@ export default function Chat({
     const useAll = settings.tabAccess === 'all-tabs' && ALL_TOKEN_RE.test(text)
     // Auto-attach the current tab on the first message of a fresh chat only (a
     // queued follow-up is never the first message, so this resolves to false there).
-    const includeCurrentTab = messages.length === 0 && !tabDismissed && currentTab !== null
+    const includeCurrentTab =
+      messages.length === 0 && currentTab !== null && !dismissedTabs.has(currentTab.tabId)
     // A deictic reference ("what about this?", "summarize this page") pulls in the
     // tab being viewed, unless it's already in context (see sharedTabsRef).
     const currentTabKey = currentTab ? tabKey(currentTab.tabId, currentTab.url) : null
@@ -2283,7 +2321,18 @@ export default function Chat({
       !sharedTabsRef.current.has(currentTabKey)
     const activeSelection =
       selection && selection.text !== dismissedSelection ? selection.text : null
-    return { text, attachments, activeMentions, useMemory, useAll, includeCurrentTab, includeDeicticTab, activeSelection }
+    // The other panes of a split ride along with the auto-attach AND with a
+    // deictic reference, minus any the user removed. Deictic was tempting to
+    // exclude ("this page" is singular), but in a split the singular reading is
+    // the wrong one often enough to matter: "compare these", "does this match
+    // that", "which of these" all point at both panes, and a model that only
+    // received one has to spend a tool call discovering the other — which is
+    // exactly the round trip this whole change exists to remove.
+    const companions =
+      includeCurrentTab || includeDeicticTab
+        ? companionTabs.filter((t) => !dismissedTabs.has(t.tabId))
+        : []
+    return { text, attachments, activeMentions, useMemory, useAll, includeCurrentTab, includeDeicticTab, activeSelection, companions }
   }
 
   /** Clear the composer and its transient popovers once a spec has been captured. */
@@ -2607,6 +2656,13 @@ export default function Chat({
       includeCurrentTab: a.includeCurrentTab || b.includeCurrentTab,
       includeDeicticTab: a.includeDeicticTab || b.includeDeicticTab,
       activeSelection: a.activeSelection ?? b.activeSelection,
+      // Union by tab id: the two submits were captured moments apart and can
+      // name the same panes, and buildUserTurn dedupes anyway — but keeping the
+      // spec itself clean means the chip count never doubles either.
+      companions: [
+        ...a.companions,
+        ...b.companions.filter((t) => !a.companions.some((x) => x.tabId === t.tabId)),
+      ],
     }
   }
 
@@ -2687,6 +2743,9 @@ export default function Chat({
       includeCurrentTab,
       includeDeicticTab: false,
       activeSelection: null,
+      // A composer action names one page ("Summarize this page"), so the pane
+      // beside it is not what the user asked about.
+      companions: [],
     }
     if (streaming) setQueued((prev) => (prev ? mergeQueuedSpec(prev, spec) : spec))
     else void startFreshTurn(spec)
@@ -3605,17 +3664,25 @@ export default function Chat({
   } else {
     const shownMentions = mentions.filter((m) => input.includes(m.token))
     const mentionedIds = new Set(shownMentions.map((m) => m.tabId))
-    if (currentTab && !mentionedIds.has(currentTab.tabId)) {
-      const attachedFirst = messages.length === 0 && !tabDismissed
+    // The focused pane, then any other pane on screen — one chip each, so a split
+    // shows the user exactly what is going to be attached rather than hiding half
+    // of it, and lets them drop either one.
+    const onScreen = currentTab ? [currentTab, ...companionTabs] : []
+    for (const t of onScreen) {
+      if (mentionedIds.has(t.tabId)) continue
+      const attachedFirst = messages.length === 0 && !dismissedTabs.has(t.tabId)
+      const companion = t !== currentTab
       contextTabs.push({
-        key: `current:${currentTab.tabId}`,
-        title: currentTab.title,
-        url: currentTab.url,
-        favIconUrl: currentTab.favIconUrl,
+        key: `current:${t.tabId}`,
+        title: t.title,
+        url: t.url,
+        favIconUrl: t.favIconUrl,
         hint: attachedFirst
-          ? `This page is attached to your first message — ${currentTab.title}`
-          : `The agent can ask to view this tab — ${currentTab.title}`,
-        onRemove: attachedFirst ? () => setTabDismissed(true) : undefined,
+          ? companion
+            ? `The other pane in your split — attached to your first message — ${t.title}`
+            : `This page is attached to your first message — ${t.title}`
+          : `The agent can ask to view this tab — ${t.title}`,
+        onRemove: attachedFirst ? () => dismissTab(t.tabId) : undefined,
       })
     }
     for (const m of shownMentions) {
@@ -3659,9 +3726,11 @@ export default function Chat({
           <div className="empty-state">
             <div className="empty-title">How can I help?</div>
             <div className="empty-hint">
-              The tab you're on is attached to your first message. @mention another tab to share
-              it, type @memory to have me draw on what I remember, type / to run one of your
-              skills, or snip a screenshot with the camera.
+              {companionTabs.length > 0
+                ? 'Both tabs in your split are attached to your first message.'
+                : "The tab you're on is attached to your first message."}{' '}
+              @mention another tab to share it, type @memory to have me draw on what I remember,
+              type / to run one of your skills, or snip a screenshot with the camera.
             </div>
           </div>
         )}

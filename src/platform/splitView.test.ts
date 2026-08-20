@@ -2,6 +2,8 @@ import { afterEach, expect, test, vi } from 'vitest'
 import {
   SPLIT_VIEW_ID_NONE,
   activeTabsIn,
+  collectShowing,
+  showingTabsIn,
   inSameSplit,
   isShowing,
   focusPaneForCapture,
@@ -199,4 +201,71 @@ test('focusPaneForCapture reports failure rather than throwing', async () => {
     { updateFails: true },
   )
   expect(await focusPaneForCapture({ id: 2, windowId: 10, splitViewId: 9 })).toBe(false)
+})
+
+// --- collectShowing --------------------------------------------------------
+
+test('collectShowing returns just the active tab outside a split', () => {
+  const active = [{ id: 1, splitViewId: SPLIT_VIEW_ID_NONE }]
+  const win = [...active, { id: 2, splitViewId: SPLIT_VIEW_ID_NONE }]
+  expect(collectShowing(active, win).map((t) => t.id)).toEqual([1])
+})
+
+test('collectShowing adds the partner when only the focused half is active', () => {
+  const active = [{ id: 1, splitViewId: 9 }]
+  const win = [{ id: 1, splitViewId: 9 }, { id: 2, splitViewId: 9 }, { id: 3, splitViewId: SPLIT_VIEW_ID_NONE }]
+  expect(collectShowing(active, win).map((t) => t.id)).toEqual([1, 2])
+})
+
+test('collectShowing dedupes when both halves are reported active', () => {
+  const active = [{ id: 1, splitViewId: 9 }, { id: 2, splitViewId: 9 }]
+  const win = [...active, { id: 3, splitViewId: SPLIT_VIEW_ID_NONE }]
+  expect(collectShowing(active, win).map((t) => t.id)).toEqual([1, 2])
+})
+
+// [0] must stay the pane holding focus — callers treat it as the primary.
+test('collectShowing keeps active tabs ahead of companions', () => {
+  const active = [{ id: 5, splitViewId: 9 }]
+  const win = [{ id: 2, splitViewId: 9 }, { id: 5, splitViewId: 9 }]
+  expect(collectShowing(active, win).map((t) => t.id)).toEqual([5, 2])
+})
+
+test('collectShowing ignores tabs with no id', () => {
+  const active = [{ id: 1, splitViewId: 9 }]
+  const win = [{ id: 1, splitViewId: 9 }, { splitViewId: 9 }, { id: 2, splitViewId: 9 }]
+  expect(collectShowing(active, win).map((t) => t.id)).toEqual([1, 2])
+})
+
+test('showingTabsIn skips the second query entirely when nothing is split', async () => {
+  const { query } = stubTabs([
+    { id: 1, windowId: 10, active: true, splitViewId: SPLIT_VIEW_ID_NONE },
+    { id: 2, windowId: 10, active: false, splitViewId: SPLIT_VIEW_ID_NONE },
+  ])
+  expect((await showingTabsIn(10)).map((t) => t.id)).toEqual([1])
+  expect(query).toHaveBeenCalledTimes(1)
+})
+
+test('showingTabsIn returns both panes of a split', async () => {
+  const tabs = [
+    { id: 1, windowId: 10, active: true, splitViewId: 9 },
+    { id: 2, windowId: 10, active: false, splitViewId: 9 },
+    { id: 3, windowId: 10, active: false, splitViewId: SPLIT_VIEW_ID_NONE },
+  ]
+  stubTabs(tabs)
+  expect((await showingTabsIn(10)).map((t) => t.id)).toEqual([1, 2])
+})
+
+test('showingTabsIn falls back to the active tabs when the window query fails', async () => {
+  let calls = 0
+  vi.stubGlobal('chrome', {
+    tabs: {
+      query: vi.fn(async (info: Record<string, unknown>) => {
+        calls++
+        if (info.active === true) return [{ id: 1, windowId: 10, splitViewId: 9 }]
+        throw new Error('boom')
+      }),
+    },
+  })
+  expect((await showingTabsIn(10)).map((t) => t.id)).toEqual([1])
+  expect(calls).toBe(2)
 })
