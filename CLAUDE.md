@@ -29,19 +29,45 @@ The product is "Lychee AI"; the agent calls itself "Lychee" (`DEFAULT_SYSTEM_PRO
 
 Load the extension: `chrome://extensions` → Developer mode → Load unpacked → select `dist/`.
 
-## Verifying a change
+## Browser-automation testing of agent capabilities
 
-There is a growing **Vitest** suite (`npm test`, or `npm run test:watch`) — 138 `*.test.ts` files (~1,820 tests) sitting beside the pure, Chrome-independent modules they cover (tool discovery, provider profiles, screenshot/stitch planning, browse policy, region indexing, math repair, citations, the approval queue, the sandbox CSP, …). Add unit tests for new pure logic. Most of the codebase is Chrome-coupled, though: to confirm a change works end to end, run `npm run build`, reload the unpacked extension in `chrome://extensions`, then open the side panel and exercise the affected flow. The `/verify-extension` skill runs this end to end.
+Most of what this project does — the turn loop, tool disclosure, approval gates, perception, page control — cannot be reached from Vitest at all. Testing it means driving the built extension in a real browser and letting a real model take real turns. **When you do that, always point it at the local LM Studio endpoint. Never a hosted provider:** no key, no spend, no rate limit, and an automated run can burn a lot of turns without anyone watching.
 
-## Code style
+| | |
+|---|---|
+| Base URL | `http://127.0.0.1:1234/v1` |
+| Provider `kind` | `lmstudio` (rides the OpenAI-compatible adapter — see `src/data/providerProfiles.ts`) |
+| Model | `google/gemma-4-26b-a4b` |
+| `apiKey` | any non-empty string — LM Studio ignores it, the settings UI and `createModel` expect one |
 
-No linter or formatter is configured — these are convention-only, so match them by hand:
+That model is the pick for what it lets you actually exercise, confirmed from LM Studio's own catalog (`curl -s http://127.0.0.1:1234/api/v0/models` — the richer native endpoint the profile already uses for listing; `/v1/models` returns bare ids):
 
-- **No semicolons** (ASI style).
-- **Single quotes** for JS/TS strings.
-- **2-space indentation.**
-- Prefer `interface` for object/record shapes; reserve `type` for unions and aliases.
-- Document exported types/functions with `/** ... */`; explain non-obvious *why* in block comments (the codebase does this heavily).
+- **`type: "vlm"`** — it genuinely reads images, so the runtime vision probe (`src/agent/vision.ts`) resolves *capable* and the `imageQueue` path runs for real. Under a text-only model every perception test silently degrades down the blind/`planShotDelivery` ladder — the opposite of what you were trying to check, and it passes quietly.
+- **`capabilities: ["tool_use"]`** — function calling works, so the agent loop, progressive disclosure and the approval cards all actually execute. Nearly every interesting path here is unreachable without it.
+
+**The harness.** Launch a *persistent, headed* context with the unpacked build (MV3 extensions load no other way), take the extension id from the service worker, then seed the provider from an extension page and reload:
+
+```js
+const ctx = await chromium.launchPersistentContext(tmpdir, {
+  executablePath: '<ms-playwright>/chromium-*/chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing',
+  headless: false,
+  args: [`--disable-extensions-except=${dist}`, `--load-extension=${dist}`],
+})
+const extId = new URL((ctx.serviceWorkers()[0] ?? await ctx.waitForEvent('serviceworker')).url()).host
+// …then, from chrome-extension://<extId>/sidepanel.html (a fully privileged extension page):
+chrome.storage.local.set({ settings: {
+  providers: [{ id: 'p1', kind: 'lmstudio', name: 'LM Studio', baseURL: 'http://127.0.0.1:1234/v1',
+                apiKey: 'x', models: ['google/gemma-4-26b-a4b'] }],
+  selected: { providerId: 'p1', modelId: 'google/gemma-4-26b-a4b' },
+  systemPrompt: '…', tabAccess: 'active-tab', onboarded: true,
+}})
+```
+
+A plaintext `apiKey` is fine — the vault only unseals `lysec1.` strings. **Omit every optional settings field you are not testing:** a malformed one (`observability: {enabled:false}` is not a valid `ObservabilityConfig`) unmounts the entire React tree, and the only symptom is a `.startsWith` TypeError whose stack names a Vite chunk rather than the real culprit. Then drive the composer (`textarea` → fill → Enter) and assert on the rendered transcript. Budget real time: a local model may have to load before it generates, so allow tens of seconds per turn rather than the couple you would give a hosted endpoint.
+
+**One trap.** The `lmstudio` profile's `defaultContextLimit` is **32000**, while this model reports **262144**. Compaction fires at `limit × 0.75`, so a long-horizon test starts folding history around 24k tokens for no reason. Override per model when that matters — `modelConfigs['google/gemma-4-26b-a4b'].contextLimit = 262144` (`resolveContextLimit`; per-model beats the profile default). Do not raise the profile default instead: it is conservative on purpose, because guessing low is invisible and guessing high is a dead turn.
+
+**When not to use a model at all.** If the assertion is about the *exact wire format* — which parts a message carries, whether an image or PDF survived the planner, what a context line says — run a local stub OpenAI-compatible server and assert on the recorded request bodies. It is instant, deterministic, and checks the thing you actually care about; a live model only adds latency and nondeterminism to a question that has one right answer.
 
 ## Architecture invariants
 
