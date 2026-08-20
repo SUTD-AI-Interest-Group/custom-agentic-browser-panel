@@ -1450,12 +1450,26 @@ export default function Chat({
       const split = (info as { splitViewId?: number }).splitViewId !== undefined
       if (info.title || info.status === 'complete' || split) void refresh()
     }
+    // Closing or moving a tab out changes what is on screen while firing NEITHER
+    // of the events above. That was invisible while this only tracked the active
+    // tab — you cannot close the focused tab without something else becoming
+    // focused, which fires onActivated — but a split has a second pane that can
+    // be closed with the focus never moving, and without these listeners it
+    // lingered in companionTabs and kept being announced to the model as still
+    // open. Detach is the same hazard: dragging a pane into its own window
+    // leaves the original window showing one page and fires no activation.
     chrome.tabs.onActivated.addListener(onActivated)
     chrome.tabs.onUpdated.addListener(onUpdated)
+    chrome.tabs.onRemoved.addListener(onActivated)
+    chrome.tabs.onDetached.addListener(onActivated)
+    chrome.tabs.onAttached.addListener(onActivated)
     return () => {
       cancelled = true
       chrome.tabs.onActivated.removeListener(onActivated)
       chrome.tabs.onUpdated.removeListener(onUpdated)
+      chrome.tabs.onRemoved.removeListener(onActivated)
+      chrome.tabs.onDetached.removeListener(onActivated)
+      chrome.tabs.onAttached.removeListener(onActivated)
     }
   }, [hidden])
 
@@ -2237,11 +2251,43 @@ export default function Chat({
       // it as background material, when the reason it is here is that the user
       // is looking at both at once — which is what makes "compare these" or
       // "does this match that" answerable at all.
+      //
+      // Past tense, and deliberately so. This sentence is frozen into the message
+      // and replayed on every later turn, so a present-tense claim ("can see them
+      // both right now") keeps asserting a split that may have been dissolved
+      // several turns ago — which is exactly how the model came to insist two
+      // tabs were still open after one had been closed. Everything embedded in a
+      // user message is a statement about send time; the live state is the
+      // on-screen line below.
       const split =
         (companions?.length ?? 0) > 0
-          ? `\n[The user has these open side by side in a split view and can see them both right now.]`
+          ? `\n[The user had these open side by side in a split view when this message was sent.]`
           : ''
       modelText = `${text}\n\n[Current content of the tab${syncedTabs.length > 1 ? 's' : ''} shared with you, synced at send time:]${split}\n${blocks.join('\n\n')}${omit}`
+    }
+    // What is on screen RIGHT NOW — identity only (title + url), never content,
+    // so it costs a couple of lines and carries nothing the attach rules did not
+    // already decide to share.
+    //
+    // Added to every user message, not just the ones that attach a page, because
+    // the attach rules deliberately fire rarely: content auto-attaches on the
+    // first message and on a deictic reference, and `sharedTabsRef` suppresses
+    // re-sending a page already in context. That left the model answering "what
+    // can you see?" and "what about now?" purely from frozen history — naming a
+    // second split pane the user had since closed, and doing it confidently
+    // because nothing in the conversation ever contradicted it. A tool call
+    // could have found the truth, but needing one to answer "what can you see"
+    // is the round trip this whole feature exists to remove.
+    //
+    // The supersede clause is what makes replay safe: every one of these lines
+    // is true of its own message, and the newest is the current state.
+    const onScreenNow = currentTab ? [currentTab, ...companionTabs] : []
+    if (onScreenNow.length > 0) {
+      const list = onScreenNow.map((t) => `${JSON.stringify(t.title)} (${t.url})`).join(', ')
+      const how = onScreenNow.length > 1 ? ', shown side by side in a split view' : ''
+      modelText =
+        `${modelText}\n\n[Open on screen right now: ${list}${how}. ` +
+        `This supersedes any earlier "open on screen" line — the user opens, closes and re-splits tabs as the conversation goes on.]`
     }
     if (activeSelection) {
       const snippet = activeSelection.slice(0, SELECTION_MAX)
