@@ -17,19 +17,23 @@ for that history.
 
 ---
 
-## [0.4.0] — 2026-08-20 — *Chrome Web Store update*
+## [0.4.0] — 2026-08-21 — *Chrome Web Store update*
 
 The third store release, and the first whose headline is durability rather than reach. A turn
 can now be *seen* (token counts, cost, an optional local step trace), *survived* (a long chat
 folds instead of dying on a context-length rejection; a turn interrupted by closing the panel
 can be resumed), and *taken back* (page control keeps a list of what it changed and offers
-undo). Alongside that, the composer accepts office documents, memory consolidation moved
-somewhere it can actually finish, and a second whole-codebase adversarial audit closed four
-criticals — including a shipped feature, `RunCode`, that had never once run in a real browser.
+undo). Alongside that, the composer accepts office documents, the assistant can read local
+files and finds PDFs whose URL never said so, memory consolidation moved somewhere it can
+actually finish, and a second whole-codebase adversarial audit closed four criticals —
+including a shipped feature, `RunCode`, that had never once run in a real browser.
 
 **No permission changes.** `public/manifest.json` differs from the published `0.3.0` in the
 version string and nothing else, so existing installs update without being disabled for a
-re-grant.
+re-grant. Local-file reading is *not* an exception to that: `<all_urls>` already covered
+`file://`, and the missing piece was always the per-extension **"Allow access to file URLs"**
+switch, which no manifest edit and no `chrome.permissions.request` can grant — only the user,
+in `chrome://extensions`.
 
 **One disclosure caught up with the code.** Office-document attachments shipped on 2026-08-08
 and were not reflected in `PRIVACY.md` or the store listing's data-use table, both of which
@@ -37,8 +41,42 @@ still said "images, PDFs, and text files". Corrected in this release, along with
 own file picker, whose `accept` filter had never listed the office formats — dragging a `.docx`
 in worked, but the **+** button's dialog hid it.
 
-Contents: the four milestones below dated 2026-08-08, 2026-08-09, 2026-08-10 and 2026-08-11, in
-full.
+Contents: the five milestones below dated 2026-08-08, 2026-08-09, 2026-08-10, 2026-08-11 and
+2026-08-20, in full.
+
+---
+
+## [2026-08-20] — Local files, and PDFs the URL never named
+
+Three things the assistant could not see, for two unrelated reasons.
+
+### Added
+
+- **Local files are readable** (`1887401`) — Chrome refuses a `file://` injection with
+  *"Extension manifest must request permission to access this host"*, which is misleading:
+  nothing about the manifest is wrong. Verified against a real Chromium that `<all_urls>`
+  already covers `file://` once the user flips **"Allow access to file URLs"** on the
+  extension's own card — a switch no manifest edit and no `permissions.request` can grant.
+  `classifyPageAccess` (pure, tested) now names the real obstacle before anything touches the
+  page, every read path routes through it, and the one *fixable* case gets a button into that
+  card. Calling a local file "browser-internal" told the user to give up on something one click
+  away.
+- **PDFs served from a path with no `.pdf` suffix** (`1887401`) — `arxiv.org/pdf/<id>` is
+  `application/pdf`, and the old URL test missed it, so `ReadPage` read a blank page and never
+  mentioned `ReadPdf`. `document.contentType` is the authority now, and it costs nothing: the
+  injection was already in flight.
+- **PDFs embedded in an ordinary page** (`1887401`) — how course sites serve readings. The tab
+  URL is the wrapper; the bytes are elsewhere. Found by scanning the top frame's own
+  `embed`/`object`/`iframe`, because — measured in a real browser —
+  `executeScript({allFrames:true})` never enumerates a cross-origin PDF frame. A same-origin one
+  *is* enumerated, which is exactly how this looks solved if you only test a local fixture.
+  `blob:` embeds are deliberately skipped: the panel cannot fetch them, and a broken fetch is no
+  better than a blank page.
+
+### Fixed
+
+- `tabIndex` stopped treating `file://` as permanently unscriptable and gates it on the switch
+  instead, so a local file in the tab list is now described rather than silently skipped.
 
 ---
 
