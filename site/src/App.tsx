@@ -7,13 +7,9 @@ import Privacy from './pages/Privacy'
 
 export const REPO = 'https://github.com/SUTD-AI-Interest-Group/custom-agentic-browser-panel'
 
-/**
- * The Chrome Web Store listing does not exist yet. Everything CTA-shaped reads
- * this one constant: while it is null the buttons render their pre-launch
- * state, and at launch a single URL here turns the whole site live. No layout
- * changes, nothing else to remember.
- */
-export const STORE_URL: string | null = null
+/** Every download CTA reads this one Chrome Web Store URL. */
+export const STORE_URL =
+  'https://chromewebstore.google.com/detail/jijmdjncddemapjkbidjdbfbjmonagpn/preview?hl=en&authuser=0'
 
 export function Cta({
   variant = 'primary',
