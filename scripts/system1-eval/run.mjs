@@ -87,6 +87,8 @@ function bundleHarness() {
   const out = path.join(OUT_DIR, 'harness.js')
   execFileSync(path.join(repo, 'node_modules/.bin/esbuild'), [
     path.join(here, 'harness.ts'), '--bundle', '--format=iife', '--platform=browser', '--target=es2022',
+    // MODE too: weightsManifest.ts honours the pin override only in this mode.
+    `--define:import.meta.env.MODE=${JSON.stringify('system1-eval')}`,
     `--define:import.meta.env.VITE_SYSTEM1_PIN=${JSON.stringify(pin)}`, `--outfile=${out}`, '--log-level=warning',
   ])
   return fs.readFileSync(out, 'utf8')

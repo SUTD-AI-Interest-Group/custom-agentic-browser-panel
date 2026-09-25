@@ -41,11 +41,13 @@ agent capabilities" (LM Studio `google/gemma-4-26b-a4b` is the only model endpoi
 ## Running it
 
 The model is not published yet, so build an eval extension with the pin override
-(never commit a build):
+(never commit a build). The override is honoured only under `--mode system1-eval`
+— an ordinary build ignores it, and hides the Experimental toggle while the
+committed pin is empty:
 
 ```bash
 VITE_SYSTEM1_PIN='{"repo":"local/von","revision":"local","manifestSha256":"<sha256 of out/manifest.json>"}' \
-  npx vite build --outDir /tmp/dist-eval --emptyOutDir
+  npx vite build --mode system1-eval --outDir /tmp/dist-eval --emptyOutDir
 EVAL_DIST=/tmp/dist-eval EVAL_PROFILE=/tmp/s1-profile \
   EVAL_PLAYWRIGHT=/path/to/node_modules/playwright node scripts/system1-eval/run.mjs
 EVAL_PLAYWRIGHT=/path/to/node_modules/playwright node scripts/system1-eval/ep-placement.mjs webgpu

@@ -12,7 +12,10 @@
 // of weakening (or temporarily editing) the committed constant. A malformed
 // override throws at module load — a broken eval build must fail loudly, not
 // silently fall back to the empty pin and look like it's testing something it
-// isn't.
+// isn't. The override is honoured ONLY in a `--mode system1-eval` build, so a
+// VITE_SYSTEM1_PIN that happens to be set in a release builder's environment
+// (a shell profile, a stray .env) cannot put an unreviewed pin in a shipped
+// build.
 export interface WeightsPin {
   repo: string
   revision: string
@@ -43,5 +46,6 @@ function parsePinOverride(raw: string): WeightsPin {
   return { repo: p.repo, revision: p.revision, manifestSha256: p.manifestSha256 }
 }
 
-const override = import.meta.env.VITE_SYSTEM1_PIN
+export const EVAL_MODE = 'system1-eval'
+const override = import.meta.env.MODE === EVAL_MODE ? import.meta.env.VITE_SYSTEM1_PIN : undefined
 export const WEIGHTS_PIN: WeightsPin = override ? parsePinOverride(override) : EMPTY_PIN
