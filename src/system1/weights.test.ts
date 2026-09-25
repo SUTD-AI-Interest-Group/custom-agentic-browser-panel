@@ -12,7 +12,8 @@ class FakeCache {
   store = new Map<string, Response>()
   async put(url: string, res: Response) { this.store.set(url, res) }
   async match(url: string) { const r = this.store.get(url); return r ? r.clone() : undefined }
-  async delete(url: string) { return this.store.delete(url) }
+  async delete(key: string | Request) { return this.store.delete(typeof key === 'string' ? key : key.url) }
+  async keys() { return [...this.store.keys()].map((url) => new Request(url)) }
 }
 
 async function fixture(corrupt?: string) {
@@ -72,6 +73,57 @@ describe('downloadWeights', () => {
     const cache = new FakeCache()
     await expect(downloadWeights(pin, { fetch: fetchFn as any, cache })).rejects.toThrow(/model_q4.onnx/)
     expect(await cache.match(fileUrl(pin, 'model_q4.onnx'))).toBeUndefined()
+  })
+  it('stops a file that runs past its manifest size, and caches nothing for it', async () => {
+    const { pin, fetchFn } = await fixture()
+    const cache = new FakeCache()
+    let cancelled = false
+    const oversized = (url: string) => {
+      if (url !== fileUrl(pin, 'model_q4.onnx')) return fetchFn(url)
+      // Streams far more than the 5 bytes declared, one chunk at a time.
+      let sent = 0
+      return Promise.resolve(new Response(new ReadableStream<Uint8Array>({
+        pull(c) { if (sent++ < 1000) c.enqueue(enc('MODELMODEL')); else c.close() },
+        cancel() { cancelled = true },
+      })))
+    }
+    await expect(downloadWeights(pin, { fetch: vi.fn(oversized) as any, cache })).rejects.toThrow(/larger than its manifest/)
+    expect(cancelled).toBe(true)
+    expect(await cache.match(fileUrl(pin, 'model_q4.onnx'))).toBeUndefined()
+  })
+  it('rejects a file that ends short of its manifest size', async () => {
+    const { pin, fetchFn } = await fixture()
+    const short = (url: string) => (url === fileUrl(pin, 'model_q4.onnx')
+      ? Promise.resolve(new Response(new ReadableStream({ start(c) { c.enqueue(enc('MOD')); c.close() } })))
+      : fetchFn(url))
+    await expect(downloadWeights(pin, { fetch: vi.fn(short) as any, cache: new FakeCache() })).rejects.toThrow(/integrity/)
+  })
+  it('caches the exact verified bytes', async () => {
+    const { pin, fetchFn } = await fixture()
+    const cache = new FakeCache()
+    await downloadWeights(pin, { fetch: fetchFn as any, cache })
+    expect(await (await cache.match(fileUrl(pin, 'model_q4.onnx')))!.text()).toBe('MODEL')
+  })
+  it("deletes an earlier revision's cached files before downloading, keeping the current pin's", async () => {
+    const { pin, fetchFn } = await fixture()
+    const cache = new FakeCache()
+    const old = { ...pin, revision: 'old-rev' }
+    const other = { ...pin, repo: 'someone/else' }
+    await cache.put(fileUrl(old, 'model_q4.onnx'), new Response('OLD'))
+    await cache.put(fileUrl(old, 'manifest.json'), new Response('{}'))
+    await cache.put(fileUrl(other, 'model_q4.onnx'), new Response('OTHER'))
+    await cache.put(fileUrl(pin, 'von.json'), new Response('{"a":1}')) // current pin: kept
+    const deleted: string[] = []
+    const del = cache.delete.bind(cache)
+    cache.delete = async (k: string | Request) => { deleted.push(typeof k === 'string' ? k : k.url); return del(k) }
+    await downloadWeights(pin, { fetch: fetchFn as any, cache })
+    expect(deleted.sort()).toEqual([
+      fileUrl(old, 'manifest.json'),
+      fileUrl(old, 'model_q4.onnx'),
+      fileUrl(other, 'model_q4.onnx'),
+    ].sort())
+    expect([...cache.store.keys()].every((u) => u.startsWith(fileUrl(pin, '')))).toBe(true)
+    expect(cache.store.size).toBe(3)
   })
   it('honours abort', async () => {
     const { pin, fetchFn } = await fixture()
