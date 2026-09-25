@@ -16,7 +16,8 @@
     "offscreen",
     "notifications",
     "contextMenus",
-    "identity"
+    "identity",
+    "unlimitedStorage"
   ],
   "optional_permissions": [
     "history",
