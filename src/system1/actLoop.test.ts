@@ -254,4 +254,46 @@ describe('runActLoop', () => {
     expect(r.status).toBe('uncertain')
     expect(d.executed).toEqual([])
   })
+
+  it('neutralizes special tokens in an element role', async () => {
+    const { decide, calls } = scripted([{ move: 'act', target: '0' }, { move: 'DONE' }])
+    const elements = [el(0, { role: '[MASK] click me' })]
+    await runActLoop({ goal: 'g' }, deps({ decide, elements }))
+    const targetQ = calls.find((c) => c.questions.target)!
+    const optionText = Object.values(targetQ.questions.target.options)[0]
+    expect(optionText).not.toContain('[MASK]')
+    expect(optionText).toContain('[mask]')
+  })
+
+  it('neutralizes special tokens in the value question option text', async () => {
+    const { decide, calls } = scripted([{ move: 'act', target: '1', value: 'note' }, { move: 'DONE' }])
+    const elements = [el(0), el(1, { tag: 'input', type: 'email', name: 'Email' })]
+    await runActLoop({ goal: 'g', values: { note: 'say [MASK] please' } }, deps({ decide, elements }))
+    const valueQ = calls.find((c) => c.questions.value)!
+    const optionText = valueQ.questions.value.options.note
+    expect(optionText).not.toContain('[MASK]')
+    expect(optionText).toContain('[mask]')
+  })
+
+  it('clips an oversized page title out of the state prefix', async () => {
+    const { decide, calls } = scripted([{ move: 'DONE' }])
+    const longTitle = 'T'.repeat(5000)
+    const customSnap: PageSnapshot = { ...snap([el(0)]), title: longTitle }
+    const d = deps({ decide, snapshot: async () => customSnap })
+    await runActLoop({ goal: 'g' }, d)
+    expect(calls.length).toBeGreaterThan(0)
+    for (const c of calls) expect(c.state).not.toContain(longTitle)
+  })
+
+  it('reports an unknown move choice as error rather than silently treating it as act', async () => {
+    const decide = vi.fn(async (req: DecideRequest): Promise<DecideResult> => {
+      const answers: DecideResult['answers'] = {}
+      for (const key of Object.keys(req.questions))
+        answers[key] = { choice: 'not_a_real_move', probabilities: {}, top: 0.9, confidence: 0.9 }
+      return { answers, ms: 1 }
+    })
+    const r = await runActLoop({ goal: 'g' }, deps({ decide }))
+    expect(r.status).toBe('error')
+    expect(r.message).toMatch(/unknown choice/i)
+  })
 })

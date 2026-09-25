@@ -65,7 +65,10 @@ const neutralize = (s: string): string => s.replace(SPECIAL_TOKENS, (m) => m.toL
 const clip = (s: string, n: number) => (s.length > n ? `${s.slice(0, n - 1)}…` : s)
 const describe = (el: IndexedElement, op: string) => {
   const tag = el.tag.toLowerCase()
-  const kind = el.role || (tag === 'input' ? `${el.type || 'text'} field` : tag)
+  // el.role is arbitrary page-authored ARIA text (domIndex.ts), same
+  // provenance as el.name/el.value — neutralize it too rather than only
+  // the tag/type fallback, which are internal, bracket-free strings.
+  const kind = neutralize(el.role || (tag === 'input' ? `${el.type || 'text'} field` : tag))
   const name = neutralize(el.name || '(unnamed)')
   const cur = el.value ? ` (currently "${clip(neutralize(el.value), 30)}")` : ''
   return `[${el.index}] ${kind} "${clip(name, 60)}"${cur} → ${op}`
@@ -158,10 +161,19 @@ export async function runActLoop(
       const op = opFor(el)
       return op === 'click' || valueKeys.length > 0
     })
-    const done = steps.map((s, i) => `${i + 1}. ${s.action}${s.label ? ` "${s.label}"` : ''}`).join('; ') || 'nothing yet'
+    // Cap the recap to the last 8 steps so a long-running chain can't grow
+    // "Done so far" without bound; numbering stays absolute (not
+    // renumbered from 1) so a trimmed recap doesn't misrepresent progress.
+    const recentSteps = steps.slice(-8)
+    const stepOffset = steps.length - recentSteps.length
+    const done = recentSteps.map((s, i) => `${stepOffset + i + 1}. ${s.action}${s.label ? ` "${s.label}"` : ''}`).join('; ') || 'nothing yet'
+    // Clip before neutralize: goal/title are the two unbounded-length
+    // inputs in the state prefix (element/value text is already clipped in
+    // describe()), so this closes the remaining overflow axis alongside
+    // the target-question tournament above.
     const state = [
-      `Goal: ${neutralize(input.goal)}`,
-      `Page: ${neutralize(snap.title)} (${snap.origin})`,
+      `Goal: ${neutralize(clip(input.goal, 300))}`,
+      `Page: ${neutralize(clip(snap.title, 150))} (${snap.origin})`,
       `Done so far: ${done}`,
       valueKeys.length ? `Provided values: ${valueKeys.join(', ')}` : 'Provided values: none',
     ].join('\n')
@@ -181,6 +193,8 @@ export async function runActLoop(
     }
     const move = result.answers.move
     if (move.top < ACT_CONFIDENCE) return { status: 'uncertain', steps, message: `unsure of the next move (p=${move.top.toFixed(2)})`, elements: snap.text }
+    if (!Object.prototype.hasOwnProperty.call(moveOptions, move.choice))
+      return { status: 'error', steps, message: 'System-1 returned an unknown choice' }
     if (move.choice === 'DONE') return { status: 'done', steps, elements: snap.text }
     if (move.choice === 'BLOCKED') return { status: 'blocked', steps, elements: snap.text }
 
@@ -212,7 +226,7 @@ export async function runActLoop(
         try {
           v = await deps.decide({ state, questions: { value: {
             instructions: `Which provided value belongs in ${describe(el, op)}?`,
-            options: Object.fromEntries(valueKeys.map((k) => [k, `${k}: ${clip(values[k], 40)}`])),
+            options: Object.fromEntries(valueKeys.map((k) => [k, `${k}: ${clip(neutralize(values[k]), 40)}`])),
           } } })
         } catch (err) {
           return { status: 'error', steps, message: `System-1 engine failed: ${err instanceof Error ? err.message : String(err)}` }
