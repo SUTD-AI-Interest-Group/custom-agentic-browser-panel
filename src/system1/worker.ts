@@ -72,6 +72,16 @@ async function boot(m: Extract<System1WorkerRequest, { type: 'init' }>) {
     executionProviders: [{ name: 'webgpu', device }],
     graphOptimizationLevel: 'all',
   })
+  // WebGPU shader-pipeline compilation happens lazily, on a session's first
+  // `run()` — NOT inside `InferenceSession.create()` above. Without a warm-up,
+  // that cost lands inside the first real `decide()` call's DECIDE_TIMEOUT_MS
+  // budget (engine.ts, 15s) rather than here, under the much larger
+  // BOOT_TIMEOUT_MS (120s) — and could time out a legitimate first request for
+  // a reason that has nothing to do with that request. Score a throwaway
+  // two-option question through the exact real path (packPrompt →
+  // planSequence → tokenizer → tensors → session.run → calibrate) before
+  // `ready` is posted, so the compile cost is paid once, here, and discarded.
+  await scoreQuestion('warm-up', { instructions: '', options: { a: 'a', b: 'b' } })
 }
 
 async function scoreQuestion(state: string, q: DecideRequest['questions'][string]): Promise<DecideAnswer> {

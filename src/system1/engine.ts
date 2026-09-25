@@ -1,27 +1,70 @@
 // Panel-side client for the System-1 worker — the pdfEngine.ts analog. One
 // module Worker, booted lazily, FIFO-serialized (one WebGPU session; a queued
 // call's timeout starts when it actually begins), rebuilt if a round trip
-// wedges. `healthy` goes false on a boot failure or wedge so resolveSystem1
-// stops offering Act until a later boot succeeds.
+// wedges. `healthy` goes false on a boot failure, a decide timeout, or a
+// post-boot worker crash — but only for HEALTH_COOLDOWN_MS, not forever: a
+// fixed cooldown so resolveSystem1 stops offering Act right after a real
+// failure without permanently stranding the whole panel session behind one
+// transient wedge (the only other way back would be reloading the
+// extension). A successful boot clears it immediately.
 import wasmUrl from 'onnxruntime-web/ort-wasm-simd-threaded.asyncify.wasm?url'
 import { WEIGHTS_PIN, fileUrl, loadCachedManifest, CACHE_NAME } from './weights'
 import type { DecideRequest, DecideResult, System1WorkerReply, System1WorkerRequest } from './protocol'
 
-// Reading ~400 MB from Cache Storage and compiling WebGPU pipelines, cold.
+// Reading ~400 MB from Cache Storage, compiling the ORT graph, and — via the
+// warm-up run in worker.ts's boot() — compiling the actual WebGPU shader
+// pipelines, which happens lazily on a session's first `run()` rather than in
+// `InferenceSession.create()`. All of that has to fit here, not in
+// DECIDE_TIMEOUT_MS.
 const BOOT_TIMEOUT_MS = 120_000
 const DECIDE_TIMEOUT_MS = 15_000
+// How long `healthy` stays false after a failure before a later call is
+// allowed to try booting again. Long enough that a genuinely broken
+// environment (crashed GPU process, corrupted cache) isn't retried on every
+// single turn; short enough that one transient wedge doesn't lock Act out of
+// the rest of the session.
+const HEALTH_COOLDOWN_MS = 60_000
 
 interface Pending { resolve: (r: DecideResult) => void; reject: (e: Error) => void; timer: number }
 
+/** Minimal surface this engine needs from a Worker — lets tests inject a fake (see officeEngine.ts's identical precedent). */
+export interface WorkerLike {
+  postMessage(msg: System1WorkerRequest): void
+  addEventListener(type: 'message', listener: (e: MessageEvent<System1WorkerReply>) => void): void
+  addEventListener(type: 'error', listener: (e: ErrorEvent) => void): void
+  terminate(): void
+}
+
+const realWorkerFactory = (): WorkerLike =>
+  new Worker(chrome.runtime.getURL('system1Worker.js'), { type: 'module' }) as unknown as WorkerLike
+
+/**
+ * `spawnWorker` is injectable (mirrors `OfficeEngine`'s `spawnWorker`,
+ * `src/platform/officeEngine.ts`) specifically so the health-cooldown and
+ * error-handling policy here can be exercised against a controllable fake
+ * Worker under Vitest — there is no browser Worker or chrome.runtime
+ * available there. See engine.test.ts.
+ */
 export class System1Engine {
-  private worker: Worker | null = null
+  private worker: WorkerLike | null = null
   private ready: Promise<void> | null = null
   private onReady: ((err?: Error) => void) | null = null
   private pending = new Map<string, Pending>()
   private queue: Promise<void> = Promise.resolve()
   private _healthy = true
+  private failedAt = 0
 
-  get healthy() { return this._healthy }
+  constructor(private readonly spawnWorker: () => WorkerLike = realWorkerFactory) {}
+
+  get healthy() {
+    if (this._healthy) return true
+    return Date.now() - this.failedAt >= HEALTH_COOLDOWN_MS
+  }
+
+  private markUnhealthy() {
+    this._healthy = false
+    this.failedAt = Date.now()
+  }
 
   private listener = (e: MessageEvent<System1WorkerReply>) => {
     const m = e.data
@@ -49,7 +92,7 @@ export class System1Engine {
       return await new Promise<DecideResult>((resolve, reject) => {
         const timer = window.setTimeout(() => {
           this.pending.delete(id)
-          this._healthy = false
+          this.markUnhealthy()
           this.destroy()
           reject(new Error('the System-1 engine stopped responding and was reset'))
         }, DECIDE_TIMEOUT_MS)
@@ -72,12 +115,23 @@ export class System1Engine {
       if (!manifest) throw new Error('the System-1 model is not downloaded')
       const model = manifest.files.find((f) => f.path.endsWith('.onnx'))
       if (!model) throw new Error('the model manifest lists no .onnx file')
-      const worker = new Worker(chrome.runtime.getURL('system1Worker.js'), { type: 'module' })
+      const worker = this.spawnWorker()
       worker.addEventListener('message', this.listener)
       // A worker that fails to even parse fires `error`, never `message` — so
       // without this the ready gate would sit until its timeout for what is an
-      // immediate, knowable failure. Same reasoning as PdfEngine.boot.
-      worker.addEventListener('error', (e) => { this.onReady?.(new Error(e.message || 'System-1 worker failed to start')); this.onReady = null })
+      // immediate, knowable failure. Same reasoning as PdfEngine.boot. A crash
+      // AFTER boot (onReady already consumed) has no boot promise left to
+      // reject, but may well have a `decide` in flight — left alone, that call
+      // would just sit until its own DECIDE_TIMEOUT_MS. Fail it now instead.
+      worker.addEventListener('error', (e) => {
+        if (this.onReady) {
+          this.onReady(new Error(e.message || 'System-1 worker failed to start'))
+          this.onReady = null
+          return
+        }
+        this.markUnhealthy()
+        this.destroy()
+      })
       this.worker = worker
       await new Promise<void>((resolve, reject) => {
         const t = window.setTimeout(() => reject(new Error('the System-1 engine did not start in time')), BOOT_TIMEOUT_MS)
@@ -93,8 +147,9 @@ export class System1Engine {
         } satisfies System1WorkerRequest)
       })
       this._healthy = true
+      this.failedAt = 0
     } catch (err) {
-      this._healthy = false
+      this.markUnhealthy()
       this.destroy()
       throw err
     }
