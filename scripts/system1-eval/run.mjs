@@ -14,8 +14,9 @@
 //               vs the golden fp32 probabilities.
 //   grounding — cases.json through the real actLoop target question.
 //   llm       — the same candidate lists put to gemma (one completion each).
-//   e2e       — three composer-driven tasks; EVAL_E2E_MODES of on, off and
-//               forced (toggle on + the prompt asks for Act). Default on,off.
+//   e2e       — three composer-driven tasks × EVAL_E2E_REPS (default 3) ×
+//               EVAL_E2E_MODES (default off,on,forced; forced = toggle on + the
+//               prompt asks for Act).
 import { createRequire } from 'node:module'
 import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
@@ -436,89 +437,178 @@ const TASKS = [
 ]
 const E2E_TIMEOUT_MS = Number(env.EVAL_E2E_TIMEOUT_MS ?? 8 * 60_000)
 
-async function phaseE2e(ctx, panel, panelUrl, fixtureUrl) {
-  const rows = []
-  const modes = (env.EVAL_E2E_MODES ?? 'on,off').split(',')
-  for (const mode of modes) {
-    for (const task of TASKS) {
-      // `forced` = toggle on AND the prompt tells the model to use Act — the
-      // only way to see Act's own end-to-end behaviour when the chat model
-      // would otherwise never pick it.
-      await seedSettings(panel, { system1: mode !== 'off' })
-      const fixture = await ctx.newPage()
-      await fixture.goto(fixtureUrl(task.page))
-      const tabId = await panel.evaluate(async (u) => (await chrome.tabs.query({})).find((t) => t.url === u)?.id, fixture.url())
-      // The fixture must be the ACTIVE tab (the panel binds its chat to the
-      // active tab of its window); the panel keeps running as a background tab.
-      await panel.evaluate((id) => chrome.tabs.update(id, { active: true }), tabId)
-      await panel.reload()
-      await sleep(2500)
-      const since = Date.now()
-      const approvals = []
-      log(`e2e ${task.id} [system1 ${mode}] start`)
-      const composer = panel.locator('textarea').first()
-      await composer.fill(mode === 'forced' ? `${task.prompt} Use the Act tool for the page actions.` : task.prompt)
-      await composer.press('Enter')
-      let seenStreaming = false
-      let idleSince = 0
-      let success = false
-      let ended = 'timeout'
-      while (Date.now() - since < E2E_TIMEOUT_MS) {
-        await sleep(1000)
-        const card = panel.locator('.approval-card').first()
-        if (await card.count()) {
-          const head = (await card.locator('.approval-header').textContent().catch(() => '')) ?? ''
-          approvals.push(head.trim())
-          log(`  approve: ${head.trim()}`)
-          await card.locator('button.btn.primary, button.btn.danger-solid').last().click().catch(() => {})
-          idleSince = 0
-          continue
-        }
-        success = await fixture.evaluate(task.check).catch(() => false)
-        const streaming = (await panel.locator('button.send-btn.stop').count()) > 0
-        if (streaming) { seenStreaming = true; idleSince = 0; continue }
-        if (seenStreaming) {
-          if (!idleSince) idleSince = Date.now()
-          if (Date.now() - idleSince > 4000) { ended = 'turn-ended'; break }
-        }
-      }
-      const wallMs = Date.now() - since
-      if (ended === 'timeout') await panel.locator('button.send-btn.stop').click().catch(() => {})
-      success = await fixture.evaluate(task.check).catch(() => false)
-      const pageState = await fixture.evaluate(task.state).catch(() => null)
-      const traces = await readTraces(panel, since)
-      const toolCalls = traces.flatMap((t) => t.steps.flatMap((s) => s.toolCalls.map((c) => c.name)))
-      const actOffered = traces.some((t) => t.steps.some((s) => s.activeTools.includes('Act')))
-      const steps = traces.reduce((a, t) => a + t.steps.length, 0)
-      // Act's own outputs, from the saved transcript (tool parts carry them).
-      const actResults = await panel.evaluate((since) => new Promise((resolve) => {
-        const req = indexedDB.open('lychee-conversations')
-        req.onerror = () => resolve([])
-        req.onsuccess = () => {
-          const all = req.result.transaction('conversations').objectStore('conversations').getAll()
-          all.onsuccess = () => {
-            const hits = []
-            for (const c of all.result) {
-              if ((c.updatedAt ?? 0) < since) continue
-              const j = JSON.stringify(c)
-              for (let i = j.indexOf('"toolName":"Act"'); i >= 0; i = j.indexOf('"toolName":"Act"', i + 1)) hits.push(j.slice(i, i + 700))
-            }
-            resolve(hits)
-          }
-          all.onerror = () => resolve([])
-        }
-      }), since).catch(() => [])
-      const lastReply = await panel.evaluate(() => {
-        const ms = document.querySelectorAll('.msg.assistant, .message.assistant, [data-role="assistant"]')
-        return ms.length ? ms[ms.length - 1].textContent.slice(0, 300) : null
+// Counts the System-1 worker's traffic from the panel side without touching
+// src/: installed before the panel's scripts run, it wraps `Worker` so the
+// engine's own worker (system1Worker.js) reports decides, Von ms and boot time.
+const VON_SPY = () => {
+  const W = window.Worker
+  window.__von = { decides: 0, failed: 0, ms: 0, boots: [] }
+  window.Worker = class extends W {
+    constructor(url, opts) {
+      super(url, opts)
+      if (!String(url).includes('system1Worker')) return
+      let initAt = 0
+      const post = this.postMessage.bind(this)
+      this.postMessage = (m, t) => { if (m && m.type === 'init') initAt = performance.now(); return post(m, t) }
+      this.addEventListener('message', (e) => {
+        const d = e.data
+        if (!d) return
+        if (d.type === 'result') { window.__von.decides++; window.__von.ms += d.result.ms }
+        if (d.type === 'failed') window.__von.failed++
+        if (d.type === 'ready' && initAt) window.__von.boots.push(Math.round(performance.now() - initAt))
       })
-      const row = { task: task.id, system1: mode, success, ended, wallMs, steps, actOffered, actCalls: toolCalls.filter((n) => n === 'Act').length, controlPageCalls: toolCalls.filter((n) => n === 'ControlPage').length, toolCalls, approvals, pageState, lastReply, actResults }
-      rows.push(row)
-      log(`e2e ${task.id} [system1 ${mode}] success=${success} ${ended} ${Math.round(wallMs / 1000)}s steps=${steps} Act×${row.actCalls} ControlPage×${row.controlPageCalls}`)
-      await fixture.close()
     }
   }
-  return rows
+}
+
+async function phaseE2e(ctx, panel, panelUrl, fixtureUrl) {
+  const rows = []
+  // `forced` = toggle on AND the prompt tells the model to use Act — the only
+  // way to see Act's own end-to-end behaviour when the chat model would
+  // otherwise never pick it. `on` = toggle on, model free to choose.
+  const modes = (env.EVAL_E2E_MODES ?? 'off,on,forced').split(',')
+  const reps = Number(env.EVAL_E2E_REPS ?? 3)
+  await panel.addInitScript(VON_SPY)
+  for (let rep = 0; rep < reps; rep++) {
+    for (const task of TASKS) {
+      // Interleave arms per task so drift in LM Studio (load, heat) hits every arm alike.
+      for (const mode of modes) rows.push(await runE2e(ctx, panel, fixtureUrl, task, mode, rep))
+    }
+  }
+  return { rows, summary: summarizeE2e(rows) }
+}
+
+async function runE2e(ctx, panel, fixtureUrl, task, mode, rep) {
+  await seedSettings(panel, { system1: mode !== 'off' })
+  const fixture = await ctx.newPage()
+  await fixture.goto(fixtureUrl(task.page))
+  const tabId = await panel.evaluate(async (u) => (await chrome.tabs.query({})).find((t) => t.url === u)?.id, fixture.url())
+  // The fixture must be the ACTIVE tab (the panel binds its chat to the
+  // active tab of its window); the panel keeps running as a background tab.
+  await panel.evaluate((id) => chrome.tabs.update(id, { active: true }), tabId)
+  await panel.reload()
+  await sleep(2500)
+  const since = Date.now()
+  const approvals = []
+  log(`e2e ${task.id} [${mode}] rep ${rep} start`)
+  const composer = panel.locator('textarea').first()
+  await composer.fill(mode === 'forced' ? `${task.prompt} Use the Act tool for the page actions.` : task.prompt)
+  await composer.press('Enter')
+  let seenStreaming = false
+  let idleSince = 0
+  let ended = 'timeout'
+  while (Date.now() - since < E2E_TIMEOUT_MS) {
+    await sleep(500)
+    const card = panel.locator('.approval-card').first()
+    if (await card.count()) {
+      const head = ((await card.locator('.approval-header').textContent().catch(() => '')) ?? '').trim()
+      // A card can outlive the click that settled it by a render or two; the
+      // same header again within 5 s is that card, not a new request.
+      const prev = approvals.at(-1)
+      if (!(prev && prev.head === head && Date.now() - prev.at < 5000)) {
+        approvals.push({ head, at: Date.now() })
+        log(`  approve: ${head}`)
+      }
+      await card.locator('button.btn.primary, button.btn.danger-solid').last().click().catch(() => {})
+      // Wait for that card to leave, so one card is never counted twice.
+      for (let k = 0; k < 20; k++) {
+        await sleep(150)
+        const still = await panel.locator('.approval-card .approval-header').first().textContent({ timeout: 200 }).catch(() => null)
+        if (still?.trim() !== head) break
+      }
+      idleSince = 0
+      continue
+    }
+    const streaming = (await panel.locator('button.send-btn.stop').count()) > 0
+    if (streaming) { seenStreaming = true; idleSince = 0; continue }
+    if (seenStreaming) {
+      if (!idleSince) idleSince = Date.now()
+      if (Date.now() - idleSince > 4000) { ended = 'turn-ended'; break }
+    }
+  }
+  // Submit → the moment the turn stopped streaming (the final answer).
+  const wallMs = (ended === 'turn-ended' ? idleSince : Date.now()) - since
+  if (ended === 'timeout') await panel.locator('button.send-btn.stop').click().catch(() => {})
+  // Success is the PAGE's state, never the model's claim.
+  const success = await fixture.evaluate(task.check).catch(() => false)
+  const pageState = await fixture.evaluate(task.state).catch(() => null)
+  await sleep(1500) // let the final transcript save land
+  const traces = await readTraces(panel, since)
+  const traceSteps = traces.flatMap((t) => t.steps)
+  const toolCalls = traceSteps.flatMap((s) => s.toolCalls.map((c) => c.name))
+  const tools = await readToolParts(panel, since)
+  const acts = tools.filter((t) => t.toolName === 'Act')
+  const actSteps = acts.reduce((a, t) => a + (Array.isArray(t.output?.steps) ? t.output.steps.length : 0), 0)
+  const controlActions = tools.filter((t) => t.toolName === 'ControlPage' && t.output && !t.output.error && !t.output.denied).length
+  const von = await panel.evaluate(() => window.__von ?? null).catch(() => null)
+  const lastReply = await panel.evaluate(() => {
+    const ms = document.querySelectorAll('.msg.assistant, .message.assistant, [data-role="assistant"]')
+    return ms.length ? ms[ms.length - 1].textContent.slice(0, 300) : null
+  }).catch(() => null)
+  const row = {
+    task: task.id, arm: mode, rep, success, ended, wallMs,
+    llmSteps: traceSteps.length,
+    inputTokens: traceSteps.reduce((a, s) => a + (s.usage?.inputTokens ?? 0), 0),
+    outputTokens: traceSteps.reduce((a, s) => a + (s.usage?.outputTokens ?? 0), 0),
+    actOffered: traceSteps.some((s) => s.activeTools.includes('Act')),
+    pageActions: controlActions + actSteps,
+    controlPageCalls: toolCalls.filter((n) => n === 'ControlPage').length,
+    actCalls: acts.length,
+    actSteps,
+    actStatuses: acts.map((t) => t.output?.status ?? (t.output?.error ? `error: ${t.output.error}` : 'none')),
+    actMessages: acts.map((t) => t.output?.message).filter(Boolean),
+    vonDecides: von?.decides ?? 0, vonFailed: von?.failed ?? 0, vonMs: von?.ms ?? 0, vonBootMs: von?.boots ?? [],
+    approvals: approvals.map((a) => a.head), toolCalls, pageState, lastReply,
+  }
+  log(`e2e ${task.id} [${mode}] rep ${rep} success=${success} ${ended} ${Math.round(wallMs / 1000)}s llmSteps=${row.llmSteps} tok=${row.inputTokens}+${row.outputTokens} actions=${row.pageActions} Act×${row.actCalls} ${JSON.stringify(row.actStatuses)} von=${row.vonDecides}/${row.vonMs}ms`)
+  await fixture.close()
+  return row
+}
+
+async function readToolParts(panel, since) {
+  // The saved transcript's UI tool parts ({type:'tool', toolCallId, toolName,
+  // input, output}) for this run's conversation, deduped by call id.
+  return panel.evaluate((since) => new Promise((resolve) => {
+    const req = indexedDB.open('lychee-conversations')
+    req.onerror = () => resolve([])
+    req.onsuccess = () => {
+      const all = req.result.transaction('conversations').objectStore('conversations').getAll()
+      all.onsuccess = () => {
+        const seen = new Map()
+        for (const c of all.result) {
+          if ((c.updatedAt ?? 0) < since) continue
+          for (const m of c.messages ?? []) for (const p of m.parts ?? []) {
+            if (p && p.type === 'tool' && p.toolName && p.toolCallId && !seen.has(p.toolCallId)) seen.set(p.toolCallId, { toolName: p.toolName, input: p.input, output: p.output })
+          }
+        }
+        resolve([...seen.values()])
+      }
+      all.onerror = () => resolve([])
+    }
+  }), since).catch(() => [])
+}
+
+function summarizeE2e(rows) {
+  const arms = [...new Set(rows.map((r) => r.arm))]
+  const tasks = [...new Set(rows.map((r) => r.task))]
+  const mean = (xs) => (xs.length ? Math.round(xs.reduce((a, b) => a + b, 0) / xs.length) : null)
+  const agg = (rs) => ({
+    runs: rs.length, success: rs.filter((r) => r.success).length,
+    wallMsMedian: pct(rs.map((r) => r.wallMs), 50), wallMsMean: mean(rs.map((r) => r.wallMs)),
+    llmStepsMean: round(rs.reduce((a, r) => a + r.llmSteps, 0) / rs.length, 1),
+    tokensMean: mean(rs.map((r) => r.inputTokens + r.outputTokens)),
+    inputTokensMean: mean(rs.map((r) => r.inputTokens)), outputTokensMean: mean(rs.map((r) => r.outputTokens)),
+    pageActionsMean: round(rs.reduce((a, r) => a + r.pageActions, 0) / rs.length, 1),
+    actCalls: rs.reduce((a, r) => a + r.actCalls, 0), actSteps: rs.reduce((a, r) => a + r.actSteps, 0),
+    actNonDone: rs.flatMap((r) => r.actStatuses).filter((s) => s !== 'done').length,
+    actStatuses: rs.flatMap((r) => r.actStatuses).reduce((a, s) => { a[s] = (a[s] ?? 0) + 1; return a }, {}),
+    vonDecides: rs.reduce((a, r) => a + r.vonDecides, 0), vonMs: rs.reduce((a, r) => a + r.vonMs, 0),
+    approvalsMean: round(rs.reduce((a, r) => a + r.approvals.length, 0) / rs.length, 1),
+  })
+  return {
+    byArm: Object.fromEntries(arms.map((a) => [a, agg(rows.filter((r) => r.arm === a))])),
+    byTaskArm: Object.fromEntries(tasks.map((t) => [t, Object.fromEntries(arms.map((a) => [a, agg(rows.filter((r) => r.task === t && r.arm === a))]))])),
+  }
 }
 
 async function readTraces(panel, since) {
@@ -568,7 +658,7 @@ function printSummary(r) {
     console.table(g.thresholds)
   }
   if (r.llm) console.log(`LLM baseline (${r.llm.model}): ${r.llm.correct}/${r.llm.cases} = ${r.llm.accuracyTop1}, p50 ${r.llm.ms.p50} ms, p95 ${r.llm.ms.p95} ms`)
-  if (r.e2e) console.table(r.e2e.map(({ task, system1, success, ended, wallMs, steps, actCalls, controlPageCalls }) => ({ task, system1, success, ended, s: Math.round(wallMs / 1000), steps, actCalls, controlPageCalls })))
+  if (r.e2e?.summary) console.table(Object.fromEntries(Object.entries(r.e2e.summary.byArm).map(([a, x]) => [a, { runs: x.runs, success: x.success, wallMedS: Math.round(x.wallMsMedian / 1000), llmSteps: x.llmStepsMean, tokens: x.tokensMean, actions: x.pageActionsMean, actCalls: x.actCalls, actNonDone: x.actNonDone, vonMs: x.vonMs }])))
   for (const s of r.skipped) console.log('SKIPPED', s)
   for (const v of r.verdict) console.log('VERDICT', v)
 }

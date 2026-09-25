@@ -1,5 +1,5 @@
 {
- "startedAt": "2026-09-25T18:45:30.727Z",
+ "startedAt": "2026-09-25T19:08:50.408Z",
  "env": {
   "lmStudio": "up",
   "webgpu": {
@@ -12,20 +12,1535 @@
   "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36"
  },
  "skipped": [],
- "model": {
-  "model": "von-1.2.0",
-  "variant": "q8",
-  "file": "model_q8.onnx",
-  "bytes": 616224170,
-  "cpuParity": {
-   "maxDeltaP": 0.0236,
-   "argmaxFlips": 0,
-   "probes": 9,
-   "invariance": 1e-05,
-   "gatePassed": true
+ "e2e": {
+  "rows": [
+   {
+    "task": "form",
+    "arm": "off",
+    "rep": 0,
+    "success": true,
+    "ended": "turn-ended",
+    "wallMs": 49781,
+    "llmSteps": 14,
+    "inputTokens": 57857,
+    "outputTokens": 1951,
+    "actOffered": false,
+    "pageActions": 7,
+    "controlPageCalls": 8,
+    "actCalls": 0,
+    "actSteps": 0,
+    "actStatuses": [],
+    "actMessages": [],
+    "vonDecides": 0,
+    "vonFailed": 0,
+    "vonMs": 0,
+    "vonBootMs": [],
+    "approvals": [
+     "Read the interactive elements on this page",
+     "Let the agent control 127.0.0.1:52999?",
+     "Click \u201cSend message\u201d",
+     "View the tab you are currently on"
+    ],
+    "toolCalls": [
+     "ReadPage",
+     "GetTool",
+     "ControlPage",
+     "GetTool",
+     "RequestPageControl",
+     "ControlPage",
+     "ControlPage",
+     "ControlPage",
+     "ControlPage",
+     "ControlPage",
+     "ControlPage",
+     "ReadPage",
+     "ControlPage"
+    ],
+    "pageState": {
+     "fullname": "Ada Lovelace",
+     "email": "ada@example.com",
+     "phone": "",
+     "topic": "Billing",
+     "message": "My last invoice was charged twice.",
+     "consent": "on"
+    },
+    "lastReply": null
+   },
+   {
+    "task": "form",
+    "arm": "on",
+    "rep": 0,
+    "success": false,
+    "ended": "turn-ended",
+    "wallMs": 52283,
+    "llmSteps": 13,
+    "inputTokens": 44129,
+    "outputTokens": 4083,
+    "actOffered": false,
+    "pageActions": 0,
+    "controlPageCalls": 8,
+    "actCalls": 0,
+    "actSteps": 0,
+    "actStatuses": [],
+    "actMessages": [],
+    "vonDecides": 0,
+    "vonFailed": 0,
+    "vonMs": 0,
+    "vonBootMs": [],
+    "approvals": [
+     "Read the interactive elements on this page"
+    ],
+    "toolCalls": [
+     "ReadPage",
+     "GetTool",
+     "ControlPage",
+     "ControlPage",
+     "ControlPage",
+     "ControlPage",
+     "ControlPage",
+     "ControlPage",
+     "ControlPage",
+     "ToolSearch",
+     "ControlPage",
+     "ToolSearch"
+    ],
+    "pageState": null,
+    "lastReply": null
+   },
+   {
+    "task": "form",
+    "arm": "forced",
+    "rep": 0,
+    "success": true,
+    "ended": "turn-ended",
+    "wallMs": 75512,
+    "llmSteps": 15,
+    "inputTokens": 69189,
+    "outputTokens": 3295,
+    "actOffered": true,
+    "pageActions": 6,
+    "controlPageCalls": 7,
+    "actCalls": 1,
+    "actSteps": 0,
+    "actStatuses": [
+     "uncertain"
+    ],
+    "actMessages": [
+     "unsure which element to use (p=0.57)"
+    ],
+    "vonDecides": 2,
+    "vonFailed": 0,
+    "vonMs": 377,
+    "vonBootMs": [
+     5343
+    ],
+    "approvals": [
+     "Read the interactive elements on this page",
+     "Let the agent control 127.0.0.1:52999?",
+     "Click \u201cSend message\u201d"
+    ],
+    "toolCalls": [
+     "ReadPage",
+     "GetTool",
+     "ControlPage",
+     "ToolSearch",
+     "ToolSearch",
+     "GetTool",
+     "RequestPageControl",
+     "Act",
+     "ControlPage",
+     "ControlPage",
+     "ControlPage",
+     "ControlPage",
+     "ControlPage",
+     "ControlPage"
+    ],
+    "pageState": {
+     "fullname": "Ada Lovelace",
+     "email": "ada@example.com",
+     "phone": "",
+     "topic": "Billing",
+     "message": "My last invoice was charged twice.",
+     "consent": "on"
+    },
+    "lastReply": null
+   },
+   {
+    "task": "shop",
+    "arm": "off",
+    "rep": 0,
+    "success": true,
+    "ended": "turn-ended",
+    "wallMs": 25517,
+    "llmSteps": 7,
+    "inputTokens": 28319,
+    "outputTokens": 593,
+    "actOffered": false,
+    "pageActions": 1,
+    "controlPageCalls": 2,
+    "actCalls": 0,
+    "actSteps": 0,
+    "actStatuses": [],
+    "actMessages": [],
+    "vonDecides": 0,
+    "vonFailed": 0,
+    "vonMs": 0,
+    "vonBootMs": [],
+    "approvals": [
+     "Read the interactive elements on this page",
+     "Let the agent control 127.0.0.1:52999?",
+     "Click \u201cAdd Aurora mug (blue) to cart\u201d"
+    ],
+    "toolCalls": [
+     "ReadPage",
+     "GetTool",
+     "ControlPage",
+     "GetTool",
+     "RequestPageControl",
+     "ControlPage"
+    ],
+    "pageState": [
+     "Aurora mug (blue)"
+    ],
+    "lastReply": null
+   },
+   {
+    "task": "shop",
+    "arm": "on",
+    "rep": 0,
+    "success": true,
+    "ended": "turn-ended",
+    "wallMs": 30092,
+    "llmSteps": 9,
+    "inputTokens": 37235,
+    "outputTokens": 1081,
+    "actOffered": true,
+    "pageActions": 1,
+    "controlPageCalls": 4,
+    "actCalls": 0,
+    "actSteps": 0,
+    "actStatuses": [],
+    "actMessages": [],
+    "vonDecides": 0,
+    "vonFailed": 0,
+    "vonMs": 0,
+    "vonBootMs": [],
+    "approvals": [
+     "Read the interactive elements on this page",
+     "Let the agent control 127.0.0.1:52999?",
+     "Click \u201cAdd Aurora mug (blue) to cart\u201d"
+    ],
+    "toolCalls": [
+     "ReadPage",
+     "GetTool",
+     "ControlPage",
+     "ControlPage",
+     "ControlPage",
+     "GetTool",
+     "RequestPageControl",
+     "ControlPage"
+    ],
+    "pageState": [
+     "Aurora mug (blue)"
+    ],
+    "lastReply": null
+   },
+   {
+    "task": "shop",
+    "arm": "forced",
+    "rep": 0,
+    "success": true,
+    "ended": "turn-ended",
+    "wallMs": 47717,
+    "llmSteps": 9,
+    "inputTokens": 42033,
+    "outputTokens": 1586,
+    "actOffered": true,
+    "pageActions": 1,
+    "controlPageCalls": 2,
+    "actCalls": 1,
+    "actSteps": 0,
+    "actStatuses": [
+     "uncertain"
+    ],
+    "actMessages": [
+     "unsure of the next move (p=0.42)"
+    ],
+    "vonDecides": 1,
+    "vonFailed": 0,
+    "vonMs": 103,
+    "vonBootMs": [
+     4943
+    ],
+    "approvals": [
+     "Read the interactive elements on this page",
+     "Let the agent control 127.0.0.1:52999?",
+     "Click \u201cAdd Aurora mug (blue) to cart\u201d"
+    ],
+    "toolCalls": [
+     "ReadPage",
+     "GetTool",
+     "ControlPage",
+     "ToolSearch",
+     "GetTool",
+     "RequestPageControl",
+     "Act",
+     "ControlPage"
+    ],
+    "pageState": [
+     "Aurora mug (blue)"
+    ],
+    "lastReply": null
+   },
+   {
+    "task": "dialog",
+    "arm": "off",
+    "rep": 0,
+    "success": true,
+    "ended": "turn-ended",
+    "wallMs": 32450,
+    "llmSteps": 9,
+    "inputTokens": 31207,
+    "outputTokens": 994,
+    "actOffered": false,
+    "pageActions": 2,
+    "controlPageCalls": 3,
+    "actCalls": 0,
+    "actSteps": 0,
+    "actStatuses": [],
+    "actMessages": [],
+    "vonDecides": 0,
+    "vonFailed": 0,
+    "vonMs": 0,
+    "vonBootMs": [],
+    "approvals": [
+     "Read the interactive elements on this page",
+     "Let the agent control 127.0.0.1:52999?",
+     "Click \u201cReject non-essential\u201d",
+     "Click \u201cAdd Nimbus tote (green) to cart\u201d"
+    ],
+    "toolCalls": [
+     "ReadPage",
+     "GetTool",
+     "ControlPage",
+     "ToolSearch",
+     "GetTool",
+     "RequestPageControl",
+     "ControlPage",
+     "ControlPage"
+    ],
+    "pageState": {
+     "consent": "essential",
+     "cart": [
+      "Nimbus tote (green)"
+     ]
+    },
+    "lastReply": null
+   },
+   {
+    "task": "dialog",
+    "arm": "on",
+    "rep": 0,
+    "success": true,
+    "ended": "turn-ended",
+    "wallMs": 27819,
+    "llmSteps": 8,
+    "inputTokens": 27567,
+    "outputTokens": 997,
+    "actOffered": true,
+    "pageActions": 2,
+    "controlPageCalls": 3,
+    "actCalls": 0,
+    "actSteps": 0,
+    "actStatuses": [],
+    "actMessages": [],
+    "vonDecides": 0,
+    "vonFailed": 0,
+    "vonMs": 0,
+    "vonBootMs": [],
+    "approvals": [
+     "Read the interactive elements on this page",
+     "Let the agent control 127.0.0.1:52999?",
+     "Click \u201cReject non-essential\u201d",
+     "Click \u201cAdd Nimbus tote (green) to cart\u201d"
+    ],
+    "toolCalls": [
+     "ReadPage",
+     "GetTool",
+     "ControlPage",
+     "GetTool",
+     "RequestPageControl",
+     "ControlPage",
+     "ControlPage"
+    ],
+    "pageState": {
+     "consent": "essential",
+     "cart": [
+      "Nimbus tote (green)"
+     ]
+    },
+    "lastReply": null
+   },
+   {
+    "task": "dialog",
+    "arm": "forced",
+    "rep": 0,
+    "success": true,
+    "ended": "turn-ended",
+    "wallMs": 36399,
+    "llmSteps": 9,
+    "inputTokens": 32731,
+    "outputTokens": 1255,
+    "actOffered": true,
+    "pageActions": 2,
+    "controlPageCalls": 3,
+    "actCalls": 1,
+    "actSteps": 0,
+    "actStatuses": [
+     "uncertain"
+    ],
+    "actMessages": [
+     "unsure of the next move (p=0.36)"
+    ],
+    "vonDecides": 1,
+    "vonFailed": 0,
+    "vonMs": 101,
+    "vonBootMs": [
+     4590
+    ],
+    "approvals": [
+     "Read the interactive elements on this page",
+     "Let the agent control 127.0.0.1:52999?",
+     "Click \u201cReject non-essential\u201d",
+     "Click \u201cAdd Nimbus tote (green) to cart\u201d"
+    ],
+    "toolCalls": [
+     "ReadPage",
+     "GetTool",
+     "ControlPage",
+     "GetTool",
+     "RequestPageControl",
+     "ControlPage",
+     "Act",
+     "ControlPage"
+    ],
+    "pageState": {
+     "consent": "essential",
+     "cart": [
+      "Nimbus tote (green)"
+     ]
+    },
+    "lastReply": null
+   },
+   {
+    "task": "form",
+    "arm": "off",
+    "rep": 1,
+    "success": true,
+    "ended": "turn-ended",
+    "wallMs": 60654,
+    "llmSteps": 14,
+    "inputTokens": 59171,
+    "outputTokens": 3609,
+    "actOffered": false,
+    "pageActions": 6,
+    "controlPageCalls": 8,
+    "actCalls": 0,
+    "actSteps": 0,
+    "actStatuses": [],
+    "actMessages": [],
+    "vonDecides": 0,
+    "vonFailed": 0,
+    "vonMs": 0,
+    "vonBootMs": [],
+    "approvals": [
+     "Read the interactive elements on this page",
+     "Let the agent control 127.0.0.1:52999?",
+     "Click \u201cSend message\u201d"
+    ],
+    "toolCalls": [
+     "ReadPage",
+     "GetTool",
+     "ControlPage",
+     "ControlPage",
+     "ToolSearch",
+     "GetTool",
+     "RequestPageControl",
+     "ControlPage",
+     "ControlPage",
+     "ControlPage",
+     "ControlPage",
+     "ControlPage",
+     "ControlPage"
+    ],
+    "pageState": {
+     "fullname": "Ada Lovelace",
+     "email": "ada@example.com",
+     "phone": "",
+     "topic": "Billing",
+     "message": "My last invoice was charged twice.",
+     "consent": "on"
+    },
+    "lastReply": null
+   },
+   {
+    "task": "form",
+    "arm": "on",
+    "rep": 1,
+    "success": false,
+    "ended": "turn-ended",
+    "wallMs": 52858,
+    "llmSteps": 13,
+    "inputTokens": 43817,
+    "outputTokens": 3863,
+    "actOffered": false,
+    "pageActions": 0,
+    "controlPageCalls": 8,
+    "actCalls": 0,
+    "actSteps": 0,
+    "actStatuses": [],
+    "actMessages": [],
+    "vonDecides": 0,
+    "vonFailed": 0,
+    "vonMs": 0,
+    "vonBootMs": [],
+    "approvals": [
+     "Read the interactive elements on this page"
+    ],
+    "toolCalls": [
+     "ReadPage",
+     "GetTool",
+     "ControlPage",
+     "ControlPage",
+     "ControlPage",
+     "ToolSearch",
+     "ControlPage",
+     "ControlPage",
+     "ControlPage",
+     "ControlPage",
+     "ControlPage",
+     "ToolSearch"
+    ],
+    "pageState": null,
+    "lastReply": null
+   },
+   {
+    "task": "form",
+    "arm": "forced",
+    "rep": 1,
+    "success": true,
+    "ended": "turn-ended",
+    "wallMs": 75225,
+    "llmSteps": 13,
+    "inputTokens": 78544,
+    "outputTokens": 2763,
+    "actOffered": true,
+    "pageActions": 6,
+    "controlPageCalls": 6,
+    "actCalls": 1,
+    "actSteps": 0,
+    "actStatuses": [
+     "uncertain"
+    ],
+    "actMessages": [
+     "unsure of the next move (p=0.59)"
+    ],
+    "vonDecides": 1,
+    "vonFailed": 0,
+    "vonMs": 129,
+    "vonBootMs": [
+     4997
+    ],
+    "approvals": [
+     "Read the interactive elements on this page",
+     "Let the agent control 127.0.0.1:52999?",
+     "Click \u201cSend message\u201d",
+     "View the tab you are currently on"
+    ],
+    "toolCalls": [
+     "ReadPage",
+     "ToolSearch",
+     "GetTool",
+     "RequestPageControl",
+     "Act",
+     "ControlPage",
+     "ControlPage",
+     "ControlPage",
+     "ControlPage",
+     "ControlPage",
+     "ControlPage",
+     "ReadPage"
+    ],
+    "pageState": {
+     "fullname": "Ada Lovelace",
+     "email": "ada@example.com",
+     "phone": "",
+     "topic": "Billing",
+     "message": "My last invoice was charged twice.",
+     "consent": "on"
+    },
+    "lastReply": null
+   },
+   {
+    "task": "shop",
+    "arm": "off",
+    "rep": 1,
+    "success": true,
+    "ended": "turn-ended",
+    "wallMs": 25463,
+    "llmSteps": 7,
+    "inputTokens": 28589,
+    "outputTokens": 704,
+    "actOffered": false,
+    "pageActions": 1,
+    "controlPageCalls": 2,
+    "actCalls": 0,
+    "actSteps": 0,
+    "actStatuses": [],
+    "actMessages": [],
+    "vonDecides": 0,
+    "vonFailed": 0,
+    "vonMs": 0,
+    "vonBootMs": [],
+    "approvals": [
+     "Read the interactive elements on this page",
+     "Let the agent control 127.0.0.1:52999?",
+     "Click \u201cAdd Aurora mug (blue) to cart\u201d"
+    ],
+    "toolCalls": [
+     "ReadPage",
+     "GetTool",
+     "ControlPage",
+     "GetTool",
+     "RequestPageControl",
+     "ControlPage"
+    ],
+    "pageState": [
+     "Aurora mug (blue)"
+    ],
+    "lastReply": null
+   },
+   {
+    "task": "shop",
+    "arm": "on",
+    "rep": 1,
+    "success": true,
+    "ended": "turn-ended",
+    "wallMs": 26998,
+    "llmSteps": 7,
+    "inputTokens": 28811,
+    "outputTokens": 525,
+    "actOffered": true,
+    "pageActions": 1,
+    "controlPageCalls": 2,
+    "actCalls": 0,
+    "actSteps": 0,
+    "actStatuses": [],
+    "actMessages": [],
+    "vonDecides": 0,
+    "vonFailed": 0,
+    "vonMs": 0,
+    "vonBootMs": [],
+    "approvals": [
+     "Read the interactive elements on this page",
+     "Let the agent control 127.0.0.1:52999?",
+     "Click \u201cAdd Aurora mug (blue) to cart\u201d"
+    ],
+    "toolCalls": [
+     "ReadPage",
+     "GetTool",
+     "ControlPage",
+     "GetTool",
+     "RequestPageControl",
+     "ControlPage"
+    ],
+    "pageState": [
+     "Aurora mug (blue)"
+    ],
+    "lastReply": null
+   },
+   {
+    "task": "shop",
+    "arm": "forced",
+    "rep": 1,
+    "success": true,
+    "ended": "turn-ended",
+    "wallMs": 68735,
+    "llmSteps": 11,
+    "inputTokens": 58647,
+    "outputTokens": 3621,
+    "actOffered": true,
+    "pageActions": 1,
+    "controlPageCalls": 3,
+    "actCalls": 3,
+    "actSteps": 0,
+    "actStatuses": [
+     "uncertain",
+     "uncertain",
+     "uncertain"
+    ],
+    "actMessages": [
+     "unsure of the next move (p=0.56)",
+     "unsure of the next move (p=0.37)",
+     "unsure of the next move (p=0.59)"
+    ],
+    "vonDecides": 3,
+    "vonFailed": 0,
+    "vonMs": 331,
+    "vonBootMs": [
+     5560
+    ],
+    "approvals": [
+     "Read the interactive elements on this page",
+     "Let the agent control 127.0.0.1:52999?",
+     "Click \u201cAdd Aurora mug (blue) to cart\u201d"
+    ],
+    "toolCalls": [
+     "ReadPage",
+     "GetTool",
+     "ControlPage",
+     "ControlPage",
+     "GetTool",
+     "RequestPageControl",
+     "Act",
+     "Act",
+     "Act",
+     "ControlPage"
+    ],
+    "pageState": [
+     "Aurora mug (blue)"
+    ],
+    "lastReply": null
+   },
+   {
+    "task": "dialog",
+    "arm": "off",
+    "rep": 1,
+    "success": false,
+    "ended": "turn-ended",
+    "wallMs": 37580,
+    "llmSteps": 13,
+    "inputTokens": 42388,
+    "outputTokens": 2343,
+    "actOffered": false,
+    "pageActions": 0,
+    "controlPageCalls": 7,
+    "actCalls": 0,
+    "actSteps": 0,
+    "actStatuses": [],
+    "actMessages": [],
+    "vonDecides": 0,
+    "vonFailed": 0,
+    "vonMs": 0,
+    "vonBootMs": [],
+    "approvals": [
+     "Read the interactive elements on this page",
+     "Read the interactive elements on this page"
+    ],
+    "toolCalls": [
+     "ReadPage",
+     "GetTool",
+     "ControlPage",
+     "ToolSearch",
+     "ToolSearch",
+     "ControlPage",
+     "ControlPage",
+     "ControlPage",
+     "ReadPage",
+     "ControlPage",
+     "ControlPage",
+     "ControlPage"
+    ],
+    "pageState": {
+     "consent": null,
+     "cart": []
+    },
+    "lastReply": null
+   },
+   {
+    "task": "dialog",
+    "arm": "on",
+    "rep": 1,
+    "success": false,
+    "ended": "turn-ended",
+    "wallMs": 54873,
+    "llmSteps": 16,
+    "inputTokens": 54190,
+    "outputTokens": 3860,
+    "actOffered": false,
+    "pageActions": 0,
+    "controlPageCalls": 11,
+    "actCalls": 0,
+    "actSteps": 0,
+    "actStatuses": [],
+    "actMessages": [],
+    "vonDecides": 0,
+    "vonFailed": 0,
+    "vonMs": 0,
+    "vonBootMs": [],
+    "approvals": [
+     "Read the interactive elements on this page"
+    ],
+    "toolCalls": [
+     "ReadPage",
+     "GetTool",
+     "ControlPage",
+     "ControlPage",
+     "ToolSearch",
+     "ControlPage",
+     "ControlPage",
+     "ControlPage",
+     "ControlPage",
+     "ToolSearch",
+     "ControlPage",
+     "ControlPage",
+     "ControlPage",
+     "ControlPage",
+     "ControlPage"
+    ],
+    "pageState": {
+     "consent": null,
+     "cart": []
+    },
+    "lastReply": null
+   },
+   {
+    "task": "dialog",
+    "arm": "forced",
+    "rep": 1,
+    "success": true,
+    "ended": "turn-ended",
+    "wallMs": 51118,
+    "llmSteps": 11,
+    "inputTokens": 42268,
+    "outputTokens": 1830,
+    "actOffered": true,
+    "pageActions": 2,
+    "controlPageCalls": 3,
+    "actCalls": 2,
+    "actSteps": 0,
+    "actStatuses": [
+     "uncertain",
+     "uncertain"
+    ],
+    "actMessages": [
+     "unsure of the next move (p=0.32)",
+     "unsure of the next move (p=0.43)"
+    ],
+    "vonDecides": 2,
+    "vonFailed": 0,
+    "vonMs": 226,
+    "vonBootMs": [
+     4413
+    ],
+    "approvals": [
+     "Read the interactive elements on this page",
+     "Let the agent control 127.0.0.1:52999?",
+     "Click \u201cReject non-essential\u201d",
+     "Click \u201cAdd Nimbus tote (green) to cart\u201d"
+    ],
+    "toolCalls": [
+     "ReadPage",
+     "GetTool",
+     "ControlPage",
+     "ToolSearch",
+     "GetTool",
+     "RequestPageControl",
+     "Act",
+     "ControlPage",
+     "Act",
+     "ControlPage"
+    ],
+    "pageState": {
+     "consent": "essential",
+     "cart": [
+      "Nimbus tote (green)"
+     ]
+    },
+    "lastReply": null
+   },
+   {
+    "task": "form",
+    "arm": "off",
+    "rep": 2,
+    "success": true,
+    "ended": "turn-ended",
+    "wallMs": 44142,
+    "llmSteps": 12,
+    "inputTokens": 47642,
+    "outputTokens": 1594,
+    "actOffered": false,
+    "pageActions": 6,
+    "controlPageCalls": 7,
+    "actCalls": 0,
+    "actSteps": 0,
+    "actStatuses": [],
+    "actMessages": [],
+    "vonDecides": 0,
+    "vonFailed": 0,
+    "vonMs": 0,
+    "vonBootMs": [],
+    "approvals": [
+     "Read the interactive elements on this page",
+     "Let the agent control 127.0.0.1:52999?",
+     "Click \u201cSend message\u201d"
+    ],
+    "toolCalls": [
+     "ReadPage",
+     "GetTool",
+     "ControlPage",
+     "GetTool",
+     "RequestPageControl",
+     "ControlPage",
+     "ControlPage",
+     "ControlPage",
+     "ControlPage",
+     "ControlPage",
+     "ControlPage"
+    ],
+    "pageState": {
+     "fullname": "Ada Lovelace",
+     "email": "ada@example.com",
+     "phone": "",
+     "topic": "Billing",
+     "message": "My last invoice was charged twice.",
+     "consent": "on"
+    },
+    "lastReply": null
+   },
+   {
+    "task": "form",
+    "arm": "on",
+    "rep": 2,
+    "success": true,
+    "ended": "turn-ended",
+    "wallMs": 40569,
+    "llmSteps": 12,
+    "inputTokens": 49011,
+    "outputTokens": 1646,
+    "actOffered": true,
+    "pageActions": 6,
+    "controlPageCalls": 7,
+    "actCalls": 0,
+    "actSteps": 0,
+    "actStatuses": [],
+    "actMessages": [],
+    "vonDecides": 0,
+    "vonFailed": 0,
+    "vonMs": 0,
+    "vonBootMs": [],
+    "approvals": [
+     "Read the interactive elements on this page",
+     "Let the agent control 127.0.0.1:52999?",
+     "Click \u201cSend message\u201d"
+    ],
+    "toolCalls": [
+     "ReadPage",
+     "GetTool",
+     "ControlPage",
+     "GetTool",
+     "RequestPageControl",
+     "ControlPage",
+     "ControlPage",
+     "ControlPage",
+     "ControlPage",
+     "ControlPage",
+     "ControlPage"
+    ],
+    "pageState": {
+     "fullname": "Ada Lovelace",
+     "email": "ada@example.com",
+     "phone": "",
+     "topic": "Billing",
+     "message": "My last invoice was charged twice.",
+     "consent": "on"
+    },
+    "lastReply": null
+   },
+   {
+    "task": "form",
+    "arm": "forced",
+    "rep": 2,
+    "success": true,
+    "ended": "turn-ended",
+    "wallMs": 79715,
+    "llmSteps": 16,
+    "inputTokens": 74313,
+    "outputTokens": 3905,
+    "actOffered": true,
+    "pageActions": 6,
+    "controlPageCalls": 8,
+    "actCalls": 1,
+    "actSteps": 0,
+    "actStatuses": [
+     "uncertain"
+    ],
+    "actMessages": [
+     "unsure of the next move (p=0.60)"
+    ],
+    "vonDecides": 1,
+    "vonFailed": 0,
+    "vonMs": 127,
+    "vonBootMs": [
+     5091
+    ],
+    "approvals": [
+     "Read the interactive elements on this page",
+     "Let the agent control 127.0.0.1:52999?",
+     "Click \u201cSend message\u201d",
+     "View the tab you are currently on"
+    ],
+    "toolCalls": [
+     "ReadPage",
+     "GetTool",
+     "ControlPage",
+     "ControlPage",
+     "ToolSearch",
+     "GetTool",
+     "RequestPageControl",
+     "Act",
+     "ControlPage",
+     "ControlPage",
+     "ControlPage",
+     "ControlPage",
+     "ControlPage",
+     "ControlPage",
+     "ReadPage"
+    ],
+    "pageState": {
+     "fullname": "Ada Lovelace",
+     "email": "ada@example.com",
+     "phone": "",
+     "topic": "Billing",
+     "message": "My last invoice was charged twice.",
+     "consent": "on"
+    },
+    "lastReply": null
+   },
+   {
+    "task": "shop",
+    "arm": "off",
+    "rep": 2,
+    "success": true,
+    "ended": "turn-ended",
+    "wallMs": 24978,
+    "llmSteps": 7,
+    "inputTokens": 28448,
+    "outputTokens": 653,
+    "actOffered": false,
+    "pageActions": 1,
+    "controlPageCalls": 2,
+    "actCalls": 0,
+    "actSteps": 0,
+    "actStatuses": [],
+    "actMessages": [],
+    "vonDecides": 0,
+    "vonFailed": 0,
+    "vonMs": 0,
+    "vonBootMs": [],
+    "approvals": [
+     "Read the interactive elements on this page",
+     "Let the agent control 127.0.0.1:52999?",
+     "Click \u201cAdd Aurora mug (blue) to cart\u201d"
+    ],
+    "toolCalls": [
+     "ReadPage",
+     "GetTool",
+     "ControlPage",
+     "GetTool",
+     "RequestPageControl",
+     "ControlPage"
+    ],
+    "pageState": [
+     "Aurora mug (blue)"
+    ],
+    "lastReply": null
+   },
+   {
+    "task": "shop",
+    "arm": "on",
+    "rep": 2,
+    "success": true,
+    "ended": "turn-ended",
+    "wallMs": 24845,
+    "llmSteps": 9,
+    "inputTokens": 37576,
+    "outputTokens": 890,
+    "actOffered": true,
+    "pageActions": 1,
+    "controlPageCalls": 3,
+    "actCalls": 0,
+    "actSteps": 0,
+    "actStatuses": [],
+    "actMessages": [],
+    "vonDecides": 0,
+    "vonFailed": 0,
+    "vonMs": 0,
+    "vonBootMs": [],
+    "approvals": [
+     "Read the interactive elements on this page",
+     "Let the agent control 127.0.0.1:52999?",
+     "Click \u201cAdd Aurora mug (blue) to cart\u201d"
+    ],
+    "toolCalls": [
+     "ReadPage",
+     "GetTool",
+     "ControlPage",
+     "ControlPage",
+     "ToolSearch",
+     "GetTool",
+     "RequestPageControl",
+     "ControlPage"
+    ],
+    "pageState": [
+     "Aurora mug (blue)"
+    ],
+    "lastReply": null
+   },
+   {
+    "task": "shop",
+    "arm": "forced",
+    "rep": 2,
+    "success": true,
+    "ended": "turn-ended",
+    "wallMs": 36003,
+    "llmSteps": 9,
+    "inputTokens": 41336,
+    "outputTokens": 939,
+    "actOffered": true,
+    "pageActions": 1,
+    "controlPageCalls": 2,
+    "actCalls": 1,
+    "actSteps": 0,
+    "actStatuses": [
+     "uncertain"
+    ],
+    "actMessages": [
+     "unsure of the next move (p=0.36)"
+    ],
+    "vonDecides": 1,
+    "vonFailed": 0,
+    "vonMs": 109,
+    "vonBootMs": [
+     5590
+    ],
+    "approvals": [
+     "Read the interactive elements on this page",
+     "Let the agent control 127.0.0.1:52999?",
+     "Click \u201cAdd Aurora mug (blue) to cart\u201d"
+    ],
+    "toolCalls": [
+     "ReadPage",
+     "GetTool",
+     "ControlPage",
+     "ToolSearch",
+     "GetTool",
+     "RequestPageControl",
+     "Act",
+     "ControlPage"
+    ],
+    "pageState": [
+     "Aurora mug (blue)"
+    ],
+    "lastReply": null
+   },
+   {
+    "task": "dialog",
+    "arm": "off",
+    "rep": 2,
+    "success": true,
+    "ended": "turn-ended",
+    "wallMs": 36028,
+    "llmSteps": 9,
+    "inputTokens": 30907,
+    "outputTokens": 982,
+    "actOffered": false,
+    "pageActions": 2,
+    "controlPageCalls": 3,
+    "actCalls": 0,
+    "actSteps": 0,
+    "actStatuses": [],
+    "actMessages": [],
+    "vonDecides": 0,
+    "vonFailed": 0,
+    "vonMs": 0,
+    "vonBootMs": [],
+    "approvals": [
+     "Read the interactive elements on this page",
+     "Let the agent control 127.0.0.1:52999?",
+     "Click \u201cReject non-essential\u201d",
+     "Click \u201cAdd Nimbus tote (green) to cart\u201d"
+    ],
+    "toolCalls": [
+     "ReadPage",
+     "GetTool",
+     "ControlPage",
+     "ToolSearch",
+     "GetTool",
+     "RequestPageControl",
+     "ControlPage",
+     "ControlPage"
+    ],
+    "pageState": {
+     "consent": "essential",
+     "cart": [
+      "Nimbus tote (green)"
+     ]
+    },
+    "lastReply": null
+   },
+   {
+    "task": "dialog",
+    "arm": "on",
+    "rep": 2,
+    "success": false,
+    "ended": "turn-ended",
+    "wallMs": 36673,
+    "llmSteps": 13,
+    "inputTokens": 43430,
+    "outputTokens": 2652,
+    "actOffered": false,
+    "pageActions": 0,
+    "controlPageCalls": 6,
+    "actCalls": 0,
+    "actSteps": 0,
+    "actStatuses": [],
+    "actMessages": [],
+    "vonDecides": 0,
+    "vonFailed": 0,
+    "vonMs": 0,
+    "vonBootMs": [],
+    "approvals": [
+     "Read the interactive elements on this page"
+    ],
+    "toolCalls": [
+     "ReadPage",
+     "GetTool",
+     "ControlPage",
+     "ControlPage",
+     "ToolSearch",
+     "ToolSearch",
+     "ControlPage",
+     "ToolSearch",
+     "ControlPage",
+     "ToolSearch",
+     "ControlPage",
+     "ControlPage"
+    ],
+    "pageState": {
+     "consent": null,
+     "cart": []
+    },
+    "lastReply": null
+   },
+   {
+    "task": "dialog",
+    "arm": "forced",
+    "rep": 2,
+    "success": true,
+    "ended": "turn-ended",
+    "wallMs": 36362,
+    "llmSteps": 11,
+    "inputTokens": 42116,
+    "outputTokens": 1360,
+    "actOffered": true,
+    "pageActions": 2,
+    "controlPageCalls": 3,
+    "actCalls": 2,
+    "actSteps": 0,
+    "actStatuses": [
+     "uncertain",
+     "uncertain"
+    ],
+    "actMessages": [
+     "unsure of the next move (p=0.41)",
+     "unsure of the next move (p=0.55)"
+    ],
+    "vonDecides": 2,
+    "vonFailed": 0,
+    "vonMs": 220,
+    "vonBootMs": [
+     4885
+    ],
+    "approvals": [
+     "Read the interactive elements on this page",
+     "Let the agent control 127.0.0.1:52999?",
+     "Click \u201cReject non-essential\u201d",
+     "Click \u201cAdd Nimbus tote (green) to cart\u201d"
+    ],
+    "toolCalls": [
+     "ReadPage",
+     "GetTool",
+     "ControlPage",
+     "ToolSearch",
+     "GetTool",
+     "RequestPageControl",
+     "Act",
+     "ControlPage",
+     "Act",
+     "ControlPage"
+    ],
+    "pageState": {
+     "consent": "essential",
+     "cart": [
+      "Nimbus tote (green)"
+     ]
+    },
+    "lastReply": null
+   }
+  ],
+  "summary": {
+   "byArm": {
+    "off": {
+     "runs": 9,
+     "success": 8,
+     "wallMsMedian": 36028,
+     "wallMsMean": 37399,
+     "llmStepsMean": 10.2,
+     "tokensMean": 40883,
+     "inputTokensMean": 39392,
+     "outputTokensMean": 1491,
+     "pageActionsMean": 2.9,
+     "actCalls": 0,
+     "actSteps": 0,
+     "actNonDone": 0,
+     "actStatuses": {},
+     "vonDecides": 0,
+     "vonMs": 0,
+     "approvalsMean": 3.2
+    },
+    "on": {
+     "runs": 9,
+     "success": 5,
+     "wallMsMedian": 36673,
+     "wallMsMean": 38557,
+     "llmStepsMean": 11.1,
+     "tokensMean": 42818,
+     "inputTokensMean": 40641,
+     "outputTokensMean": 2177,
+     "pageActionsMean": 1.2,
+     "actCalls": 0,
+     "actSteps": 0,
+     "actNonDone": 0,
+     "actStatuses": {},
+     "vonDecides": 0,
+     "vonMs": 0,
+     "approvalsMean": 2.2
+    },
+    "forced": {
+     "runs": 9,
+     "success": 9,
+     "wallMsMedian": 51118,
+     "wallMsMean": 56310,
+     "llmStepsMean": 11.6,
+     "tokensMean": 55748,
+     "inputTokensMean": 53464,
+     "outputTokensMean": 2284,
+     "pageActionsMean": 3,
+     "actCalls": 13,
+     "actSteps": 0,
+     "actNonDone": 13,
+     "actStatuses": {
+      "uncertain": 13
+     },
+     "vonDecides": 14,
+     "vonMs": 1723,
+     "approvalsMean": 3.6
+    }
+   },
+   "byTaskArm": {
+    "form": {
+     "off": {
+      "runs": 3,
+      "success": 3,
+      "wallMsMedian": 49781,
+      "wallMsMean": 51526,
+      "llmStepsMean": 13.3,
+      "tokensMean": 57275,
+      "inputTokensMean": 54890,
+      "outputTokensMean": 2385,
+      "pageActionsMean": 6.3,
+      "actCalls": 0,
+      "actSteps": 0,
+      "actNonDone": 0,
+      "actStatuses": {},
+      "vonDecides": 0,
+      "vonMs": 0,
+      "approvalsMean": 3.3
+     },
+     "on": {
+      "runs": 3,
+      "success": 1,
+      "wallMsMedian": 52283,
+      "wallMsMean": 48570,
+      "llmStepsMean": 12.7,
+      "tokensMean": 48850,
+      "inputTokensMean": 45652,
+      "outputTokensMean": 3197,
+      "pageActionsMean": 2,
+      "actCalls": 0,
+      "actSteps": 0,
+      "actNonDone": 0,
+      "actStatuses": {},
+      "vonDecides": 0,
+      "vonMs": 0,
+      "approvalsMean": 1.7
+     },
+     "forced": {
+      "runs": 3,
+      "success": 3,
+      "wallMsMedian": 75512,
+      "wallMsMean": 76817,
+      "llmStepsMean": 14.7,
+      "tokensMean": 77336,
+      "inputTokensMean": 74015,
+      "outputTokensMean": 3321,
+      "pageActionsMean": 6,
+      "actCalls": 3,
+      "actSteps": 0,
+      "actNonDone": 3,
+      "actStatuses": {
+       "uncertain": 3
+      },
+      "vonDecides": 4,
+      "vonMs": 633,
+      "approvalsMean": 3.7
+     }
+    },
+    "shop": {
+     "off": {
+      "runs": 3,
+      "success": 3,
+      "wallMsMedian": 25463,
+      "wallMsMean": 25319,
+      "llmStepsMean": 7,
+      "tokensMean": 29102,
+      "inputTokensMean": 28452,
+      "outputTokensMean": 650,
+      "pageActionsMean": 1,
+      "actCalls": 0,
+      "actSteps": 0,
+      "actNonDone": 0,
+      "actStatuses": {},
+      "vonDecides": 0,
+      "vonMs": 0,
+      "approvalsMean": 3
+     },
+     "on": {
+      "runs": 3,
+      "success": 3,
+      "wallMsMedian": 26998,
+      "wallMsMean": 27312,
+      "llmStepsMean": 8.3,
+      "tokensMean": 35373,
+      "inputTokensMean": 34541,
+      "outputTokensMean": 832,
+      "pageActionsMean": 1,
+      "actCalls": 0,
+      "actSteps": 0,
+      "actNonDone": 0,
+      "actStatuses": {},
+      "vonDecides": 0,
+      "vonMs": 0,
+      "approvalsMean": 3
+     },
+     "forced": {
+      "runs": 3,
+      "success": 3,
+      "wallMsMedian": 47717,
+      "wallMsMean": 50818,
+      "llmStepsMean": 9.7,
+      "tokensMean": 49387,
+      "inputTokensMean": 47339,
+      "outputTokensMean": 2049,
+      "pageActionsMean": 1,
+      "actCalls": 5,
+      "actSteps": 0,
+      "actNonDone": 5,
+      "actStatuses": {
+       "uncertain": 5
+      },
+      "vonDecides": 5,
+      "vonMs": 543,
+      "approvalsMean": 3
+     }
+    },
+    "dialog": {
+     "off": {
+      "runs": 3,
+      "success": 2,
+      "wallMsMedian": 36028,
+      "wallMsMean": 35353,
+      "llmStepsMean": 10.3,
+      "tokensMean": 36274,
+      "inputTokensMean": 34834,
+      "outputTokensMean": 1440,
+      "pageActionsMean": 1.3,
+      "actCalls": 0,
+      "actSteps": 0,
+      "actNonDone": 0,
+      "actStatuses": {},
+      "vonDecides": 0,
+      "vonMs": 0,
+      "approvalsMean": 3.3
+     },
+     "on": {
+      "runs": 3,
+      "success": 1,
+      "wallMsMedian": 36673,
+      "wallMsMean": 39788,
+      "llmStepsMean": 12.3,
+      "tokensMean": 44232,
+      "inputTokensMean": 41729,
+      "outputTokensMean": 2503,
+      "pageActionsMean": 0.7,
+      "actCalls": 0,
+      "actSteps": 0,
+      "actNonDone": 0,
+      "actStatuses": {},
+      "vonDecides": 0,
+      "vonMs": 0,
+      "approvalsMean": 2
+     },
+     "forced": {
+      "runs": 3,
+      "success": 3,
+      "wallMsMedian": 36399,
+      "wallMsMean": 41293,
+      "llmStepsMean": 10.3,
+      "tokensMean": 40520,
+      "inputTokensMean": 39038,
+      "outputTokensMean": 1482,
+      "pageActionsMean": 2,
+      "actCalls": 5,
+      "actSteps": 0,
+      "actNonDone": 5,
+      "actStatuses": {
+       "uncertain": 5
+      },
+      "vonDecides": 5,
+      "vonMs": 547,
+      "approvalsMean": 4
+     }
+    }
+   }
   }
  },
- "bootMs": 1299,
+ "finishedAt": "2026-09-25T19:33:08.032Z",
+ "download": {
+  "status": "Ready \u00b7 620 MB",
+  "downloadMs": 2059,
+  "testDecision": "Picked [2] with p=0.76 in 57 ms",
+  "note": "weights served from localhost via a 302 on the pinned HF URL, so downloadMs is not a network figure"
+ },
+ "carriedOver": {
+  "download": "2026-09-26 (parity/grounding/llm run of 18:45 local)",
+  "parity": "2026-09-26 (parity/grounding/llm run of 18:45 local)",
+  "bootMs": "2026-09-26 (parity/grounding/llm run of 18:45 local)",
+  "model": "2026-09-26 (parity/grounding/llm run of 18:45 local)",
+  "grounding": "2026-09-26 (parity/grounding/llm run of 18:45 local)",
+  "llm": "2026-09-26 (parity/grounding/llm run of 18:45 local)"
+ },
  "parity": {
   "cases": 4,
   "maxDeltaP": 0.00243,
@@ -110,6 +1625,20 @@
     "ms": 52
    }
   ]
+ },
+ "bootMs": 1299,
+ "model": {
+  "model": "von-1.2.0",
+  "variant": "q8",
+  "file": "model_q8.onnx",
+  "bytes": 616224170,
+  "cpuParity": {
+   "maxDeltaP": 0.0236,
+   "argmaxFlips": 0,
+   "probes": 9,
+   "invariance": 1e-05,
+   "gatePassed": true
+  }
  },
  "grounding": {
   "cases": 54,
@@ -3583,378 +5112,150 @@
    }
   ]
  },
- "finishedAt": "2026-09-25T18:49:19.132Z",
  "verdict": [
-  "p50 decide 105 ms <= ~300 ms: latency OK",
-  "first-move gate cleared in 0/54 cases; every Act call that reached the loop in e2e returned uncertain with 0 steps",
-  "grounding Von 0.741 vs LLM 0.907 (delta -0.166): Von clearly below the LLM: KILL condition met",
+  "p50 decide 105 ms <= ~300 ms: latency OK (all 84 MatMulNBits nodes run on WebGPU)",
+  "grounding Von 0.741 vs gemma 0.907 (delta -0.166): Von clearly below the LLM: KILL condition met",
+  "first-move gate cleared in 0/54 grounding cases and 1/14 e2e decides; 13/13 Act calls in e2e ended uncertain with 0 actions",
   "WebGPU parity max|dp| 0.00243, argmax flips 0 (4 golden cases)"
  ],
- "runs": {
-  "download": "2026-09-26T18:40:36Z (numbers copied from that run's log; its report.json was overwritten by the next phase run)",
-  "parity,grounding,llm": "2026-09-25T18:45:30.727Z",
-  "e2e on/off": "2026-09-25T18:49:47.698Z",
-  "e2e forced": "2026-09-25T18:55:21.394Z"
- },
- "download": {
-  "status": "Ready \u00b7 620 MB",
-  "downloadMs": 2059,
-  "testDecision": "Picked [2] with p=0.76 in 57 ms",
-  "note": "weights served from localhost via a 302 on the pinned HF URL, so downloadMs is not a network figure"
- },
- "e2e": [
-  {
-   "task": "form",
-   "system1": "on",
-   "success": true,
-   "ended": "turn-ended",
-   "wallMs": 85628,
-   "steps": 18,
-   "actOffered": true,
-   "actCalls": 0,
-   "controlPageCalls": 10,
-   "toolCalls": [
-    "ReadPage",
-    "GetTool",
-    "ControlPage",
-    "ControlPage",
-    "ToolSearch",
-    "ControlPage",
-    "ToolSearch",
-    "ControlPage",
-    "ToolSearch",
-    "GetTool",
-    "RequestPageControl",
-    "ControlPage",
-    "ControlPage",
-    "ControlPage",
-    "ControlPage",
-    "ControlPage",
-    "ControlPage"
-   ],
-   "approvals": [
-    "Read the interactive elements on this page",
-    "Let the agent control 127.0.0.1:50954?",
-    "Click \u201cSend message\u201d",
-    "Click \u201cSend message\u201d"
-   ],
-   "pageState": {
-    "fullname": "Ada Lovelace",
-    "email": "ada@example.com",
-    "phone": "",
-    "topic": "Billing",
-    "message": "My last invoice was charged twice.",
-    "consent": "on"
+ "epPlacement": {
+  "ep": "webgpu",
+  "model": "model_q8.onnx",
+  "createMs": 1508,
+  "placement": {
+   "WebGpuExecutionProvider": {
+    "total": 1369,
+    "ops": {
+     "And": 3,
+     "Not": 1,
+     "Unsqueeze": 7,
+     "Where": 2,
+     "Gather": 3,
+     "LayerNormalization": 59,
+     "Expand": 2,
+     "MatMul": 86,
+     "Concat": 58,
+     "Cos": 2,
+     "Sin": 2,
+     "Shape": 112,
+     "Reshape": 56,
+     "Split": 28,
+     "Squeeze": 85,
+     "Transpose": 144,
+     "Mul": 196,
+     "Slice": 168,
+     "Neg": 56,
+     "Add": 140,
+     "Softmax": 28,
+     "MatMulNBits": 84,
+     "Gemm": 2,
+     "Cast": 1,
+     "Gelu": 29,
+     "MemcpyFromHost": 11,
+     "MemcpyToHost": 4
+    }
    },
-   "lastReply": null
+   "CPUExecutionProvider": {
+    "total": 540,
+    "ops": {
+     "Unsqueeze": 122,
+     "Equal": 5,
+     "Or": 4,
+     "Shape": 3,
+     "Gather": 201,
+     "Range": 1,
+     "Sub": 1,
+     "Abs": 1,
+     "LessOrEqual": 1,
+     "Concat": 57,
+     "ConstantOfShape": 1,
+     "Reshape": 1,
+     "Where": 1,
+     "Cast": 1,
+     "Div": 84,
+     "Add": 28,
+     "Mul": 28
+    }
+   }
   },
-  {
-   "task": "shop",
-   "system1": "on",
-   "success": true,
-   "ended": "turn-ended",
-   "wallMs": 35322,
-   "steps": 10,
-   "actOffered": true,
-   "actCalls": 0,
-   "controlPageCalls": 3,
-   "toolCalls": [
-    "GetTool",
-    "ReadPage",
-    "GetTool",
-    "ControlPage",
-    "ControlPage",
-    "ToolSearch",
-    "GetTool",
-    "RequestPageControl",
-    "ControlPage"
-   ],
-   "approvals": [
-    "Read the interactive elements on this page",
-    "Read the interactive elements on this page",
-    "Let the agent control 127.0.0.1:50954?",
-    "Click \u201cAdd Aurora mug (blue) to cart\u201d"
-   ],
-   "pageState": [
-    "Aurora mug (blue)"
-   ],
-   "lastReply": null
-  },
-  {
-   "task": "dialog",
-   "system1": "on",
-   "success": true,
-   "ended": "turn-ended",
-   "wallMs": 35355,
-   "steps": 10,
-   "actOffered": true,
-   "actCalls": 0,
-   "controlPageCalls": 4,
-   "toolCalls": [
-    "ReadPage",
-    "GetTool",
-    "ControlPage",
-    "ControlPage",
-    "ToolSearch",
-    "GetTool",
-    "RequestPageControl",
-    "ControlPage",
-    "ControlPage"
-   ],
-   "approvals": [
-    "Read the interactive elements on this page",
-    "Read the interactive elements on this page",
-    "Let the agent control 127.0.0.1:50954?",
-    "Click \u201cReject non-essential\u201d",
-    "Click \u201cAdd Nimbus tote (green) to cart\u201d"
-   ],
-   "pageState": {
-    "consent": "essential",
-    "cart": [
-     "Nimbus tote (green)"
-    ]
+  "matMulNBitsWebGpuPrograms": 1008,
+  "runs": [
+   {
+    "rep": 0,
+    "T": 263,
+    "ms": 355,
+    "maxAbsLogitDelta": 0.010429859161376953
    },
-   "lastReply": null
-  },
-  {
-   "task": "form",
-   "system1": "off",
-   "success": true,
-   "ended": "turn-ended",
-   "wallMs": 42370,
-   "steps": 12,
-   "actOffered": false,
-   "actCalls": 0,
-   "controlPageCalls": 7,
-   "toolCalls": [
-    "ReadPage",
-    "GetTool",
-    "ControlPage",
-    "GetTool",
-    "RequestPageControl",
-    "ControlPage",
-    "ControlPage",
-    "ControlPage",
-    "ControlPage",
-    "ControlPage",
-    "ControlPage"
-   ],
-   "approvals": [
-    "Read the interactive elements on this page",
-    "Read the interactive elements on this page",
-    "Let the agent control 127.0.0.1:50954?",
-    "Click \u201cSend message\u201d"
-   ],
-   "pageState": {
-    "fullname": "Ada Lovelace",
-    "email": "ada@example.com",
-    "phone": "",
-    "topic": "Billing",
-    "message": "My last invoice was charged twice.",
-    "consent": "on"
+   {
+    "rep": 0,
+    "T": 275,
+    "ms": 175,
+    "maxAbsLogitDelta": 0.0076940953731536865
    },
-   "lastReply": null
-  },
-  {
-   "task": "shop",
-   "system1": "off",
-   "success": true,
-   "ended": "turn-ended",
-   "wallMs": 31417,
-   "steps": 6,
-   "actOffered": false,
-   "actCalls": 0,
-   "controlPageCalls": 1,
-   "toolCalls": [
-    "ReadPage",
-    "ToolSearch",
-    "GetTool",
-    "RequestPageControl",
-    "ControlPage"
-   ],
-   "approvals": [
-    "Read the interactive elements on this page",
-    "Let the agent control 127.0.0.1:50954?",
-    "Click \u201cAdd Aurora mug (blue) to cart\u201d",
-    "Click \u201cAdd Aurora mug (blue) to cart\u201d"
-   ],
-   "pageState": [
-    "Aurora mug (blue)"
-   ],
-   "lastReply": null
-  },
-  {
-   "task": "dialog",
-   "system1": "off",
-   "success": true,
-   "ended": "turn-ended",
-   "wallMs": 26390,
-   "steps": 9,
-   "actOffered": false,
-   "actCalls": 0,
-   "controlPageCalls": 3,
-   "toolCalls": [
-    "ReadPage",
-    "GetTool",
-    "ControlPage",
-    "ToolSearch",
-    "GetTool",
-    "RequestPageControl",
-    "ControlPage",
-    "ControlPage"
-   ],
-   "approvals": [
-    "Read the interactive elements on this page",
-    "Read the interactive elements on this page",
-    "Let the agent control 127.0.0.1:50954?",
-    "Let the agent control 127.0.0.1:50954?",
-    "Click \u201cReject non-essential\u201d",
-    "Click \u201cAdd Nimbus tote (green) to cart\u201d"
-   ],
-   "pageState": {
-    "consent": "essential",
-    "cart": [
-     "Nimbus tote (green)"
-    ]
+   {
+    "rep": 0,
+    "T": 297,
+    "ms": 188,
+    "maxAbsLogitDelta": 0.0426936149597168
    },
-   "lastReply": null
-  },
-  {
-   "task": "form",
-   "system1": "forced",
-   "success": true,
-   "ended": "turn-ended",
-   "wallMs": 77637,
-   "steps": 15,
-   "actOffered": true,
-   "actCalls": 2,
-   "controlPageCalls": 6,
-   "toolCalls": [
-    "ToolSearch",
-    "ReadPage",
-    "GetTool",
-    "Act",
-    "GetTool",
-    "RequestPageControl",
-    "Act",
-    "ControlPage",
-    "ControlPage",
-    "ControlPage",
-    "ControlPage",
-    "ControlPage",
-    "ControlPage",
-    "ReadPage"
-   ],
-   "approvals": [
-    "Read the interactive elements on this page",
-    "Read the interactive elements on this page",
-    "Let the agent control 127.0.0.1:51540?",
-    "Let the agent control 127.0.0.1:51540?",
-    "Click \u201cSend message\u201d",
-    "View the tab you are currently on",
-    "View the tab you are currently on"
-   ],
-   "pageState": {
-    "fullname": "Ada Lovelace",
-    "email": "ada@example.com",
-    "phone": "",
-    "topic": "Billing",
-    "message": "My last invoice was charged twice.",
-    "consent": "on"
+   {
+    "rep": 0,
+    "T": 70,
+    "ms": 99,
+    "maxAbsLogitDelta": 0.03335833549499512
    },
-   "lastReply": null,
-   "actResults": [
-    "\"toolName\":\"Act\",\"input\":{\"goal\":\"Fill out the contact form with the provided details and submit it.\",\"values\":{\"email\":\"ada@example.com\",\"full_name\":\"Ada Lovelace\",\"message\":\"My last invoice was charged twice.\",\"topic\":\"Billing\"}},\"state\":\"done\",\"output\":{\"error\":\"No page-control session is open. Call RequestPageControl first.\"}},{\"type\":\"reasoning\",\"text\":\"\\nAh, I forgot to call `RequestPageControl` first to establish the session. \\n\\nI'll request control now.\\n\"},{\"type\":\"tool\",\"toolCallId\":\"810618430\",\"toolName\":\"GetTool\",\"input\":{\"names\":[\"RequestPageControl\"]},\"state\":\"done\",\"output\":{\"loaded\":[\"RequestPageControl\"],\"note\":\"These tools are now available to call.\"}},{\"type\":\"reasoning\",",
-    "\"toolName\":\"Act\",\"input\":{\"goal\":\"Fill out the contact form: Full name, Email, Topic, Message, and check the agreement box.\",\"values\":{\"email\":\"ada@example.com\",\"full_name\":\"Ada Lovelace\",\"message\":\"My last invoice was charged twice.\",\"topic\":\"Billing\"}},\"state\":\"done\",\"output\":{\"status\":\"uncertain\",\"steps\":[],\"message\":\"unsure of the next move (p=0.54)\",\"elements\":\"[0]<a> \\\"Home\\\"\\n[1]<a> \\\"FAQ\\\"\\n[2]<a> \\\"Service status\\\"\\n[3]<input> \\\"Full name\\\"\\n[4]<input> email \\\"Email address\\\"\\n[5]<input> \\\"Phone number\\\"\\n[6]<select> select-one \\\"Topic\\\"\\n[7]<textarea> textarea \\\"How can we help?\\\"\\n[8]<input> checkbox \\\"I agree to be contacted about my request\\\" = \\\"on\\\"\\n[9]<input> checkbox \\\"Send",
-    "\"toolName\":\"Act\",\"input\":{\"goal\":\"Fill out the contact form with the provided details and submit it.\",\"values\":{\"email\":\"ada@example.com\",\"full_name\":\"Ada Lovelace\",\"message\":\"My last invoice was charged twice.\",\"topic\":\"Billing\"}}}]},{\"role\":\"tool\",\"content\":[{\"type\":\"tool-result\",\"toolCallId\":\"474464159\",\"toolName\":\"Act\",\"output\":{\"type\":\"json\",\"value\":{\"error\":\"No page-control session is open. Call RequestPageControl first.\"}}}]},{\"role\":\"assistant\",\"content\":[{\"type\":\"tool-call\",\"toolCallId\":\"810618430\",\"toolName\":\"GetTool\",\"input\":{\"names\":[\"RequestPageControl\"]}}]},{\"role\":\"tool\",\"content\":[{\"type\":\"tool-result\",\"toolCallId\":\"810618430\",\"toolName\":\"GetTool\",\"output\":{\"type\":\"json\",\"val",
-    "\"toolName\":\"Act\",\"output\":{\"type\":\"json\",\"value\":{\"error\":\"No page-control session is open. Call RequestPageControl first.\"}}}]},{\"role\":\"assistant\",\"content\":[{\"type\":\"tool-call\",\"toolCallId\":\"810618430\",\"toolName\":\"GetTool\",\"input\":{\"names\":[\"RequestPageControl\"]}}]},{\"role\":\"tool\",\"content\":[{\"type\":\"tool-result\",\"toolCallId\":\"810618430\",\"toolName\":\"GetTool\",\"output\":{\"type\":\"json\",\"value\":{\"loaded\":[\"RequestPageControl\"],\"note\":\"These tools are now available to call.\"}}}]},{\"role\":\"assistant\",\"content\":[{\"type\":\"tool-call\",\"toolCallId\":\"428684699\",\"toolName\":\"RequestPageControl\",\"input\":{\"plan\":\"I will fill in the contact form with 'Ada Lovelace', 'ada@example.com', 'Billing', and the me",
-    "\"toolName\":\"Act\",\"input\":{\"goal\":\"Fill out the contact form: Full name, Email, Topic, Message, and check the agreement box.\",\"values\":{\"email\":\"ada@example.com\",\"full_name\":\"Ada Lovelace\",\"message\":\"My last invoice was charged twice.\",\"topic\":\"Billing\"}}}]},{\"role\":\"tool\",\"content\":[{\"type\":\"tool-result\",\"toolCallId\":\"527735616\",\"toolName\":\"Act\",\"output\":{\"type\":\"json\",\"value\":{\"status\":\"uncertain\",\"steps\":[],\"message\":\"unsure of the next move (p=0.54)\",\"elements\":\"[0]<a> \\\"Home\\\"\\n[1]<a> \\\"FAQ\\\"\\n[2]<a> \\\"Service status\\\"\\n[3]<input> \\\"Full name\\\"\\n[4]<input> email \\\"Email address\\\"\\n[5]<input> \\\"Phone number\\\"\\n[6]<select> select-one \\\"Topic\\\"\\n[7]<textarea> textarea \\\"How can we help?\\\"\\n",
-    "\"toolName\":\"Act\",\"output\":{\"type\":\"json\",\"value\":{\"status\":\"uncertain\",\"steps\":[],\"message\":\"unsure of the next move (p=0.54)\",\"elements\":\"[0]<a> \\\"Home\\\"\\n[1]<a> \\\"FAQ\\\"\\n[2]<a> \\\"Service status\\\"\\n[3]<input> \\\"Full name\\\"\\n[4]<input> email \\\"Email address\\\"\\n[5]<input> \\\"Phone number\\\"\\n[6]<select> select-one \\\"Topic\\\"\\n[7]<textarea> textarea \\\"How can we help?\\\"\\n[8]<input> checkbox \\\"I agree to be contacted about my request\\\" = \\\"on\\\"\\n[9]<input> checkbox \\\"Send me the monthly newsletter\\\" = \\\"on\\\"\\n[10]<button> submit \\\"Send message\\\"\\n[11]<button> reset \\\"Clear form\\\"\"}}}]},{\"role\":\"assistant\",\"content\":[{\"type\":\"tool-call\",\"toolCallId\":\"593583332\",\"toolName\":\"ControlPage\",\"input\":{\"ac"
-   ]
-  },
-  {
-   "task": "shop",
-   "system1": "forced",
-   "success": true,
-   "ended": "turn-ended",
-   "wallMs": 41323,
-   "steps": 8,
-   "actOffered": true,
-   "actCalls": 1,
-   "controlPageCalls": 2,
-   "toolCalls": [
-    "ReadPage",
-    "GetTool",
-    "ControlPage",
-    "GetTool",
-    "RequestPageControl",
-    "Act",
-    "ControlPage"
-   ],
-   "approvals": [
-    "Read the interactive elements on this page",
-    "Read the interactive elements on this page",
-    "Let the agent control 127.0.0.1:51540?",
-    "Let the agent control 127.0.0.1:51540?",
-    "Click \u201cAdd Aurora mug (blue) to cart\u201d"
-   ],
-   "pageState": [
-    "Aurora mug (blue)"
-   ],
-   "lastReply": null,
-   "actResults": [
-    "\"toolName\":\"Act\",\"input\":{\"goal\":\"Click on the 'Add blue' button for the Aurora mug.\",\"values\":{}},\"state\":\"done\",\"output\":{\"status\":\"uncertain\",\"steps\":[],\"message\":\"unsure of the next move (p=0.37)\",\"elements\":\"[0]<a> \\\"Home\\\"\\n[1]<a> \\\"New in\\\"\\n[2]<a> \\\"Sale\\\"\\n[3]<input> search \\\"Search products\\\"\\n[4]<select> select-one \\\"Sort by\\\" = \\\"Featured\\\"\\n[5]<a> \\\"Cart\\\"\\n[6]<span> \\\"0\\\"\\n[7]<button> submit \\\"Checkout\\\"\\n[8]<button> submit \\\"Add Aurora mug (blue) to cart\\\"\\n[9]<button> submit \\\"Add Aurora mug (red) to cart\\\"\\n[10]<button> submit \\\"Add Aurora mug (green) to cart\\\"\\n[11]<button> submit \\\"Add Nimbus tote (blue) to cart\\\"\\n[12]<button> submit \\\"Add Nimbus tote (red) to cart\\\"\\n[13",
-    "\"toolName\":\"Act\",\"input\":{\"goal\":\"Click on the 'Add blue' button for the Aurora mug.\",\"values\":{}}}]},{\"role\":\"tool\",\"content\":[{\"type\":\"tool-result\",\"toolCallId\":\"151712501\",\"toolName\":\"Act\",\"output\":{\"type\":\"json\",\"value\":{\"status\":\"uncertain\",\"steps\":[],\"message\":\"unsure of the next move (p=0.37)\",\"elements\":\"[0]<a> \\\"Home\\\"\\n[1]<a> \\\"New in\\\"\\n[2]<a> \\\"Sale\\\"\\n[3]<input> search \\\"Search products\\\"\\n[4]<select> select-one \\\"Sort by\\\" = \\\"Featured\\\"\\n[5]<a> \\\"Cart\\\"\\n[6]<span> \\\"0\\\"\\n[7]<button> submit \\\"Checkout\\\"\\n[8]<button> submit \\\"Add Aurora mug (blue) to cart\\\"\\n[9]<button> submit \\\"Add Aurora mug (red) to cart\\\"\\n[10]<button> submit \\\"Add Aurora mug (green) to cart\\\"\\n[11]<button> ",
-    "\"toolName\":\"Act\",\"output\":{\"type\":\"json\",\"value\":{\"status\":\"uncertain\",\"steps\":[],\"message\":\"unsure of the next move (p=0.37)\",\"elements\":\"[0]<a> \\\"Home\\\"\\n[1]<a> \\\"New in\\\"\\n[2]<a> \\\"Sale\\\"\\n[3]<input> search \\\"Search products\\\"\\n[4]<select> select-one \\\"Sort by\\\" = \\\"Featured\\\"\\n[5]<a> \\\"Cart\\\"\\n[6]<span> \\\"0\\\"\\n[7]<button> submit \\\"Checkout\\\"\\n[8]<button> submit \\\"Add Aurora mug (blue) to cart\\\"\\n[9]<button> submit \\\"Add Aurora mug (red) to cart\\\"\\n[10]<button> submit \\\"Add Aurora mug (green) to cart\\\"\\n[11]<button> submit \\\"Add Nimbus tote (blue) to cart\\\"\\n[12]<button> submit \\\"Add Nimbus tote (red) to cart\\\"\\n[13]<button> submit \\\"Add Nimbus tote (green) to cart\\\"\\n[14]<button> submit "
-   ]
-  },
-  {
-   "task": "dialog",
-   "system1": "forced",
-   "success": true,
-   "ended": "turn-ended",
-   "wallMs": 53443,
-   "steps": 12,
-   "actOffered": true,
-   "actCalls": 2,
-   "controlPageCalls": 3,
-   "toolCalls": [
-    "ReadPage",
-    "GetTool",
-    "ControlPage",
-    "ToolSearch",
-    "ToolSearch",
-    "GetTool",
-    "RequestPageControl",
-    "Act",
-    "ControlPage",
-    "Act",
-    "ControlPage"
-   ],
-   "approvals": [
-    "Read the interactive elements on this page",
-    "Read the interactive elements on this page",
-    "Let the agent control 127.0.0.1:51540?",
-    "Let the agent control 127.0.0.1:51540?",
-    "Click \u201cReject non-essential\u201d",
-    "Click \u201cReject non-essential\u201d",
-    "Click \u201cAdd Nimbus tote (green) to cart\u201d"
-   ],
-   "pageState": {
-    "consent": "essential",
-    "cart": [
-     "Nimbus tote (green)"
-    ]
+   {
+    "rep": 1,
+    "T": 263,
+    "ms": 169,
+    "maxAbsLogitDelta": 0.010429859161376953
    },
-   "lastReply": null,
-   "actResults": [
-    "\"toolName\":\"Act\",\"input\":{\"goal\":\"click the \\\"Reject non-essential\\\" button and then click the \\\"Add green\\\" button for the Nimbus tote\"},\"state\":\"done\",\"output\":{\"status\":\"uncertain\",\"steps\":[],\"message\":\"unsure of the next move (p=0.37)\",\"elements\":\"[0]<button> submit \\\"Accept all\\\"\\n[1]<button> submit \\\"Reject non-essential\\\"\\n[2]<button> submit \\\"Manage preferences\\\"\"}},{\"type\":\"reasoning\",\"text\":\"\\nThe user wants to reject non-essential cookies and then add the green Nimbus tote to the cart.\\nI have already requested page control with a plan.\\nThe `Act` tool attempt failed with \\\"uncertain\\\" and didn't actually perform the click because it seems like I need to provide the element indice",
-    "\"toolName\":\"Act\",\"input\":{\"goal\":\"click the \\\"Add green\\\" button for the Nimbus tote to add it to the cart\",\"values\":{}},\"state\":\"done\",\"output\":{\"status\":\"uncertain\",\"steps\":[],\"message\":\"unsure of the next move (p=0.45)\",\"elements\":\"[0]<a> \\\"Home\\\"\\n[1]<a> \\\"Stores\\\"\\n[2]<a> \\\"Cart\\\"\\n[3]<span> \\\"0\\\"\\n[4]<button> submit \\\"Add Nimbus tote (green) to cart\\\"\\n[5]<button> submit \\\"Add Nimbus tote (grey) to cart\\\"\\n[6]<button> submit \\\"Add Aurora mug (green) to cart\\\"\\n[7]<button> submit \\\"Add Aurora mug (grey) to cart\\\"\\n[8]<button> submit \\\"Add Harbor throw (green) to cart\\\"\\n[9]<button> submit \\\"Add Harbor throw (grey) to cart\\\"\\n[10]<button> submit \\\"Add Cedar candle (green) to cart\\\"\\n[11]",
-    "\"toolName\":\"Act\",\"input\":{\"goal\":\"click the \\\"Reject non-essential\\\" button and then click the \\\"Add green\\\" button for the Nimbus tote\"}}]},{\"role\":\"tool\",\"content\":[{\"type\":\"tool-result\",\"toolCallId\":\"629365227\",\"toolName\":\"Act\",\"output\":{\"type\":\"json\",\"value\":{\"status\":\"uncertain\",\"steps\":[],\"message\":\"unsure of the next move (p=0.37)\",\"elements\":\"[0]<button> submit \\\"Accept all\\\"\\n[1]<button> submit \\\"Reject non-essential\\\"\\n[2]<button> submit \\\"Manage preferences\\\"\"}}}]},{\"role\":\"assistant\",\"content\":[{\"type\":\"tool-call\",\"toolCallId\":\"919217975\",\"toolName\":\"ControlPage\",\"input\":{\"action\":\"click\",\"index\":1}}]},{\"role\":\"tool\",\"content\":[{\"type\":\"tool-result\",\"toolCallId\":\"919217975\",\"tool",
-    "\"toolName\":\"Act\",\"output\":{\"type\":\"json\",\"value\":{\"status\":\"uncertain\",\"steps\":[],\"message\":\"unsure of the next move (p=0.37)\",\"elements\":\"[0]<button> submit \\\"Accept all\\\"\\n[1]<button> submit \\\"Reject non-essential\\\"\\n[2]<button> submit \\\"Manage preferences\\\"\"}}}]},{\"role\":\"assistant\",\"content\":[{\"type\":\"tool-call\",\"toolCallId\":\"919217975\",\"toolName\":\"ControlPage\",\"input\":{\"action\":\"click\",\"index\":1}}]},{\"role\":\"tool\",\"content\":[{\"type\":\"tool-result\",\"toolCallId\":\"919217975\",\"toolName\":\"ControlPage\",\"output\":{\"type\":\"json\",\"value\":{\"ok\":true,\"message\":\"clicked element 1\",\"urlChanged\":false,\"elements\":\"[0]<a> \\\"Home\\\"\\n[1]<a> \\\"Stores\\\"\\n[2]<a> \\\"Cart\\\"\\n[3]<span> \\\"0\\\"\\n[4]<button> submit \\",
-    "\"toolName\":\"Act\",\"input\":{\"goal\":\"click the \\\"Add green\\\" button for the Nimbus tote to add it to the cart\",\"values\":{}}}]},{\"role\":\"tool\",\"content\":[{\"type\":\"tool-result\",\"toolCallId\":\"658494907\",\"toolName\":\"Act\",\"output\":{\"type\":\"json\",\"value\":{\"status\":\"uncertain\",\"steps\":[],\"message\":\"unsure of the next move (p=0.45)\",\"elements\":\"[0]<a> \\\"Home\\\"\\n[1]<a> \\\"Stores\\\"\\n[2]<a> \\\"Cart\\\"\\n[3]<span> \\\"0\\\"\\n[4]<button> submit \\\"Add Nimbus tote (green) to cart\\\"\\n[5]<button> submit \\\"Add Nimbus tote (grey) to cart\\\"\\n[6]<button> submit \\\"Add Aurora mug (green) to cart\\\"\\n[7]<button> submit \\\"Add Aurora mug (grey) to cart\\\"\\n[8]<button> submit \\\"Add Harbor throw (green) to cart\\\"\\n[9]<button> submi",
-    "\"toolName\":\"Act\",\"output\":{\"type\":\"json\",\"value\":{\"status\":\"uncertain\",\"steps\":[],\"message\":\"unsure of the next move (p=0.45)\",\"elements\":\"[0]<a> \\\"Home\\\"\\n[1]<a> \\\"Stores\\\"\\n[2]<a> \\\"Cart\\\"\\n[3]<span> \\\"0\\\"\\n[4]<button> submit \\\"Add Nimbus tote (green) to cart\\\"\\n[5]<button> submit \\\"Add Nimbus tote (grey) to cart\\\"\\n[6]<button> submit \\\"Add Aurora mug (green) to cart\\\"\\n[7]<button> submit \\\"Add Aurora mug (grey) to cart\\\"\\n[8]<button> submit \\\"Add Harbor throw (green) to cart\\\"\\n[9]<button> submit \\\"Add Harbor throw (grey) to cart\\\"\\n[10]<button> submit \\\"Add Cedar candle (green) to cart\\\"\\n[11]<button> submit \\\"Add Cedar candle (grey) to cart\\\"\\n[12]<button> submit \\\"Add Fjord bowl (green"
-   ]
+   {
+    "rep": 1,
+    "T": 275,
+    "ms": 178,
+    "maxAbsLogitDelta": 0.0076940953731536865
+   },
+   {
+    "rep": 1,
+    "T": 297,
+    "ms": 187,
+    "maxAbsLogitDelta": 0.0426936149597168
+   },
+   {
+    "rep": 1,
+    "T": 70,
+    "ms": 81,
+    "maxAbsLogitDelta": 0.03335833549499512
+   },
+   {
+    "rep": 2,
+    "T": 263,
+    "ms": 170,
+    "maxAbsLogitDelta": 0.010429859161376953
+   },
+   {
+    "rep": 2,
+    "T": 275,
+    "ms": 174,
+    "maxAbsLogitDelta": 0.0076940953731536865
+   },
+   {
+    "rep": 2,
+    "T": 297,
+    "ms": 186,
+    "maxAbsLogitDelta": 0.0426936149597168
+   },
+   {
+    "rep": 2,
+    "T": 70,
+    "ms": 79,
+    "maxAbsLogitDelta": 0.03335833549499512
+   }
+  ],
+  "note": "verbose logging is on, so run times here are inflated vs the worker",
+  "wasmComparison": {
+   "note": "same probe with executionProviders:[\"wasm\"] (single thread): 3.9-4.4 s per golden case at T=263-297, 1.26 s at T=70, vs 0.17-0.21 s / 0.08-0.12 s on webgpu; logits identical to 4 dp"
   }
- ]
+ }
 }
