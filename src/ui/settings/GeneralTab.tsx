@@ -7,6 +7,7 @@ import {
 } from '../../data/settings'
 import { testLangfuseConnection } from '../../agent/observability'
 import { Disclosure, Section } from './primitives'
+import ExperimentalSection from './ExperimentalSection'
 import McpSection from './McpSection'
 import { SealedChip } from './SealedChip'
 
@@ -80,6 +81,8 @@ export default function GeneralTab({
           anywhere. Clear them in the Data tab.
         </p>
       </Section>
+
+      <ExperimentalSection draft={draft} commit={commit} />
 
       <McpSection draft={draft} commit={commit} />
 
