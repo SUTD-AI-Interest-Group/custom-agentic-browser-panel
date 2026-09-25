@@ -188,6 +188,13 @@ def build_q8(src, dst):
 
 
 def main():
+    import argparse
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--ship", choices=["q8", "fp16"], help="ship this variant instead of the first to pass the gate")
+    ap.add_argument("--accept-drift", action="store_true", help="with --ship: ship it even if it fails parity")
+    args = ap.parse_args()
+    if args.ship and not args.accept_drift:
+        ap.error("--ship requires --accept-drift (without it the gate picks the variant)")
     os.makedirs(OUT, exist_ok=True)
     model, calib, paths = load_reference()
     tok = model.tokenizer
@@ -268,8 +275,9 @@ def main():
             if int(np.argmax(p_ref)) != int(np.argmax(p_got)):
                 flips.append(f"K={len(mk)}/T={len(ids)}")
             worst = max(worst, float(np.abs(np.array(p_ref) - np.array(p_got)).max()))
+        stats = {"maxDeltaP": round(worst, 4), "argmaxFlips": len(flips), "probes": len(encoded)}
         if flips:
-            return False, f"argmax flip on {', '.join(flips)} (max|Δp|={worst:.4f})"
+            return False, f"argmax flip on {', '.join(flips)} (max|Δp|={worst:.4f})", stats
         # Order invariance: reverse the options of the 8-option case.
         case = encoded[3][0]
         rev = dict(case, options=list(reversed(case["options"])))
@@ -279,19 +287,25 @@ def main():
         b = onnx_logits(sess, ids2, o2, p2, m2)[::-1]
         inv = float(np.abs(a - b).max())
         ok = worst <= PROB_TOL and inv < 1e-2
-        return ok, f"max|Δp|={worst:.4f} invariance={inv:.5f}"
+        return ok, f"max|Δp|={worst:.4f} invariance={inv:.5f}", dict(stats, invariance=round(inv, 5))
 
     chosen = None
     for name, path, f16 in [("q8", q8, False), ("fp16", fp16, True)]:
-        ok, why = gate(path)
+        ok, why, stats = gate(path)
         print(f"[gate] {name}: {'PASS' if ok else 'FAIL'} {why}")
-        if ok and chosen is None:
-            chosen = (name, path, f16)
+        forced = args.ship == name and args.accept_drift
+        if (ok and chosen is None and args.ship is None) or forced:
+            chosen = (name, path, f16, dict(stats, gatePassed=ok))
     if chosen is None:
         sys.exit("[gate] no variant passes parity — STOP (see plan Task 1)")
 
     # 5) Ship files + manifest.
-    name, path, requires_f16 = chosen
+    name, path, requires_f16, parity = chosen
+    if not parity["gatePassed"]:
+        print(f"[gate] shipping {name} DESPITE failing parity (--accept-drift)")
+    for stale in os.listdir(OUT):
+        if stale.startswith("model_") and stale.endswith(".onnx"):
+            os.remove(os.path.join(OUT, stale))
     ship_model = os.path.join(OUT, f"model_{name}.onnx")
     os.replace(path, ship_model)
     for f in ["tokenizer.json", "tokenizer_config.json"]:
@@ -312,6 +326,7 @@ def main():
     files = [f"model_{name}.onnx", "tokenizer.json", "tokenizer_config.json", "von.json"]
     manifest = {
         "format": 1, "model": von["model"], "variant": name, "requiresShaderF16": requires_f16,
+        "parity": parity,  # provenance only: the extension ignores it
         "source": {"repo": REPO, "revision": REVISION},
         "files": [{"path": f, "bytes": os.path.getsize(os.path.join(OUT, f)),
                    "sha256": sha256(os.path.join(OUT, f))} for f in files],
@@ -333,3 +348,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+    # torch + onnxruntime can abort in a static destructor at interpreter exit on
+    # macOS (recursive_mutex lock failed) after all output is written; skip teardown.
+    sys.stdout.flush(); sys.stderr.flush()
+    os._exit(0)
