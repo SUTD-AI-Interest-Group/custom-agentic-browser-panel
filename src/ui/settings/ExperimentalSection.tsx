@@ -67,8 +67,18 @@ interface DownloadJob {
 }
 
 let activeJob: DownloadJob | null = null
+/**
+ * The most recent non-abort failure of a job nobody was subscribed to when it
+ * happened — without this, closing Settings while a download fails leaves no
+ * trace: the next mount finds `activeJob` gone and `readState()` null, and
+ * (before this) fell back to `Off` with the checkbox still checked and no
+ * Retry button to recover with. Cleared whenever a new job starts (so a
+ * fresh attempt doesn't inherit a stale reason) and on that job's success.
+ */
+let lastJobError: string | null = null
 
 function startJob(): DownloadJob {
+  lastJobError = null
   const ac = new AbortController()
   const listeners = new Set<(p: DownloadProgress) => void>()
   const job: DownloadJob = {
@@ -77,17 +87,23 @@ function startJob(): DownloadJob {
     latestProgress: null,
     listeners,
     promise: (async () => {
-      const state = await downloadWeights(WEIGHTS_PIN, {
-        fetch: (u, init) => fetch(u, init),
-        cache: await caches.open(CACHE_NAME),
-        signal: ac.signal,
-        onProgress: (p) => {
-          job.latestProgress = p
-          for (const l of listeners) l(p)
-        },
-      })
-      await writeState(state)
-      return state
+      try {
+        const state = await downloadWeights(WEIGHTS_PIN, {
+          fetch: (u, init) => fetch(u, init),
+          cache: await caches.open(CACHE_NAME),
+          signal: ac.signal,
+          onProgress: (p) => {
+            job.latestProgress = p
+            for (const l of listeners) l(p)
+          },
+        })
+        await writeState(state)
+        lastJobError = null
+        return state
+      } catch (err) {
+        if (!ac.signal.aborted) lastJobError = err instanceof Error ? err.message : String(err)
+        throw err
+      }
     })(),
   }
   activeJob = job
@@ -120,8 +136,14 @@ export default function ExperimentalSection({ draft, commit }: { draft: Settings
     void readState().then(async (s) => {
       if (cancelled) return
       setStored(s ? s.bytes : null)
-      // Don't stomp a live download's status with a stale on-disk read.
-      if (on && s && !activeJob) setStatus(await resolveReadyStatus(s.bytes))
+      // Don't stomp a live download's status with a stale on-disk read — the
+      // job-subscribe effect below owns status while one is active.
+      if (activeJob) return
+      if (on && s) { setStatus(await resolveReadyStatus(s.bytes)); return }
+      // Nothing on disk and nothing running: if the last attempt failed while
+      // no instance was mounted to see it (e.g. Settings was closed), surface
+      // that now instead of silently reporting "Off" with the box still checked.
+      if (on && !s && lastJobError) setStatus({ kind: 'failed', reason: lastJobError })
     })
     return () => { cancelled = true }
   }, [on])
@@ -158,7 +180,18 @@ export default function ExperimentalSection({ draft, commit }: { draft: Settings
     unsubRef.current = () => { cancelled = true; job.listeners.delete(onProgress) }
   }
 
+  // A job that's mid-abort is still `activeJob` for a tick (aborting a
+  // fetch/reader isn't synchronous) — reusing it here would subscribe to a
+  // job that's about to reject and immediately flip status back to `off`
+  // right after the user asked to turn the feature back *on*. Wait for it to
+  // actually finish settling (module slot clears itself, see startJob) before
+  // deciding whether to reuse or start fresh.
+  const settleIfAborting = async () => {
+    if (activeJob?.signal.aborted) await activeJob.promise.catch(() => {})
+  }
+
   const start = async () => {
+    await settleIfAborting()
     if (activeJob) { subscribeTo(activeJob); return }
     // The model's own f16 requirement isn't known until its manifest is
     // downloaded, so this pre-flight only checks that WebGPU exists at all.
@@ -166,17 +199,22 @@ export default function ExperimentalSection({ draft, commit }: { draft: Settings
     subscribeTo(startJob())
   }
 
+  /** The one path for every user-initiated stop: the checkbox going off AND
+   *  the Cancel button — both must leave the setting, the job and the status
+   *  in agreement, or the UI shows "Off" while `experimental.system1` is
+   *  still `true` with no control left to fix it. */
+  const stop = () => {
+    commit({ ...draftRef.current, experimental: { ...draftRef.current.experimental, system1: false } })
+    activeJob?.abort()
+    unsubRef.current?.()
+    unsubRef.current = null
+    setStatus({ kind: 'off' })
+  }
+
   const toggle = async (next: boolean) => {
-    commit({ ...draftRef.current, experimental: { ...draftRef.current.experimental, system1: next } })
-    if (!next) {
-      // Turning the feature back off is what cancels its download — an
-      // abandoned download nobody will use has no reason to keep running.
-      activeJob?.abort()
-      unsubRef.current?.()
-      unsubRef.current = null
-      setStatus({ kind: 'off' })
-      return
-    }
+    if (!next) { stop(); return }
+    commit({ ...draftRef.current, experimental: { ...draftRef.current.experimental, system1: true } })
+    await settleIfAborting()
     if (activeJob) { subscribeTo(activeJob); return }
     const s = await readState()
     if (s) setStatus(await resolveReadyStatus(s.bytes))
@@ -225,7 +263,7 @@ export default function ExperimentalSection({ draft, commit }: { draft: Settings
       {status.kind === 'downloading' && (
         <>
           <progress max={status.total} value={status.received} />
-          <button className="btn ghost small" onClick={() => activeJob?.abort()}>Cancel</button>
+          <button className="btn ghost small" onClick={() => stop()}>Cancel</button>
         </>
       )}
       {status.kind === 'failed' && <button className="btn ghost small" onClick={() => void start()}>Retry</button>}
