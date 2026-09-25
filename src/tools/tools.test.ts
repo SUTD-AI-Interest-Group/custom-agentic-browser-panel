@@ -377,3 +377,115 @@ describe('AutofillForm — re-checks isForeground per field, not only at tool en
     expect(runControlStep).not.toHaveBeenCalled()
   })
 })
+
+// ---------------------------------------------------------------------------
+// Act (System-1) — built only with a runtime, drives controlStep, never echoes
+// the caller's values, and stops between steps once the chain is aborted.
+// ---------------------------------------------------------------------------
+
+describe('Act (System-1)', () => {
+  function buildWith(system1?: { decide: any }) {
+    return createAgentTools(async () => true, 'all-tabs', new Set(), noopPageControl, null, false, [],
+      () => 'always', 'conv-1', new Set(), undefined, undefined, undefined, system1 as any)
+  }
+
+  function buildInSession(decide: (req: any) => Promise<any>, activeNames = new Set<string>()) {
+    const session = buildSession()
+    const pageControl: PageControlGate = {
+      requestSession: async () => true,
+      session: () => session,
+      endSession: () => { session.active = false },
+    }
+    const pageTarget: PageTarget = { resolveTab: async () => FG_TAB, park: () => {} }
+    return createAgentTools(async () => true, 'all-tabs', new Set(), pageControl, null, false, [],
+      () => 'always', 'conv-1', activeNames, undefined, undefined, pageTarget, { decide })
+  }
+
+  const answer = (key: string, choice: string, top = 0.9) =>
+    ({ answers: { [key]: { choice, probabilities: { [choice]: top }, top, confidence: top } }, ms: 1 })
+
+  beforeEach(() => {
+    vi.mocked(snapshotPage).mockReset()
+    vi.mocked(runControlStep).mockReset()
+    vi.stubGlobal('chrome', { tabs: { query: vi.fn(async () => [FG_TAB]) } })
+  })
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('is absent without a System-1 runtime', () => {
+    expect(buildWith().Act).toBeUndefined()
+  })
+
+  it('is present with one, and refuses without a page-control session', async () => {
+    const tools = buildWith({ decide: vi.fn() })
+    expect(tools.Act).toBeDefined()
+    const r = (await (tools.Act as any).execute({ goal: 'x' }, { toolCallId: 't', messages: [] })) as any
+    expect(r.error).toMatch(/RequestPageControl/)
+  })
+
+  it('rejects a non-integer or over-cap maxSteps and an empty or oversized goal at the schema', () => {
+    const schema = (buildWith({ decide: vi.fn() }).Act as any).inputSchema
+    expect(schema.safeParse({ goal: 'x', maxSteps: 3 }).success).toBe(true)
+    expect(schema.safeParse({ goal: 'x', maxSteps: 2.5 }).success).toBe(false)
+    expect(schema.safeParse({ goal: 'x', maxSteps: 9 }).success).toBe(false)
+    expect(schema.safeParse({ goal: 'x', maxSteps: 0 }).success).toBe(false)
+    expect(schema.safeParse({ goal: '' }).success).toBe(false)
+    expect(schema.safeParse({ goal: 'x'.repeat(301) }).success).toBe(false)
+  })
+
+  it('types a supplied value through controlStep but never echoes it in the result', async () => {
+    vi.mocked(snapshotPage).mockResolvedValue(snap([el({ index: 0, tag: 'input', type: 'email', name: 'Email' })]))
+    vi.mocked(runControlStep).mockResolvedValue({ ok: true, message: 'typed', registry: 'fresh', origin: 'https://example.com' })
+    const decide = vi.fn()
+      .mockResolvedValueOnce(answer('move', 'act'))
+      .mockResolvedValueOnce(answer('target', '0'))
+      .mockResolvedValueOnce(answer('value', 'email'))
+      .mockResolvedValueOnce(answer('move', 'DONE'))
+    const tools = buildInSession(decide)
+    const r = (await (tools.Act as any).execute(
+      { goal: 'fill the email', values: { email: 'secret@example.com' } },
+      { toolCallId: 't', messages: [] },
+    )) as any
+    expect(r.status).toBe('done')
+    expect(r.steps).toHaveLength(1)
+    expect(vi.mocked(runControlStep).mock.calls[0][0].spec).toMatchObject({ action: 'type', index: 0, text: 'secret@example.com' })
+    expect(JSON.stringify(r)).not.toContain('secret@example.com')
+  })
+
+  it('stops between steps once the tool call is aborted', async () => {
+    vi.mocked(snapshotPage).mockResolvedValue(snap([el({ index: 0, name: 'Next' })]))
+    vi.mocked(runControlStep).mockResolvedValue({ ok: true, message: 'scrolled', registry: 'fresh', origin: 'https://example.com' })
+    const ctrl = new AbortController()
+    const decide = vi.fn(async () => {
+      ctrl.abort() // Stop pressed while the first step is being decided
+      return answer('move', 'scroll_down')
+    })
+    const tools = buildInSession(decide)
+    const r = (await (tools.Act as any).execute(
+      { goal: 'find the next button' },
+      { toolCallId: 't', messages: [], abortSignal: ctrl.signal },
+    )) as any
+    expect(r.status).toBe('aborted')
+    expect(r.steps).toHaveLength(1)
+    expect(decide).toHaveBeenCalledTimes(1)
+  })
+
+  it('joins the control cluster when RequestPageControl is granted, only with a runtime', async () => {
+    vi.mocked(snapshotPage).mockRejectedValue(new Error('stop here'))
+    const withRuntime = new Set<string>()
+    await (buildInSession(vi.fn(), withRuntime).RequestPageControl as any).execute({ plan: 'p' }, { toolCallId: 't', messages: [] })
+    expect(withRuntime.has('ControlPage')).toBe(true)
+    expect(withRuntime.has('Act')).toBe(true)
+
+    const without = new Set<string>()
+    const session = buildSession()
+    const tools = createAgentTools(async () => true, 'all-tabs', new Set(),
+      { requestSession: async () => true, session: () => session, endSession: () => {} },
+      null, false, [], () => 'always', 'conv-1', without, undefined, undefined,
+      { resolveTab: async () => FG_TAB, park: () => {} })
+    await (tools.RequestPageControl as any).execute({ plan: 'p' }, { toolCallId: 't', messages: [] })
+    expect(without.has('ControlPage')).toBe(true)
+    expect(without.has('Act')).toBe(false)
+  })
+})

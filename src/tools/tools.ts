@@ -41,6 +41,8 @@ import { getExecHost } from '../exec/host'
 import { budgetOutcome, escapeHtml, RUN_MEMORY_BYTES, RUN_TIMEOUT_MS } from '../exec/protocol'
 import { saveArtifact, updateArtifactContent } from '../data/artifacts'
 import { createProposeResearchTool } from './research'
+import type { System1Runtime } from '../system1/runtime'
+import { runActLoop, ACT_DEFAULT_STEPS, ACT_MAX_STEPS, type ExecOutcome } from '../system1/actLoop'
 import { buildCatalog, searchCatalog, partitionToolNames, type CatalogEntry } from './toolDiscovery'
 import {
   hasElementChanged,
@@ -280,6 +282,12 @@ export function createAgentTools(
   extraTools?: ToolSet,
   /** Which tab this turn acts on, and what to do when it isn't in front. */
   pageTarget?: PageTarget,
+  /**
+   * The experimental System-1 decision runtime (src/system1/runtime.ts), or
+   * undefined when the toggle is off, the model isn't ready, or there is no
+   * WebGPU. Undefined means `Act` is never built — absent, not disabled.
+   */
+  system1?: System1Runtime,
 ): ToolSet {
   const resolveTab: (pane?: PaneTarget) => Promise<chrome.tabs.Tab | undefined> =
     pageTarget?.resolveTab ??
@@ -1586,6 +1594,7 @@ export function createAgentTools(
         activeNames.add('ControlPage')
         activeNames.add('AutofillForm')
         activeNames.add('GetScreenshot')
+        if (system1) activeNames.add('Act')
         await mountPresence(tab.id)
         // Entering active control: turn the soft dark tint on (ambient shows the
         // frame only). The spotlight/cursor come alive on the first ControlPage.
@@ -1617,6 +1626,42 @@ export function createAgentTools(
         timeoutMs: z.number().optional().describe('Max ms to wait for the page to settle (action=wait).'),
       }),
       execute: (spec: ControlSpec) => controlStep(spec),
+    }),
+
+    Act: tool({
+      description:
+        `Experimental fast page control. Within an open page-control session, hand a short routine sub-goal ("add the blue variant to the cart", "fill the shipping form") to a local decision model that takes up to ${ACT_MAX_STEPS} steps (click, type, select, scroll, wait) without waiting on you. It can only type/select values you pass in \`values\` (by name, verbatim), never navigates, and never touches password/payment fields. Submits and leaving the site still ask the user. ALWAYS read the returned status: done/blocked/uncertain/denied/drifted/repeat/capped/error/parked/aborted — on anything but done, continue with ControlPage (uncertain returns the top candidates). Use ControlPage for single precise actions, sensitive fields and navigation.`,
+      inputSchema: z.object({
+        // Bounded: the goal is embedded in every prompt the local model packs,
+        // and an unbounded one would overflow its small token budget.
+        goal: z.string().min(1).max(300).describe('One short sub-goal on the current page (max 300 chars).'),
+        values: z.record(z.string()).optional().describe('Named literal values it may type/select, e.g. {"email":"a@b.co"}.'),
+        maxSteps: z.number().int().min(1).max(ACT_MAX_STEPS).optional().describe(`Step cap (default ${ACT_DEFAULT_STEPS}, max ${ACT_MAX_STEPS}).`),
+      }),
+      execute: async ({ goal, values, maxSteps }, { abortSignal }) => {
+        const session = pageControl.session()
+        if (!session || !session.active)
+          return { error: 'No page-control session is open. Call RequestPageControl first.' }
+        const tab = await resolveTab()
+        if (tab?.id === undefined || tab.id !== session.tabId) return { error: 'The controlled tab is no longer active.' }
+        const tabId = tab.id
+        const result = await runActLoop({ goal, values, maxSteps }, {
+          snapshot: () => snapshotPage(tabId),
+          decide: (req) => system1!.decide(req),
+          aborted: () => abortSignal?.aborted === true,
+          execute: async (spec): Promise<ExecOutcome> => {
+            const r = (await controlStep(spec)) as Record<string, unknown>
+            if (r.denied) return { kind: 'denied' }
+            if (r.parked) return { kind: 'parked', note: String(r.note ?? '') }
+            if (r.drifted) return { kind: 'drifted', message: String(r.message ?? ''), elements: r.elements as string | undefined }
+            if (typeof r.error === 'string') return { kind: 'error', message: r.error }
+            if (r.ok === false) return { kind: 'error', message: String(r.message ?? 'the action failed') }
+            return { kind: 'ok', elements: String(r.elements ?? '') }
+          },
+        })
+        // `values` are never echoed: steps carry labels and indices only.
+        return result
+      },
     }),
 
     /** Fills mapped, non-sensitive fields from saved profile memories inside an already-open page-control session; sensitive fields still raise a one-shot point-of-no-return card, and submit is never part of this tool. */
@@ -2077,6 +2122,8 @@ export function createAgentTools(
   // question off to the offscreen research host that runs the real (ungated)
   // research tools headlessly — see src/tools/research.ts and src/agent/research.ts.
   Object.assign(tools, createProposeResearchTool())
+
+  if (!system1) delete tools.Act
 
   // MCP server tools, pre-gated and policy-filtered by buildMcpTools. Built-in
   // names win a collision (the mcp_ prefix makes one implausible anyway).

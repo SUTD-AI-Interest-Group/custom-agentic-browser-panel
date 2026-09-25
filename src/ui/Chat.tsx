@@ -13,6 +13,7 @@ import { repairMessageText, type Complete } from '../agent/mathRepair'
 import { cancelRegionCapture, captureRegion, type CapturedImage } from '../platform/capture'
 import { PageAccessError } from '../platform/pageAccess'
 import { ensureVisionCapability } from '../agent/vision'
+import { resolveSystem1 } from '../system1/runtime'
 import { copyElementAsPng } from '../platform/domImage'
 import { getConversation, renameConversation, saveConversation, type RegenTarget } from '../data/conversations'
 import {
@@ -3143,12 +3144,18 @@ export default function Chat({
     // pre-authorized tool (e.g. @memory → SearchMemory, via turnAllowed) and, if
     // a page-control session is already open, the control cluster.
     const activeNames = new Set<string>(turnAllowed.current)
+    // The experimental System-1 runtime, resolved once per chain: undefined
+    // (toggle off, weights missing, no WebGPU, unhealthy engine) means `Act`
+    // is never built. Resolved here, ahead of the seeding below, so an open
+    // session can seed `Act` alongside the rest of the control cluster.
+    const system1 = await resolveSystem1(settingsRef.current)
     const openSession = pageControl.session()
     if (openSession && openSession.active) {
       activeNames.add('RequestPageControl')
       activeNames.add('ControlPage')
       activeNames.add('AutofillForm')
       activeNames.add('GetScreenshot')
+      if (system1) activeNames.add('Act')
     }
 
     // Does this model actually read images? This no longer removes any tool — the
@@ -3384,6 +3391,7 @@ export default function Chat({
                   },
               park: (reason) => { parked = reason },
             },
+            system1,
           ),
           abortSignal: controller.signal,
           onUpdate: patch(assistantId, base),
@@ -5710,6 +5718,7 @@ function ToolPill({
   else if (part.toolName === 'RequestPageControl')
     label = output?.started ? 'Started controlling the page' : 'Asked to control the page'
   else if (part.toolName === 'ControlPage') label = controlActionLabel(part.input, output)
+  else if (part.toolName === 'Act') label = `Act: ${String((part.input as { goal?: string })?.goal ?? '')}`
   else if (part.toolName === 'ExtractData')
     label = output?.error ? 'Could not extract data' : 'Extracted structured data'
   else if (part.toolName === 'ProposeResearch') label = 'Proposed background research'
