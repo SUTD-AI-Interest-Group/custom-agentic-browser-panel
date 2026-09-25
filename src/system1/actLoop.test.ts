@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from 'vitest'
 import type { IndexedElement, PageSnapshot } from '../platform/domIndex'
 import type { ControlSpec } from '../tools/pageControl'
 import type { DecideRequest, DecideResult } from './protocol'
-import { ACT_MAX_STEPS, opFor, runActLoop, type ActDeps, type ExecOutcome } from './actLoop'
+import { ACT_MAX_STEPS, TARGET_CHUNK, opFor, runActLoop, type ActDeps, type ExecOutcome } from './actLoop'
 
 const el = (index: number, over: Partial<IndexedElement> = {}): IndexedElement =>
   ({ index, tag: 'button', name: `Button ${index}`, rect: { x: 0, y: 0, width: 10, height: 10 }, sensitive: false, ...over }) as IndexedElement
@@ -161,5 +161,97 @@ describe('runActLoop', () => {
     const r = await runActLoop({ goal: 'g' }, d)
     expect(r.status).toBe('error')
     expect(r.message).toMatch(/gpu lost/)
+  })
+
+  it('runs a target tournament when candidates exceed TARGET_CHUNK, never exceeding it per call', async () => {
+    // Dense page: domIndex.ts caps at 200 elements. Every element gets a
+    // long (>60 char) name so the clip-to-60 fix is exercised too. One
+    // element carries a marker the fake decide() can find regardless of
+    // which chunk it lands in, so the tournament's real winner is provable.
+    const N = 200
+    const markerIndex = 137
+    const markerName = (i: number) => `TARGET-MARKER ${i} ${'z'.repeat(80)}`
+    const longName = (i: number) => `${'y'.repeat(90)} item ${i}`
+    const elements: IndexedElement[] = Array.from({ length: N }, (_, i) =>
+      el(i, { name: i === markerIndex ? markerName(i) : longName(i) }),
+    )
+    const calls: DecideRequest[] = []
+    let moveCalls = 0
+    const decide = vi.fn(async (req: DecideRequest): Promise<DecideResult> => {
+      calls.push(req)
+      const answers: DecideResult['answers'] = {}
+      if ('move' in req.questions) {
+        moveCalls++
+        const choice = moveCalls === 1 ? 'act' : 'DONE'
+        answers.move = { choice, probabilities: { [choice]: 0.9 }, top: 0.9, confidence: 0.9 }
+      }
+      if ('target' in req.questions) {
+        const options = req.questions.target.options
+        const markerKey = Object.entries(options).find(([, v]) => v.includes('TARGET-MARKER'))?.[0]
+        const choice = markerKey ?? Object.keys(options)[0]
+        answers.target = { choice, probabilities: { [choice]: 0.9 }, top: 0.9, confidence: 0.9 }
+      }
+      return { answers, ms: 2 }
+    })
+    const d = deps({ decide, elements })
+    const r = await runActLoop({ goal: 'g' }, d)
+
+    expect(r.status).toBe('done')
+    expect(d.executed).toEqual([{ action: 'click', index: markerIndex }])
+
+    const targetCalls = calls.filter((c) => 'target' in c.questions)
+    for (const c of targetCalls) expect(Object.keys(c.questions.target.options).length).toBeLessThanOrEqual(TARGET_CHUNK)
+    const chunkCount = Math.ceil(N / TARGET_CHUNK)
+    expect(targetCalls).toHaveLength(chunkCount + 1) // one per chunk, plus one final round over the winners
+
+    const finalCall = targetCalls[targetCalls.length - 1]
+    const finalKeys = Object.keys(finalCall.questions.target.options)
+    expect(finalKeys).toHaveLength(chunkCount)
+    expect(finalKeys).toContain(String(markerIndex))
+  })
+
+  it('neutralizes exact-case special tokens in element names before they reach the model', async () => {
+    const { decide, calls } = scripted([{ move: 'act', target: '0' }, { move: 'DONE' }])
+    const elements = [el(0, { name: 'Buy [MASK] now' })]
+    await runActLoop({ goal: 'g' }, deps({ decide, elements }))
+    const targetQ = calls.find((c) => c.questions.target)!
+    const optionText = Object.values(targetQ.questions.target.options)[0]
+    expect(optionText).not.toContain('[MASK]')
+    expect(optionText).toContain('[mask]')
+  })
+
+  it('reports an unknown target choice as error rather than throwing', async () => {
+    const decide = vi.fn(async (req: DecideRequest): Promise<DecideResult> => {
+      const answers: DecideResult['answers'] = {}
+      for (const key of Object.keys(req.questions))
+        answers[key] = key === 'move'
+          ? { choice: 'act', probabilities: {}, top: 0.9, confidence: 0.9 }
+          : { choice: 'nonexistent', probabilities: {}, top: 0.9, confidence: 0.9 }
+      return { answers, ms: 1 }
+    })
+    const r = await runActLoop({ goal: 'g' }, deps({ decide }))
+    expect(r.status).toBe('error')
+    expect(r.message).toMatch(/unknown choice/i)
+  })
+
+  it('reports an unknown value choice as error rather than a broken type', async () => {
+    const decide = vi.fn(async (req: DecideRequest): Promise<DecideResult> => {
+      const answers: DecideResult['answers'] = {}
+      if ('move' in req.questions) answers.move = { choice: 'act', probabilities: {}, top: 0.9, confidence: 0.9 }
+      if ('target' in req.questions) answers.target = { choice: '1', probabilities: {}, top: 0.9, confidence: 0.9 }
+      if ('value' in req.questions) answers.value = { choice: 'bogus', probabilities: {}, top: 0.9, confidence: 0.9 }
+      return { answers, ms: 1 }
+    })
+    const r = await runActLoop({ goal: 'g', values: { email: 'a@b.co' } }, deps({ decide }))
+    expect(r.status).toBe('error')
+    expect(r.message).toMatch(/unknown choice/i)
+  })
+
+  it('returns uncertain when confidence on the value question is low, without executing', async () => {
+    const { decide } = scripted([{ move: 'act', target: '1', value: ['email', 0.4] }])
+    const d = deps({ decide })
+    const r = await runActLoop({ goal: 'g', values: { email: 'a@b.co' } }, d)
+    expect(r.status).toBe('uncertain')
+    expect(d.executed).toEqual([])
   })
 })

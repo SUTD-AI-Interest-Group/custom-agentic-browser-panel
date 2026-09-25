@@ -5,11 +5,19 @@
 // point-of-no-return card, park and origin-drift check applies unchanged.
 import type { IndexedElement, PageSnapshot } from '../platform/domIndex'
 import type { ControlSpec } from '../tools/pageControl'
-import type { DecideQuestion, DecideRequest, DecideResult } from './protocol'
+import type { DecideAnswer, DecideQuestion, DecideRequest, DecideResult } from './protocol'
 
 export const ACT_DEFAULT_STEPS = 6
 export const ACT_MAX_STEPS = 8
 export const ACT_CONFIDENCE = 0.6
+/**
+ * The target question's option text is proportional to candidate count, and
+ * a dense page (domIndex.ts caps at 200 elements) overflows Von's maxTokens
+ * budget in a single question. Above this many candidates, split into chunks
+ * of at most this size (document order), ask the same question per chunk,
+ * then run one final round over the chunk winners — see pickTarget below.
+ */
+export const TARGET_CHUNK = 40
 
 export type ActStatus = 'done' | 'blocked' | 'uncertain' | 'denied' | 'drifted' | 'repeat' | 'aborted' | 'capped' | 'error' | 'parked'
 export type ExecOutcome =
@@ -44,11 +52,23 @@ export function opFor(el: IndexedElement): 'click' | 'type' | 'select' {
   return 'click'
 }
 
+// The tokenizer treats these exact, case-sensitive strings as special tokens
+// (a literal "[MASK]" resolves to a fixed id outside the vocabulary Von
+// reasons over as ordinary text). Page-controlled text — an element's own
+// name or current value — or the caller's goal could contain one verbatim
+// and silently inject a control token into what's meant to be ordinary
+// content. Lowercasing is enough to defuse it: BPE is case-sensitive, so
+// "[mask]" tokenizes as plain text.
+const SPECIAL_TOKENS = /\[(MASK|SEP|CLS|PAD|UNK)\]/g
+const neutralize = (s: string): string => s.replace(SPECIAL_TOKENS, (m) => m.toLowerCase())
+
 const clip = (s: string, n: number) => (s.length > n ? `${s.slice(0, n - 1)}…` : s)
 const describe = (el: IndexedElement, op: string) => {
-  const kind = el.role || (el.tag === 'input' ? `${el.type || 'text'} field` : el.tag)
-  const cur = el.value ? ` (currently "${clip(el.value, 30)}")` : ''
-  return `[${el.index}] ${kind} "${clip(el.name || '(unnamed)', 80)}"${cur} → ${op}`
+  const tag = el.tag.toLowerCase()
+  const kind = el.role || (tag === 'input' ? `${el.type || 'text'} field` : tag)
+  const name = neutralize(el.name || '(unnamed)')
+  const cur = el.value ? ` (currently "${clip(neutralize(el.value), 30)}")` : ''
+  return `[${el.index}] ${kind} "${clip(name, 60)}"${cur} → ${op}`
 }
 
 const MOVES: Record<string, string> = {
@@ -57,6 +77,63 @@ const MOVES: Record<string, string> = {
   WAIT: 'The page is still loading or changing; wait for it to settle.',
   DONE: 'The goal is already achieved on this page.',
   BLOCKED: 'The goal cannot be progressed here (login, captcha, a missing control, or information that was not provided).',
+}
+
+type TargetAsk = { kind: 'ok'; ans: DecideAnswer; ms: number } | { kind: 'error'; message: string }
+
+async function askTarget(state: string, pool: IndexedElement[], deps: ActDeps): Promise<TargetAsk> {
+  const targetQ: Record<string, DecideQuestion> = {
+    target: {
+      instructions: 'Which element should be used next to progress toward the goal?',
+      options: Object.fromEntries(pool.map((el) => [String(el.index), describe(el, opFor(el))])),
+    },
+  }
+  try {
+    const t = await deps.decide({ state, questions: targetQ })
+    return { kind: 'ok', ans: t.answers.target, ms: t.ms }
+  } catch (err) {
+    return { kind: 'error', message: `System-1 engine failed: ${err instanceof Error ? err.message : String(err)}` }
+  }
+}
+
+type TargetPick =
+  | { kind: 'ok'; el: IndexedElement; p: number; ms: number }
+  | { kind: 'uncertain'; ms: number; top: number; probabilities: Record<string, number> }
+  | { kind: 'error'; message: string }
+
+/**
+ * Picks one element from `candidates`. Within TARGET_CHUNK, this is exactly
+ * one decide() call, same as before the tournament existed. Above it, splits
+ * into document-order chunks of at most TARGET_CHUNK, asks the same target
+ * question per chunk (sequentially — one decide() realm, see ExecHost/engine
+ * for the reasoning), takes each chunk's winner, then asks one final target
+ * question over the winners only. The final round's calibrated confidence is
+ * what ACT_CONFIDENCE gates on and what `uncertain` candidates are drawn
+ * from — earlier rounds only narrow the field, they never gate.
+ */
+async function pickTarget(state: string, candidates: IndexedElement[], deps: ActDeps): Promise<TargetPick> {
+  let ms = 0
+  let pool = candidates
+  if (candidates.length > TARGET_CHUNK) {
+    const winners: IndexedElement[] = []
+    for (let i = 0; i < candidates.length; i += TARGET_CHUNK) {
+      const chunk = candidates.slice(i, i + TARGET_CHUNK)
+      const r = await askTarget(state, chunk, deps)
+      if (r.kind === 'error') return r
+      ms += r.ms
+      const winner = chunk.find((el) => String(el.index) === r.ans.choice)
+      if (!winner) return { kind: 'error', message: 'System-1 returned an unknown choice' }
+      winners.push(winner)
+    }
+    pool = winners
+  }
+  const r = await askTarget(state, pool, deps)
+  if (r.kind === 'error') return r
+  ms += r.ms
+  if (r.ans.top < ACT_CONFIDENCE) return { kind: 'uncertain', ms, top: r.ans.top, probabilities: r.ans.probabilities }
+  const el = pool.find((c) => String(c.index) === r.ans.choice)
+  if (!el) return { kind: 'error', message: 'System-1 returned an unknown choice' }
+  return { kind: 'ok', el, p: r.ans.top, ms }
 }
 
 export async function runActLoop(
@@ -83,8 +160,8 @@ export async function runActLoop(
     })
     const done = steps.map((s, i) => `${i + 1}. ${s.action}${s.label ? ` "${s.label}"` : ''}`).join('; ') || 'nothing yet'
     const state = [
-      `Goal: ${input.goal}`,
-      `Page: ${snap.title} (${snap.origin})`,
+      `Goal: ${neutralize(input.goal)}`,
+      `Page: ${neutralize(snap.title)} (${snap.origin})`,
       `Done so far: ${done}`,
       valueKeys.length ? `Provided values: ${valueKeys.join(', ')}` : 'Provided values: none',
     ].join('\n')
@@ -113,30 +190,21 @@ export async function runActLoop(
     if (move.choice === 'scroll_down') spec = { action: 'scroll', direction: 'down' }
     else if (move.choice === 'WAIT') spec = { action: 'wait', timeoutMs: 3000 }
     else {
-      const targetQ: Record<string, DecideQuestion> = {
-        target: {
-          instructions: 'Which element should be used next to progress toward the goal?',
-          options: Object.fromEntries(candidates.map((el) => [String(el.index), describe(el, opFor(el))])),
-        },
-      }
-      let t: DecideResult
-      try { t = await deps.decide({ state, questions: targetQ }) } catch (err) {
-        return { status: 'error', steps, message: `System-1 engine failed: ${err instanceof Error ? err.message : String(err)}` }
-      }
-      ms += t.ms
-      const ans = t.answers.target
-      if (ans.top < ACT_CONFIDENCE) {
-        const ranked = Object.entries(ans.probabilities).sort((a, b) => b[1] - a[1]).slice(0, 3)
+      const pick = await pickTarget(state, candidates, deps)
+      if (pick.kind === 'error') return { status: 'error', steps, message: pick.message }
+      ms += pick.ms
+      if (pick.kind === 'uncertain') {
+        const ranked = Object.entries(pick.probabilities).sort((a, b) => b[1] - a[1]).slice(0, 3)
         const byIndex = new Map(candidates.map((el) => [String(el.index), el]))
         return {
           status: 'uncertain', steps, elements: snap.text,
-          message: `unsure which element to use (p=${ans.top.toFixed(2)})`,
+          message: `unsure which element to use (p=${pick.top.toFixed(2)})`,
           candidates: ranked.map(([k, pr]) => ({ index: Number(k), label: byIndex.get(k)?.name ?? '', p: pr })),
         }
       }
-      const el = candidates.find((c) => String(c.index) === ans.choice)!
-      label = clip(el.name || '(unnamed)', 60)
-      p = Math.min(p, ans.top)
+      const el = pick.el
+      label = clip(neutralize(el.name || '(unnamed)'), 60)
+      p = Math.min(p, pick.p)
       const op = opFor(el)
       if (op === 'click') spec = { action: 'click', index: el.index }
       else {
@@ -153,7 +221,10 @@ export async function runActLoop(
         if (v.answers.value.top < ACT_CONFIDENCE)
           return { status: 'uncertain', steps, elements: snap.text, message: `unsure which value belongs in "${label}"` }
         p = Math.min(p, v.answers.value.top)
-        const text = values[v.answers.value.choice]
+        const chosenKey = v.answers.value.choice
+        if (!Object.prototype.hasOwnProperty.call(values, chosenKey))
+          return { status: 'error', steps, message: 'System-1 returned an unknown choice' }
+        const text = values[chosenKey]
         spec = op === 'type' ? { action: 'type', index: el.index, text, clear: true } : { action: 'select', index: el.index, value: text }
       }
     }
