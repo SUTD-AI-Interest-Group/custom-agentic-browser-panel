@@ -161,7 +161,7 @@ def sha256(path):
     return h.hexdigest()
 
 
-def build_q8(src, dst):
+def build_q8(src, dst, n_layers):
     """8-bit (block 16, asymmetric) encoder matmuls except attn Wqkv; large fp32 weights left over are stored fp16."""
     from onnxruntime.quantization.matmul_nbits_quantizer import MatMulNBitsQuantizer
     m = onnx.load(src)
@@ -169,7 +169,28 @@ def build_q8(src, dst):
             and not (n.name.startswith("/encoder/layers.") and "/attn/Wqkv/" not in n.name)]
     qz = MatMulNBitsQuantizer(m, bits=8, block_size=16, is_symmetric=False, nodes_to_exclude=keep)
     qz.process()
+    # Selection is by torch-export node names; if they drift, fail rather than ship an unquantized "q8".
+    quantized = sum(n.op_type == "MatMulNBits" for n in qz.model.model.graph.node)
+    expected = 3 * n_layers  # attn Wo, mlp Wi, mlp Wo per layer
+    assert quantized == expected, f"q8 quantized {quantized} MatMuls, expected {expected}"
+    print(f"[export] q8: {quantized} MatMuls quantized to 8-bit ({n_layers} layers x 3)")
     store_fp16(qz.model.model, dst, "q8")
+
+
+def fp16_activations(path):
+    """Names of fp16 tensors the graph computes (not the fp16-stored weights feeding the *_upcast Casts)."""
+    from onnx import TensorProto
+    m = onnx.shape_inference.infer_shapes(onnx.load(path))
+    g = m.graph
+    stored = {i.name for i in g.initializer}
+    upcast_in = {n.input[0] for n in g.node if n.op_type == "Cast" and n.name.endswith("_upcast")}
+    found = [v.name for v in list(g.input) + list(g.output) + list(g.value_info)
+             if v.name not in stored and v.type.tensor_type.elem_type == TensorProto.FLOAT16]
+    # Belt: shape inference cannot type com.microsoft ops' outputs, so also look at what types are produced.
+    found += [n.output[0] for n in g.node if n.op_type == "Cast"
+              and any(a.name == "to" and a.i == TensorProto.FLOAT16 for a in n.attribute)]
+    found += [i.name for i in g.initializer if i.data_type == TensorProto.FLOAT16 and i.name not in upcast_in]
+    return sorted(set(found))
 
 
 def store_fp16(m, dst, name):
@@ -196,10 +217,12 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--ship", choices=["q8", "fp16w"], help="ship this variant instead of the first to pass the gate")
     ap.add_argument("--accept-drift", action="store_true", help="with --ship: ship it even if it fails parity")
+    ap.add_argument("--out", default=OUT, help=f"output directory (default {OUT})")
     args = ap.parse_args()
-    if args.ship and not args.accept_drift:
-        ap.error("--ship requires --accept-drift (without it the gate picks the variant)")
-    os.makedirs(OUT, exist_ok=True)
+    if bool(args.ship) != args.accept_drift:
+        ap.error("--ship and --accept-drift go together (without them the gate picks the variant)")
+    out = args.out
+    os.makedirs(out, exist_ok=True)
     model, calib, paths = load_reference()
     tok = model.tokenizer
     w = int(model.encoder.config.sliding_window)
@@ -221,7 +244,7 @@ def main():
     print("[export] wrapper == reference on all probes")
 
     # 2) Export fp32 (dynamic T and K).
-    fp32 = os.path.join(OUT, "von_fp32.onnx")
+    fp32 = os.path.join(out, "von_fp32.onnx")
     _, _, ids, _, oid, pid, mk, _ = encoded[3]
     example = (torch.tensor([ids]), torch.tensor([oid]), torch.tensor([pid]), torch.tensor(mk))
 
@@ -248,10 +271,21 @@ def main():
     # the one group 8-bit cannot carry. fp16w: fp16-stored weights, fp32 compute —
     # the fallback. (An fp16-activation graph also passed but needs shader-f16, and
     # graph converters put RoPE's position*inv_freq in fp16, which flips long prompts.)
-    q8 = os.path.join(OUT, "von_q8.onnx")
-    build_q8(fp32, q8)
-    fp16w = os.path.join(OUT, "von_fp16w.onnx")
+    q8 = os.path.join(out, "von_q8.onnx")
+    build_q8(fp32, q8, int(model.encoder.config.num_hidden_layers))
+    fp16w = os.path.join(out, "von_fp16w.onnx")
     store_fp16(onnx.load(fp32), fp16w, "fp16w")
+    variants = []
+    for name, path in [("q8", q8), ("fp16w", fp16w)]:
+        f16 = fp16_activations(path)
+        print(f"[export] {name}: requiresShaderF16={bool(f16)}" + (f" ({len(f16)} fp16 tensors, e.g. {f16[:3]})" if f16 else ""))
+        assert not f16, f"{name} is documented as fp32-compute but computes fp16 tensors"
+        variants.append((name, path, bool(f16)))
+
+    def drop_onnx(keep=None):
+        for f in os.listdir(out):
+            if f.endswith(".onnx") and os.path.join(out, f) != keep:
+                os.remove(os.path.join(out, f))
 
     # 4) Parity gate + order invariance per variant.
     def gate(path):
@@ -278,27 +312,24 @@ def main():
         return ok, f"max|Δp|={worst:.4f} invariance={inv:.5f}", dict(stats, invariance=round(inv, 5))
 
     chosen = None
-    for name, path, f16 in [("q8", q8, False), ("fp16w", fp16w, False)]:
+    for name, path, f16 in variants:
         ok, why, stats = gate(path)
         print(f"[gate] {name}: {'PASS' if ok else 'FAIL'} {why}")
-        forced = args.ship == name and args.accept_drift
+        forced = args.ship == name
         if (ok and chosen is None and args.ship is None) or forced:
-            chosen = (name, path, f16, dict(stats, gatePassed=ok))
+            chosen = (name, path, f16, dict(stats, gatePassed=ok, ep="cpu"))
     if chosen is None:
+        drop_onnx()
         sys.exit("[gate] no variant passes parity — STOP (see plan Task 1)")
 
     # 5) Ship files + manifest.
     name, path, requires_f16, parity = chosen
     if not parity["gatePassed"]:
         print(f"[gate] shipping {name} DESPITE failing parity (--accept-drift)")
-    ship_model = os.path.join(OUT, f"model_{name}.onnx")
+    ship_model = os.path.join(out, f"model_{name}.onnx")
     os.replace(path, ship_model)
-    # out/ holds only the ship set: drop older models and this run's intermediates.
-    for stale in os.listdir(OUT):
-        if stale.endswith(".onnx") and os.path.join(OUT, stale) != ship_model:
-            os.remove(os.path.join(OUT, stale))
     for f in ["tokenizer.json", "tokenizer_config.json"]:
-        with open(paths[f], "rb") as src, open(os.path.join(OUT, f), "wb") as dst:
+        with open(paths[f], "rb") as src, open(os.path.join(out, f), "wb") as dst:
             dst.write(src.read())
     von = {
         "model": calib.get("model_id", "von-1.2.0"),
@@ -311,17 +342,21 @@ def main():
         "temperature": float(calib.get("temperature", 1.0)),
         "calibrationMap": calib.get("calibration_map"),
     }
-    json.dump(von, open(os.path.join(OUT, "von.json"), "w"), indent=2)
+    with open(os.path.join(out, "von.json"), "w") as f:
+        json.dump(von, f, indent=2)
     files = [f"model_{name}.onnx", "tokenizer.json", "tokenizer_config.json", "von.json"]
     manifest = {
         "format": 1, "model": von["model"], "variant": name, "requiresShaderF16": requires_f16,
         "parity": parity,  # provenance only: the extension ignores it
         "source": {"repo": REPO, "revision": REVISION},
-        "files": [{"path": f, "bytes": os.path.getsize(os.path.join(OUT, f)),
-                   "sha256": sha256(os.path.join(OUT, f))} for f in files],
+        "files": [{"path": f, "bytes": os.path.getsize(os.path.join(out, f)),
+                   "sha256": sha256(os.path.join(out, f))} for f in files],
     }
-    json.dump(manifest, open(os.path.join(OUT, "manifest.json"), "w"), indent=2)
-    print(f"[export] manifest sha256 = {sha256(os.path.join(OUT, 'manifest.json'))}")
+    with open(os.path.join(out, "manifest.json"), "w") as f:
+        json.dump(manifest, f, indent=2)
+    print(f"[export] manifest sha256 = {sha256(os.path.join(out, 'manifest.json'))}")
+    # Only now that the manifest names the new model: out/ keeps just the ship set.
+    drop_onnx(keep=ship_model)
 
     # 6) Golden fixture for the TS tests (first 3 cases + the move case; ids only, no weights).
     golden = {"model": von["model"], "maskTokenId": von["maskTokenId"], "calibration": {
@@ -331,7 +366,8 @@ def main():
                                 "markers": mk, "stateTokens": st, "logits": ref.tolist(),
                                 "probs": calibrate(ref, st, calib)})
     os.makedirs(os.path.dirname(GOLDEN), exist_ok=True)
-    json.dump(golden, open(GOLDEN, "w"))
+    with open(GOLDEN, "w") as f:
+        json.dump(golden, f)
     print(f"[export] wrote {GOLDEN}")
 
 
