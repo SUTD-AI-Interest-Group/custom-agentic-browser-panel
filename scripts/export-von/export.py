@@ -161,6 +161,32 @@ def sha256(path):
     return h.hexdigest()
 
 
+def build_q8(src, dst):
+    """8-bit (block 16, asymmetric) encoder matmuls except attn Wqkv; large fp32 weights left over are stored fp16."""
+    from onnx import numpy_helper, helper, TensorProto
+    from onnxruntime.quantization.matmul_nbits_quantizer import MatMulNBitsQuantizer
+    m = onnx.load(src)
+    keep = [n.name for n in m.graph.node if n.op_type == "MatMul"
+            and not (n.name.startswith("/encoder/layers.") and "/attn/Wqkv/" not in n.name)]
+    qz = MatMulNBitsQuantizer(m, bits=8, block_size=16, is_symmetric=False, nodes_to_exclude=keep)
+    qz.process()
+    m = qz.model.model
+    inits = {i.name: i for i in m.graph.initializer}
+    weights = sorted({i for n in m.graph.node if n.op_type in ("MatMul", "Gather", "Gemm") for i in n.input
+                      if i in inits and inits[i].data_type == TensorProto.FLOAT and np.prod(inits[i].dims) >= 1 << 16})
+    casts = []
+    for w in weights:
+        arr = numpy_helper.to_array(inits[w]).astype(np.float16)
+        m.graph.initializer.remove(inits[w])
+        m.graph.initializer.append(numpy_helper.from_array(arr, w + "_f16"))
+        casts.append(helper.make_node("Cast", [w + "_f16"], [w], to=TensorProto.FLOAT, name=w + "_upcast"))
+    nodes = list(m.graph.node)
+    del m.graph.node[:]
+    m.graph.node.extend(casts + nodes)
+    onnx.save(m, dst)
+    print(f"[export] q8: {len(weights)} weights stored fp16")
+
+
 def main():
     os.makedirs(OUT, exist_ok=True)
     model, calib, paths = load_reference()
@@ -204,11 +230,14 @@ def main():
     export(fp32)
 
     # 3) Variants.
-    from onnxruntime.quantization.matmul_nbits_quantizer import MatMulNBitsQuantizer
-    q4 = os.path.join(OUT, "von_q4.onnx")
-    qz = MatMulNBitsQuantizer(onnx.load(fp32), block_size=32, is_symmetric=True)
-    qz.process()
-    qz.model.save_model_to_file(q4, use_external_data_format=False)
+    # q8: 8-bit weights, fp32 activations, so WebGPU needs no shader-f16. Every
+    # 4-bit recipe (RTN/HQQ/k-quant/GPTQ, block 16/32, MLP-only) and 8-bit on all
+    # matmuls failed the gate; attention Wqkv is the one group 8-bit cannot carry.
+    # It, the embeddings and the scorer are *stored* fp16 behind Cast(to=float),
+    # which ORT's basic ConstantFolding (pre-partitioning, any EP) upcasts at
+    # session init, so no fp16 tensor reaches the EP.
+    q8 = os.path.join(OUT, "von_q8.onnx")
+    build_q8(fp32, q8)
 
     # fp16 is re-exported from a half-precision model, not converted from the fp32
     # graph. Graph converters cast RoPE's position*inv_freq product to fp16, which
@@ -253,16 +282,16 @@ def main():
         return ok, f"max|Δp|={worst:.4f} invariance={inv:.5f}"
 
     chosen = None
-    for name, path in [("q4", q4), ("fp16", fp16)]:
+    for name, path, f16 in [("q8", q8, False), ("fp16", fp16, True)]:
         ok, why = gate(path)
         print(f"[gate] {name}: {'PASS' if ok else 'FAIL'} {why}")
         if ok and chosen is None:
-            chosen = (name, path)
+            chosen = (name, path, f16)
     if chosen is None:
         sys.exit("[gate] no variant passes parity — STOP (see plan Task 1)")
 
     # 5) Ship files + manifest.
-    name, path = chosen
+    name, path, requires_f16 = chosen
     ship_model = os.path.join(OUT, f"model_{name}.onnx")
     os.replace(path, ship_model)
     for f in ["tokenizer.json", "tokenizer_config.json"]:
@@ -282,7 +311,7 @@ def main():
     json.dump(von, open(os.path.join(OUT, "von.json"), "w"), indent=2)
     files = [f"model_{name}.onnx", "tokenizer.json", "tokenizer_config.json", "von.json"]
     manifest = {
-        "format": 1, "model": von["model"], "variant": name,
+        "format": 1, "model": von["model"], "variant": name, "requiresShaderF16": requires_f16,
         "source": {"repo": REPO, "revision": REVISION},
         "files": [{"path": f, "bytes": os.path.getsize(os.path.join(OUT, f)),
                    "sha256": sha256(os.path.join(OUT, f))} for f in files],

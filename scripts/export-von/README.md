@@ -1,8 +1,9 @@
 # Von → ONNX (browser)
 
 `uv run scripts/export-von/export.py` exports Von 1.2 (pinned revision) to
-`out/`, gates q4 then fp16 on parity with the PyTorch reference, and writes
-`out/manifest.json` plus `src/system1/__fixtures__/von-golden.json`.
+`out/`, gates q8 (fp32 activations, no WebGPU shader-f16) then fp16 on parity with the PyTorch reference, and writes
+`out/manifest.json` plus `src/system1/__fixtures__/von-golden.json`. The manifest's
+`requiresShaderF16` is true only when the shipped graph has fp16 activations.
 
 Publish (maintainer):
 
