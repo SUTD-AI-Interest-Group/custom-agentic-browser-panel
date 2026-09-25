@@ -1,0 +1,306 @@
+# scripts/export-von/export.py
+# /// script
+# requires-python = ">=3.12"
+# dependencies = [
+#   "von-sdk @ git+https://github.com/wfzyx/von@ca5d608fa79820d4e5388c9cb4c6a9b47a44a98c",
+#   "torch>=2.4", "transformers>=5.0", "onnx>=1.17", "onnxruntime>=1.20",
+#   "onnx-ir", "huggingface_hub>=0.30", "numpy",
+# ]
+# ///
+"""Export Von 1.2 to a browser-runnable ONNX graph.
+
+The graph takes per-token option ids and builds Von's order-invariant masks
+in-graph (see von.models.option_marker.build_independent_option_masks), so the
+browser never uploads two TxT float masks per call.
+"""
+import hashlib, json, math, os, random, sys
+import numpy as np
+import torch
+import onnx
+import onnxruntime as ort
+from huggingface_hub import hf_hub_download
+from von.models.option_marker import OptionMarkerModel
+
+REPO = "wfzyx/von"
+REVISION = "5df8185a4f2327ad0a7cd117cc4f701ac557b9ae"
+OUT = os.path.join(os.path.dirname(__file__), "out")
+GOLDEN = os.path.join(os.path.dirname(__file__), "..", "..", "src", "system1", "__fixtures__", "von-golden.json")
+MAX_TOKENS = 4096
+NEG = -30000.0  # representable in fp16; exp() underflows to exactly 0 either way
+PROB_TOL = 0.03
+
+
+def load_reference():
+    files = ["config.json", "model.safetensors", "option_marker.pt", "tokenizer.json",
+             "tokenizer_config.json", "marker_calibration.json"]
+    paths = {f: hf_hub_download(REPO, f, revision=REVISION) for f in files}
+    ckpt_dir = os.path.dirname(paths["config.json"])
+    model = OptionMarkerModel(base_model_id=ckpt_dir)
+    model.load_state_dict(torch.load(paths["option_marker.pt"], map_location="cpu", weights_only=True), strict=True)
+    model.eval()
+    calib = json.load(open(paths["marker_calibration.json"]))
+    assert calib.get("independent_options") is True, "exporter assumes Von >= 1.2"
+    model.digit_split = bool(calib.get("digit_split", False))
+    return model, calib, paths
+
+
+class VonExport(torch.nn.Module):
+    def __init__(self, model, sliding_window: int):
+        super().__init__()
+        self.encoder = model.encoder
+        self.scorer = model.scorer
+        self.w = sliding_window
+
+    def forward(self, input_ids, option_ids, position_ids, marker_positions):
+        oi = option_ids.unsqueeze(2)
+        oj = option_ids.unsqueeze(1)
+        qp = oi == -1
+        kp = oj == -1
+        allowed = (qp & kp) | (~qp & (kp | (oi == oj)))
+        ar = torch.arange(input_ids.shape[1], device=input_ids.device)
+        eye = (ar.unsqueeze(0) == ar.unsqueeze(1)).unsqueeze(0)
+        full = allowed | eye
+        pi = position_ids.unsqueeze(2)
+        pj = position_ids.unsqueeze(1)
+        sliding = (allowed & ((pi - pj).abs() <= self.w)) | eye
+        # Masks follow the weights' dtype: they are added to fp16 scores in the half export.
+        zero = torch.zeros(full.shape, dtype=self.scorer.dense.weight.dtype, device=input_ids.device)
+        fm = zero.masked_fill(~full, NEG).unsqueeze(1)
+        sm = zero.masked_fill(~sliding, NEG).unsqueeze(1)
+        hidden = self.encoder(
+            input_ids=input_ids,
+            attention_mask={"full_attention": fm, "sliding_attention": sm},
+            position_ids=position_ids,
+        ).last_hidden_state
+        return self.scorer(hidden[0].index_select(0, marker_positions)).float()
+
+
+def plan_sequence(ids, mask_id):
+    """Mirror of build_option_invariant_position_ids + option spans (batch 1, no padding)."""
+    T = len(ids)
+    markers = [i for i, t in enumerate(ids) if t == mask_id]
+    last = T - 1  # trailing [SEP] stays prefix-class
+    option_ids = [-1] * T
+    position_ids = list(range(T))
+    prefix_len = markers[0]
+    for k, start in enumerate(markers):
+        end = markers[k + 1] if k + 1 < len(markers) else last
+        for j in range(start, end):
+            option_ids[j] = k
+            position_ids[j] = prefix_len + (j - start)
+    return option_ids, position_ids, markers
+
+
+def calibrate(logits, state_tokens, calib):
+    logits = np.asarray(logits, dtype=np.float64)
+    def softmax(x):
+        e = np.exp(x - x.max()); return e / e.sum()
+    m = calib.get("calibration_map")
+    if m:
+        p = softmax(logits); n = len(p)
+        ent = float(-(p * np.log(np.clip(p, 1e-12, None))).sum() / math.log(n)) if n > 1 else 0.0
+        raw = (m.get("bias", 0) * 1.0 + m.get("entropy", 0) * ent
+               + m.get("log_tokens", 0) * (math.log10(max(state_tokens, 1)) / 4.0)
+               + m.get("n_options", 0) * (n / 8.0))
+        t = min(m.get("hi", 12.0), max(m.get("lo", 0.5), raw))
+    else:
+        t = float(calib.get("temperature", 1.0))
+    return softmax(logits / max(t, 1e-4)).tolist()
+
+
+def probe_suite():
+    """Deterministic prompts spanning option counts 2..60 and lengths up to ~3k tokens."""
+    rng = random.Random(7)
+    roles = ["button", "link", "textbox", "select", "checkbox"]
+    words = "cart checkout size colour blue red email name address next back search filter sort save cancel".split()
+    cases = []
+    for n in [2, 3, 5, 8, 13, 21, 34, 60]:
+        opts = [f"[{i}] {rng.choice(roles)} '{rng.choice(words).title()} {rng.choice(words)}' → click" for i in range(n)]
+        filler = " ".join(rng.choice(words) for _ in range(rng.choice([10, 200, 1500])))
+        cases.append({
+            "state": f"Goal: add the blue variant to the cart\nPage: Acme Shop (shop.example)\nNotes: {filler}",
+            "instructions": "Which element should be used next to progress toward the goal?",
+            "options": opts,
+        })
+    cases.append({"state": "Goal: sign up for the newsletter\nPage: Blog (blog.example)",
+                  "instructions": "Decide the next browser move toward the goal.",
+                  "options": ["Act on one of the visible page elements", "Scroll down to reveal more of the page",
+                              "The page is still loading; wait", "The goal is already achieved", "The goal cannot be progressed here"]})
+    return cases
+
+
+def encode(tok, model, case):
+    packed = model.pack_sequence(case["state"], case["instructions"], case["options"])
+    ids = tok(packed)["input_ids"]
+    assert len(ids) <= MAX_TOKENS, f"probe case too long: {len(ids)}"
+    state_tokens = len(tok.encode(case["state"], add_special_tokens=False))
+    return packed, ids, state_tokens
+
+
+def reference_logits(model, ids, markers):
+    with torch.no_grad():
+        t = torch.tensor([ids])
+        return model(input_ids=t, attention_mask=torch.ones_like(t), mask_positions=[markers],
+                     independent_options=True)[0].float().numpy()
+
+
+def onnx_logits(sess, ids, option_ids, position_ids, markers):
+    return sess.run(["logits"], {
+        "input_ids": np.array([ids], dtype=np.int64),
+        "option_ids": np.array([option_ids], dtype=np.int64),
+        "position_ids": np.array([position_ids], dtype=np.int64),
+        "marker_positions": np.array(markers, dtype=np.int64),
+    })[0].astype(np.float64)
+
+
+def sha256(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def main():
+    os.makedirs(OUT, exist_ok=True)
+    model, calib, paths = load_reference()
+    tok = model.tokenizer
+    w = int(model.encoder.config.sliding_window)
+    print(f"[export] sliding_window={w} mask={model.mask_token_id}")
+
+    # 1) The in-graph mask must reproduce Von's own forward exactly (fp32, PyTorch).
+    wrapper = VonExport(model, w).eval()
+    suite = probe_suite()
+    encoded = []
+    for case in suite:
+        packed, ids, st = encode(tok, model, case)
+        oid, pid, mk = plan_sequence(ids, model.mask_token_id)
+        ref = reference_logits(model, ids, mk)
+        with torch.no_grad():
+            mine = wrapper(torch.tensor([ids]), torch.tensor([oid]), torch.tensor([pid]), torch.tensor(mk)).numpy()
+        d = float(np.abs(ref - mine).max())
+        assert d < 1e-3, f"wrapper diverges from Von reference by {d}"
+        encoded.append((case, packed, ids, st, oid, pid, mk, ref))
+    print("[export] wrapper == reference on all probes")
+
+    # 2) Export fp32 (dynamic T and K).
+    fp32 = os.path.join(OUT, "von_fp32.onnx")
+    _, _, ids, _, oid, pid, mk, _ = encoded[3]
+    example = (torch.tensor([ids]), torch.tensor([oid]), torch.tensor([pid]), torch.tensor(mk))
+
+    def export(path):
+        torch.onnx.export(
+            wrapper,
+            example,
+            path,
+            input_names=["input_ids", "option_ids", "position_ids", "marker_positions"],
+            output_names=["logits"],
+            dynamic_axes={"input_ids": {1: "T"}, "option_ids": {1: "T"}, "position_ids": {1: "T"},
+                          "marker_positions": {0: "K"}, "logits": {0: "K"}},
+            opset_version=18,
+            dynamo=False,
+        )
+
+    export(fp32)
+
+    # 3) Variants.
+    from onnxruntime.quantization.matmul_nbits_quantizer import MatMulNBitsQuantizer
+    q4 = os.path.join(OUT, "von_q4.onnx")
+    qz = MatMulNBitsQuantizer(onnx.load(fp32), block_size=32, is_symmetric=True)
+    qz.process()
+    qz.model.save_model_to_file(q4, use_external_data_format=False)
+
+    # fp16 is re-exported from a half-precision model, not converted from the fp32
+    # graph. Graph converters cast RoPE's position*inv_freq product to fp16, which
+    # near position 2000 is off by up to a radian and flipped long-prompt argmaxes
+    # (onnxconverter-common also leaves Cast(to=float) nodes that make the model
+    # invalid; ORT's node_block_list still round-trips blocked nodes through fp16).
+    # HF computes RoPE in fp32 explicitly, so a native half export keeps it there as
+    # long as the inv_freq buffers stay fp32; eager attention keeps softmax in fp32.
+    # This mutates the reference model in place, so it runs after its last use.
+    fp16 = os.path.join(OUT, "von_fp16.onnx")
+    rope = model.encoder.rotary_emb
+    inv_freq = {n: b.clone() for n, b in rope.named_buffers()}
+    model.encoder.config._attn_implementation = "eager"
+    wrapper.half()
+    for n, b in inv_freq.items():
+        setattr(rope, n, b)
+    print(f"[export] fp16: attn={model.encoder.config._attn_implementation} "
+          f"rope={sorted({str(getattr(rope, n).dtype) for n in inv_freq})}")
+    export(fp16)
+
+    # 4) Parity gate + order invariance per variant.
+    def gate(path):
+        sess = ort.InferenceSession(path, providers=["CPUExecutionProvider"])
+        worst, flips = 0.0, []
+        for case, packed, ids, st, oid, pid, mk, ref in encoded:
+            got = onnx_logits(sess, ids, oid, pid, mk)
+            p_ref, p_got = calibrate(ref, st, calib), calibrate(got, st, calib)
+            if int(np.argmax(p_ref)) != int(np.argmax(p_got)):
+                flips.append(f"K={len(mk)}/T={len(ids)}")
+            worst = max(worst, float(np.abs(np.array(p_ref) - np.array(p_got)).max()))
+        if flips:
+            return False, f"argmax flip on {', '.join(flips)} (max|Δp|={worst:.4f})"
+        # Order invariance: reverse the options of the 8-option case.
+        case = encoded[3][0]
+        rev = dict(case, options=list(reversed(case["options"])))
+        _, ids2, _ = encode(tok, model, rev)
+        o2, p2, m2 = plan_sequence(ids2, model.mask_token_id)
+        a = onnx_logits(sess, *(encoded[3][2], encoded[3][4], encoded[3][5], encoded[3][6]))
+        b = onnx_logits(sess, ids2, o2, p2, m2)[::-1]
+        inv = float(np.abs(a - b).max())
+        ok = worst <= PROB_TOL and inv < 1e-2
+        return ok, f"max|Δp|={worst:.4f} invariance={inv:.5f}"
+
+    chosen = None
+    for name, path in [("q4", q4), ("fp16", fp16)]:
+        ok, why = gate(path)
+        print(f"[gate] {name}: {'PASS' if ok else 'FAIL'} {why}")
+        if ok and chosen is None:
+            chosen = (name, path)
+    if chosen is None:
+        sys.exit("[gate] no variant passes parity — STOP (see plan Task 1)")
+
+    # 5) Ship files + manifest.
+    name, path = chosen
+    ship_model = os.path.join(OUT, f"model_{name}.onnx")
+    os.replace(path, ship_model)
+    for f in ["tokenizer.json", "tokenizer_config.json"]:
+        with open(paths[f], "rb") as src, open(os.path.join(OUT, f), "wb") as dst:
+            dst.write(src.read())
+    von = {
+        "model": calib.get("model_id", "von-1.2.0"),
+        "maskTokenId": model.mask_token_id,
+        "clsTokenId": tok.cls_token_id,
+        "sepTokenId": tok.sep_token_id,
+        "slidingWindow": w,
+        "maxTokens": MAX_TOKENS,
+        "digitSplit": model.digit_split,
+        "temperature": float(calib.get("temperature", 1.0)),
+        "calibrationMap": calib.get("calibration_map"),
+    }
+    json.dump(von, open(os.path.join(OUT, "von.json"), "w"), indent=2)
+    files = [f"model_{name}.onnx", "tokenizer.json", "tokenizer_config.json", "von.json"]
+    manifest = {
+        "format": 1, "model": von["model"], "variant": name,
+        "source": {"repo": REPO, "revision": REVISION},
+        "files": [{"path": f, "bytes": os.path.getsize(os.path.join(OUT, f)),
+                   "sha256": sha256(os.path.join(OUT, f))} for f in files],
+    }
+    json.dump(manifest, open(os.path.join(OUT, "manifest.json"), "w"), indent=2)
+    print(f"[export] manifest sha256 = {sha256(os.path.join(OUT, 'manifest.json'))}")
+
+    # 6) Golden fixture for the TS tests (first 3 cases + the move case; ids only, no weights).
+    golden = {"model": von["model"], "maskTokenId": von["maskTokenId"], "calibration": {
+        "temperature": von["temperature"], "calibrationMap": von["calibrationMap"]}, "cases": []}
+    for case, packed, ids, st, oid, pid, mk, ref in [encoded[0], encoded[1], encoded[2], encoded[-1]]:
+        golden["cases"].append({**case, "packed": packed, "ids": ids, "optionIds": oid, "positionIds": pid,
+                                "markers": mk, "stateTokens": st, "logits": ref.tolist(),
+                                "probs": calibrate(ref, st, calib)})
+    os.makedirs(os.path.dirname(GOLDEN), exist_ok=True)
+    json.dump(golden, open(GOLDEN, "w"))
+    print(f"[export] wrote {GOLDEN}")
+
+
+if __name__ == "__main__":
+    main()

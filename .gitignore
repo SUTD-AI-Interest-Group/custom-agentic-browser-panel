@@ -24,3 +24,5 @@ dist/
 
 # Superpowers brainstorming companion (local mockups)
 .superpowers/
+
+scripts/export-von/out/
