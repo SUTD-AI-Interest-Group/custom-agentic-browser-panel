@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Contact us — Northwind Support</title>
+<style>
+  body { font: 14px/1.4 system-ui, sans-serif; margin: 0; color: #222; }
+  nav { display: flex; gap: 16px; padding: 10px 20px; border-bottom: 1px solid #ddd; }
+  main { max-width: 520px; padding: 16px 20px; }
+  form { display: grid; gap: 10px; }
+  label { display: grid; gap: 3px; }
+  input[type=text], input[type=email], select, textarea { font: inherit; padding: 5px 7px; }
+  .row { display: flex; gap: 10px; }
+  #thanks { display: none; padding: 12px; background: #e8f5e9; border-radius: 6px; }
+</style>
+</head>
+<body>
+<nav>
+  <a href="#home">Home</a>
+  <a href="#faq">FAQ</a>
+  <a href="#status">Service status</a>
+</nav>
+<main>
+  <h1>Contact us</h1>
+  <form id="contact" onsubmit="return send(event)">
+    <label>Full name <input type="text" name="fullname" placeholder="Full name" required></label>
+    <label>Email <input type="email" name="email" aria-label="Email address" required></label>
+    <label>Phone (optional) <input type="text" name="phone" placeholder="Phone number"></label>
+    <label>Topic
+      <select name="topic" aria-label="Topic">
+        <option value="">Choose a topic…</option>
+        <option>Billing</option><option>Technical support</option><option>Sales</option><option>Other</option>
+      </select>
+    </label>
+    <label>Message <textarea name="message" rows="3" placeholder="How can we help?"></textarea></label>
+    <label><input type="checkbox" name="consent" aria-label="I agree to be contacted about my request"> I agree to be contacted about my request</label>
+    <label><input type="checkbox" name="newsletter" aria-label="Send me the monthly newsletter"> Send me the monthly newsletter</label>
+    <div class="row">
+      <button type="submit">Send message</button>
+      <button type="reset">Clear form</button>
+    </div>
+  </form>
+  <div id="thanks"></div>
+</main>
+<script>
+  window.__submitted = null
+  function send(e) {
+    e.preventDefault()
+    const f = document.getElementById('contact')
+    const d = Object.fromEntries(new FormData(f).entries())
+    window.__submitted = d
+    f.style.display = 'none'
+    const t = document.getElementById('thanks')
+    t.textContent = `Thanks, ${d.fullname || 'there'} — we'll reply to ${d.email || '(no email)'} about ${d.topic || '(no topic)'}.`
+    t.style.display = 'block'
+    return false
+  }
+</script>
+</body>
+</html>

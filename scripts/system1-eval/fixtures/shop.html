@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Hearth &amp; Co. — Homeware</title>
+<style>
+  body { font: 13px/1.3 system-ui, sans-serif; margin: 0; color: #222; }
+  header { display: flex; gap: 14px; align-items: center; padding: 8px 16px; border-bottom: 1px solid #ddd; }
+  header .spacer { flex: 1; }
+  main { padding: 8px 16px; }
+  .grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+  .card { border: 1px solid #ddd; border-radius: 6px; padding: 6px 8px; }
+  .card h2 { font-size: 13px; margin: 0 0 2px; }
+  .card p { margin: 0 0 4px; color: #666; }
+  .card button { font-size: 11px; padding: 2px 6px; margin: 0 2px 2px 0; }
+  #cart-count { font-weight: 600; }
+</style>
+</head>
+<body>
+<header>
+  <a href="#home">Home</a>
+  <a href="#new">New in</a>
+  <a href="#sale">Sale</a>
+  <span class="spacer"></span>
+  <input type="search" placeholder="Search products" aria-label="Search products">
+  <select aria-label="Sort by">
+    <option>Featured</option><option>Price: low to high</option><option>Price: high to low</option><option>Newest</option>
+  </select>
+  <a href="#cart" aria-label="Cart">Cart (<span id="cart-count">0</span>)</a>
+  <button id="checkout">Checkout</button>
+</header>
+<main>
+  <div class="grid" id="grid"></div>
+</main>
+<script>
+  // 12 products × 3 colours. Each variant button carries the accessible name
+  // the grounding cases expect; the visible text is just "Add <colour>".
+  const products = [
+    ['Aurora mug', 12], ['Nimbus tote', 24], ['Cedar candle', 18], ['Harbor throw', 58],
+    ['Lumen lamp', 74], ['Fjord bowl', 16], ['Sable apron', 29], ['Tidal vase', 42],
+    ['Ember kettle', 65], ['Meadow napkins', 14], ['Quill notebook', 9], ['Orbit clock', 38],
+  ]
+  const colours = ['blue', 'red', 'green']
+  const grid = document.getElementById('grid')
+  window.__cart = []
+  for (const [name, price] of products) {
+    const card = document.createElement('div')
+    card.className = 'card'
+    card.innerHTML = `<h2>${name}</h2><p>$${price}</p>`
+    for (const c of colours) {
+      const b = document.createElement('button')
+      b.textContent = `Add ${c}`
+      b.setAttribute('aria-label', `Add ${name} (${c}) to cart`)
+      b.addEventListener('click', () => {
+        window.__cart.push(`${name} (${c})`)
+        document.getElementById('cart-count').textContent = String(window.__cart.length)
+      })
+      card.appendChild(b)
+    }
+    grid.appendChild(card)
+  }
+</script>
+</body>
+</html>
