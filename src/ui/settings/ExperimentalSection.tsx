@@ -196,6 +196,9 @@ export default function ExperimentalSection({ draft, commit }: { draft: Settings
     // The model's own f16 requirement isn't known until its manifest is
     // downloaded, so this pre-flight only checks that WebGPU exists at all.
     if (!(await hasWebGpu(false))) { setStatus({ kind: 'no-webgpu', needsF16: false }); return }
+    // The awaits above leave room for the user to switch the feature back off;
+    // starting a download now would be one they just declined.
+    if (!system1Enabled(draftRef.current)) return
     subscribeTo(startJob())
   }
 
@@ -206,6 +209,8 @@ export default function ExperimentalSection({ draft, commit }: { draft: Settings
   const stop = () => {
     commit({ ...draftRef.current, experimental: { ...draftRef.current.experimental, system1: false } })
     activeJob?.abort()
+    // Release the worker and its GPU session now rather than at panel close.
+    getSystem1Engine().dispose()
     unsubRef.current?.()
     unsubRef.current = null
     setStatus({ kind: 'off' })
@@ -255,7 +260,7 @@ export default function ExperimentalSection({ draft, commit }: { draft: Settings
         <input type="checkbox" checked={on} onChange={(e) => void toggle(e.target.checked)} />
         Fast page control (System-1)
       </label>
-      <p className="hint">
+      <p className="hint" aria-live="polite">
         Runs a small local decision model (Von, several hundred MB download) on your GPU so page control can take
         several routine steps without waiting on your chat model. Submits, payments and leaving the site still ask
         you every time. Status: {line}
@@ -270,7 +275,10 @@ export default function ExperimentalSection({ draft, commit }: { draft: Settings
       {status.kind === 'ready' && <button className="btn ghost small" onClick={() => void runTest()}>Run a test decision</button>}
       {test && <p className="hint">{test}</p>}
       {!on && stored !== null && (
-        <button className="btn small danger-solid" onClick={() => void deleteWeights().then(() => setStored(null))}>
+        <button className="btn small danger-solid" onClick={() => {
+          getSystem1Engine().dispose()
+          void deleteWeights().then(() => setStored(null))
+        }}>
           Delete model ({mb(stored)})
         </button>
       )}

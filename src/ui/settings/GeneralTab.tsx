@@ -8,6 +8,7 @@ import {
 import { testLangfuseConnection } from '../../agent/observability'
 import { Disclosure, Section } from './primitives'
 import ExperimentalSection from './ExperimentalSection'
+import { WEIGHTS_PIN } from '../../system1/weights'
 import McpSection from './McpSection'
 import { SealedChip } from './SealedChip'
 
@@ -82,7 +83,9 @@ export default function GeneralTab({
         </p>
       </Section>
 
-      <ExperimentalSection draft={draft} commit={commit} />
+      {/* No published model yet → the toggle could only ever fail; eval builds
+          (VITE_SYSTEM1_PIN under --mode system1-eval) still show it. */}
+      {WEIGHTS_PIN.repo && <ExperimentalSection draft={draft} commit={commit} />}
 
       <McpSection draft={draft} commit={commit} />
 

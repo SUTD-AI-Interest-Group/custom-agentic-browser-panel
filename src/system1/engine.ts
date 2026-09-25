@@ -53,6 +53,9 @@ export class System1Engine {
   private queue: Promise<void> = Promise.resolve()
   private _healthy = true
   private failedAt = 0
+  // Bumped by dispose(): a boot that started before it must neither spawn a
+  // worker afterwards nor count its own cancellation as a health failure.
+  private generation = 0
 
   constructor(private readonly spawnWorker: () => WorkerLike = realWorkerFactory) {}
 
@@ -104,14 +107,29 @@ export class System1Engine {
     }
   }
 
+  /**
+   * User-initiated teardown — the feature switched off, or its weights
+   * deleted. Terminates the worker (and the WebGPU session it holds), rejects
+   * anything pending and forgets readiness, so the next decide() boots fresh
+   * from whatever is on disk then. Not a failure: health is left untouched.
+   */
+  dispose() {
+    this.generation++
+    const onReady = this.onReady
+    this.destroy()
+    onReady?.(new Error('the System-1 engine was shut down'))
+  }
+
   private ensure() {
     if (!this.ready) this.ready = this.boot()
     return this.ready
   }
 
   private async boot() {
+    const gen = this.generation
     try {
       const manifest = await loadCachedManifest(WEIGHTS_PIN, await caches.open(CACHE_NAME))
+      if (gen !== this.generation) throw new Error('the System-1 engine was shut down')
       if (!manifest) throw new Error('the System-1 model is not downloaded')
       const model = manifest.files.find((f) => f.path.endsWith('.onnx'))
       if (!model) throw new Error('the model manifest lists no .onnx file')
@@ -124,6 +142,9 @@ export class System1Engine {
       // reject, but may well have a `decide` in flight — left alone, that call
       // would just sit until its own DECIDE_TIMEOUT_MS. Fail it now instead.
       worker.addEventListener('error', (e) => {
+        // A worker already replaced or disposed is none of this engine's
+        // business any more — tearing down would kill its successor.
+        if (worker !== this.worker) return
         if (this.onReady) {
           this.onReady(new Error(e.message || 'System-1 worker failed to start'))
           this.onReady = null
@@ -149,8 +170,11 @@ export class System1Engine {
       this._healthy = true
       this.failedAt = 0
     } catch (err) {
-      this.markUnhealthy()
-      this.destroy()
+      // After a dispose() the teardown already happened, and on purpose.
+      if (gen === this.generation) {
+        this.markUnhealthy()
+        this.destroy()
+      }
       throw err
     }
   }

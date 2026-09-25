@@ -127,4 +127,64 @@ describe('System1Engine', () => {
     expect(worker!.terminated).toBe(true)
     expect(engine.healthy).toBe(false)
   })
+
+  it('dispose() terminates the worker, rejects the in-flight decide and reboots fresh next time, without going unhealthy', async () => {
+    vi.useFakeTimers()
+    stubCaches()
+    const workers: FakeWorker[] = []
+    let behavior: Behavior = 'wedge'
+    const engine = new System1Engine(() => {
+      const w = new FakeWorker(() => behavior)
+      workers.push(w)
+      return w
+    })
+
+    const inFlight = engine.decide(REQ)
+    const assertion = expect(inFlight).rejects.toThrow(/torn down/)
+    await vi.advanceTimersByTimeAsync(0)
+    engine.dispose()
+    await assertion
+    expect(workers[0].terminated).toBe(true)
+    expect(engine.healthy).toBe(true)
+
+    behavior = 'ok'
+    await expect(engine.decide(REQ)).resolves.toEqual(RESULT)
+    expect(workers).toHaveLength(2)
+  })
+
+  it('dispose() during boot neither spawns a worker afterwards nor marks the engine unhealthy', async () => {
+    // Hold boot at its manifest read so dispose() lands mid-boot.
+    let openCache!: () => void
+    const manifestUrl = fileUrl(WEIGHTS_PIN, 'manifest.json')
+    const match = async (url: string) => (url === manifestUrl ? new Response(JSON.stringify(MANIFEST)) : undefined)
+    vi.stubGlobal('caches', { open: () => new Promise((r) => { openCache = () => r({ match }) }) })
+    const spawn = vi.fn(() => new FakeWorker(() => 'ok'))
+    const engine = new System1Engine(spawn)
+    const booting = engine.decide(REQ)
+    const assertion = expect(booting).rejects.toThrow(/shut down/)
+    await vi.waitFor(() => expect(openCache).toBeDefined())
+    engine.dispose()
+    openCache()
+    await assertion
+    expect(spawn).not.toHaveBeenCalled()
+    expect(engine.healthy).toBe(true)
+  })
+
+  it("ignores an error event from a worker it has already replaced", async () => {
+    vi.useFakeTimers()
+    stubCaches()
+    const workers: FakeWorker[] = []
+    const engine = new System1Engine(() => {
+      const w = new FakeWorker(() => 'ok')
+      workers.push(w)
+      return w
+    })
+    await engine.decide(REQ)
+    engine.dispose()
+    await engine.decide(REQ) // boots workers[1]
+    workers[0].crash('late error from the old worker')
+    expect(engine.healthy).toBe(true)
+    expect(workers[1].terminated).toBe(false)
+    await expect(engine.decide(REQ)).resolves.toEqual(RESULT)
+  })
 })
