@@ -9,6 +9,7 @@ import {
   readState,
   writeState,
   type DownloadProgress,
+  type System1State,
 } from '../../system1/weights'
 import { hasWebGpu } from '../../system1/runtime'
 import { getSystem1Engine } from '../../system1/engine'
@@ -45,50 +46,138 @@ async function resolveReadyStatus(bytes: number): Promise<Status> {
   }
 }
 
+/**
+ * The one in-flight download, owned at module scope rather than by any single
+ * mounted `ExperimentalSection` — closing Settings (unmounting this
+ * component) must not kill an 800 MB download, and reopening Settings (or a
+ * second panel instance) must see it still running rather than guess "off"
+ * and let a stray click start a second, concurrent one. `startJob` is the
+ * only place allowed to create one; every component instance just subscribes
+ * to whatever `activeJob` currently is.
+ */
+interface DownloadJob {
+  promise: Promise<System1State>
+  abort: () => void
+  /** Most recent progress event, so a component that subscribes late (a
+   *  reopened panel) can render current state immediately instead of waiting
+   *  for the next chunk. */
+  latestProgress: DownloadProgress | null
+  listeners: Set<(p: DownloadProgress) => void>
+  signal: AbortSignal
+}
+
+let activeJob: DownloadJob | null = null
+
+function startJob(): DownloadJob {
+  const ac = new AbortController()
+  const listeners = new Set<(p: DownloadProgress) => void>()
+  const job: DownloadJob = {
+    signal: ac.signal,
+    abort: () => ac.abort(),
+    latestProgress: null,
+    listeners,
+    promise: (async () => {
+      const state = await downloadWeights(WEIGHTS_PIN, {
+        fetch: (u, init) => fetch(u, init),
+        cache: await caches.open(CACHE_NAME),
+        signal: ac.signal,
+        onProgress: (p) => {
+          job.latestProgress = p
+          for (const l of listeners) l(p)
+        },
+      })
+      await writeState(state)
+      return state
+    })(),
+  }
+  activeJob = job
+  // Free the module slot once this job settles (success, failure or abort) so
+  // a later start() creates a fresh one rather than reusing a dead job.
+  // Guarded by identity in case a newer job has already taken the slot.
+  void job.promise.catch(() => {}).finally(() => { if (activeJob === job) activeJob = null })
+  return job
+}
+
 export default function ExperimentalSection({ draft, commit }: { draft: Settings; commit: (next: Settings) => void }) {
   const on = system1Enabled(draft)
   const [status, setStatus] = useState<Status>({ kind: 'off' })
   const [stored, setStored] = useState<number | null>(null)
   const [test, setTest] = useState<string | null>(null)
-  const abortRef = useRef<AbortController | null>(null)
+  // Mirrors the `draft` prop every render so an async continuation (a
+  // download that finishes or is cancelled well after the click that started
+  // it) commits on top of whatever the user has edited *since*, rather than
+  // reverting it — `commit` is a full-overwrite, so building it from a
+  // closed-over `draft` would silently undo unrelated edits made mid-download.
+  // Same pattern as Settings.tsx's draftRef.
+  const draftRef = useRef(draft)
+  draftRef.current = draft
+  // Unsubscribe from whatever DownloadJob this instance is currently
+  // listening to, if any — set by subscribeTo, cleared on unmount.
+  const unsubRef = useRef<(() => void) | null>(null)
 
   useEffect(() => {
+    let cancelled = false
     void readState().then(async (s) => {
+      if (cancelled) return
       setStored(s ? s.bytes : null)
-      if (on && s) setStatus(await resolveReadyStatus(s.bytes))
+      // Don't stomp a live download's status with a stale on-disk read.
+      if (on && s && !activeJob) setStatus(await resolveReadyStatus(s.bytes))
     })
+    return () => { cancelled = true }
   }, [on])
 
+  // Attach to whatever's already downloading when this instance mounts, so
+  // reopening Settings mid-download shows real progress instead of "Off".
+  useEffect(() => {
+    if (activeJob) subscribeTo(activeJob)
+    return () => { unsubRef.current?.(); unsubRef.current = null }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  /** Track `job`'s progress/outcome into this instance's state until unmount or a re-subscribe. */
+  function subscribeTo(job: DownloadJob) {
+    unsubRef.current?.()
+    let cancelled = false
+    const onProgress = (p: DownloadProgress) => {
+      if (p.phase === 'file') setStatus({ kind: 'downloading', received: p.overallReceived, total: p.overallTotal })
+      else if (p.phase === 'verifying') setStatus({ kind: 'verifying' })
+    }
+    if (job.latestProgress) onProgress(job.latestProgress)
+    job.listeners.add(onProgress)
+    job.promise
+      .then(async (state) => {
+        if (cancelled) return
+        setStored(state.bytes)
+        setStatus(await resolveReadyStatus(state.bytes))
+      })
+      .catch((err: unknown) => {
+        if (cancelled) return
+        if (job.signal.aborted) { setStatus({ kind: 'off' }); return }
+        setStatus({ kind: 'failed', reason: err instanceof Error ? err.message : String(err) })
+      })
+    unsubRef.current = () => { cancelled = true; job.listeners.delete(onProgress) }
+  }
+
   const start = async () => {
+    if (activeJob) { subscribeTo(activeJob); return }
     // The model's own f16 requirement isn't known until its manifest is
     // downloaded, so this pre-flight only checks that WebGPU exists at all.
     if (!(await hasWebGpu(false))) { setStatus({ kind: 'no-webgpu', needsF16: false }); return }
-    const ac = new AbortController()
-    abortRef.current = ac
-    try {
-      const state = await downloadWeights(WEIGHTS_PIN, {
-        fetch: (u, init) => fetch(u, init),
-        cache: await caches.open(CACHE_NAME),
-        signal: ac.signal,
-        onProgress: (p: DownloadProgress) => {
-          if (p.phase === 'file') setStatus({ kind: 'downloading', received: p.overallReceived, total: p.overallTotal })
-          else if (p.phase === 'verifying') setStatus({ kind: 'verifying' })
-        },
-      })
-      await writeState(state)
-      setStored(state.bytes)
-      setStatus(await resolveReadyStatus(state.bytes))
-    } catch (err) {
-      setStatus(ac.signal.aborted ? { kind: 'off' } : { kind: 'failed', reason: err instanceof Error ? err.message : String(err) })
-      if (ac.signal.aborted) commit({ ...draft, experimental: { ...draft.experimental, system1: false } })
-    } finally {
-      abortRef.current = null
-    }
+    subscribeTo(startJob())
   }
 
   const toggle = async (next: boolean) => {
-    commit({ ...draft, experimental: { ...draft.experimental, system1: next } })
-    if (!next) { abortRef.current?.abort(); setStatus({ kind: 'off' }); return }
+    commit({ ...draftRef.current, experimental: { ...draftRef.current.experimental, system1: next } })
+    if (!next) {
+      // Turning the feature back off is what cancels its download — an
+      // abandoned download nobody will use has no reason to keep running.
+      activeJob?.abort()
+      unsubRef.current?.()
+      unsubRef.current = null
+      setStatus({ kind: 'off' })
+      return
+    }
+    if (activeJob) { subscribeTo(activeJob); return }
     const s = await readState()
     if (s) setStatus(await resolveReadyStatus(s.bytes))
     else void start()
@@ -136,14 +225,16 @@ export default function ExperimentalSection({ draft, commit }: { draft: Settings
       {status.kind === 'downloading' && (
         <>
           <progress max={status.total} value={status.received} />
-          <button onClick={() => abortRef.current?.abort()}>Cancel</button>
+          <button className="btn ghost small" onClick={() => activeJob?.abort()}>Cancel</button>
         </>
       )}
-      {status.kind === 'failed' && <button onClick={() => void start()}>Retry</button>}
-      {status.kind === 'ready' && <button onClick={() => void runTest()}>Run a test decision</button>}
+      {status.kind === 'failed' && <button className="btn ghost small" onClick={() => void start()}>Retry</button>}
+      {status.kind === 'ready' && <button className="btn ghost small" onClick={() => void runTest()}>Run a test decision</button>}
       {test && <p className="hint">{test}</p>}
       {!on && stored !== null && (
-        <button onClick={() => void deleteWeights().then(() => setStored(null))}>Delete model ({mb(stored)})</button>
+        <button className="btn small danger-solid" onClick={() => void deleteWeights().then(() => setStored(null))}>
+          Delete model ({mb(stored)})
+        </button>
       )}
     </Section>
   )
