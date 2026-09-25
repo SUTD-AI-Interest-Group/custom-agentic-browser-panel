@@ -12,6 +12,12 @@ export interface IndexedElement {
   name: string
   type?: string
   value?: string
+  /**
+   * Checked state of an `<input type=checkbox|radio>`; absent for everything
+   * else. Such an input's `value` is its submit token (usually "on") whatever
+   * its state, so `value` alone would describe an unticked box as "on".
+   */
+  checked?: boolean
   /** Viewport rect in CSS pixels. */
   rect: { x: number; y: number; width: number; height: number }
   /** Password/payment-like field — forces an approval card even in a session. */
@@ -181,7 +187,10 @@ function buildInteractiveIndex(attr: string, maxElements: number) {
     const ph = el.getAttribute('placeholder')
     const input = el as HTMLInputElement
     const text = (el as HTMLElement).innerText?.trim() || ''
-    return (text || ph || input.value || el.getAttribute('title') || el.getAttribute('name') || '')
+    // A checkbox/radio's default value "on" is a submit token, not a name.
+    const toggle = el.tagName === 'INPUT' && /^(checkbox|radio)$/i.test(input.type)
+    const value = toggle && input.value === 'on' ? '' : input.value
+    return (text || ph || value || el.getAttribute('title') || el.getAttribute('name') || '')
       .toString()
       .slice(0, 120)
   }
@@ -394,6 +403,7 @@ function buildInteractiveIndex(attr: string, maxElements: number) {
     name: string
     type?: string
     value?: string
+    checked?: boolean
     rect: { x: number; y: number; width: number; height: number }
     sensitive: boolean
     href?: string
@@ -477,6 +487,7 @@ function buildInteractiveIndex(attr: string, maxElements: number) {
       name: accessible,
       type,
       value: input.value ? String(input.value).slice(0, 80) : undefined,
+      checked: el.tagName === 'INPUT' && /^(checkbox|radio)$/i.test(input.type) ? input.checked : undefined,
       rect: { x: r.left, y: r.top, width: r.width, height: r.height },
       sensitive,
       href: el.tagName === 'A' ? (el as HTMLAnchorElement).href : undefined,
@@ -536,10 +547,14 @@ export function serializeRegistry(elements: IndexedElement[]): string {
   if (elements.length === 0) return '(no interactive elements found)'
   return elements
     .map((e) => {
+      // A checkbox/radio reports its state, not its "on" submit token (a
+      // non-default value such as a radio's "express" is still informative).
+      const toggle = e.checked !== undefined
       const attrs = [
         e.type && e.type !== 'text' ? e.type : '',
         e.name ? `"${e.name}"` : '',
-        e.value ? `= "${e.value}"` : '',
+        e.value && !(toggle && e.value === 'on') ? `= "${e.value}"` : '',
+        toggle ? (e.checked ? '(checked)' : '(unchecked)') : '',
         e.sensitive ? '(sensitive)' : '',
       ]
         .filter(Boolean)

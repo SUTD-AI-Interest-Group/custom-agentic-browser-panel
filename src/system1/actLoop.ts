@@ -70,7 +70,12 @@ const describe = (el: IndexedElement, op: string) => {
   // the tag/type fallback, which are internal, bracket-free strings.
   const kind = neutralize(el.role || (tag === 'input' ? `${el.type || 'text'} field` : tag))
   const name = neutralize(el.name || '(unnamed)')
-  const cur = el.value ? ` (currently "${clip(neutralize(el.value), 30)}")` : ''
+  // A checkbox/radio's value is its submit token (usually "on"), not its
+  // state — describe what the user sees instead.
+  const toggle = tag === 'input' && /^(checkbox|radio)$/i.test(el.type ?? '')
+  const cur = toggle
+    ? el.checked === undefined ? '' : el.checked ? ' (checked)' : ' (unchecked)'
+    : el.value ? ` (currently "${clip(neutralize(el.value), 30)}")` : ''
   return `[${el.index}] ${kind} "${clip(name, 60)}"${cur} → ${op}`
 }
 
@@ -107,7 +112,7 @@ type TargetPick =
 /**
  * Picks one element from `candidates`. Within TARGET_CHUNK, this is exactly
  * one decide() call, same as before the tournament existed. Above it, splits
- * into document-order chunks of at most TARGET_CHUNK, asks the same target
+ * into balanced document-order chunks of at most TARGET_CHUNK, asks the same target
  * question per chunk (sequentially — one decide() realm, see ExecHost/engine
  * for the reasoning), takes each chunk's winner, then asks one final target
  * question over the winners only. The final round's calibrated confidence is
@@ -118,9 +123,17 @@ async function pickTarget(state: string, candidates: IndexedElement[], deps: Act
   let ms = 0
   let pool = candidates
   if (candidates.length > TARGET_CHUNK) {
+    // Balanced chunks: fixed-size slicing would turn 41 candidates into 40 + 1,
+    // and a one-option "chunk" wins by default with no question really asked.
+    // k chunks of near-equal size (sizes differ by at most one, each ≤ TARGET_CHUNK).
+    const k = Math.ceil(candidates.length / TARGET_CHUNK)
+    const base = Math.floor(candidates.length / k)
+    const extra = candidates.length % k
     const winners: IndexedElement[] = []
-    for (let i = 0; i < candidates.length; i += TARGET_CHUNK) {
-      const chunk = candidates.slice(i, i + TARGET_CHUNK)
+    for (let c = 0, i = 0; c < k; c++) {
+      const size = base + (c < extra ? 1 : 0)
+      const chunk = candidates.slice(i, i + size)
+      i += size
       const r = await askTarget(state, chunk, deps)
       if (r.kind === 'error') return r
       ms += r.ms

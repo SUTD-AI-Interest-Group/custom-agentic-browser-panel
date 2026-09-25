@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import { createRequire } from 'node:module'
 import { execFileSync } from 'node:child_process'
+import { serializeRegistry } from './domIndex'
 
 // SENSITIVE_RE and INTERACTIVE_ROLES live INSIDE buildInteractiveIndex, the
 // function injected via chrome.scripting.executeScript — it must stay fully
@@ -884,5 +885,58 @@ describe('domIndex — bounded walk does not materialize the whole document (fol
     // assertion is what pins the early-stop down structurally.
     expect(spy.mock.calls.length).toBeLessThan(30)
     spy.mockRestore()
+  })
+})
+
+// A checkbox/radio's `value` is its submit token ("on" by default) regardless
+// of whether it is ticked, so the registry used to describe an unticked box as
+// `= "on"`, and an unlabeled one was even *named* "on". The walker now records
+// `checked` and the registry renders the state instead.
+describe('domIndex — checkbox/radio report checked state, not "on"', () => {
+  // stubLayoutFor makes exactly one element visible, so one fixture per case.
+  const indexOne = (html: string) => {
+    document.body.innerHTML = html
+    stubLayoutFor(document.querySelector('input') as HTMLElement)
+    const buildInteractiveIndex = extractInjected('buildInteractiveIndex')
+    const els = buildInteractiveIndex('data-agent-idx', 200).elements as Array<{ name: string; value?: string; checked?: boolean }>
+    expect(els).toHaveLength(1)
+    return els[0]
+  }
+
+  it('records an unticked, unlabeled checkbox as checked:false and never names it "on"', () => {
+    const e = indexOne('<input type="checkbox">')
+    expect(e.checked).toBe(false)
+    expect(e.value).toBe('on')
+    expect(e.name).not.toBe('on')
+  })
+
+  it('records a ticked checkbox as checked:true', () => {
+    expect(indexOne('<input type="checkbox" checked aria-label="Subscribe">').checked).toBe(true)
+  })
+
+  it('keeps a real radio value as a usable name', () => {
+    const e = indexOne('<input type="radio" value="express" name="ship">')
+    expect(e.checked).toBe(false)
+    expect(e.name).toBe('express')
+  })
+
+  it('leaves checked absent for non-toggle inputs', () => {
+    expect(indexOne('<input type="text" aria-label="Email">').checked).toBeUndefined()
+  })
+
+  it('serializes toggles as (checked)/(unchecked) instead of = "on"', () => {
+    const base = { rect: { x: 0, y: 0, width: 1, height: 1 }, sensitive: false }
+    const text = serializeRegistry([
+      { ...base, index: 0, tag: 'input', type: 'checkbox', name: 'Gift wrap', value: 'on', checked: false },
+      { ...base, index: 1, tag: 'input', type: 'checkbox', name: 'Subscribe', value: 'on', checked: true },
+      { ...base, index: 2, tag: 'input', type: 'radio', name: 'Express', value: 'express', checked: true },
+      { ...base, index: 3, tag: 'input', type: 'text', name: 'Qty', value: 'on' },
+    ])
+    expect(text.split('\n')).toEqual([
+      '[0]<input> checkbox "Gift wrap" (unchecked)',
+      '[1]<input> checkbox "Subscribe" (checked)',
+      '[2]<input> radio "Express" = "express" (checked)',
+      '[3]<input> "Qty" = "on"',
+    ])
   })
 })

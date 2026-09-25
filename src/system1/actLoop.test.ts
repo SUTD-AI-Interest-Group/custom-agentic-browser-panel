@@ -210,6 +210,45 @@ describe('runActLoop', () => {
     expect(finalKeys).toContain(String(markerIndex))
   })
 
+  it.each([41, 42, 81, 200])('balances the tournament chunks for %i candidates', async (N) => {
+    const elements = Array.from({ length: N }, (_, i) => el(i))
+    const calls: DecideRequest[] = []
+    let moveCalls = 0
+    const decide = vi.fn(async (req: DecideRequest): Promise<DecideResult> => {
+      calls.push(req)
+      const answers: DecideResult['answers'] = {}
+      if ('move' in req.questions) {
+        const choice = ++moveCalls === 1 ? 'act' : 'DONE'
+        answers.move = { choice, probabilities: { [choice]: 0.9 }, top: 0.9, confidence: 0.9 }
+      }
+      if ('target' in req.questions) {
+        const choice = Object.keys(req.questions.target.options)[0]
+        answers.target = { choice, probabilities: { [choice]: 0.9 }, top: 0.9, confidence: 0.9 }
+      }
+      return { answers, ms: 1 }
+    })
+    await runActLoop({ goal: 'g' }, deps({ decide, elements }))
+    const sizes = calls.filter((c) => 'target' in c.questions).map((c) => Object.keys(c.questions.target.options).length)
+    const chunks = sizes.slice(0, -1) // the last call is the final round over the winners
+    expect(chunks).toHaveLength(Math.ceil(N / TARGET_CHUNK))
+    expect(chunks.reduce((a, b) => a + b, 0)).toBe(N)
+    for (const size of sizes) expect(size).toBeLessThanOrEqual(TARGET_CHUNK)
+    expect(Math.max(...chunks) - Math.min(...chunks)).toBeLessThanOrEqual(1)
+  })
+
+  it('describes a checkbox by its checked state, never its "on" value', async () => {
+    const { decide, calls } = scripted([{ move: 'act', target: '0' }, { move: 'DONE' }])
+    const elements = [
+      el(0, { tag: 'input', type: 'checkbox', name: 'Gift wrap', value: 'on', checked: false }),
+      el(1, { tag: 'input', type: 'checkbox', name: 'Subscribe', value: 'on', checked: true }),
+    ]
+    await runActLoop({ goal: 'g' }, deps({ decide, elements }))
+    const options = calls.find((c) => c.questions.target)!.questions.target.options
+    expect(options['0']).toContain('(unchecked)')
+    expect(options['1']).toContain('(checked)')
+    expect(JSON.stringify(options)).not.toContain('currently')
+  })
+
   it('neutralizes exact-case special tokens in element names before they reach the model', async () => {
     const { decide, calls } = scripted([{ move: 'act', target: '0' }, { move: 'DONE' }])
     const elements = [el(0, { name: 'Buy [MASK] now' })]
