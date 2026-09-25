@@ -381,3 +381,18 @@ test('redaction preserves the key so the trace still shows call structure', () =
   expect(Object.keys(out)).toContain('password')
   expect(out.password).not.toBe('hunter2')
 })
+
+test('S6: Act redacts every supplied value, keeps the keys and the goal', () => {
+  const out = redactSecrets(
+    { goal: 'fill the shipping form', values: { email: 'a@b.co', qty: '2', street: '1 Main St' }, maxSteps: 4 },
+    'Act',
+  ) as any
+  expect(out.values).toEqual({ email: REDACTED, qty: REDACTED, street: REDACTED })
+  expect(out.goal).toBe('fill the shipping form')
+  expect(out.maxSteps).toBe(4)
+})
+
+test('S6: Act without values passes through untouched', () => {
+  const out = redactSecrets({ goal: 'click next' }, 'Act') as any
+  expect(out).toEqual({ goal: 'click next' })
+})
