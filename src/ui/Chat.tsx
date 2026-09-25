@@ -5718,7 +5718,10 @@ function ToolPill({
   else if (part.toolName === 'RequestPageControl')
     label = output?.started ? 'Started controlling the page' : 'Asked to control the page'
   else if (part.toolName === 'ControlPage') label = controlActionLabel(part.input, output)
-  else if (part.toolName === 'Act') label = `Act: ${String((part.input as { goal?: string })?.goal ?? '')}`
+  else if (part.toolName === 'Act') {
+    const goal = String((part.input as { goal?: string })?.goal ?? '')
+    label = output?.status && output.status !== 'done' ? `Act stopped (${output.status}): ${goal}` : `Act: ${goal}`
+  }
   else if (part.toolName === 'ExtractData')
     label = output?.error ? 'Could not extract data' : 'Extracted structured data'
   else if (part.toolName === 'ProposeResearch') label = 'Proposed background research'

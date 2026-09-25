@@ -42,7 +42,7 @@ import { budgetOutcome, escapeHtml, RUN_MEMORY_BYTES, RUN_TIMEOUT_MS } from '../
 import { saveArtifact, updateArtifactContent } from '../data/artifacts'
 import { createProposeResearchTool } from './research'
 import type { System1Runtime } from '../system1/runtime'
-import { runActLoop, ACT_DEFAULT_STEPS, ACT_MAX_STEPS, type ExecOutcome } from '../system1/actLoop'
+import { runActLoop, ACT_DEFAULT_STEPS, ACT_MAX_STEPS, type ActResult, type ExecOutcome } from '../system1/actLoop'
 import { buildCatalog, searchCatalog, partitionToolNames, type CatalogEntry } from './toolDiscovery'
 import {
   hasElementChanged,
@@ -245,6 +245,23 @@ const MAX_PDF_TEXT_CHARS = 25_000
 // can cost several images — hence a per-call cap and a per-turn cap.
 const MAX_TILES_PER_CALL = 6
 const MAX_SHOT_IMAGES_PER_TURN = 12
+
+/** Replaces every occurrence of each non-empty supplied value with «key» throughout an Act result. */
+function scrubActValues(result: ActResult, values: Record<string, string>): ActResult {
+  const pairs = Object.entries(values)
+    .filter(([, v]) => v.length > 0)
+    .sort((a, b) => b[1].length - a[1].length)
+  if (pairs.length === 0) return result
+  const scrub = (s: string) => pairs.reduce((acc, [k, v]) => acc.split(v).join(`«${k}»`), s)
+  const out: ActResult = {
+    ...result,
+    steps: result.steps.map((st) => (st.label === undefined ? st : { ...st, label: scrub(st.label) })),
+  }
+  if (result.message !== undefined) out.message = scrub(result.message)
+  if (result.elements !== undefined) out.elements = scrub(result.elements)
+  if (result.candidates) out.candidates = result.candidates.map((c) => ({ ...c, label: scrub(c.label) }))
+  return out
+}
 
 export function createAgentTools(
   requestApproval: ApprovalGate,
@@ -1644,6 +1661,9 @@ export function createAgentTools(
           return { error: 'No page-control session is open. Call RequestPageControl first.' }
         const tab = await resolveTab()
         if (tab?.id === undefined || tab.id !== session.tabId) return { error: 'The controlled tab is no longer active.' }
+        // Park before the first snapshot, not only inside controlStep: the
+        // loop reads the page and asks the local model before its first step.
+        if (!(await isForeground(tab))) return parkFor(tab, 'act on this page')
         const tabId = tab.id
         const result = await runActLoop({ goal, values, maxSteps }, {
           snapshot: () => snapshotPage(tabId),
@@ -1659,8 +1679,12 @@ export function createAgentTools(
             return { kind: 'ok', elements: String(r.elements ?? '') }
           },
         })
-        // `values` are never echoed: steps carry labels and indices only.
-        return result
+        // `values` are never echoed. Steps carry labels and indices, but the page
+        // itself reflects what was typed — the next snapshot's registry renders a
+        // field's current value, and an unlabeled field's name falls back to it —
+        // so every string in the result is scrubbed, each value replaced by
+        // «key» (longest first, so a value containing another is masked whole).
+        return scrubActValues(result, values ?? {})
       },
     }),
 

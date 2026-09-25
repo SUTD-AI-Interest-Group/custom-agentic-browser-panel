@@ -389,16 +389,19 @@ describe('Act (System-1)', () => {
       () => 'always', 'conv-1', new Set(), undefined, undefined, undefined, system1 as any)
   }
 
-  function buildInSession(decide: (req: any) => Promise<any>, activeNames = new Set<string>()) {
-    const session = buildSession()
+  function buildInSession(
+    decide: (req: any) => Promise<any>,
+    opts: { activeNames?: Set<string>; tab?: chrome.tabs.Tab; session?: ControlSession; requestApproval?: ApprovalGate } = {},
+  ) {
+    const session = opts.session ?? buildSession()
     const pageControl: PageControlGate = {
       requestSession: async () => true,
       session: () => session,
       endSession: () => { session.active = false },
     }
-    const pageTarget: PageTarget = { resolveTab: async () => FG_TAB, park: () => {} }
-    return createAgentTools(async () => true, 'all-tabs', new Set(), pageControl, null, false, [],
-      () => 'always', 'conv-1', activeNames, undefined, undefined, pageTarget, { decide })
+    const pageTarget: PageTarget = { resolveTab: async () => opts.tab ?? FG_TAB, park: () => {} }
+    return createAgentTools(opts.requestApproval ?? (async () => true), 'all-tabs', new Set(), pageControl, null, false, [],
+      () => 'always', 'conv-1', opts.activeNames ?? new Set(), undefined, undefined, pageTarget, { decide })
   }
 
   const answer = (key: string, choice: string, top = 0.9) =>
@@ -434,23 +437,105 @@ describe('Act (System-1)', () => {
     expect(schema.safeParse({ goal: 'x'.repeat(301) }).success).toBe(false)
   })
 
-  it('types a supplied value through controlStep but never echoes it in the result', async () => {
-    vi.mocked(snapshotPage).mockResolvedValue(snap([el({ index: 0, tag: 'input', type: 'email', name: 'Email' })]))
-    vi.mocked(runControlStep).mockResolvedValue({ ok: true, message: 'typed', registry: 'fresh', origin: 'https://example.com' })
+  it('types a supplied value through controlStep but scrubs it from everything the page reflects back', async () => {
+    const SECRET = 'secret@example.com'
+    // Live-page behaviour: once the value is typed, the registry renders the
+    // field's current value, and an unlabeled field's name falls back to it.
+    let typed = false
+    vi.mocked(snapshotPage).mockImplementation(async () => typed
+      ? { ...snap([
+          el({ index: 0, tag: 'input', type: 'email', name: 'Email', value: SECRET }),
+          el({ index: 1, tag: 'input', type: 'text', name: SECRET }),
+        ]), text: `[0] email "Email" value="${SECRET}"\n[1] text "${SECRET}"` }
+      : snap([el({ index: 0, tag: 'input', type: 'email', name: 'Email' })]))
+    vi.mocked(runControlStep).mockImplementation(async () => {
+      typed = true
+      return { ok: true, message: 'typed', registry: `[0] email "Email" value="${SECRET}"`, origin: 'https://example.com' }
+    })
     const decide = vi.fn()
       .mockResolvedValueOnce(answer('move', 'act'))
       .mockResolvedValueOnce(answer('target', '0'))
       .mockResolvedValueOnce(answer('value', 'email'))
-      .mockResolvedValueOnce(answer('move', 'DONE'))
+      .mockResolvedValueOnce(answer('move', 'act'))
+      // Low-confidence target → `uncertain`, which returns candidates + elements.
+      .mockResolvedValueOnce({ answers: { target: { choice: '1', probabilities: { '1': 0.4, '0': 0.3 }, top: 0.4, confidence: 0.1 } }, ms: 1 })
     const tools = buildInSession(decide)
     const r = (await (tools.Act as any).execute(
-      { goal: 'fill the email', values: { email: 'secret@example.com' } },
+      { goal: 'fill the email', values: { email: SECRET } },
       { toolCallId: 't', messages: [] },
     )) as any
-    expect(r.status).toBe('done')
+    expect(r.status).toBe('uncertain')
     expect(r.steps).toHaveLength(1)
-    expect(vi.mocked(runControlStep).mock.calls[0][0].spec).toMatchObject({ action: 'type', index: 0, text: 'secret@example.com' })
-    expect(JSON.stringify(r)).not.toContain('secret@example.com')
+    expect(vi.mocked(runControlStep).mock.calls[0][0].spec).toMatchObject({ action: 'type', index: 0, text: SECRET })
+    expect(r.elements).toContain('«email»')
+    expect(r.candidates.map((c: any) => c.label)).toContain('«email»')
+    expect(JSON.stringify(r)).not.toContain(SECRET)
+  })
+
+  describe('maps every controlStep outcome to an Act status', () => {
+    const clickFirst = () => vi.fn()
+      .mockResolvedValueOnce(answer('move', 'act'))
+      .mockResolvedValueOnce(answer('target', '0'))
+      .mockResolvedValue(answer('move', 'DONE'))
+    const run = (tools: any) => (tools.Act as any).execute({ goal: 'click it' }, { toolCallId: 't', messages: [] })
+
+    it('denied — the point-of-no-return card is refused', async () => {
+      vi.mocked(snapshotPage).mockResolvedValue(snap([el({ index: 0, type: 'submit', name: 'Place order' })]))
+      const r = await run(buildInSession(clickFirst(), { requestApproval: async () => false }))
+      expect(r.status).toBe('denied')
+      expect(runControlStep).not.toHaveBeenCalled()
+    })
+
+    it('parked — the user switched away mid-loop', async () => {
+      vi.stubGlobal('chrome', { tabs: { query: vi.fn().mockResolvedValueOnce([FG_TAB]).mockResolvedValue([BG_TAB]) } })
+      vi.mocked(snapshotPage).mockResolvedValue(snap([el({ index: 0, name: 'Next' })]))
+      const r = await run(buildInSession(clickFirst()))
+      expect(r.status).toBe('parked')
+      expect(runControlStep).not.toHaveBeenCalled()
+    })
+
+    it('drifted — wins over the ok:true the drift branch also carries', async () => {
+      const drifted = { id: 1, windowId: 1, url: 'https://b.example/' } as chrome.tabs.Tab
+      vi.stubGlobal('chrome', { tabs: { query: vi.fn(async () => [drifted]) } })
+      vi.mocked(snapshotPage).mockResolvedValue(snap([el({ index: 0, name: 'Next' })]))
+      const r = await run(buildInSession(clickFirst(), { tab: drifted, session: buildSession({ crossingAuthorized: true }) }))
+      expect(r.status).toBe('drifted')
+      expect(runControlStep).not.toHaveBeenCalled()
+    })
+
+    it('error — controlStep returns an error string', async () => {
+      vi.mocked(snapshotPage)
+        .mockResolvedValueOnce(snap([el({ index: 0, name: 'Next' })])) // the loop's own read
+        .mockRejectedValue(new Error('gone')) // controlStep's read
+      const r = await run(buildInSession(clickFirst()))
+      expect(r.status).toBe('error')
+      expect(r.message).toMatch(/Cannot read this page/)
+    })
+
+    it('error — runControlStep reports ok:false', async () => {
+      vi.mocked(snapshotPage).mockResolvedValue(snap([el({ index: 0, name: 'Next' })]))
+      vi.mocked(runControlStep).mockResolvedValue({ ok: false, message: 'element vanished', registry: 'fresh', origin: 'https://example.com' })
+      const r = await run(buildInSession(clickFirst()))
+      expect(r.status).toBe('error')
+      expect(r.message).toBe('element vanished')
+    })
+
+    it('ok — a successful step is recorded and the loop continues', async () => {
+      vi.mocked(snapshotPage).mockResolvedValue(snap([el({ index: 0, name: 'Next' })]))
+      vi.mocked(runControlStep).mockResolvedValue({ ok: true, message: 'clicked', registry: 'fresh', origin: 'https://example.com' })
+      const r = await run(buildInSession(clickFirst()))
+      expect(r.status).toBe('done')
+      expect(r.steps).toHaveLength(1)
+    })
+  })
+
+  it('parks before reading the page when the controlled tab is not in front', async () => {
+    vi.stubGlobal('chrome', { tabs: { query: vi.fn(async () => [BG_TAB]) } })
+    const decide = vi.fn()
+    const r = (await (buildInSession(decide).Act as any).execute({ goal: 'x' }, { toolCallId: 't', messages: [] })) as any
+    expect(r.parked).toBe(true)
+    expect(snapshotPage).not.toHaveBeenCalled()
+    expect(decide).not.toHaveBeenCalled()
   })
 
   it('stops between steps once the tool call is aborted', async () => {
@@ -474,7 +559,7 @@ describe('Act (System-1)', () => {
   it('joins the control cluster when RequestPageControl is granted, only with a runtime', async () => {
     vi.mocked(snapshotPage).mockRejectedValue(new Error('stop here'))
     const withRuntime = new Set<string>()
-    await (buildInSession(vi.fn(), withRuntime).RequestPageControl as any).execute({ plan: 'p' }, { toolCallId: 't', messages: [] })
+    await (buildInSession(vi.fn(), { activeNames: withRuntime }).RequestPageControl as any).execute({ plan: 'p' }, { toolCallId: 't', messages: [] })
     expect(withRuntime.has('ControlPage')).toBe(true)
     expect(withRuntime.has('Act')).toBe(true)
 
