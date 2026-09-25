@@ -43,7 +43,7 @@ vi.mock('../data/memory', async (importOriginal) => {
   return { ...actual, getProfileMemories: vi.fn(async () => []) }
 })
 
-import { createAgentTools, type ApprovalGate, type PageControlGate, type PageTarget } from './tools'
+import { createAgentTools, scrubActValues, type ApprovalGate, type PageControlGate, type PageTarget } from './tools'
 import { closeTabs } from '../platform/tabs'
 import { listTabFacts } from '../platform/tabIndex'
 import { snapshotPage } from '../platform/domIndex'
@@ -420,6 +420,22 @@ describe('Act (System-1)', () => {
     expect(buildWith().Act).toBeUndefined()
   })
 
+  it('is absent when ControlPage is set to Never — no side door around the policy', () => {
+    const tools = createAgentTools(async () => true, 'all-tabs', new Set(), noopPageControl, null, false, [],
+      (n) => (n === 'ControlPage' ? 'never' : 'always'), 'conv-1', new Set(), undefined, undefined, undefined,
+      { decide: vi.fn() } as any)
+    expect(tools.ControlPage).toBeUndefined()
+    expect(tools.Act).toBeUndefined()
+  })
+
+  it('is absent when Act itself is set to Never', () => {
+    const tools = createAgentTools(async () => true, 'all-tabs', new Set(), noopPageControl, null, false, [],
+      (n) => (n === 'Act' ? 'never' : 'always'), 'conv-1', new Set(), undefined, undefined, undefined,
+      { decide: vi.fn() } as any)
+    expect(tools.ControlPage).toBeDefined()
+    expect(tools.Act).toBeUndefined()
+  })
+
   it('is present with one, and refuses without a page-control session', async () => {
     const tools = buildWith({ decide: vi.fn() })
     expect(tools.Act).toBeDefined()
@@ -470,6 +486,27 @@ describe('Act (System-1)', () => {
     expect(r.elements).toContain('«email»')
     expect(r.candidates.map((c: any) => c.label)).toContain('«email»')
     expect(JSON.stringify(r)).not.toContain(SECRET)
+  })
+
+  it('scrubs long values literally but never touches short values or [N] index tokens', () => {
+    const result = {
+      status: 'uncertain',
+      steps: [{ action: 'type', index: 12, label: 'Email a@b.co' }],
+      message: 'typed a@b.co into [12]',
+      elements: '[12] email "Email" = "a@b.co"\n[2] number "Qty" = "2"\n[20] button "Add 2"',
+      candidates: [{ index: 12, label: 'a@b.co', p: 0.4 }],
+    } as any
+    const r = scrubActValues(result, { qty: '2', email: 'a@b.co' })
+    expect(r.elements).toBe('[12] email "Email" = "«email»"\n[2] number "Qty" = "2"\n[20] button "Add 2"')
+    expect(r.message).toBe('typed «email» into [12]')
+    expect(r.steps[0].label).toBe('Email «email»')
+    expect(r.candidates![0].label).toBe('«email»')
+    expect(JSON.stringify(r)).not.toContain('a@b.co')
+  })
+
+  it('does not rewrite an index token even when a long value matches its digits', () => {
+    const r = scrubActValues({ status: 'done', steps: [], elements: '[1234] text "code 1234"' } as any, { pin: '1234' })
+    expect(r.elements).toBe('[1234] text "code «pin»"')
   })
 
   describe('maps every controlStep outcome to an Act status', () => {

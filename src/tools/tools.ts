@@ -246,13 +246,25 @@ const MAX_PDF_TEXT_CHARS = 25_000
 const MAX_TILES_PER_CALL = 6
 const MAX_SHOT_IMAGES_PER_TURN = 12
 
-/** Replaces every occurrence of each non-empty supplied value with «key» throughout an Act result. */
-function scrubActValues(result: ActResult, values: Record<string, string>): ActResult {
+// Below this length a value is left in place: a global replace of "2" or "on"
+// would rewrite unrelated text — worst of all the `[12]` indices the model acts
+// on — and a value that short carries almost nothing worth hiding.
+const MIN_SCRUB_LEN = 4
+// Element-index tokens (`[12]`, `[r3]`) are never scrubbed inside.
+const INDEX_TOKEN = /(\[r?\d+\])/
+
+/**
+ * Replaces every literal occurrence of each supplied value (≥ MIN_SCRUB_LEN
+ * characters) with «key» throughout an Act result, never inside an index token.
+ */
+export function scrubActValues(result: ActResult, values: Record<string, string>): ActResult {
   const pairs = Object.entries(values)
-    .filter(([, v]) => v.length > 0)
+    .filter(([, v]) => v.length >= MIN_SCRUB_LEN)
     .sort((a, b) => b[1].length - a[1].length)
   if (pairs.length === 0) return result
-  const scrub = (s: string) => pairs.reduce((acc, [k, v]) => acc.split(v).join(`«${k}»`), s)
+  const scrubPlain = (s: string) => pairs.reduce((acc, [k, v]) => acc.split(v).join(`«${k}»`), s)
+  // split() with a capturing group keeps the tokens at odd positions.
+  const scrub = (s: string) => s.split(INDEX_TOKEN).map((part, i) => (i % 2 === 1 ? part : scrubPlain(part))).join('')
   const out: ActResult = {
     ...result,
     steps: result.steps.map((st) => (st.label === undefined ? st : { ...st, label: scrub(st.label) })),
@@ -1647,7 +1659,7 @@ export function createAgentTools(
 
     Act: tool({
       description:
-        `Experimental fast page control. Within an open page-control session, hand a short routine sub-goal ("add the blue variant to the cart", "fill the shipping form") to a local decision model that takes up to ${ACT_MAX_STEPS} steps (click, type, select, scroll, wait) without waiting on you. It can only type/select values you pass in \`values\` (by name, verbatim), never navigates, and never touches password/payment fields. Submits and leaving the site still ask the user. ALWAYS read the returned status: done/blocked/uncertain/denied/drifted/repeat/capped/error/parked/aborted — on anything but done, continue with ControlPage (uncertain returns the top candidates). Use ControlPage for single precise actions, sensitive fields and navigation.`,
+        `Experimental fast page control. Within an open page-control session, hand a short routine sub-goal ("add the blue variant to the cart", "fill the shipping form") to a local decision model that takes up to ${ACT_MAX_STEPS} steps (click, type, select, scroll, wait) without waiting on you. It can only type/select values you pass in \`values\` (by name, verbatim), never navigates, and never touches password/payment fields. Submits and leaving the site still ask the user. ALWAYS read the returned status: done/blocked/uncertain/denied/drifted/repeat/capped/error/parked/aborted — on anything but done, continue with ControlPage (uncertain returns the top candidates). Use ControlPage for single precise actions, sensitive fields and navigation. Call Act one at a time; don't combine with ControlPage in the same step.`,
       inputSchema: z.object({
         // Bounded: the goal is embedded in every prompt the local model packs,
         // and an unbounded one would overflow its small token budget.
@@ -1683,7 +1695,8 @@ export function createAgentTools(
         // itself reflects what was typed — the next snapshot's registry renders a
         // field's current value, and an unlabeled field's name falls back to it —
         // so every string in the result is scrubbed, each value replaced by
-        // «key» (longest first, so a value containing another is masked whole).
+        // «key» (longest first, so a value containing another is masked whole;
+        // values under 4 chars and `[N]` index tokens are left alone).
         return scrubActValues(result, values ?? {})
       },
     }),
@@ -2147,7 +2160,10 @@ export function createAgentTools(
   // research tools headlessly — see src/tools/research.ts and src/agent/research.ts.
   Object.assign(tools, createProposeResearchTool())
 
-  if (!system1) delete tools.Act
+  // Act drives ControlPage's own step (controlStep), so a user who set
+  // ControlPage to "Never" has refused what Act does too — it must not survive
+  // as a side door. (Act's own "Never" is handled by the generic loop below.)
+  if (!system1 || policyFor('ControlPage') === 'never') delete tools.Act
 
   // MCP server tools, pre-gated and policy-filtered by buildMcpTools. Built-in
   // names win a collision (the mcp_ prefix makes one implausible anyway).
