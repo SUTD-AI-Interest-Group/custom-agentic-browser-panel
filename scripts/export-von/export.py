@@ -63,7 +63,7 @@ class VonExport(torch.nn.Module):
         pi = position_ids.unsqueeze(2)
         pj = position_ids.unsqueeze(1)
         sliding = (allowed & ((pi - pj).abs() <= self.w)) | eye
-        # Masks follow the weights' dtype: they are added to fp16 scores in the half export.
+        # Masks follow the weights' dtype, so a half-precision export would add them to fp16 scores.
         zero = torch.zeros(full.shape, dtype=self.scorer.dense.weight.dtype, device=input_ids.device)
         fm = zero.masked_fill(~full, NEG).unsqueeze(1)
         sm = zero.masked_fill(~sliding, NEG).unsqueeze(1)
@@ -163,14 +163,18 @@ def sha256(path):
 
 def build_q8(src, dst):
     """8-bit (block 16, asymmetric) encoder matmuls except attn Wqkv; large fp32 weights left over are stored fp16."""
-    from onnx import numpy_helper, helper, TensorProto
     from onnxruntime.quantization.matmul_nbits_quantizer import MatMulNBitsQuantizer
     m = onnx.load(src)
     keep = [n.name for n in m.graph.node if n.op_type == "MatMul"
             and not (n.name.startswith("/encoder/layers.") and "/attn/Wqkv/" not in n.name)]
     qz = MatMulNBitsQuantizer(m, bits=8, block_size=16, is_symmetric=False, nodes_to_exclude=keep)
     qz.process()
-    m = qz.model.model
+    store_fp16(qz.model.model, dst, "q8")
+
+
+def store_fp16(m, dst, name):
+    """Store large fp32 MatMul/Gather/Gemm weights as fp16 behind Cast(to=float); compute stays fp32."""
+    from onnx import numpy_helper, helper, TensorProto
     inits = {i.name: i for i in m.graph.initializer}
     weights = sorted({i for n in m.graph.node if n.op_type in ("MatMul", "Gather", "Gemm") for i in n.input
                       if i in inits and inits[i].data_type == TensorProto.FLOAT and np.prod(inits[i].dims) >= 1 << 16})
@@ -184,13 +188,13 @@ def build_q8(src, dst):
     del m.graph.node[:]
     m.graph.node.extend(casts + nodes)
     onnx.save(m, dst)
-    print(f"[export] q8: {len(weights)} weights stored fp16")
+    print(f"[export] {name}: {len(weights)} weights stored fp16")
 
 
 def main():
     import argparse
     ap = argparse.ArgumentParser()
-    ap.add_argument("--ship", choices=["q8", "fp16"], help="ship this variant instead of the first to pass the gate")
+    ap.add_argument("--ship", choices=["q8", "fp16w"], help="ship this variant instead of the first to pass the gate")
     ap.add_argument("--accept-drift", action="store_true", help="with --ship: ship it even if it fails parity")
     args = ap.parse_args()
     if args.ship and not args.accept_drift:
@@ -236,34 +240,18 @@ def main():
 
     export(fp32)
 
-    # 3) Variants.
-    # q8: 8-bit weights, fp32 activations, so WebGPU needs no shader-f16. Every
-    # 4-bit recipe (RTN/HQQ/k-quant/GPTQ, block 16/32, MLP-only) and 8-bit on all
-    # matmuls failed the gate; attention Wqkv is the one group 8-bit cannot carry.
-    # It, the embeddings and the scorer are *stored* fp16 behind Cast(to=float),
-    # which ORT's basic ConstantFolding (pre-partitioning, any EP) upcasts at
-    # session init, so no fp16 tensor reaches the EP.
+    # 3) Variants. Both keep every activation fp32, so WebGPU needs no shader-f16:
+    # weights *stored* fp16 sit behind Cast(to=float), which ORT's basic
+    # ConstantFolding (pre-partitioning, so on any EP) upcasts at session init.
+    # q8: 8-bit weights except attention Wqkv. Every 4-bit recipe (RTN/HQQ/k-quant/
+    # GPTQ, block 16/32, MLP-only) and 8-bit on all matmuls failed the gate; Wqkv is
+    # the one group 8-bit cannot carry. fp16w: fp16-stored weights, fp32 compute —
+    # the fallback. (An fp16-activation graph also passed but needs shader-f16, and
+    # graph converters put RoPE's position*inv_freq in fp16, which flips long prompts.)
     q8 = os.path.join(OUT, "von_q8.onnx")
     build_q8(fp32, q8)
-
-    # fp16 is re-exported from a half-precision model, not converted from the fp32
-    # graph. Graph converters cast RoPE's position*inv_freq product to fp16, which
-    # near position 2000 is off by up to a radian and flipped long-prompt argmaxes
-    # (onnxconverter-common also leaves Cast(to=float) nodes that make the model
-    # invalid; ORT's node_block_list still round-trips blocked nodes through fp16).
-    # HF computes RoPE in fp32 explicitly, so a native half export keeps it there as
-    # long as the inv_freq buffers stay fp32; eager attention keeps softmax in fp32.
-    # This mutates the reference model in place, so it runs after its last use.
-    fp16 = os.path.join(OUT, "von_fp16.onnx")
-    rope = model.encoder.rotary_emb
-    inv_freq = {n: b.clone() for n, b in rope.named_buffers()}
-    model.encoder.config._attn_implementation = "eager"
-    wrapper.half()
-    for n, b in inv_freq.items():
-        setattr(rope, n, b)
-    print(f"[export] fp16: attn={model.encoder.config._attn_implementation} "
-          f"rope={sorted({str(getattr(rope, n).dtype) for n in inv_freq})}")
-    export(fp16)
+    fp16w = os.path.join(OUT, "von_fp16w.onnx")
+    store_fp16(onnx.load(fp32), fp16w, "fp16w")
 
     # 4) Parity gate + order invariance per variant.
     def gate(path):
@@ -290,7 +278,7 @@ def main():
         return ok, f"max|Δp|={worst:.4f} invariance={inv:.5f}", dict(stats, invariance=round(inv, 5))
 
     chosen = None
-    for name, path, f16 in [("q8", q8, False), ("fp16", fp16, True)]:
+    for name, path, f16 in [("q8", q8, False), ("fp16w", fp16w, False)]:
         ok, why, stats = gate(path)
         print(f"[gate] {name}: {'PASS' if ok else 'FAIL'} {why}")
         forced = args.ship == name and args.accept_drift
@@ -303,11 +291,12 @@ def main():
     name, path, requires_f16, parity = chosen
     if not parity["gatePassed"]:
         print(f"[gate] shipping {name} DESPITE failing parity (--accept-drift)")
-    for stale in os.listdir(OUT):
-        if stale.startswith("model_") and stale.endswith(".onnx"):
-            os.remove(os.path.join(OUT, stale))
     ship_model = os.path.join(OUT, f"model_{name}.onnx")
     os.replace(path, ship_model)
+    # out/ holds only the ship set: drop older models and this run's intermediates.
+    for stale in os.listdir(OUT):
+        if stale.endswith(".onnx") and os.path.join(OUT, stale) != ship_model:
+            os.remove(os.path.join(OUT, stale))
     for f in ["tokenizer.json", "tokenizer_config.json"]:
         with open(paths[f], "rb") as src, open(os.path.join(OUT, f), "wb") as dst:
             dst.write(src.read())
