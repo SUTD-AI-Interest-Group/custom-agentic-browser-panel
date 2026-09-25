@@ -11,7 +11,20 @@ export const CACHE_NAME = 'lychee-system1'
 export const STATE_KEY = 'system1State'
 
 export interface WeightsFile { path: string; bytes: number; sha256: string }
-export interface WeightsManifest { format: 1; model: string; variant: string; files: WeightsFile[] }
+export interface WeightsManifest {
+  format: 1
+  model: string
+  variant: string
+  files: WeightsFile[]
+  /**
+   * True only for a graph whose compute needs the WebGPU `shader-f16` feature
+   * (the fp16 variant). A weight-only quantized graph with fp32 activations
+   * does not need it. Absent (old manifests, or a variant that doesn't need
+   * it) is treated as `false` by every reader — never normalized here, so a
+   * manifest's own JSON stays the source of truth.
+   */
+  requiresShaderF16?: boolean
+}
 export interface System1State { revision: string; variant: string; bytes: number; readyAt: number }
 export type DownloadProgress =
   | { phase: 'manifest' }
@@ -35,6 +48,8 @@ export function parseManifest(json: unknown): WeightsManifest {
   const m = json as Partial<WeightsManifest>
   if (!m || m.format !== 1 || typeof m.model !== 'string' || typeof m.variant !== 'string' || !Array.isArray(m.files))
     throw new Error('model manifest has an unexpected shape')
+  if (m.requiresShaderF16 !== undefined && typeof m.requiresShaderF16 !== 'boolean')
+    throw new Error('model manifest requiresShaderF16 must be a boolean')
   for (const f of m.files) {
     if (!f || typeof f.path !== 'string' || !SAFE_PATH.test(f.path) || f.path.includes('..'))
       throw new Error('model manifest lists an unsafe path')

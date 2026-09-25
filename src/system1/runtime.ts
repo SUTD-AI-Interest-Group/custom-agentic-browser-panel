@@ -21,24 +21,32 @@ interface MinimalGpu {
   requestAdapter(): Promise<MinimalGpuAdapter | null>
 }
 
-let adapterProbe: Promise<boolean> | null = null
+// Cached per requireF16 value, not shared: which manifest is currently cached
+// can change (a re-download could swap variants), and "is there any adapter"
+// and "is there an adapter with shader-f16" are two different facts that
+// don't invalidate each other.
+const adapterProbes = new Map<boolean, Promise<boolean>>()
 
 /**
- * True only when a WebGPU adapter exists AND advertises `shader-f16` — the
- * fp16 graph (the only exported variant; q4 failed parity, see Task 1) needs
- * it, so without the feature the tool must be absent rather than offered and
- * fail at boot. Cached for the life of the context: an adapter's feature set
- * cannot change without a context reload, same rationale as
- * `pageAccess.ts`'s `fileAccessGranted()` cache.
+ * True when a WebGPU adapter exists, and — only when `requireF16` is set —
+ * that adapter also advertises `shader-f16`. Not every shipped variant needs
+ * the feature: the fp16 graph does, but a weight-only quantized graph with
+ * fp32 activations does not (see the manifest's `requiresShaderF16`), so the
+ * caller decides per the manifest it actually resolved, rather than this
+ * function assuming one graph shape. Cached for the life of the context: an
+ * adapter's feature set cannot change without a context reload, same
+ * rationale as `pageAccess.ts`'s `fileAccessGranted()` cache.
  */
-export function hasWebGpu(): Promise<boolean> {
-  if (!adapterProbe) {
+export function hasWebGpu(requireF16: boolean): Promise<boolean> {
+  let probe = adapterProbes.get(requireF16)
+  if (!probe) {
     const gpu = (navigator as Navigator & { gpu?: MinimalGpu }).gpu
-    adapterProbe = gpu
-      ? gpu.requestAdapter().then((a) => a != null && a.features.has('shader-f16'), () => false)
+    probe = gpu
+      ? gpu.requestAdapter().then((a) => a != null && (!requireF16 || a.features.has('shader-f16')), () => false)
       : Promise.resolve(false)
+    adapterProbes.set(requireF16, probe)
   }
-  return adapterProbe
+  return probe
 }
 
 export async function resolveSystem1(settings: Settings): Promise<System1Runtime | undefined> {
@@ -48,7 +56,7 @@ export async function resolveSystem1(settings: Settings): Promise<System1Runtime
     const cache = await caches.open(CACHE_NAME)
     const manifest = await loadCachedManifest(WEIGHTS_PIN, cache)
     if (!manifest || !(await verifyCached(WEIGHTS_PIN, manifest, cache))) return undefined
-    if (!(await hasWebGpu())) return undefined
+    if (!(await hasWebGpu(manifest.requiresShaderF16 === true))) return undefined
     const engine = getSystem1Engine()
     if (!engine.healthy) return undefined
     return { decide: (req) => engine.decide(req) }

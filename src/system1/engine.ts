@@ -89,6 +89,7 @@ export class System1Engine {
           tokenizerUrl: fileUrl(WEIGHTS_PIN, 'tokenizer.json'),
           tokenizerConfigUrl: fileUrl(WEIGHTS_PIN, 'tokenizer_config.json'),
           configUrl: fileUrl(WEIGHTS_PIN, 'von.json'),
+          requiresShaderF16: manifest.requiresShaderF16 === true,
         } satisfies System1WorkerRequest)
       })
       this._healthy = true

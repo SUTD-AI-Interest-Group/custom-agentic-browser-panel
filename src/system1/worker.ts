@@ -31,21 +31,25 @@ interface MinimalGpu {
 }
 
 /**
- * The fp16 graph needs `shader-f16`; a feature is only actually enabled on a
- * device that requested it (an adapter merely supporting it is not enough).
+ * Only the fp16 graph needs `shader-f16` — a weight-only quantized graph with
+ * fp32 activations does not (see the manifest's `requiresShaderF16`). A
+ * feature is only actually enabled on a device that requested it (an adapter
+ * merely supporting it is not enough), so when it IS required this asks for
+ * it explicitly rather than trusting a default device to have it.
  * `hasWebGpu()` (runtime.ts) already refused to offer Act without an adapter
- * that has the feature, so a missing/insufficient adapter here means that
- * check raced a real environment change (e.g. the GPU process died) between
- * resolving the runtime and this boot — fail the boot, don't silently fall
- * back to a device without it.
+ * that has the feature the manifest calls for, so a missing/insufficient
+ * adapter here means that check raced a real environment change (e.g. the GPU
+ * process died) between resolving the runtime and this boot — fail the boot,
+ * don't silently fall back to a device without it.
  */
-async function requestGpuDevice(): Promise<unknown> {
+async function requestGpuDevice(requireF16: boolean): Promise<unknown> {
   const gpu = (navigator as Navigator & { gpu?: MinimalGpu }).gpu
   if (!gpu) throw new Error('WebGPU is not available in the System-1 worker')
   const adapter = await gpu.requestAdapter()
-  if (!adapter || !adapter.features.has('shader-f16'))
-    throw new Error('the WebGPU adapter does not support shader-f16, which the System-1 model requires')
-  return adapter.requestDevice({ requiredFeatures: ['shader-f16'] })
+  if (!adapter) throw new Error('no WebGPU adapter is available in the System-1 worker')
+  if (requireF16 && !adapter.features.has('shader-f16'))
+    throw new Error('the WebGPU adapter does not support shader-f16, which this model variant requires')
+  return adapter.requestDevice(requireF16 ? { requiredFeatures: ['shader-f16'] } : undefined)
 }
 
 async function boot(m: Extract<System1WorkerRequest, { type: 'init' }>) {
@@ -56,7 +60,7 @@ async function boot(m: Extract<System1WorkerRequest, { type: 'init' }>) {
     cached(m.tokenizerUrl).then((r) => r.json()),
     cached(m.tokenizerConfigUrl).then((r) => r.json()),
     cached(m.configUrl).then((r) => r.json()),
-    requestGpuDevice(),
+    requestGpuDevice(m.requiresShaderF16),
   ])
   tokenizer = new Tokenizer(tj, tc)
   cfg = c as VonConfig

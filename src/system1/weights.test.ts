@@ -40,6 +40,13 @@ describe('parseManifest', () => {
   it('rejects path traversal', () => {
     expect(() => parseManifest({ format: 1, model: 'x', variant: 'q4', files: [{ path: '../a', bytes: 1, sha256: 'f'.repeat(64) }] })).toThrow()
   })
+  it('rejects a non-boolean requiresShaderF16', () => {
+    expect(() => parseManifest({ format: 1, model: 'x', variant: 'q4', files: [], requiresShaderF16: 'yes' })).toThrow()
+  })
+  it('accepts requiresShaderF16 when boolean, and leaves it absent otherwise', () => {
+    expect(parseManifest({ format: 1, model: 'x', variant: 'fp16', files: [], requiresShaderF16: true }).requiresShaderF16).toBe(true)
+    expect(parseManifest({ format: 1, model: 'x', variant: 'q4', files: [] }).requiresShaderF16).toBeUndefined()
+  })
 })
 
 describe('downloadWeights', () => {

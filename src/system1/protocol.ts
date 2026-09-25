@@ -24,7 +24,16 @@ export interface DecideResult {
 }
 
 export type System1WorkerRequest =
-  | { type: 'init'; wasmUrl: string; modelUrl: string; tokenizerUrl: string; tokenizerConfigUrl: string; configUrl: string }
+  | {
+      type: 'init'
+      wasmUrl: string
+      modelUrl: string
+      tokenizerUrl: string
+      tokenizerConfigUrl: string
+      configUrl: string
+      /** From the manifest's `requiresShaderF16` — whether to request the WebGPU device with that feature. */
+      requiresShaderF16: boolean
+    }
   | { type: 'decide'; id: string; req: DecideRequest }
 
 export type System1WorkerReply =
