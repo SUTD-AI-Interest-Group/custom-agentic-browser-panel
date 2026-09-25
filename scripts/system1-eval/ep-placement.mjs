@@ -13,6 +13,7 @@ import http from 'node:http'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { writeReport } from './report.mjs'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
 const repo = path.resolve(here, '../..')
@@ -49,6 +50,7 @@ const page = await ctx.newPage()
 const logs = []
 page.on('console', (m) => logs.push(m.text()))
 await page.goto(`http://127.0.0.1:${server.address().port}/`)
+const startedAt = new Date().toISOString()
 const result = await page.evaluate(async ([ep, file, cases]) => {
   const ort = await import('/ort/ort.webgpu.bundle.min.mjs')
   ort.env.wasm.wasmPaths = { wasm: '/ort/ort-wasm-simd-threaded.asyncify.wasm' }
@@ -78,10 +80,15 @@ await ctx.close()
 server.close()
 
 // ORT prints "Node(s) placed on [EP]. Number of nodes: N" followed by one
-// "  OpType (node name)" line per node (VerifyEachNodeIsAssignedToAnEp).
+// "  OpType (node name)" line per node (VerifyEachNodeIsAssignedToAnEp) —
+// or, when a single EP took everything, only "All nodes placed on [EP].
+// Number of nodes: N" with no per-node lines.
 const placement = {}
+const allOn = {}
 let cur = null
 for (const l of logs) {
+  const all = l.match(/All nodes placed on \[(\w+)\]\. Number of nodes: (\d+)/)
+  if (all) { allOn[all[1]] = Number(all[2]); continue }
   const head = l.match(/Node\(s\) placed on \[(\w+)\]/)
   if (head) { cur = head[1]; placement[cur] = {}; continue }
   const node = l.match(/VerifyEachNodeIsAssignedToAnEp\]\s{3}(\w+) \(/)
@@ -89,12 +96,28 @@ for (const l of logs) {
   else if (cur && !l.includes('VerifyEachNodeIsAssignedToAnEp')) cur = null
 }
 const programs = logs.filter((l) => l.includes('Starting program "MatMulNBits')).length
+const byEp = Object.fromEntries([
+  ...Object.entries(placement).map(([ep, ops]) => [ep, { total: Object.values(ops).reduce((a, b) => a + b, 0), ops }]),
+  ...Object.entries(allOn).map(([ep, n]) => [ep, { total: n, ops: {} }]),
+])
+const gpu = byEp.WebGpuExecutionProvider
+const cpu = byEp.CPUExecutionProvider
+const totalNBits = Object.values(byEp).reduce((a, x) => a + (x.ops.MatMulNBits ?? 0), 0)
+// The engine lists only the webgpu EP, and ORT appends its CPU EP as the
+// implicit fallback: a node the WebGPU EP cannot (or prefers not to) run is
+// PARTITIONED onto CPU rather than failing session creation — so the counts
+// below are the whole story of what fell back.
+const summary = EP === 'webgpu'
+  ? `${gpu?.ops.MatMulNBits ?? 0}/${totalNBits} MatMulNBits nodes on WebGPU; ${gpu?.total ?? 0} nodes on WebGPU, ${cpu?.total ?? 0} partitioned to CPU`
+  : `${EP} EP: ${Object.entries(byEp).map(([k, v]) => `${v.total} nodes on ${k}`).join(', ')}`
 const out = {
-  ep: EP, model: modelFile, createMs: result.createMs,
-  placement: Object.fromEntries(Object.entries(placement).map(([ep, ops]) => [ep, { total: Object.values(ops).reduce((a, b) => a + b, 0), ops }])),
+  ep: EP, model: modelFile, createMs: result.createMs, summary,
+  sessionCreation: 'succeeded (unsupported nodes are partitioned to the implicit CPU EP, not a failure)',
+  placement: byEp,
   matMulNBitsWebGpuPrograms: programs,
   runs: result.runs,
+  msPerRunMedian: [...result.runs.map((r) => r.ms)].sort((a, b) => a - b)[Math.floor(result.runs.length / 2)],
   note: 'verbose logging is on, so run times here are inflated vs the worker',
 }
 console.log(JSON.stringify(out, null, 1))
-if (env.EVAL_OUT) fs.writeFileSync(path.join(env.EVAL_OUT, `ep-placement-${EP}.json`), JSON.stringify(out, null, 1))
+writeReport({ phases: [`ep-placement:${EP}`], startedAt, finishedAt: new Date().toISOString() }, { epPlacement: { [EP]: out } })

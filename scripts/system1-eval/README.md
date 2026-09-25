@@ -35,7 +35,8 @@ agent capabilities" (LM Studio `google/gemma-4-26b-a4b` is the only model endpoi
 - `ep-placement.mjs` — node→execution-provider placement of the exported graph
   under onnxruntime-web's WebGPU EP (verbose ORT log), plus exact-id logits vs the
   golden fp32 reference. `node ep-placement.mjs [webgpu|wasm]`.
-- `report.json` — the numbers below (partial runs carry earlier sections over).
+- `report.mjs` — the only writer of `report.json`: sections, a `runs` provenance list,
+  and the verdict re-derived from data.
 
 ## Running it
 
@@ -54,121 +55,150 @@ EVAL_PLAYWRIGHT=/path/to/node_modules/playwright node scripts/system1-eval/ep-pl
 `EVAL_CHROMIUM` overrides the Chrome for Testing binary (branded Chrome ignores
 `--load-extension`). If LM Studio is down, `llm` and `e2e` are skipped and say so.
 
-## Results — 2026-09-26
+`EVAL_PHASES=rederive` recomputes the summaries and verdict from the rows already
+in `report.json`, with no browser and no model. `report.json` is written only by
+`report.mjs`. Every invocation appends to its `runs` list the phases it produced, so
+the file records which run each section came from.
 
-Model `von-1.2.0` q8 (`model_q8.onnx`, 616 MB, int8 MatMulNBits weights, fp32
-activations; manifest sha256 `6e2fb20c…4236d9`). Chrome for Testing (Playwright
-chromium-1234), macOS, WebGPU adapter `apple / metal-3`, onnxruntime-web 1.30.0.
-LM Studio up throughout; nothing skipped.
+## Results — 2026-09-26 (UTC 2026-09-25)
 
-### Von vs the original (ControlPage only) — end to end
+`report.json` is produced by one full run, `run.mjs` with all phases, 19:37–20:10 UTC.
+It is followed by `ep-placement.mjs webgpu` and `wasm`, then a `rederive` (see its
+`runs`). An earlier replicate head-to-head, 18:4x–19:35 UTC the same day, is kept in
+commit `a2aeb26`'s `report.json`. Its numbers appear below as the "replicate" rows.
 
-Same 3 tasks, same fixtures, same model, 3 runs per task per arm (27 runs).
+Setup:
+- Model `von-1.2.0` q8 (`model_q8.onnx`, 616 MB, int8 MatMulNBits weights, fp32
+  activations; manifest sha256 `6e2fb20c…4236d9`).
+- Google Chrome for Testing 151, macOS, WebGPU adapter `apple / metal-3`,
+  onnxruntime-web 1.30.0.
+- LM Studio was up throughout, and nothing was skipped.
 
-| arm | success | wall median (mean) | LLM steps | tokens in+out | page actions | Act calls (non-done) | Von decides / ms | approval cards |
+### Von vs the original (ControlPage only), end to end
+
+Same 3 tasks, same fixtures, same model, 3 runs per task per arm. Medians, because
+one forced-arm run looped for 342 s / 68 steps / 548k tokens and would dominate a mean.
+
+| arm | success | wall median | LLM steps median | tokens median (mean) | page actions / run | Act calls → non-done → actions | Von decides / ms | approval cards / run |
 |---|---|---|---|---|---|---|---|---|
-| **off** — original | **8/9** | **36 s** (37 s) | 10.2 | 40.9k (39.4k + 1.5k) | 2.9 | — | — | 3.2 |
-| on — toggle, model's choice | 5/9 | 37 s (39 s) | 11.1 | 42.8k (40.6k + 2.2k) | 1.2 | 0 | 0 | 2.2 |
-| forced — toggle + "use Act" | 9/9 | 51 s (56 s) | 11.6 | 55.7k (53.5k + 2.3k) | 3.0 | 13 (13 `uncertain`) | 14 / 1.7 s | 3.6 |
+| **off**: original | 6/9 | 40 s | 9 | 36.6k (41.0k) | 1.6 | — | — | 2.7 |
+| on: toggle, model's choice | 8/9 | 37 s | 10 | 36.0k (48.2k) | 2.9 | 1 → 1 → 0 | 1 / 0.1 s | 3.4 |
+| forced: toggle + "use Act" | 7/9 | 49 s | 9 | 37.4k (97.3k) | 1.7 | 7 → 7 → 0 | 7 / 0.8 s | 2.9 |
+| *replicate* off | 8/9 | 36 s | 9 | 32.2k | 2.9 | — | — | 3.2 |
+| *replicate* on | 5/9 | 37 s | 12 | 46.1k | 1.2 | 0 | 0 | 2.2 |
+| *replicate* forced | 9/9 | 51 s | 11 | 44.1k | 3.0 | 13 → 13 → 0 | 14 / 1.7 s | 3.6 |
+| **both sessions: off / on / forced** | **14 / 13 / 16 of 18** | **38 / 37 / 49 s** | 9 / 10 / 9 | 34.8k / 38.5k / 42.7k | 2.2 / 2.1 / 2.3 | **21 → 21 → 0** | 22 / 2.7 s | |
 
-Per task (success · median wall · mean tokens):
+Per task, this run (success · median wall · median tokens):
 
 | task | off | on | forced |
 |---|---|---|---|
-| form (4 fields + consent + submit) | 3/3 · 50 s · 57k | 1/3 · 52 s · 49k | 3/3 · 76 s · 77k |
-| shop (1 of 36 variant buttons) | 3/3 · 25 s · 29k | 3/3 · 27 s · 35k | 3/3 · 48 s · 49k |
-| dialog (cookie wall, then add) | 2/3 · 36 s · 36k | 1/3 · 37 s · 44k | 3/3 · 36 s · 41k |
+| form (4 fields + consent + submit) | 1/3 · 52 s · 49k | 3/3 · 69 s · 66k | 1/3 · 40 s · 35k |
+| shop (1 of 36 variant buttons) | 2/3 · 28 s · 35k | 2/3 · 29 s · 34k | 3/3 · 43 s · 37k |
+| dialog (cookie wall, then add) | 3/3 · 39 s · 33k | 3/3 · 35 s · 33k | 3/3 · 53 s · 43k |
 
-- **`Act` never performed a page action.** 13 calls in the forced arm, 13 `uncertain`,
-  0 steps: 12 at the move question (p 0.32–0.60, all below `ACT_CONFIDENCE` 0.6),
-  1 at the target question (p 0.57). Every page action in the forced arm was a
-  ControlPage call the chat model made after `Act` handed back. The forced arm's
-  extra ~15 s and ~15k tokens are the cost of those detours; Von's own share is
-  1.7 s of inference plus a 4.4–5.6 s cold engine boot inside the first `Act` call
-  of each panel load.
-- **In the `on` arm gemma never chose `Act`** (0 calls in 9 runs though it was in
-  `activeTools` after the page-control grant), so that arm measures the original path
-  with a larger tool catalog. Its 4 failures, and the `off` arm's 1, share one
-  pattern: gemma called ControlPage without ever calling `RequestPageControl`, looped
-  on the "no session" error and gave up. That is chat-model variance; with n=3 it
-  can't be attributed to the toggle. The forced arm's 9/9 is probably the extra
-  instruction steering gemma to the page-control cluster, not `Act`, which did nothing.
-- **Approval cards:** in successful runs the point-of-no-return cards were the same in
-  every arm ("Click “Send message”", "Click “Add Aurora mug (blue) to cart”", "Click
-  “Reject non-essential”", "Click “Add Nimbus tote (green) to cart”"), each after one
-  "Let the agent control 127.0.0.1…" card. `Act` added no cards of its own. The other
-  differences are the model's own reads, e.g. a "View the tab you are currently on"
-  (screenshot) card in some form runs of both `off` and `forced`. Failed runs show
-  fewer cards because they never reached page control.
+- **`Act` never performed a page action.** Across both sessions it was called 21
+  times and returned `uncertain` with 0 steps all 21 times. Every "unsure of the next
+  move" was below `ACT_CONFIDENCE` 0.6: 0.34–0.57 in this run, and 0.32–0.60 plus
+  one target-question stop at 0.57 in the replicate. Every page action in the `on`
+  and `forced` arms was a ControlPage call the chat model made after `Act` handed
+  back.
+- Where the model used `Act`, the only effect was extra time: the forced median is
+  9–15 s slower than `off` (49 vs 40 s here, 51 vs 36 s in the replicate). Von's own inference is small
+  (0.1 s per decide), but its engine cold-boots inside the first `Act` call of each
+  panel load: 5.3–8.6 s, with one 14.7 s outlier, while an LM Studio generation
+  competed for the GPU.
+- **Success rates are gemma's, not Von's.** Every failed run in every arm, in both
+  sessions, is the same chat-model error: gemma called ControlPage without ever
+  calling `RequestPageControl`, looped on the "no session" error, then gave up. The
+  arm ranking flips between sessions (off 8/9 → 6/9, on 5/9 → 8/9), which is the
+  signature of noise at n=3. `Act` cannot have raised success anywhere, because it
+  never acted. In this run gemma ignored the "use Act" instruction on all 3 forced
+  form runs.
+- **Approval cards:** every successful run in every arm showed exactly the expected
+  point-of-no-return card(s): "Click “Send message”" ×5, "Click “Add Aurora mug (blue)
+  to cart”" ×7, "Click “Reject non-essential”" ×9 and "Click “Add Nimbus tote (green)
+  to cart”" ×9, for 5, 7 and 9 successful runs respectively. Each came after one "Let
+  the agent control …" card. `Act` added none. Failed runs show fewer cards because
+  they never reached page control.
 
 ### Component-level numbers
 
-**Execution-provider placement** (`ep-placement.mjs`): **all 84 MatMulNBits nodes run
-on WebGPU** (84 × 12 runs = 1008 `MatMulNBits` WebGPU programs launched). 1369 nodes
-go to `WebGpuExecutionProvider` and 540 to `CPUExecutionProvider`. The CPU nodes are
-ORT's own "fallback CPU capability" choice for small int64 shape subgraphs (Gather
-201, Unsqueeze 122, Div 84, Concat 57, Add 28, Mul 28, …), plus 11 MemcpyFromHost / 4
-MemcpyToHost. Same probe with the `wasm` EP: 3.9–4.4 s per golden case vs 0.17–0.21 s
-on WebGPU, so the latency numbers here really are GPU numbers.
+**Execution-provider placement** (`ep-placement.mjs webgpu`):
+- **84/84 MatMulNBits nodes run on WebGPU**, and ORT logged 1008 `MatMulNBits` WebGPU
+  programs over 12 runs.
+- The engine lists only the `webgpu` EP. Session creation **succeeded**, and ORT
+  **partitioned** 540 of 1909 nodes onto its implicit CPU EP; none failed. Those 540
+  are its "fallback CPU capability" choice for small int64 shape subgraphs: Gather
+  201, Unsqueeze 122, Div 84, Concat 57, Add 28, Mul 28, Equal 5, Or 4, … plus 11
+  MemcpyFromHost / 4 MemcpyToHost.
+- The same probe on the `wasm` EP puts all 1814 nodes on CPU. It takes a 3977 ms
+  median per golden case vs 176 ms on WebGPU (both with verbose logging on), so the
+  latency numbers here really are GPU numbers.
 
-**WebGPU parity** (4 golden cases vs fp32 reference): max |Δ calibrated p| **0.0024**,
-argmax flips **0**; max |Δ logit| 0.043 with the exact golden ids. The exporter's CPU
-check of the same q8 graph was 0.0236 over 9 probes. 4 cases is a thin sample.
+**WebGPU parity** (4 golden cases vs the fp32 reference):
+- Max |Δ calibrated p| is **0.0024** (per case 0.0002 / 0.00017 / 0.00098 / 0.00243),
+  with **0** argmax flips. Max |Δ logit| with the exact golden ids is 0.043.
+- The exporter's CPU check of the same q8 graph was 0.0236 over 9 probes. 4 cases is
+  a thin sample.
 
-**Boot and download:** Settings download → "Ready · 620 MB" in 2.1 s (localhost, so
-not a network figure; this includes hashing 616 MB). Worker boot (Cache Storage →
-session → warm-up): 1.3 s in an eval page, 4.4–5.6 s inside the panel during e2e (with
-an LM Studio generation competing). Settings "Run a test decision": `Picked [2] with
-p=0.76 in 57 ms`.
+**Boot and download:**
+- On a fresh profile, Settings download reached "Ready · 620 MB" in 2.6 s. That was
+  from localhost, so it is not a network figure, but it includes hashing 616 MB.
+- Worker boot (Cache Storage → session → warm-up) takes 1.6 s in an eval page, and
+  5.3–14.7 s inside the panel during e2e.
+- Settings "Run a test decision" returned `Picked [2] with p=0.76 in 59 ms`.
 
 | decide() ms | p50 | p95 |
 |---|---|---|
-| all calls (n=164) | 105 | 486 |
-| move question | 112 | 133 |
-| target question (single call) | 93 | 496 |
-| whole target pick per case (incl. tournament) | 203 | 657 |
-| gemma, one completion per grounding case | 1711 | 13730 |
+| all calls (n=164) | 96 | 488 |
+| move question | 98 | 110 |
+| target question (single call) | 78 | 491 |
+| whole target pick per case (incl. tournament) | 204 | 643 |
+| gemma, one completion per grounding case | 1821 | 8374 |
 
 **Grounding** (54 cases on 3 pages, same element lists for both; top-1 target):
 
 | | Von | gemma-4-26b-a4b |
 |---|---|---|
-| all | **40/54 = 0.741** | **49/54 = 0.907** |
-| shop (43 candidates → tournament) | 16/23 | — |
+| all | **37/54 = 0.685** | **48/54 = 0.889** |
+| shop (42 candidates → tournament) | 13/23 | — |
 | form | 13/16 | — |
 | dialog | 11/15 | — |
 
-Run-to-run: a first identical grounding run scored 37/54 (0.685). All the differences
-were in tournament cases, so WebGPU results are not bit-stable across sessions.
+The replicate session scored Von 40/54 (0.741) and gemma 49/54 (0.907) on identical
+inputs. Von's differences were all in tournament cases, so WebGPU results are not
+bit-stable across sessions.
 
 - **Move question:** the correct move is `act` in all 54 cases. Von chose
-  `scroll_down` 40×, `act` 13×, `WAIT` 1×, and its calibrated top never reached
-  `ACT_CONFIDENCE` (p50 0.38, max 0.56) — **0/54 cases clear the loop's first gate**,
-  matching the e2e result above.
+  `scroll_down` 40×, `act` 12×, `BLOCKED` 1× and `WAIT` 1×. Its calibrated top never
+  reached `ACT_CONFIDENCE` (p50 0.37, max 0.55): **0/54 cases clear the loop's first
+  gate**, which matches the e2e result.
 - **Tournament:** the 42 shop candidates split 40 + 2. The chunk holding the right
-  button picked it in 17/23; the final round then often preferred the header "Cart"
-  link or the degenerate 2-option chunk's winner (7 of 7 tournament errors).
-- **Checkbox:** `describe()` renders an unchecked checkbox as `(currently "on")`
-  (an `<input type=checkbox>`'s `.value` is "on" regardless of `checked`). Von then
-  picks "Send message" for "tick the consent box" with p=0.99.
+  button picked it in 14/23. The final round then often preferred the header "Cart"
+  link, or the degenerate 2-option chunk's winner.
+- **Checkbox:** `describe()` renders an unchecked checkbox as `(currently "on")`,
+  because an `<input type=checkbox>`'s `.value` is "on" regardless of `checked`. Von
+  then picks "Send message" for "tick the consent box" with p=0.98.
 - **Value key** (asked only when the target cleared the gate): 8/9.
 
 **Threshold sweep** (target question, final round's calibrated top):
 
 | ACT_CONFIDENCE | coverage | accuracy on answered | confident-but-wrong |
 |---|---|---|---|
-| 0.4 | 0.981 | 0.736 | 14 |
-| 0.5 | 0.907 | 0.735 | 13 |
-| 0.6 | 0.667 | 0.750 | 9 |
-| 0.7 | 0.519 | 0.786 | 6 |
+| 0.4 | 0.981 | 0.679 | 17 |
+| 0.5 | 0.907 | 0.673 | 16 |
+| 0.6 | 0.667 | 0.694 | 11 |
+| 0.7 | 0.519 | 0.750 | 7 |
 | 0.8 | 0.352 | 0.789 | 4 |
 
-No threshold reaches LLM-level accuracy; raising it trades coverage for a few points.
-Keep 0.6. The binding constraint is the move question, where lowering the gate would
-mostly make `Act` scroll instead of act.
+No threshold reaches LLM-level accuracy, and raising it trades coverage for a few
+points. Keep 0.6. The binding constraint is the move question: lowering the gate
+there would mostly make `Act` scroll instead of act.
 
-**Kill criterion (spec §9): met.** Latency is fine (p50 105 ms, well under 300 ms, and
-genuinely on the GPU). But Von's grounding is clearly below the chat LLM's (0.741 vs
-0.907), and head to head the `Act` arm is slower (51 s vs 36 s median), uses more
-tokens (55.7k vs 40.9k) and completes zero actions itself. The feature stays behind
-the experimental toggle.
+**Kill criterion (spec §9): met.**
+- Latency is fine: p50 96 ms, well under 300 ms, and genuinely on the GPU.
+- But Von's grounding is clearly below the chat LLM's (0.685 vs 0.889, and 0.741 vs
+  0.907 in the replicate).
+- Head to head, `Act` completed zero actions in 21 calls and only added time.
+- The feature stays behind the experimental toggle.

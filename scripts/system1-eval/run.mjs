@@ -24,6 +24,7 @@ import http from 'node:http'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { writeReport } from './report.mjs'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
 const repo = path.resolve(here, '../..')
@@ -93,9 +94,11 @@ function bundleHarness() {
 
 // ---------------------------------------------------------------------------
 async function main() {
+  if (PHASES.has('rederive')) return rederive()
   log('dist', DIST)
   log('out', OUT_DIR, '| profile', PROFILE)
-  const report = { startedAt: new Date().toISOString(), env: {}, skipped: [] }
+  const startedAt = new Date().toISOString()
+  const report = { env: {}, skipped: [] }
   const lmUp = await fetch(`${LM_URL}/models`).then((r) => r.ok, () => false)
   report.env.lmStudio = lmUp ? 'up' : 'down'
   if (!lmUp) {
@@ -135,8 +138,9 @@ async function main() {
       return { available: true, vendor: a.info?.vendor, architecture: a.info?.architecture, shaderF16: a.features.has('shader-f16') }
     })
     report.env.webgpu = gpu
-    report.env.chromium = CHROMIUM
+    // Version only — the binary path would put the local username in a committed file.
     report.env.userAgent = await panel.evaluate(() => navigator.userAgent)
+    report.env.chromium = `${path.basename(CHROMIUM)} ${report.env.userAgent.match(/Chrome\/([\d.]+)/)?.[1] ?? ''}`.trim()
     log('webgpu', JSON.stringify(gpu))
     await seedSettings(panel, { system1: false })
 
@@ -173,27 +177,28 @@ async function main() {
     if (lab) await lab.close()
     if (PHASES.has('e2e')) report.e2e = await phaseE2e(ctx, panel, panelUrl, fixtureUrl)
 
-    report.finishedAt = new Date().toISOString()
-    // A partial run (EVAL_PHASES) keeps the previous report's other sections,
-    // marked with when they were measured, so phases can be re-run one at a time.
-    const reportPath = path.join(here, 'report.json')
-    if (fs.existsSync(reportPath)) {
-      const prev = JSON.parse(fs.readFileSync(reportPath, 'utf8'))
-      for (const k of ['download', 'parity', 'bootMs', 'model', 'grounding', 'llm', 'e2e']) {
-        if (report[k] === undefined && prev[k] !== undefined) {
-          report[k] = prev[k]
-          ;(report.carriedOver ??= {})[k] = prev.carriedOver?.[k] ?? prev.startedAt
-        }
-      }
-    }
-    report.verdict = verdict(report)
-    fs.writeFileSync(reportPath, JSON.stringify(report, null, 1))
+    const measured = ['download', 'parity', 'grounding', 'llm', 'e2e'].filter((k) => PHASES.has(k))
+    const { skipped, ...sections } = report
+    const written = writeReport({ phases: measured, startedAt, finishedAt: new Date().toISOString(), skipped }, sections)
     if (grounding) fs.writeFileSync(path.join(OUT_DIR, 'grounding-raw.json'), JSON.stringify(grounding, null, 1))
-    printSummary(report)
+    printSummary(written, skipped)
   } finally {
     await ctx.close().catch(() => {})
     server.close()
   }
+}
+
+// EVAL_PHASES=rederive: no browser, no model. Recomputes the grounding and e2e
+// summaries (and the verdict) from the per-case/per-run rows already in
+// report.json — for when only the aggregation code changed.
+function rederive() {
+  const r = JSON.parse(fs.readFileSync(path.join(here, 'report.json'), 'utf8'))
+  const startedAt = new Date().toISOString()
+  const sections = {}
+  if (r.grounding?.rows) sections.grounding = summarizeGrounding(r.grounding.rows)
+  if (r.e2e?.rows) sections.e2e = { rows: r.e2e.rows, summary: summarizeE2e(r.e2e.rows) }
+  const written = writeReport({ phases: ['rederive'], startedAt, finishedAt: new Date().toISOString() }, sections)
+  printSummary(written, [])
 }
 
 async function findExtensionId(ctx) {
@@ -596,6 +601,10 @@ function summarizeE2e(rows) {
     runs: rs.length, success: rs.filter((r) => r.success).length,
     wallMsMedian: pct(rs.map((r) => r.wallMs), 50), wallMsMean: mean(rs.map((r) => r.wallMs)),
     llmStepsMean: round(rs.reduce((a, r) => a + r.llmSteps, 0) / rs.length, 1),
+    // Medians alongside means: one runaway turn (an auto-continued loop) can
+    // multiply a 3-run mean without saying anything about the typical run.
+    llmStepsMedian: pct(rs.map((r) => r.llmSteps), 50),
+    tokensMedian: pct(rs.map((r) => r.inputTokens + r.outputTokens), 50),
     tokensMean: mean(rs.map((r) => r.inputTokens + r.outputTokens)),
     inputTokensMean: mean(rs.map((r) => r.inputTokens)), outputTokensMean: mean(rs.map((r) => r.outputTokens)),
     pageActionsMean: round(rs.reduce((a, r) => a + r.pageActions, 0) / rs.length, 1),
@@ -626,23 +635,7 @@ async function readTraces(panel, since) {
 }
 
 // ---------------------------------------------------------------------------
-function verdict(r) {
-  const out = []
-  const g = r.grounding
-  if (g) {
-    const p50 = g.decideMs.all.p50
-    out.push(`p50 decide ${p50} ms ${p50 > 300 ? '> ~300 ms: KILL condition met' : '≤ ~300 ms: latency OK'}`)
-    out.push(`first-move gate cleared in ${g.moveAboveGate}/${g.cases} cases (a move below ACT_CONFIDENCE ends Act as \`uncertain\` before any action)`)
-  }
-  if (g && r.llm) {
-    const d = g.accuracyTop1 - r.llm.accuracyTop1
-    out.push(`grounding Von ${g.accuracyTop1} vs LLM ${r.llm.accuracyTop1} (Δ ${round(d, 3)}) ${d < -0.05 ? '— Von clearly below the LLM: KILL condition met' : '— not clearly below the LLM'}`)
-  }
-  if (r.parity) out.push(`WebGPU parity max|Δp| ${r.parity.maxDeltaP}, argmax flips ${r.parity.argmaxFlips}`)
-  return out
-}
-
-function printSummary(r) {
+function printSummary(r, skipped) {
   console.log('\n================ System-1 eval ================')
   console.log('WebGPU:', JSON.stringify(r.env.webgpu), '| LM Studio:', r.env.lmStudio)
   if (r.download) console.log('Download:', r.download.status, `${Math.round(r.download.downloadMs / 1000)}s`, '| test:', r.download.testDecision)
@@ -658,8 +651,8 @@ function printSummary(r) {
     console.table(g.thresholds)
   }
   if (r.llm) console.log(`LLM baseline (${r.llm.model}): ${r.llm.correct}/${r.llm.cases} = ${r.llm.accuracyTop1}, p50 ${r.llm.ms.p50} ms, p95 ${r.llm.ms.p95} ms`)
-  if (r.e2e?.summary) console.table(Object.fromEntries(Object.entries(r.e2e.summary.byArm).map(([a, x]) => [a, { runs: x.runs, success: x.success, wallMedS: Math.round(x.wallMsMedian / 1000), llmSteps: x.llmStepsMean, tokens: x.tokensMean, actions: x.pageActionsMean, actCalls: x.actCalls, actNonDone: x.actNonDone, vonMs: x.vonMs }])))
-  for (const s of r.skipped) console.log('SKIPPED', s)
+  if (r.e2e?.summary) console.table(Object.fromEntries(Object.entries(r.e2e.summary.byArm).map(([a, x]) => [a, { runs: x.runs, success: x.success, wallMedS: Math.round(x.wallMsMedian / 1000), llmStepsMed: x.llmStepsMedian, tokensMed: x.tokensMedian, tokensMean: x.tokensMean, actions: x.pageActionsMean, actCalls: x.actCalls, actNonDone: x.actNonDone, vonMs: x.vonMs }])))
+  for (const s of skipped) console.log('SKIPPED', s)
   for (const v of r.verdict) console.log('VERDICT', v)
 }
 
