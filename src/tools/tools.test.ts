@@ -258,6 +258,50 @@ describe('ControlPage — re-checks isForeground after the approval wait on a po
     // reading the card is no longer looking at the tab it will act on.
     expect(runControlStep).not.toHaveBeenCalled()
   })
+
+  it('marks the origin-drift early return as drifted', async () => {
+    // The tab has already moved to a different origin than the session
+    // remembers, and the session records that its previous step's approved
+    // point-of-no-return authorized the crossing — so this re-fences
+    // silently (no approval card) and returns the fresh page without ever
+    // reaching runControlStep.
+    const driftedTab = { id: 1, windowId: 1, url: 'https://b.example/' } as chrome.tabs.Tab
+    stubTabsQuery(driftedTab) // entry-point isForeground check inside controlStep
+    vi.mocked(snapshotPage).mockResolvedValue(snap([el({ index: 0, name: 'Continue' })], 'https://b.example'))
+
+    const session = buildSession({ origin: 'https://a.example', crossingAuthorized: true })
+    const pageControl: PageControlGate = {
+      requestSession: async () => true,
+      session: () => session,
+      endSession: () => {
+        session.active = false
+      },
+    }
+    const pageTarget: PageTarget = { resolveTab: async () => driftedTab, park: () => {} }
+    const tools = createAgentTools(
+      async () => true,
+      'all-tabs',
+      new Set(),
+      pageControl,
+      null,
+      false,
+      [],
+      () => 'always',
+      'conv-1',
+      new Set(),
+      undefined,
+      undefined,
+      pageTarget,
+    )
+
+    const result = (await (tools.ControlPage as any).execute(
+      { action: 'click', index: 0 },
+      {} as any,
+    )) as any
+
+    expect(result.drifted).toBe(true)
+    expect(runControlStep).not.toHaveBeenCalled()
+  })
 })
 
 describe('AutofillForm — re-checks isForeground per field, not only at tool entry', () => {
