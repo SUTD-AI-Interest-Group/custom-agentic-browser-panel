@@ -1,7 +1,11 @@
 # Candidate-action `Act` — the harness owns the action space, Von only chooses
 
-Status: design approved in chat 2026-09-26 (approach A of three); implementation
-started the same day on branch `candidate-action-act`. Supersedes §4 of
+Status: design approved in chat 2026-09-26 (approach A of three); implemented
+2026-09-27 on branch `candidate-action-act` and measured — see
+`scripts/system1-eval/README.md` "Results — 2026-09-27". One correction from
+measurement: the control list is rendered into the **operation head's** state
+only (§4 below is amended); listing it in every head cost ~10× the tokens and
+dropped grounding to 0.481. Supersedes §4 of
 `2026-09-26-system1-act-design.md` (the `Act` step); everything else in that
 spec (weights, engine, worker, settings, safety analysis) stands.
 
@@ -20,13 +24,15 @@ from that set. The model is a policy over available controls, never the
 executor. Concretely, for base Von 1.2 and zero-shot, it changes five things the
 eval measured as the failure:
 
-1. **The controls are in the prefix.** Von scores each option against the
-   prefix alone; options never see each other. The move question's prefix used
-   to carry goal, title, progress and value keys — nothing that separates
-   "act" from "scroll down". `moveState` fixed this for one question; here the
-   full control list is the state every question shares, so a target option
-   also sees its siblings (the 36 other "Add … to cart" buttons) through the
-   prefix — context the option-marker head cannot get any other way.
+1. **The controls are in the operation head's prefix.** Von scores each
+   option against the prefix alone; options never see each other. The move
+   question's prefix used to carry goal, title, progress and value keys —
+   nothing that separates "act" from "scroll down". `moveState` fixed this for
+   one question; here the ranked, capped control list is the operation head's
+   state. (The first draft put it in every head's state so a target option
+   could "see" its siblings; measured, that drowned the option's own line and
+   cost ~10× the tokens — see the Status note. A target head's options are the
+   controls, so its state omits the list.)
 2. **Per-operation target heads.** The target pool used to mix clickables and
    fields with a `→ click`/`→ type` suffix. Asking `target_CLICK` over click
    targets only (and `target_TYPE_TEXT` over fields only) shrinks pools and
@@ -200,8 +206,13 @@ loop's job, not the adapter's: the adapter reports, the loop decides.
 
 `createVonPolicy(decide: (req: DecideRequest) => Promise<DecideResult>): BrowserPolicy`.
 
-**Shared state block** (`renderState(ctx, shownIds)`, exported), the doc's §18
-in Von's line format — every question in one step shares it:
+**Shared state block** (`renderState(ctx, shownIds, {controls})`, exported), the
+doc's §18 in Von's line format. Every question in one step shares it, **but only
+the operation head (and `blocked_reason`) gets the `Controls` list** — a target
+head's options ARE the controls, and measured on 2026-09-27 the list in its prefix
+cost ~10× the tokens and dropped grounding from 0.685 to 0.481 (a target option's
+own line drowned among 40 copies of its siblings). With the list confined to the
+operation head: 0.889 at p50 222 ms.
 
 ```
 Goal: <goal ≤ 300>

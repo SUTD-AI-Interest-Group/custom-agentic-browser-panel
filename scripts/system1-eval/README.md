@@ -62,6 +62,148 @@ in `report.json`, with no browser and no model. `report.json` is written only by
 `report.mjs`. Every invocation appends to its `runs` list the phases it produced, so
 the file records which run each section came from.
 
+## Results — 2026-09-27: the candidate-action representation, base Von
+
+Same fixtures, same 54 cases, same model (`von-1.2.0` q8, the pinned base weights —
+not the fine-tune), same machine and Chrome for Testing 151. What changed is the
+harness: `Act` now runs on the candidate-action layer
+(`docs/superpowers/specs/2026-09-26-candidate-action-act-design.md`) — the finite
+space is built before any question, the policy answers `operation` → `target_<OP>`
+→ `value`, membership is validated, and `harness.ts` forces the operation head to
+the expected element's operation so the target head is measured in isolation.
+Two renderings were run back to back; the second is what ships.
+
+### Variant 1 — control list in every head's prefix (commit 865aa8c; report at 729f070)
+
+Doc §18 taken literally: the state block every question shares listed the
+(ranked, capped at 60) controls, so a target option could "see" its siblings.
+
+| | old format (26 Sep) | variant 1 | gemma-4-26b-a4b |
+|---|---|---|---|
+| grounding top-1 | 37/54 = 0.685 | **26/54 = 0.481** | 48/54 = 0.889 |
+| shop / form / dialog | 13/23 · 13/16 · 11/15 | 9/23 · 8/16 · 9/15 | |
+| tournament cases correct | — | 7/21 | |
+| first head correct | 12/54 (`act`) | **43/54** (`CLICK` 53×, `BLOCKED` 1×; expected CLICK 44, TYPE_TEXT 7, SELECT_OPTION 3) | |
+| first head above the 0.6 gate | 0/54 (max 0.55) | 8/54 (p50 0.43, max 0.70) | |
+| target above the gate · accuracy on those | 36/54 · 0.694 | 11/54 · 0.636 | |
+| decide ms p50 / p95 (all heads) | 96 / 488 | **1018 / 1939** | |
+| target pick per case p50 / p95 | 204 / 643 | 778 / 5405 (shop median 4449) | 3168 / 15131 |
+| expected control in the candidate set · shown · rank p50 | — | 54/54 · 54/54 · 1 (max 11) | |
+
+- **Candidate generation is not the problem.** The right control was a target of
+  the forced operation in all 54 cases and shown in the state block in all 54;
+  the lexical ranker put it first in 47 (all 7 rank>1 are form fields whose goal
+  wording does not overlap the label, e.g. "fill in the message" vs "Your message").
+- **The operation head is fixed by the representation.** With the controls in
+  its prefix it answers `CLICK` where the old move question answered
+  `scroll_down` 40/54 times. It is still under the gate in 46/54 cases.
+- **The target head got worse and ~10× slower, for one reason.** Every head's
+  prefix carried the ~40-line control list: each pass cost ~10× the tokens
+  (target p50 1258 ms vs 78 ms), and a target option's own line was drowned among
+  copies of its siblings — Von's option marker attends to the prefix and itself,
+  so 40 near-identical "Add … to cart" lines in the prefix are noise, not context.
+  Both kill conditions met: p50 1018 ms > 300 ms; 0.481 clearly below 0.889.
+- **e2e** (3 tasks × 3 reps × 3 arms): off 6/9 · on 5/9 · forced 6/9 (medians
+  58 s / 41 s / 62 s). Forced arm: 15 `Act` calls, 14 `uncertain` + 1 error,
+  **3 Act actions in total** (the first real ones — previously 0), all before an
+  `uncertain` hand-back. Every success is still gemma's via ControlPage.
+
+### Variant 2 — control list in the operation head only (commit dac560c; report at 0f50115) — **ships**
+
+A target head's options ARE the controls, so its state carries goal, page, state
+line, value keys and recent actions only; the operation head (whose options carry
+no context of their own) keeps the list.
+
+| | old format (26 Sep) | variant 1 | **variant 2** | gemma-4-26b-a4b |
+|---|---|---|---|---|
+| grounding top-1 | 37/54 = 0.685 | 26/54 = 0.481 | **48/54 = 0.889** | 48/54 = 0.889 |
+| shop / form / dialog | 13/23 · 13/16 · 11/15 | 9/23 · 8/16 · 9/15 | **21/23 · 14/16 · 13/15** | |
+| tournament cases correct | — | 7/21 | **19/21** | |
+| target above the 0.6 gate · accuracy on those · confident-but-wrong | 36/54 · 0.694 · 11 | 11/54 · 0.636 · 4 | **46/54 · 0.913 · 4** | |
+| first head correct · above the gate | 12/54 · 0/54 | 43/54 · 8/54 | 43/54 · 8/54 (p50 0.43, max 0.70) | |
+| value key (asked only past the gate) | 8/9 | 4/5 | 5/6 | |
+| decide ms p50 / p95 (all heads) | 96 / 488 | 1018 / 1939 | **222 / 586** (operation 256, target 222, value 67) | |
+| target pick per case p50 / p95 | 204 / 643 | 778 / 5405 | **222 / 662** (shop median 641 = tournament) | 1787 / 11912 |
+| worker boot · Settings test decision | 1.6 s · 59 ms | 2.0 s · 171 ms | 1.9 s · 57 ms | |
+
+Threshold sweep (target head, final round):
+
+| ACT_CONFIDENCE | coverage | accuracy on answered | confident-but-wrong |
+|---|---|---|---|
+| 0.4 | 0.963 | 0.904 | 5 |
+| 0.5 | 0.907 | 0.918 | 4 |
+| 0.6 | 0.852 | 0.913 | 4 |
+| 0.7 | 0.630 | 0.941 | 2 |
+| 0.8 | 0.426 | 0.957 | 1 |
+
+- **Grounding is now level with the chat LLM, zero-shot.** 0.889 vs gemma's 0.889
+  on identical candidate lists, up from 0.685 on the old rendering. The
+  tournament, which lost most shop cases before, wins 19/21: the ranked order puts
+  the goal's lexical matches in one chunk and Von discriminates well among them.
+  The 6 misses: two green-variant confusions on the shop page (green Fjord bowl →
+  green Nimbus tote), two checkbox/newsletter goals grounded to the nearby field or
+  submit, and two dialog-page goals grounded to "Manage preferences" at p<0.5.
+- **Latency is back under the line.** p50 222 ms across heads; the operation head
+  costs ~250 ms because its prefix carries the control list, a target pass ~80 ms.
+- **The operation head is the binding constraint, and it did not move between
+  variants** (identical: it saw the same prefix in both). It answers `CLICK` in
+  53/54 cases — right for the 44 CLICK cases (0.80 overall), wrong for every field
+  case (TYPE_TEXT 7, SELECT_OPTION 3) — at p50 0.43, with the wrong answers at the
+  same confidence as the right ones, so no threshold separates them. Zero-shot Von
+  has no notion of "type into a field" as a *move*; the fine-tune's structural move
+  labels are what target this.
+- **e2e** (3 tasks × 3 reps × 3 arms): off 8/9 · on 8/9 · forced 7/9 (medians
+  35 s / 36 s / 67 s). Forced arm: 13 `Act` calls, 11 `uncertain` (all on the
+  operation head, 1–2 Von passes each) and 2 refused because gemma called `Act`
+  before `RequestPageControl`; **1 Act action in total**. Success is gemma's via
+  ControlPage in every arm.
+
+**Decision (spec §10).** The representation wins on grounding and latency (both
+kill conditions lifted: 222 ms, 0.889 = LLM) and fails on the operation gate
+(8/54), so `Act` still hands back on its first head. Two follow-ups, cheapest
+first: (1) fold the operation choice into the target head (one question: the
+controls plus the four global moves, the operation implied by the chosen
+control's kind) and re-run `grounding`; (2) re-target `scripts/von-finetune/render.mjs`
+to `vonPolicy.ts`'s exported renderers (`renderState`, `operationQuestion`,
+`targetQuestion`, `valueQuestion`) and retrain — the episode labels transfer by
+construction (`act` → the target's own operation, `scroll_down` → `SCROLL_DOWN`,
+`DONE`/`BLOCKED` unchanged), ~1 h/epoch on the Mac. The 26 Sep fine-tune was
+trained on the old rendering and is measured on this harness below.
+
+### The 26 Sep fine-tune on the new harness (old-format training, zero re-rendering)
+
+`EVAL_MODEL_DIR` pointed at the `von-finetune` worktree's export
+(`scripts/von-finetune/data/onnx`, manifest `63f7e93d…`, calibration refit to
+T=1.266 with no map): Von 1.2 continue-trained for 3 epochs on 4,753 rows rendered
+through the **old** builders (`actState`/`moveState`/`describe()`), val acc 0.94.
+It was never shown this rendering, so this measures transfer. Parity was skipped
+(the golden fixtures are the base weights'); the LLM baseline is model-independent.
+
+| | base Von, variant 2 | **fine-tune, variant 2** | gemma-4-26b-a4b |
+|---|---|---|---|
+| grounding top-1 | 48/54 = 0.889 | **53/54 = 0.981** | 48/54 = 0.889 |
+| shop / form / dialog | 21/23 · 14/16 · 13/15 | **22/23 · 16/16 · 15/15** | |
+| tournament cases correct | 19/21 | **20/21** | |
+| target above the 0.6 gate · accuracy · confident-but-wrong | 46/54 · 0.913 · 4 | **52/54 · 0.981 · 1** | |
+| operation head correct · above the gate · both | 43/54 · 8/54 · 8 | **48/54 · 42/54 · 40** (p50 0.98, max 0.995) | |
+| operation choices | CLICK 53, BLOCKED 1 | CLICK 50, TYPE_TEXT 3, SELECT_OPTION 1 | |
+| value key (asked past the gate) | 5/6 | 9/10 | |
+| decide ms p50 / p95 · target pick p50 / p95 | 222 / 586 · 222 / 662 | 220 / 583 · 220 / 657 | |
+
+- **The old-format fine-tune transfers.** The control lines it trained on
+  (`[N] button "…" → click`) are close enough to `renderControl`'s that grounding
+  reaches 0.981 and the target gate passes 52/54 with one confident miss ("add
+  the green mug" → the green tote; the page has no green mug, so arguably right).
+- **The operation head clears the gate where it was trained to** — every CLICK
+  case at p≈0.98 — **and not where it was not.** Its 6 misses are all field cases
+  answered `CLICK` at p 0.38–0.67 (TYPE_TEXT ×4, SELECT_OPTION ×2): the training
+  rows labelled these `act`, a move that no longer exists, so "type into a field"
+  as an *operation* is out of distribution. On the form page the head's p50 is
+  0.41 against 0.98 elsewhere. That is the case for re-rendering the dataset
+  through `vonPolicy.ts`'s renderers and retraining (labels transfer by
+  construction) — a targeted gain on field operations, not a prerequisite for
+  `Act` to act at all.
+
 ## Results — 2026-09-26 (UTC 2026-09-25)
 
 `report.json` is produced by one full run, `run.mjs` with all phases, 19:37–20:10 UTC.
