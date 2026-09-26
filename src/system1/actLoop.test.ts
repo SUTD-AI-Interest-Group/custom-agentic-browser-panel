@@ -162,6 +162,27 @@ describe('runActLoop — history, loops and staleness', () => {
     expect(r.transitions[1].result).toBe('repeat')
   })
 
+  it('stops with repeat on the same element action twice in a row even when the page changed', async () => {
+    // Measured: "Add to cart" changes the cart badge (a new hash) and the
+    // policy never says DONE, so without this rule it clicked five times.
+    const snapshots = Array.from({ length: 6 }, (_, i) => snap([el(0, { name: 'Add mug' }), el(1, { name: `Cart (${i})` })]))
+    const d = deps({ policy: policyOf([{ operation: 'CLICK', targetId: 0 }]), snapshots })
+    const r = await runActLoop({ goal: 'add the mug', maxSteps: 6 }, d)
+    expect(r.status).toBe('repeat')
+    expect(r.message).toContain('twice in a row')
+    expect(d.executed).toHaveLength(1)
+
+    // A retry after a stale step is not a repeat.
+    let n = 0
+    const afterStale = deps({
+      policy: policyOf([{ operation: 'CLICK', targetId: 0 }, { operation: 'CLICK', targetId: 0 }, { operation: 'DONE' }]),
+      execute: async () => (n++ === 0 ? { kind: 'stale' } : { kind: 'ok', elements: 'R' }),
+      snapshots: [snap([el(0)]), snap([el(0, { name: 'Renamed' })]), snap([el(0, { name: 'Renamed' }), el(1)])],
+    })
+    expect((await runActLoop({ goal: 'g' }, afterStale)).status).toBe('done')
+    expect(n).toBe(2)
+  })
+
   it('allows the same action again once the page changed (a second value into the same field)', async () => {
     const d = deps({
       policy: policyOf([{ operation: 'TYPE_TEXT', targetId: 1, valueKey: 'a' }, { operation: 'TYPE_TEXT', targetId: 1, valueKey: 'b' }, { operation: 'DONE' }]),

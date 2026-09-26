@@ -164,12 +164,25 @@ export async function runActLoop(
     const label = action.targetId !== undefined ? nameOf(action.targetId) : undefined
     transition.action = { operation: action.operation, targetId: action.targetId, targetName: label, valueKey: action.valueKey }
 
+    // Two loop rules, both needed. (1) Same (page hash, operation, target) as
+    // an earlier step: the page did not change and the policy wants the same
+    // thing again. (2) The SAME element action twice in a row even though the
+    // page changed — measured 2026-09-27: after one "Add to cart" the cart
+    // badge changed the hash, the policy never answered DONE, and it clicked
+    // the same button five times (five approval cards, five items). The one
+    // legitimate consecutive repeat is a different value into the same field,
+    // so the value key is part of the identity; a stale step does not count,
+    // since retrying the target on a fresh read is the point of `stale`.
     const key = `${obs.hash}|${action.operation}|${action.targetId ?? ''}`
-    if (seen.has(key)) {
+    const prev = steps[steps.length - 1]
+    const consecutive =
+      prev !== undefined && prev.result !== 'stale' && action.targetId !== undefined &&
+      prev.operation === action.operation && prev.targetId === action.targetId && prev.valueKey === action.valueKey
+    if (seen.has(key) || consecutive) {
       transition.result = 'repeat'
       return fin({
         status: 'repeat', steps, elements: snap.text,
-        message: `would repeat ${action.operation}${action.targetId !== undefined ? ` on [${action.targetId}]` : ''} on an unchanged page`,
+        message: `would repeat ${action.operation}${action.targetId !== undefined ? ` on [${action.targetId}]` : ''}${consecutive ? ' twice in a row' : ' on an unchanged page'}`,
       })
     }
     seen.add(key)
