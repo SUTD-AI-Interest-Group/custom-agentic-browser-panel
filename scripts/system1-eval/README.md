@@ -204,6 +204,61 @@ It was never shown this rendering, so this measures transfer. Parity was skipped
   construction) — a targeted gain on field operations, not a prerequisite for
   `Act` to act at all.
 
+### Fine-tune + the shipped loop, end to end (commit 240ac57; `report.json` is this run)
+
+The first fine-tune e2e exposed a loop bug the base model could never reach: one
+"Add to cart" click changed the cart badge (a new observation hash), the policy
+never answered `DONE` (its DONE rows were all typed-field cases), and the
+hash-aware repeat rule let it click the same button five times — five approval
+cards, five items, `capped`, task failed. The old "same element action twice in
+a row" guard is restored beside the hash rule (a different value key into the
+same field is the one legitimate consecutive repeat; a stale step does not count).
+This run is the fine-tune on that loop, all phases but parity, 17:27–17:58 UTC.
+
+Grounding re-run: 52/54 = 0.963 (shop 22/23, form 16/16, dialog 14/15; the extra
+miss is "subscribe to the newsletter" → "Manage preferences" at p=0.34, under the
+gate), operation gate 42/54 as before, p50 219 ms. gemma 48/54 = 0.889.
+
+| arm | success | wall median | LLM steps median | tokens median (mean) | page actions / run | Act calls → statuses → actions | Von decides / ms | cards / run |
+|---|---|---|---|---|---|---|---|---|
+| off: ControlPage only | 7/9 | 37 s | 9 | 36.4k (43.1k) | 2.9 | — | — | 3.1 |
+| on: model's choice | 8/9 | 38 s | 9 | 36.5k (44.1k) | 2.3 | 0 | 0 | 3.2 |
+| forced: "use Act" | 7/9 | 49 s | 10 | 36.5k (50.6k) | 1.7 | **12 → repeat 4, uncertain 8 → 9 actions** | 45 / 13.5 s | 2.8 |
+
+Per task, forced arm (success · wall · LLM steps · Act):
+
+| task | rep 0 | rep 1 | rep 2 |
+|---|---|---|---|
+| shop | ✓ 40 s · 7 · 1 action, `repeat` | ✓ 35 s · 5 · 1 action, `uncertain` | ✓ 44 s · 7 · 1 action, `uncertain` |
+| dialog | ✓ 72 s · 10 · 2 actions, `uncertain`+`repeat` | ✓ 52 s · 7 · 2 actions | ✓ 47 s · 10 · 2 actions |
+| form | ✗ 49 s · 11 · Act never called | ✗ 105 s · 19 · Act never called | ✓ 191 s · 29 · 3 calls, all `uncertain`, 0 actions |
+
+- **`Act` now performs the decisive actions on click tasks.** Shop 3/3: the one
+  correct "Add Aurora mug (blue)" click, then a clean stop. Dialog 3/3: "Reject
+  non-essential" then "Add Nimbus tote (green)", then a clean stop. 9 Act
+  actions across 12 calls, against 0 in 21 calls on 26 Sep and 1 in 13 with base
+  Von on this harness. gemma still chose `Act` on its own in 0/9 `on` runs.
+- **It does not yet make a task faster.** Forced wall medians are 5–35 s above
+  the `off` arm: the engine cold-boots inside the first `Act` call of each panel
+  load (1.8–6 s), each Act step still raises the same point-of-no-return card,
+  and the chat model re-reads the page and verifies after every hand-back. LLM
+  steps did drop on the shop task (5–7 vs 7–11).
+- **Forms are the gap, exactly where grounding said.** Two forced form failures
+  are gemma's (it never called `Act`, never opened a session — the known loop);
+  the third call `Act` three times and got `uncertain` each time: the operation
+  head answers `CLICK` at p≈0.4 on field cases because its training labels were
+  `act`, so it hands back before typing. `repeat` also ends a call after each
+  action, so a multi-step sub-goal costs one call per action for now.
+
+**Decision.** Both 26 Sep kill conditions are lifted on this harness (p50 219 ms;
+grounding 0.963 fine-tuned / 0.889 base vs 0.889 LLM), and `Act` acts. It stays
+behind the experimental toggle: it adds wall time rather than removing it, and
+it cannot fill a form. Next, in order: (1) re-render the fine-tune rows through
+`vonPolicy.ts`'s renderers and retrain, so field operations and `DONE`-after-
+click are in distribution (labels transfer by construction; ~1 h/epoch);
+(2) keep the engine warm across a chain rather than booting inside the first
+call; (3) consider a single target-or-move head to cut a step to one pass.
+
 ## Results — 2026-09-26 (UTC 2026-09-25)
 
 `report.json` is produced by one full run, `run.mjs` with all phases, 19:37–20:10 UTC.
