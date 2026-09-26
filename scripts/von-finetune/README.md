@@ -149,6 +149,30 @@ Re-run the real eval on the fine-tuned export. The feature earns its place only 
 Otherwise the kill criterion stands. Record the numbers in
 `scripts/system1-eval/README.md` either way.
 
+## Results — second fine-tune, candidate-action rows (2026-09-27)
+
+Same 4,921 episodes, re-rendered (4,644 train rows / 115 sites, 643 val rows / 12
+held-out sites; `render-stats.json`). 3 epochs = 456 optimizer steps on the M4 Max
+(MPS, grad checkpointing), 62 min, best at step 200. Export `data/onnx` (q8,
+manifest sha256 `33e4bc66…`) passes the parity gate (CPU max|Δp| 0.0073, fp16w
+0.0005, invariance 1e-5).
+
+**Offline val, per head** (accuracy · coverage at the 0.6 gate):
+
+| head | rows | base Von 1.2 | step 200 (best) |
+|---|---|---|---|
+| all | 643 | 0.617 · 0.398 | **0.958 · 0.955** (0.977 on the covered) |
+| `operation` | 321 | 0.508 · 0.003 | **0.963 · 0.978** |
+| `target_<OP>` final round | 114 | 0.912 · 0.693 | 1.000 · 1.000 |
+| `target_<OP>` chunk round | 114 | 0.561 · 0.903 | 0.956 · 0.921 |
+| `target_<OP>` single | 73 | 0.685 · 0.794 | 0.890 · 0.849 |
+| `value` | 21 | 0.762 · 0.714 | 0.905 · 0.905 |
+
+The operation head — the one the previous fine-tune could not transfer to field
+cases (it had never seen `TYPE_TEXT` as a label) — goes from unusable to 0.963
+with 98% coverage. Real-browser numbers: `scripts/system1-eval/README.md`,
+"Results — 2026-09-27".
+
 ## Results — first fine-tune (2026-09-26/27)
 
 Data: 196 of 340 collected pages labelled (4,753 train rows / 115 sites, 652 val rows /
