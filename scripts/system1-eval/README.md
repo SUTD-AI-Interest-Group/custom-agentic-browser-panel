@@ -259,6 +259,65 @@ click are in distribution (labels transfer by construction; ~1 h/epoch);
 (2) keep the engine warm across a chain rather than booting inside the first
 call; (3) consider a single target-or-move head to cut a step to one pass.
 
+### The second fine-tune — trained on the candidate-action rows (`report.json` is this run)
+
+`scripts/von-finetune/` re-rendered the same 4,921 episodes through `vonPolicy.ts`'s
+renderers (labels transfer by construction) and continue-trained base Von 1.2 for
+3 epochs (62 min, best step 200, val top-1 0.958; the `operation` head alone went
+0.508 → 0.963 with 98% coverage). Export q8, manifest `33e4bc66…`, parity gate
+passed (CPU max|Δp| 0.0073; WebGPU 0.0073, 0 flips against its own golden). All
+phases, 19:14–19:43 UTC.
+
+| | base, new harness | old-format fine-tune | **second fine-tune** | gemma |
+|---|---|---|---|---|
+| grounding top-1 | 0.889 | 0.963–0.981 | **0.963** (22/23 · 15/16 · 15/15) | 0.907 (49/54) |
+| tournament cases correct | 19/21 | 20/21 | 20/21 | |
+| target above the 0.6 gate · accuracy · confident-but-wrong | 46/54 · 0.913 · 4 | 52/54 · 0.981 · 1 | 51/54 · 0.961 · 2 | |
+| operation correct · above gate · both | 43 · 8 · 8 | 48 · 42 · 40 | **46 · 51 · 45** (p50 0.999) | |
+| operation answers | CLICK 53 | CLICK 50, TYPE_TEXT 3 | **CLICK 39, TYPE_TEXT 14**, BLOCKED 1 | |
+| value key (asked past the gate) | 5/6 | 9/10 | 8/10 | |
+| decide p50 / p95 · target pick p50 / p95 | 222 / 586 · 222 / 662 | 220 / 583 · 220 / 657 | 220 / 584 · 221 / 659 | 2101 / 14484 |
+
+| arm | success | wall median | LLM steps median | tokens median (mean) | Act calls → statuses → actions |
+|---|---|---|---|---|---|
+| off | 8/9 | 35 s | 9 | 34.2k (37.5k) | — |
+| on | 9/9 | 34 s | 8 | 29.5k (39.1k) | 0 |
+| forced | 5/9 | 54 s | 8 | 37.5k (47.7k) | **9 → done 7, uncertain 2 → 8 actions** |
+
+Forced arm per task (success · wall · Act): shop ✗ 49 s · 1 action, `done` — the
+**green** Aurora mug (grounding case 0's confident miss, p=0.998) and the chat model
+trusted `done` · ✓ 59 s · `uncertain` · ✗ 57 s · Act never called; dialog ✓ ✓ ✓
+(42 / 54 / 47 s, each 2 actions in 2 `done` calls); form ✓ 89 s · 1 action then
+`uncertain` · ✗ 86 s · never called · ✗ 24 s · never called.
+
+- **Field operations are in distribution now.** The operation head answers
+  `TYPE_TEXT` where the old fine-tune said `CLICK`, and clears the gate on 51/54
+  cases (was 42, base 8). Its 8 misses are the mirror image: 3 `SELECT_OPTION`
+  cases answered `TYPE_TEXT` (11 training rows for that operation) and 4 form
+  goals whose target is a checkbox or the submit button answered `TYPE_TEXT`
+  because values were supplied. More labelled `SELECT_OPTION` and
+  click-with-values-present episodes is the data fix.
+- **`DONE` after a click works.** Every dialog call ended `done` on its own after
+  its two clicks; no `repeat` stops were needed. The other side of that: on the
+  shop task a confident wrong click (green for blue, a variant-disambiguation
+  miss the old fine-tune did not make) was sealed by a `done` the chat model
+  accepted without re-reading the cart. The verifier is the chat model by design;
+  it should re-read after `done`, not before.
+- **Three of the four forced-arm failures are gemma never calling `Act`** (0 calls,
+  the "no session" loop) — the same chat-model failure every run has shown, and
+  the reason the `on` arm (9/9) beats `forced`. Where `Act` was called, 7/9 calls
+  ended `done` and 8 actions ran in 8.0 s of Von time across the arm.
+- Latency unchanged (p50 220 ms); the engine now boots in 1.2 s.
+
+**Decision.** The candidate-action representation plus a fine-tune rendered
+through the same builders lifts every measured number except one: 0.963 grounding
+vs 0.907, operation gate 51/54, `Act` completing click sub-goals with `done`.
+Still experimental: the chat model must verify after `done` (a re-read of the
+page is one ControlPage call), variant disambiguation needs data, and forms end in
+`uncertain` after one field. Next data round: `SELECT_OPTION` and
+click-with-values episodes, longer form trajectories, and colour/size-variant
+goals on product grids.
+
 ## Results — 2026-09-26 (UTC 2026-09-25)
 
 `report.json` is produced by one full run, `run.mjs` with all phases, 19:37–20:10 UTC.

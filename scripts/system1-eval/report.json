@@ -83,6 +83,18 @@
    "startedAt": "2026-09-26T17:27:23.735Z",
    "finishedAt": "2026-09-26T17:58:18.318Z",
    "skipped": []
+  },
+  {
+   "phases": [
+    "download",
+    "parity",
+    "grounding",
+    "llm",
+    "e2e"
+   ],
+   "startedAt": "2026-09-26T19:14:50.581Z",
+   "finishedAt": "2026-09-26T19:43:01.195Z",
+   "skipped": []
   }
  ],
  "env": {
@@ -98,28 +110,28 @@
  },
  "download": {
   "status": "Ready · 620 MB",
-  "downloadMs": 3340,
-  "testDecision": "Picked [2] with p=1.00 in 83 ms",
-  "testDecisionWallMs": 2833
+  "downloadMs": 2028,
+  "testDecision": "Picked [2] with p=0.99 in 69 ms",
+  "testDecisionWallMs": 2302
  },
  "parity": {
   "cases": 4,
-  "maxDeltaP": 0.00243,
+  "maxDeltaP": 0.00733,
   "argmaxFlips": 0,
   "rows": [
    {
     "case": 0,
     "nOptions": 2,
     "tokens": 263,
-    "maxDeltaP": 0.0002,
+    "maxDeltaP": 0.00155,
     "argmaxFlip": false,
     "golden": [
-     0.542,
-     0.458
+     0.9307,
+     0.0693
     ],
     "webgpu": [
-     0.5418,
-     0.4582
+     0.9323,
+     0.0677
     ],
     "ms": 165
    },
@@ -127,39 +139,39 @@
     "case": 1,
     "nOptions": 3,
     "tokens": 275,
-    "maxDeltaP": 0.00017,
+    "maxDeltaP": 0.00012,
     "argmaxFlip": false,
     "golden": [
-     0.3397,
-     0.3881,
-     0.2722
+     0.4731,
+     0.498,
+     0.0288
     ],
     "webgpu": [
-     0.3396,
-     0.388,
-     0.2724
+     0.4732,
+     0.4981,
+     0.0287
     ],
-    "ms": 170
+    "ms": 169
    },
    {
     "case": 2,
     "nOptions": 5,
     "tokens": 297,
-    "maxDeltaP": 0.00098,
+    "maxDeltaP": 0.00733,
     "argmaxFlip": false,
     "golden": [
-     0.1291,
-     0.3099,
-     0.2144,
-     0.1638,
-     0.1829
+     0.0711,
+     0.434,
+     0.1326,
+     0.1761,
+     0.1862
     ],
     "webgpu": [
-     0.1284,
-     0.3109,
-     0.2148,
-     0.1636,
-     0.1823
+     0.0701,
+     0.4413,
+     0.1328,
+     0.1719,
+     0.184
     ],
     "ms": 182
    },
@@ -167,37 +179,37 @@
     "case": 3,
     "nOptions": 5,
     "tokens": 70,
-    "maxDeltaP": 0.00243,
+    "maxDeltaP": 0.00226,
     "argmaxFlip": false,
     "golden": [
-     0.5393,
-     0.105,
-     0.0943,
-     0.0602,
-     0.2012
+     0.163,
+     0.0286,
+     0.0123,
+     0.0878,
+     0.7083
     ],
     "webgpu": [
-     0.5391,
-     0.106,
-     0.095,
-     0.0611,
-     0.1988
+     0.1607,
+     0.0292,
+     0.0125,
+     0.0898,
+     0.7078
     ],
-    "ms": 90
+    "ms": 88
    }
   ]
  },
- "bootMs": 1775,
+ "bootMs": 1198,
  "model": {
   "model": "von-1.2.0",
   "variant": "q8",
   "file": "model_q8.onnx",
   "bytes": 616224170,
   "cpuParity": {
-   "maxDeltaP": 0.0098,
+   "maxDeltaP": 0.0073,
    "argmaxFlips": 0,
    "probes": 9,
-   "invariance": 0.00002,
+   "invariance": 0.00001,
    "gatePassed": true,
    "ep": "cpu"
   }
@@ -213,11 +225,11 @@
    },
    "form.html": {
     "cases": 16,
-    "correct": 16
+    "correct": 15
    },
    "dialog.html": {
     "cases": 15,
-    "correct": 14
+    "correct": 15
    }
   },
   "tournamentCases": 21,
@@ -228,86 +240,86 @@
    "p50": 1,
    "max": 11
   },
-  "operationCorrect": 48,
-  "operationCorrectAboveGate": 40,
-  "operationAboveGate": 42,
+  "operationCorrect": 46,
+  "operationCorrectAboveGate": 45,
+  "operationAboveGate": 51,
   "operationTop": {
-   "p50": 0.9789,
-   "max": 0.9952
+   "p50": 0.9987,
+   "max": 0.9992
   },
   "operationChoices": {
-   "CLICK": 50,
-   "TYPE_TEXT": 3,
-   "SELECT_OPTION": 1
+   "CLICK": 39,
+   "TYPE_TEXT": 14,
+   "BLOCKED": 1
   },
   "tournamentChunkWins": 20,
   "valueKey": {
    "asked": 10,
-   "correct": 9
+   "correct": 8
   },
   "decideMs": {
    "all": {
     "n": 160,
-    "p50": 219,
-    "p95": 596,
-    "max": 628
+    "p50": 220,
+    "p95": 584,
+    "max": 613
    },
    "warm": {
     "n": 148,
-    "p50": 210,
-    "p95": 589
+    "p50": 218,
+    "p95": 584
    },
    "operation": {
-    "p50": 271,
-    "p95": 607
+    "p50": 266,
+    "p95": 600
    },
    "target": {
-    "p50": 219,
-    "p95": 312
+    "p50": 221,
+    "p95": 302
    },
    "value": {
-    "p50": 68,
+    "p50": 67,
     "p95": 86
    },
    "targetPickPerCase": {
-    "p50": 219,
-    "p95": 683
+    "p50": 221,
+    "p95": 659
    },
-   "wallP50": 219
+   "wallP50": 220
   },
   "thresholds": [
    {
     "threshold": 0.4,
     "coverage": 0.963,
     "answered": 52,
-    "accuracyOnAnswered": 0.981,
-    "wrongButConfident": 1
+    "accuracyOnAnswered": 0.962,
+    "wrongButConfident": 2
    },
    {
     "threshold": 0.5,
-    "coverage": 0.963,
-    "answered": 52,
-    "accuracyOnAnswered": 0.981,
-    "wrongButConfident": 1
+    "coverage": 0.944,
+    "answered": 51,
+    "accuracyOnAnswered": 0.961,
+    "wrongButConfident": 2
    },
    {
     "threshold": 0.6,
     "coverage": 0.944,
     "answered": 51,
-    "accuracyOnAnswered": 0.98,
-    "wrongButConfident": 1
+    "accuracyOnAnswered": 0.961,
+    "wrongButConfident": 2
    },
    {
     "threshold": 0.7,
     "coverage": 0.926,
     "answered": 50,
-    "accuracyOnAnswered": 0.98,
-    "wrongButConfident": 1
+    "accuracyOnAnswered": 0.96,
+    "wrongButConfident": 2
    },
    {
     "threshold": 0.8,
-    "coverage": 0.889,
-    "answered": 48,
+    "coverage": 0.87,
+    "answered": 47,
     "accuracyOnAnswered": 0.979,
     "wrongButConfident": 1
    }
@@ -345,29 +357,29 @@
      {
       "options": 22,
       "hasExpected": true,
-      "choice": "Add Aurora mug (blue) to cart",
-      "top": 0.706
+      "choice": "Add Aurora mug (green) to cart",
+      "top": 0.32
      },
      {
       "options": 22,
       "hasExpected": false,
       "choice": "Cart",
-      "top": 0.98
+      "top": 0.902
      },
      {
       "options": 2,
-      "hasExpected": true,
-      "choice": "Add Aurora mug (blue) to cart",
-      "top": 0.969
+      "hasExpected": false,
+      "choice": "Add Aurora mug (green) to cart",
+      "top": 0.998
      }
     ],
-    "picked": "Add Aurora mug (blue) to cart",
-    "correct": true,
-    "top": 0.9686988977983285,
+    "picked": "Add Aurora mug (green) to cart",
+    "correct": false,
+    "top": 0.9979735055324881,
     "status": "denied",
     "operation": {
      "choice": "CLICK",
-     "top": 0.9649,
+     "top": 0.9992,
      "forced": "CLICK",
      "correct": true
     },
@@ -376,26 +388,26 @@
     "decideMs": [
      {
       "kind": "operation",
-      "ms": 628,
-      "wallMs": 629
+      "ms": 581,
+      "wallMs": 583
      },
      {
       "kind": "target",
-      "ms": 407,
-      "wallMs": 409
+      "ms": 394,
+      "wallMs": 398
      },
      {
       "kind": "target",
-      "ms": 330,
-      "wallMs": 332
+      "ms": 287,
+      "wallMs": 288
      },
      {
       "kind": "target",
-      "ms": 113,
-      "wallMs": 114
+      "ms": 76,
+      "wallMs": 77
      }
     ],
-    "targetMs": 850,
+    "targetMs": 757,
     "errors": []
    },
    {
@@ -431,28 +443,28 @@
       "options": 22,
       "hasExpected": true,
       "choice": "Add Nimbus tote (red) to cart",
-      "top": 0.977
+      "top": 0.91
      },
      {
       "options": 22,
       "hasExpected": false,
       "choice": "Cart",
-      "top": 0.799
+      "top": 0.757
      },
      {
       "options": 2,
       "hasExpected": true,
       "choice": "Add Nimbus tote (red) to cart",
-      "top": 0.997
+      "top": 1
      }
     ],
     "picked": "Add Nimbus tote (red) to cart",
     "correct": true,
-    "top": 0.9969120457641224,
+    "top": 0.9996260472761505,
     "status": "denied",
     "operation": {
      "choice": "CLICK",
-     "top": 0.9297,
+     "top": 0.9991,
      "forced": "CLICK",
      "correct": true
     },
@@ -461,26 +473,26 @@
     "decideMs": [
      {
       "kind": "operation",
-      "ms": 596,
-      "wallMs": 602
+      "ms": 587,
+      "wallMs": 591
      },
      {
       "kind": "target",
-      "ms": 317,
-      "wallMs": 320
+      "ms": 305,
+      "wallMs": 309
      },
      {
       "kind": "target",
-      "ms": 294,
-      "wallMs": 297
+      "ms": 279,
+      "wallMs": 279
      },
      {
       "kind": "target",
-      "ms": 88,
-      "wallMs": 90
+      "ms": 75,
+      "wallMs": 75
      }
     ],
-    "targetMs": 699,
+    "targetMs": 659,
     "errors": []
    },
    {
@@ -516,13 +528,13 @@
       "options": 22,
       "hasExpected": true,
       "choice": "Add Cedar candle (green) to cart",
-      "top": 0.521
+      "top": 0.324
      },
      {
       "options": 22,
       "hasExpected": false,
-      "choice": "Add Orbit clock (blue) to cart",
-      "top": 0.117
+      "choice": "Add Lumen lamp (red) to cart",
+      "top": 0.205
      },
      {
       "options": 2,
@@ -533,11 +545,11 @@
     ],
     "picked": "Add Cedar candle (green) to cart",
     "correct": true,
-    "top": 0.999747584359712,
+    "top": 0.9999367076612485,
     "status": "denied",
     "operation": {
      "choice": "CLICK",
-     "top": 0.9838,
+     "top": 0.999,
      "forced": "CLICK",
      "correct": true
     },
@@ -546,26 +558,26 @@
     "decideMs": [
      {
       "kind": "operation",
-      "ms": 599,
-      "wallMs": 601
+      "ms": 551,
+      "wallMs": 552
      },
      {
       "kind": "target",
-      "ms": 315,
-      "wallMs": 316
+      "ms": 297,
+      "wallMs": 297
      },
      {
       "kind": "target",
-      "ms": 283,
-      "wallMs": 284
+      "ms": 286,
+      "wallMs": 286
      },
      {
       "kind": "target",
-      "ms": 85,
-      "wallMs": 85
+      "ms": 77,
+      "wallMs": 77
      }
     ],
-    "targetMs": 683,
+    "targetMs": 660,
     "errors": []
    },
    {
@@ -601,13 +613,13 @@
       "options": 22,
       "hasExpected": true,
       "choice": "Add Harbor throw (blue) to cart",
-      "top": 0.921
+      "top": 0.689
      },
      {
       "options": 22,
       "hasExpected": false,
       "choice": "Add Fjord bowl (red) to cart",
-      "top": 0.107
+      "top": 0.071
      },
      {
       "options": 2,
@@ -618,11 +630,11 @@
     ],
     "picked": "Add Harbor throw (blue) to cart",
     "correct": true,
-    "top": 0.9999972551474376,
+    "top": 0.9999944810201292,
     "status": "denied",
     "operation": {
      "choice": "CLICK",
-     "top": 0.9926,
+     "top": 0.9991,
      "forced": "CLICK",
      "correct": true
     },
@@ -631,26 +643,26 @@
     "decideMs": [
      {
       "kind": "operation",
-      "ms": 607,
-      "wallMs": 608
+      "ms": 600,
+      "wallMs": 600
      },
      {
       "kind": "target",
-      "ms": 281,
-      "wallMs": 285
+      "ms": 267,
+      "wallMs": 267
      },
      {
       "kind": "target",
-      "ms": 312,
-      "wallMs": 312
+      "ms": 302,
+      "wallMs": 302
      },
      {
       "kind": "target",
-      "ms": 80,
-      "wallMs": 80
+      "ms": 76,
+      "wallMs": 76
      }
     ],
-    "targetMs": 673,
+    "targetMs": 645,
     "errors": []
    },
    {
@@ -686,13 +698,13 @@
       "options": 22,
       "hasExpected": true,
       "choice": "Add Lumen lamp (red) to cart",
-      "top": 0.999
+      "top": 0.788
      },
      {
       "options": 22,
       "hasExpected": false,
-      "choice": "Add Orbit clock (blue) to cart",
-      "top": 0.078
+      "choice": "Home",
+      "top": 0.069
      },
      {
       "options": 2,
@@ -703,11 +715,11 @@
     ],
     "picked": "Add Lumen lamp (red) to cart",
     "correct": true,
-    "top": 0.9999991729341006,
+    "top": 0.9999970615974207,
     "status": "denied",
     "operation": {
      "choice": "CLICK",
-     "top": 0.9854,
+     "top": 0.9991,
      "forced": "CLICK",
      "correct": true
     },
@@ -716,26 +728,26 @@
     "decideMs": [
      {
       "kind": "operation",
-      "ms": 572,
+      "ms": 574,
       "wallMs": 574
      },
      {
       "kind": "target",
-      "ms": 305,
-      "wallMs": 306
+      "ms": 296,
+      "wallMs": 296
      },
      {
       "kind": "target",
-      "ms": 280,
-      "wallMs": 280
+      "ms": 276,
+      "wallMs": 276
      },
      {
       "kind": "target",
-      "ms": 79,
-      "wallMs": 79
+      "ms": 78,
+      "wallMs": 81
      }
     ],
-    "targetMs": 664,
+    "targetMs": 650,
     "errors": []
    },
    {
@@ -771,13 +783,13 @@
       "options": 22,
       "hasExpected": true,
       "choice": "Add Fjord bowl (green) to cart",
-      "top": 0.449
+      "top": 0.293
      },
      {
       "options": 22,
       "hasExpected": false,
       "choice": "Add Harbor throw (red) to cart",
-      "top": 0.258
+      "top": 0.669
      },
      {
       "options": 2,
@@ -788,11 +800,11 @@
     ],
     "picked": "Add Fjord bowl (green) to cart",
     "correct": true,
-    "top": 0.999856343429803,
+    "top": 0.9998538515904706,
     "status": "denied",
     "operation": {
      "choice": "CLICK",
-     "top": 0.9789,
+     "top": 0.9991,
      "forced": "CLICK",
      "correct": true
     },
@@ -801,26 +813,26 @@
     "decideMs": [
      {
       "kind": "operation",
-      "ms": 575,
-      "wallMs": 577
+      "ms": 578,
+      "wallMs": 579
      },
      {
       "kind": "target",
-      "ms": 300,
-      "wallMs": 302
+      "ms": 291,
+      "wallMs": 292
      },
      {
       "kind": "target",
-      "ms": 280,
-      "wallMs": 281
+      "ms": 273,
+      "wallMs": 273
      },
      {
       "kind": "target",
-      "ms": 89,
-      "wallMs": 89
+      "ms": 79,
+      "wallMs": 79
      }
     ],
-    "targetMs": 669,
+    "targetMs": 643,
     "errors": []
    },
    {
@@ -856,28 +868,28 @@
       "options": 22,
       "hasExpected": true,
       "choice": "Add Sable apron (blue) to cart",
-      "top": 0.975
+      "top": 0.586
      },
      {
       "options": 22,
       "hasExpected": false,
       "choice": "Cart",
-      "top": 0.798
+      "top": 0.716
      },
      {
       "options": 2,
       "hasExpected": true,
       "choice": "Add Sable apron (blue) to cart",
-      "top": 0.998
+      "top": 1
      }
     ],
     "picked": "Add Sable apron (blue) to cart",
     "correct": true,
-    "top": 0.998158140745089,
+    "top": 0.9997153477061825,
     "status": "denied",
     "operation": {
      "choice": "CLICK",
-     "top": 0.9874,
+     "top": 0.9987,
      "forced": "CLICK",
      "correct": true
     },
@@ -886,26 +898,26 @@
     "decideMs": [
      {
       "kind": "operation",
-      "ms": 569,
-      "wallMs": 570
+      "ms": 580,
+      "wallMs": 580
      },
      {
       "kind": "target",
-      "ms": 305,
-      "wallMs": 306
+      "ms": 302,
+      "wallMs": 302
      },
      {
       "kind": "target",
-      "ms": 287,
-      "wallMs": 290
+      "ms": 272,
+      "wallMs": 274
      },
      {
       "kind": "target",
-      "ms": 88,
-      "wallMs": 89
+      "ms": 79,
+      "wallMs": 79
      }
     ],
-    "targetMs": 680,
+    "targetMs": 653,
     "errors": []
    },
    {
@@ -941,13 +953,13 @@
       "options": 22,
       "hasExpected": true,
       "choice": "Add Tidal vase (red) to cart",
-      "top": 0.993
+      "top": 0.495
      },
      {
       "options": 22,
       "hasExpected": false,
       "choice": "Add Fjord bowl (blue) to cart",
-      "top": 0.163
+      "top": 0.091
      },
      {
       "options": 2,
@@ -958,11 +970,11 @@
     ],
     "picked": "Add Tidal vase (red) to cart",
     "correct": true,
-    "top": 0.999994213641036,
+    "top": 0.9999914948627219,
     "status": "denied",
     "operation": {
      "choice": "CLICK",
-     "top": 0.9784,
+     "top": 0.9991,
      "forced": "CLICK",
      "correct": true
     },
@@ -971,26 +983,26 @@
     "decideMs": [
      {
       "kind": "operation",
-      "ms": 572,
-      "wallMs": 574
+      "ms": 578,
+      "wallMs": 578
      },
      {
       "kind": "target",
-      "ms": 310,
-      "wallMs": 311
+      "ms": 302,
+      "wallMs": 303
      },
      {
       "kind": "target",
-      "ms": 279,
-      "wallMs": 280
+      "ms": 274,
+      "wallMs": 274
      },
      {
       "kind": "target",
-      "ms": 88,
-      "wallMs": 89
+      "ms": 75,
+      "wallMs": 75
      }
     ],
-    "targetMs": 677,
+    "targetMs": 651,
     "errors": []
    },
    {
@@ -1026,28 +1038,28 @@
       "options": 22,
       "hasExpected": true,
       "choice": "Add Ember kettle (green) to cart",
-      "top": 0.983
+      "top": 0.816
      },
      {
       "options": 22,
       "hasExpected": false,
       "choice": "Cart",
-      "top": 0.942
+      "top": 0.871
      },
      {
       "options": 2,
       "hasExpected": true,
       "choice": "Add Ember kettle (green) to cart",
-      "top": 0.993
+      "top": 0.999
      }
     ],
     "picked": "Add Ember kettle (green) to cart",
     "correct": true,
-    "top": 0.993054888435878,
+    "top": 0.9992531957916923,
     "status": "denied",
     "operation": {
      "choice": "CLICK",
-     "top": 0.9836,
+     "top": 0.9992,
      "forced": "CLICK",
      "correct": true
     },
@@ -1056,26 +1068,26 @@
     "decideMs": [
      {
       "kind": "operation",
-      "ms": 596,
-      "wallMs": 598
+      "ms": 600,
+      "wallMs": 601
      },
      {
       "kind": "target",
-      "ms": 293,
-      "wallMs": 294
+      "ms": 290,
+      "wallMs": 290
      },
      {
       "kind": "target",
-      "ms": 272,
-      "wallMs": 272
+      "ms": 265,
+      "wallMs": 265
      },
      {
       "kind": "target",
-      "ms": 79,
-      "wallMs": 79
+      "ms": 74,
+      "wallMs": 74
      }
     ],
-    "targetMs": 644,
+    "targetMs": 629,
     "errors": []
    },
    {
@@ -1111,28 +1123,28 @@
       "options": 22,
       "hasExpected": true,
       "choice": "Add Meadow napkins (blue) to cart",
-      "top": 0.851
+      "top": 0.447
      },
      {
       "options": 22,
       "hasExpected": false,
       "choice": "Cart",
-      "top": 0.455
+      "top": 0.694
      },
      {
       "options": 2,
       "hasExpected": true,
       "choice": "Add Meadow napkins (blue) to cart",
-      "top": 0.999
+      "top": 1
      }
     ],
     "picked": "Add Meadow napkins (blue) to cart",
     "correct": true,
-    "top": 0.9994821582048469,
+    "top": 0.9997411539120801,
     "status": "denied",
     "operation": {
      "choice": "CLICK",
-     "top": 0.9851,
+     "top": 0.999,
      "forced": "CLICK",
      "correct": true
     },
@@ -1141,26 +1153,26 @@
     "decideMs": [
      {
       "kind": "operation",
-      "ms": 576,
-      "wallMs": 576
+      "ms": 554,
+      "wallMs": 555
      },
      {
       "kind": "target",
-      "ms": 304,
-      "wallMs": 305
+      "ms": 299,
+      "wallMs": 299
      },
      {
       "kind": "target",
-      "ms": 279,
-      "wallMs": 280
+      "ms": 274,
+      "wallMs": 275
      },
      {
       "kind": "target",
-      "ms": 80,
-      "wallMs": 80
+      "ms": 82,
+      "wallMs": 82
      }
     ],
-    "targetMs": 663,
+    "targetMs": 655,
     "errors": []
    },
    {
@@ -1196,13 +1208,13 @@
       "options": 22,
       "hasExpected": true,
       "choice": "Add Quill notebook (red) to cart",
-      "top": 0.996
+      "top": 0.969
      },
      {
       "options": 22,
       "hasExpected": false,
       "choice": "Add Lumen lamp (green) to cart",
-      "top": 0.117
+      "top": 0.093
      },
      {
       "options": 2,
@@ -1213,11 +1225,11 @@
     ],
     "picked": "Add Quill notebook (red) to cart",
     "correct": true,
-    "top": 0.9999954439989259,
+    "top": 0.9999905341051288,
     "status": "denied",
     "operation": {
      "choice": "CLICK",
-     "top": 0.9772,
+     "top": 0.9929,
      "forced": "CLICK",
      "correct": true
     },
@@ -1226,26 +1238,26 @@
     "decideMs": [
      {
       "kind": "operation",
-      "ms": 585,
-      "wallMs": 587
+      "ms": 572,
+      "wallMs": 572
      },
      {
       "kind": "target",
-      "ms": 303,
-      "wallMs": 304
+      "ms": 297,
+      "wallMs": 297
      },
      {
       "kind": "target",
-      "ms": 286,
-      "wallMs": 286
+      "ms": 273,
+      "wallMs": 273
      },
      {
       "kind": "target",
-      "ms": 80,
-      "wallMs": 81
+      "ms": 76,
+      "wallMs": 76
      }
     ],
-    "targetMs": 669,
+    "targetMs": 646,
     "errors": []
    },
    {
@@ -1281,28 +1293,28 @@
       "options": 22,
       "hasExpected": true,
       "choice": "Add Orbit clock (green) to cart",
-      "top": 0.982
+      "top": 0.559
      },
      {
       "options": 22,
       "hasExpected": false,
       "choice": "Cart",
-      "top": 0.925
+      "top": 0.896
      },
      {
       "options": 2,
       "hasExpected": true,
       "choice": "Add Orbit clock (green) to cart",
-      "top": 0.994
+      "top": 0.999
      }
     ],
     "picked": "Add Orbit clock (green) to cart",
     "correct": true,
-    "top": 0.9938334796007794,
+    "top": 0.9992361981195723,
     "status": "denied",
     "operation": {
      "choice": "CLICK",
-     "top": 0.9831,
+     "top": 0.9991,
      "forced": "CLICK",
      "correct": true
     },
@@ -1311,26 +1323,26 @@
     "decideMs": [
      {
       "kind": "operation",
-      "ms": 586,
-      "wallMs": 586
+      "ms": 569,
+      "wallMs": 569
      },
      {
       "kind": "target",
-      "ms": 311,
-      "wallMs": 312
+      "ms": 299,
+      "wallMs": 299
      },
      {
       "kind": "target",
-      "ms": 279,
-      "wallMs": 280
+      "ms": 270,
+      "wallMs": 271
      },
      {
       "kind": "target",
-      "ms": 75,
+      "ms": 74,
       "wallMs": 75
      }
     ],
-    "targetMs": 665,
+    "targetMs": 643,
     "errors": []
    },
    {
@@ -1366,13 +1378,13 @@
       "options": 22,
       "hasExpected": true,
       "choice": "Add Ember kettle (blue) to cart",
-      "top": 0.963
+      "top": 0.882
      },
      {
       "options": 22,
       "hasExpected": false,
       "choice": "Add Lumen lamp (green) to cart",
-      "top": 0.32
+      "top": 0.201
      },
      {
       "options": 2,
@@ -1383,11 +1395,11 @@
     ],
     "picked": "Add Ember kettle (blue) to cart",
     "correct": true,
-    "top": 0.999910349937673,
+    "top": 0.9999564307290196,
     "status": "denied",
     "operation": {
      "choice": "CLICK",
-     "top": 0.9824,
+     "top": 0.9967,
      "forced": "CLICK",
      "correct": true
     },
@@ -1396,26 +1408,26 @@
     "decideMs": [
      {
       "kind": "operation",
-      "ms": 596,
-      "wallMs": 599
+      "ms": 590,
+      "wallMs": 590
      },
      {
       "kind": "target",
-      "ms": 302,
-      "wallMs": 305
+      "ms": 289,
+      "wallMs": 289
      },
      {
       "kind": "target",
-      "ms": 284,
-      "wallMs": 285
+      "ms": 261,
+      "wallMs": 262
      },
      {
       "kind": "target",
-      "ms": 82,
-      "wallMs": 87
+      "ms": 76,
+      "wallMs": 76
      }
     ],
-    "targetMs": 668,
+    "targetMs": 626,
     "errors": []
    },
    {
@@ -1451,13 +1463,13 @@
       "options": 22,
       "hasExpected": true,
       "choice": "Add Lumen lamp (red) to cart",
-      "top": 0.981
+      "top": 0.745
      },
      {
       "options": 22,
       "hasExpected": false,
       "choice": "Add Orbit clock (blue) to cart",
-      "top": 0.171
+      "top": 0.104
      },
      {
       "options": 2,
@@ -1468,11 +1480,11 @@
     ],
     "picked": "Add Lumen lamp (red) to cart",
     "correct": true,
-    "top": 0.9999829427419944,
+    "top": 0.9999856460980903,
     "status": "denied",
     "operation": {
      "choice": "CLICK",
-     "top": 0.9498,
+     "top": 0.9988,
      "forced": "CLICK",
      "correct": true
     },
@@ -1481,26 +1493,26 @@
     "decideMs": [
      {
       "kind": "operation",
-      "ms": 602,
-      "wallMs": 603
+      "ms": 583,
+      "wallMs": 583
      },
      {
       "kind": "target",
-      "ms": 302,
-      "wallMs": 305
+      "ms": 285,
+      "wallMs": 285
      },
      {
       "kind": "target",
-      "ms": 274,
-      "wallMs": 276
+      "ms": 263,
+      "wallMs": 263
      },
      {
       "kind": "target",
-      "ms": 92,
-      "wallMs": 93
+      "ms": 76,
+      "wallMs": 76
      }
     ],
-    "targetMs": 668,
+    "targetMs": 624,
     "errors": []
    },
    {
@@ -1535,29 +1547,29 @@
      {
       "options": 22,
       "hasExpected": true,
-      "choice": "Add Nimbus tote (green) to cart",
-      "top": 0.569
+      "choice": "Add Aurora mug (green) to cart",
+      "top": 0.423
      },
      {
       "options": 22,
       "hasExpected": false,
-      "choice": "Add Tidal vase (blue) to cart",
-      "top": 0.194
+      "choice": "Add Fjord bowl (blue) to cart",
+      "top": 0.108
      },
      {
       "options": 2,
-      "hasExpected": false,
-      "choice": "Add Nimbus tote (green) to cart",
+      "hasExpected": true,
+      "choice": "Add Aurora mug (green) to cart",
       "top": 1
      }
     ],
-    "picked": "Add Nimbus tote (green) to cart",
-    "correct": false,
-    "top": 0.9997793766771776,
+    "picked": "Add Aurora mug (green) to cart",
+    "correct": true,
+    "top": 0.999982703780666,
     "status": "denied",
     "operation": {
      "choice": "CLICK",
-     "top": 0.9799,
+     "top": 0.9979,
      "forced": "CLICK",
      "correct": true
     },
@@ -1566,26 +1578,26 @@
     "decideMs": [
      {
       "kind": "operation",
-      "ms": 605,
-      "wallMs": 607
+      "ms": 574,
+      "wallMs": 574
      },
      {
       "kind": "target",
-      "ms": 296,
-      "wallMs": 298
+      "ms": 287,
+      "wallMs": 288
      },
      {
       "kind": "target",
-      "ms": 265,
-      "wallMs": 265
+      "ms": 263,
+      "wallMs": 263
      },
      {
       "kind": "target",
-      "ms": 80,
-      "wallMs": 80
+      "ms": 75,
+      "wallMs": 75
      }
     ],
-    "targetMs": 641,
+    "targetMs": 625,
     "errors": []
    },
    {
@@ -1621,13 +1633,13 @@
       "options": 22,
       "hasExpected": true,
       "choice": "Add Nimbus tote (blue) to cart",
-      "top": 0.977
+      "top": 0.916
      },
      {
       "options": 22,
       "hasExpected": false,
-      "choice": "Add Tidal vase (green) to cart",
-      "top": 0.155
+      "choice": "Add Sable apron (green) to cart",
+      "top": 0.093
      },
      {
       "options": 2,
@@ -1638,11 +1650,11 @@
     ],
     "picked": "Add Nimbus tote (blue) to cart",
     "correct": true,
-    "top": 0.9999739997944413,
+    "top": 0.9999888608127331,
     "status": "denied",
     "operation": {
      "choice": "CLICK",
-     "top": 0.9675,
+     "top": 0.9911,
      "forced": "CLICK",
      "correct": true
     },
@@ -1651,26 +1663,26 @@
     "decideMs": [
      {
       "kind": "operation",
-      "ms": 597,
-      "wallMs": 598
+      "ms": 584,
+      "wallMs": 584
      },
      {
       "kind": "target",
-      "ms": 295,
-      "wallMs": 295
+      "ms": 288,
+      "wallMs": 288
      },
      {
       "kind": "target",
-      "ms": 269,
-      "wallMs": 269
+      "ms": 261,
+      "wallMs": 262
      },
      {
       "kind": "target",
-      "ms": 82,
-      "wallMs": 83
+      "ms": 76,
+      "wallMs": 76
      }
     ],
-    "targetMs": 646,
+    "targetMs": 625,
     "errors": []
    },
    {
@@ -1706,13 +1718,13 @@
       "options": 22,
       "hasExpected": true,
       "choice": "Cart",
-      "top": 0.997
+      "top": 0.999
      },
      {
       "options": 22,
       "hasExpected": false,
       "choice": "Add Ember kettle (blue) to cart",
-      "top": 0.116
+      "top": 0.108
      },
      {
       "options": 2,
@@ -1723,11 +1735,11 @@
     ],
     "picked": "Cart",
     "correct": true,
-    "top": 0.9997070368833558,
+    "top": 0.9999706899680517,
     "status": "denied",
     "operation": {
      "choice": "CLICK",
-     "top": 0.9896,
+     "top": 0.999,
      "forced": "CLICK",
      "correct": true
     },
@@ -1736,26 +1748,26 @@
     "decideMs": [
      {
       "kind": "operation",
-      "ms": 579,
-      "wallMs": 582
+      "ms": 585,
+      "wallMs": 585
      },
      {
       "kind": "target",
-      "ms": 298,
-      "wallMs": 298
+      "ms": 289,
+      "wallMs": 290
      },
      {
       "kind": "target",
-      "ms": 281,
-      "wallMs": 282
+      "ms": 272,
+      "wallMs": 272
      },
      {
       "kind": "target",
-      "ms": 96,
-      "wallMs": 97
+      "ms": 70,
+      "wallMs": 71
      }
     ],
-    "targetMs": 675,
+    "targetMs": 631,
     "errors": []
    },
    {
@@ -1797,7 +1809,7 @@
       "options": 22,
       "hasExpected": false,
       "choice": "Add Quill notebook (green) to cart",
-      "top": 0.057
+      "top": 0.053
      },
      {
       "options": 2,
@@ -1808,11 +1820,11 @@
     ],
     "picked": "Checkout",
     "correct": true,
-    "top": 0.9999994573330059,
+    "top": 0.99999857914877,
     "status": "denied",
     "operation": {
      "choice": "CLICK",
-     "top": 0.9478,
+     "top": 0.9991,
      "forced": "CLICK",
      "correct": true
     },
@@ -1821,26 +1833,26 @@
     "decideMs": [
      {
       "kind": "operation",
-      "ms": 616,
-      "wallMs": 625
+      "ms": 574,
+      "wallMs": 574
      },
      {
       "kind": "target",
-      "ms": 262,
-      "wallMs": 263
+      "ms": 261,
+      "wallMs": 261
      },
      {
       "kind": "target",
-      "ms": 301,
-      "wallMs": 302
+      "ms": 300,
+      "wallMs": 301
      },
      {
       "kind": "target",
-      "ms": 72,
+      "ms": 71,
       "wallMs": 72
      }
     ],
-    "targetMs": 635,
+    "targetMs": 632,
     "errors": []
    },
    {
@@ -1881,8 +1893,8 @@
      {
       "options": 22,
       "hasExpected": false,
-      "choice": "Add Quill notebook (green) to cart",
-      "top": 0.047
+      "choice": "Add Sable apron (blue) to cart",
+      "top": 0.048
      },
      {
       "options": 2,
@@ -1893,11 +1905,11 @@
     ],
     "picked": "Sale",
     "correct": true,
-    "top": 0.9999997415894842,
+    "top": 0.9999988041630644,
     "status": "denied",
     "operation": {
      "choice": "CLICK",
-     "top": 0.9503,
+     "top": 0.9984,
      "forced": "CLICK",
      "correct": true
     },
@@ -1906,26 +1918,26 @@
     "decideMs": [
      {
       "kind": "operation",
-      "ms": 555,
-      "wallMs": 556
+      "ms": 553,
+      "wallMs": 554
      },
      {
       "kind": "target",
-      "ms": 267,
-      "wallMs": 267
+      "ms": 265,
+      "wallMs": 266
      },
      {
       "kind": "target",
-      "ms": 306,
-      "wallMs": 306
+      "ms": 301,
+      "wallMs": 302
      },
      {
       "kind": "target",
-      "ms": 73,
-      "wallMs": 73
+      "ms": 71,
+      "wallMs": 71
      }
     ],
-    "targetMs": 646,
+    "targetMs": 637,
     "errors": []
    },
    {
@@ -1967,7 +1979,7 @@
       "options": 22,
       "hasExpected": false,
       "choice": "Add Ember kettle (green) to cart",
-      "top": 0.057
+      "top": 0.055
      },
      {
       "options": 2,
@@ -1978,11 +1990,11 @@
     ],
     "picked": "New in",
     "correct": true,
-    "top": 0.9999978838280472,
+    "top": 0.9999848457618948,
     "status": "denied",
     "operation": {
      "choice": "CLICK",
-     "top": 0.9759,
+     "top": 0.9988,
      "forced": "CLICK",
      "correct": true
     },
@@ -1991,13 +2003,13 @@
     "decideMs": [
      {
       "kind": "operation",
-      "ms": 576,
-      "wallMs": 577
+      "ms": 558,
+      "wallMs": 558
      },
      {
       "kind": "target",
-      "ms": 268,
-      "wallMs": 268
+      "ms": 263,
+      "wallMs": 264
      },
      {
       "kind": "target",
@@ -2010,7 +2022,7 @@
       "wallMs": 72
      }
     ],
-    "targetMs": 644,
+    "targetMs": 639,
     "errors": []
    },
    {
@@ -2051,7 +2063,7 @@
      {
       "options": 22,
       "hasExpected": false,
-      "choice": "Add Ember kettle (green) to cart",
+      "choice": "Add Meadow napkins (green) to cart",
       "top": 0.047
      },
      {
@@ -2063,11 +2075,11 @@
     ],
     "picked": "Home",
     "correct": true,
-    "top": 0.9999907648923283,
+    "top": 0.9999977014880846,
     "status": "denied",
     "operation": {
      "choice": "CLICK",
-     "top": 0.9734,
+     "top": 0.9991,
      "forced": "CLICK",
      "correct": true
     },
@@ -2076,26 +2088,26 @@
     "decideMs": [
      {
       "kind": "operation",
-      "ms": 589,
-      "wallMs": 589
+      "ms": 613,
+      "wallMs": 613
      },
      {
       "kind": "target",
-      "ms": 260,
-      "wallMs": 261
+      "ms": 266,
+      "wallMs": 266
      },
      {
       "kind": "target",
-      "ms": 295,
-      "wallMs": 295
+      "ms": 309,
+      "wallMs": 313
      },
      {
       "kind": "target",
-      "ms": 72,
-      "wallMs": 72
+      "ms": 71,
+      "wallMs": 71
      }
     ],
-    "targetMs": 627,
+    "targetMs": 646,
     "errors": []
    },
    {
@@ -2141,10 +2153,10 @@
     "top": 1,
     "status": "denied",
     "operation": {
-     "choice": "CLICK",
-     "top": 0.6,
+     "choice": "TYPE_TEXT",
+     "top": 0.6578,
      "forced": "TYPE_TEXT",
-     "correct": false
+     "correct": true
     },
     "value": {
      "choice": "query",
@@ -2155,8 +2167,8 @@
     "decideMs": [
      {
       "kind": "operation",
-      "ms": 579,
-      "wallMs": 579
+      "ms": 585,
+      "wallMs": 585
      },
      {
       "kind": "target",
@@ -2165,7 +2177,7 @@
      },
      {
       "kind": "value",
-      "ms": 62,
+      "ms": 61,
       "wallMs": 62
      }
     ],
@@ -2215,8 +2227,8 @@
     "top": 1,
     "status": "denied",
     "operation": {
-     "choice": "CLICK",
-     "top": 0.4881,
+     "choice": "TYPE_TEXT",
+     "top": 0.6885,
      "forced": "SELECT_OPTION",
      "correct": false
     },
@@ -2229,18 +2241,18 @@
     "decideMs": [
      {
       "kind": "operation",
-      "ms": 575,
-      "wallMs": 576
+      "ms": 593,
+      "wallMs": 593
      },
      {
       "kind": "target",
       "ms": 69,
-      "wallMs": 70
+      "wallMs": 69
      },
      {
       "kind": "value",
-      "ms": 68,
-      "wallMs": 68
+      "ms": 67,
+      "wallMs": 67
      }
     ],
     "targetMs": 69,
@@ -2281,43 +2293,43 @@
       "options": 4,
       "hasExpected": true,
       "choice": "Full name",
-      "top": 0.997
+      "top": 0.996
      }
     ],
     "picked": "Full name",
     "correct": true,
-    "top": 0.9967140032646736,
+    "top": 0.995612664949204,
     "status": "denied",
     "operation": {
      "choice": "TYPE_TEXT",
-     "top": 0.3712,
+     "top": 0.8763,
      "forced": "TYPE_TEXT",
      "correct": true
     },
     "value": {
      "choice": "fullname",
-     "top": 0.9969,
+     "top": 0.9941,
      "correct": true
     },
     "expectedValueKey": "fullname",
     "decideMs": [
      {
       "kind": "operation",
-      "ms": 195,
-      "wallMs": 195
+      "ms": 213,
+      "wallMs": 213
      },
      {
       "kind": "target",
-      "ms": 94,
+      "ms": 93,
       "wallMs": 94
      },
      {
       "kind": "value",
-      "ms": 82,
-      "wallMs": 83
+      "ms": 81,
+      "wallMs": 81
      }
     ],
-    "targetMs": 94,
+    "targetMs": 93,
     "errors": []
    },
    {
@@ -2360,30 +2372,30 @@
     ],
     "picked": "Email address",
     "correct": true,
-    "top": 0.9966644399228635,
+    "top": 0.9974835562452886,
     "status": "denied",
     "operation": {
      "choice": "TYPE_TEXT",
-     "top": 0.4262,
+     "top": 0.8545,
      "forced": "TYPE_TEXT",
      "correct": true
     },
     "value": {
      "choice": "email",
-     "top": 0.9995,
+     "top": 0.9961,
      "correct": true
     },
     "expectedValueKey": "email",
     "decideMs": [
      {
       "kind": "operation",
-      "ms": 208,
-      "wallMs": 208
+      "ms": 220,
+      "wallMs": 220
      },
      {
       "kind": "target",
-      "ms": 101,
-      "wallMs": 101
+      "ms": 98,
+      "wallMs": 98
      },
      {
       "kind": "value",
@@ -2391,7 +2403,7 @@
       "wallMs": 80
      }
     ],
-    "targetMs": 101,
+    "targetMs": 98,
     "errors": []
    },
    {
@@ -2435,37 +2447,37 @@
     "picked": "Topic",
     "correct": true,
     "top": 1,
-    "status": "denied",
+    "status": "uncertain",
     "operation": {
-     "choice": "SELECT_OPTION",
-     "top": 0.372,
+     "choice": "TYPE_TEXT",
+     "top": 0.8806,
      "forced": "SELECT_OPTION",
-     "correct": true
+     "correct": false
     },
     "value": {
      "choice": "fullname",
-     "top": 0.7941,
+     "top": 0.5778,
      "correct": false
     },
     "expectedValueKey": "topic",
     "decideMs": [
      {
       "kind": "operation",
-      "ms": 210,
-      "wallMs": 210
+      "ms": 196,
+      "wallMs": 197
      },
      {
       "kind": "target",
-      "ms": 71,
-      "wallMs": 71
+      "ms": 77,
+      "wallMs": 78
      },
      {
       "kind": "value",
-      "ms": 79,
-      "wallMs": 79
+      "ms": 80,
+      "wallMs": 80
      }
     ],
-    "targetMs": 71,
+    "targetMs": 77,
     "errors": []
    },
    {
@@ -2503,23 +2515,23 @@
       "options": 4,
       "hasExpected": true,
       "choice": "How can we help?",
-      "top": 0.834
+      "top": 0.867
      }
     ],
     "picked": "How can we help?",
     "correct": true,
-    "top": 0.8338001518521014,
+    "top": 0.8670328339089606,
     "status": "uncertain",
     "operation": {
-     "choice": "CLICK",
-     "top": 0.3865,
+     "choice": "TYPE_TEXT",
+     "top": 0.8541,
      "forced": "TYPE_TEXT",
-     "correct": false
+     "correct": true
     },
     "value": {
-     "choice": "message",
-     "top": 0.5216,
-     "correct": true
+     "choice": "email",
+     "top": 0.4714,
+     "correct": false
     },
     "expectedValueKey": "message",
     "decideMs": [
@@ -2530,16 +2542,16 @@
      },
      {
       "kind": "target",
-      "ms": 100,
-      "wallMs": 100
+      "ms": 98,
+      "wallMs": 99
      },
      {
       "kind": "value",
-      "ms": 84,
-      "wallMs": 84
+      "ms": 82,
+      "wallMs": 82
      }
     ],
-    "targetMs": 100,
+    "targetMs": 98,
     "errors": []
    },
    {
@@ -2577,35 +2589,35 @@
       "options": 4,
       "hasExpected": true,
       "choice": "Phone number",
-      "top": 0.999
+      "top": 0.997
      }
     ],
     "picked": "Phone number",
     "correct": true,
-    "top": 0.9987899554364852,
+    "top": 0.9974929124305414,
     "status": "denied",
     "operation": {
      "choice": "TYPE_TEXT",
-     "top": 0.4106,
+     "top": 0.7979,
      "forced": "TYPE_TEXT",
      "correct": true
     },
     "value": {
      "choice": "phone",
-     "top": 0.9998,
+     "top": 0.9972,
      "correct": true
     },
     "expectedValueKey": "phone",
     "decideMs": [
      {
       "kind": "operation",
-      "ms": 208,
-      "wallMs": 209
+      "ms": 198,
+      "wallMs": 198
      },
      {
       "kind": "target",
-      "ms": 100,
-      "wallMs": 100
+      "ms": 99,
+      "wallMs": 99
      },
      {
       "kind": "value",
@@ -2613,7 +2625,7 @@
       "wallMs": 86
      }
     ],
-    "targetMs": 100,
+    "targetMs": 99,
     "errors": []
    },
    {
@@ -2659,8 +2671,8 @@
     "top": 1,
     "status": "denied",
     "operation": {
-     "choice": "CLICK",
-     "top": 0.4129,
+     "choice": "TYPE_TEXT",
+     "top": 0.5733,
      "forced": "SELECT_OPTION",
      "correct": false
     },
@@ -2673,21 +2685,21 @@
     "decideMs": [
      {
       "kind": "operation",
-      "ms": 193,
-      "wallMs": 194
+      "ms": 214,
+      "wallMs": 215
      },
      {
       "kind": "target",
-      "ms": 66,
-      "wallMs": 66
+      "ms": 67,
+      "wallMs": 67
      },
      {
       "kind": "value",
-      "ms": 62,
+      "ms": 61,
       "wallMs": 62
      }
     ],
-    "targetMs": 66,
+    "targetMs": 67,
     "errors": []
    },
    {
@@ -2730,13 +2742,13 @@
     ],
     "picked": "Email address",
     "correct": true,
-    "top": 0.999162087935391,
+    "top": 0.9994856207988114,
     "status": "denied",
     "operation": {
-     "choice": "CLICK",
-     "top": 0.3846,
+     "choice": "TYPE_TEXT",
+     "top": 0.5562,
      "forced": "TYPE_TEXT",
-     "correct": false
+     "correct": true
     },
     "value": {
      "choice": "email",
@@ -2747,13 +2759,13 @@
     "decideMs": [
      {
       "kind": "operation",
-      "ms": 215,
-      "wallMs": 215
+      "ms": 197,
+      "wallMs": 197
      },
      {
       "kind": "target",
-      "ms": 94,
-      "wallMs": 94
+      "ms": 96,
+      "wallMs": 96
      },
      {
       "kind": "value",
@@ -2761,7 +2773,7 @@
       "wallMs": 65
      }
     ],
-    "targetMs": 94,
+    "targetMs": 96,
     "errors": []
    },
    {
@@ -2799,34 +2811,34 @@
       "options": 12,
       "hasExpected": true,
       "choice": "I agree to be contacted about my request",
-      "top": 1
+      "top": 0.999
      }
     ],
     "picked": "I agree to be contacted about my request",
     "correct": true,
-    "top": 0.9999405742560384,
+    "top": 0.9989309798127011,
     "status": "denied",
     "operation": {
-     "choice": "CLICK",
-     "top": 0.4178,
+     "choice": "TYPE_TEXT",
+     "top": 0.698,
      "forced": "CLICK",
-     "correct": true
+     "correct": false
     },
     "value": null,
     "expectedValueKey": null,
     "decideMs": [
      {
       "kind": "operation",
-      "ms": 200,
-      "wallMs": 201
+      "ms": 219,
+      "wallMs": 220
      },
      {
       "kind": "target",
-      "ms": 160,
-      "wallMs": 161
+      "ms": 159,
+      "wallMs": 160
      }
     ],
-    "targetMs": 160,
+    "targetMs": 159,
     "errors": []
    },
    {
@@ -2869,29 +2881,29 @@
     ],
     "picked": "Send me the monthly newsletter",
     "correct": true,
-    "top": 0.9995060397183515,
+    "top": 0.9996640604864828,
     "status": "denied",
     "operation": {
-     "choice": "CLICK",
-     "top": 0.4059,
+     "choice": "TYPE_TEXT",
+     "top": 0.7883,
      "forced": "CLICK",
-     "correct": true
+     "correct": false
     },
     "value": null,
     "expectedValueKey": null,
     "decideMs": [
      {
       "kind": "operation",
-      "ms": 212,
-      "wallMs": 212
+      "ms": 210,
+      "wallMs": 210
      },
      {
       "kind": "target",
-      "ms": 159,
-      "wallMs": 160
+      "ms": 160,
+      "wallMs": 174
      }
     ],
-    "targetMs": 159,
+    "targetMs": 160,
     "errors": []
    },
    {
@@ -2934,29 +2946,29 @@
     ],
     "picked": "Send message",
     "correct": true,
-    "top": 0.9998779103868192,
+    "top": 0.9998136472085422,
     "status": "denied",
     "operation": {
-     "choice": "CLICK",
-     "top": 0.4064,
+     "choice": "TYPE_TEXT",
+     "top": 0.72,
      "forced": "CLICK",
-     "correct": true
+     "correct": false
     },
     "value": null,
     "expectedValueKey": null,
     "decideMs": [
      {
       "kind": "operation",
-      "ms": 196,
-      "wallMs": 196
+      "ms": 218,
+      "wallMs": 219
      },
      {
       "kind": "target",
-      "ms": 159,
-      "wallMs": 159
+      "ms": 156,
+      "wallMs": 156
      }
     ],
-    "targetMs": 159,
+    "targetMs": 156,
     "errors": []
    },
    {
@@ -2999,29 +3011,29 @@
     ],
     "picked": "Clear form",
     "correct": true,
-    "top": 0.9999910698323546,
+    "top": 0.9999612367315137,
     "status": "denied",
     "operation": {
-     "choice": "CLICK",
-     "top": 0.3714,
+     "choice": "TYPE_TEXT",
+     "top": 0.8139,
      "forced": "CLICK",
-     "correct": true
+     "correct": false
     },
     "value": null,
     "expectedValueKey": null,
     "decideMs": [
      {
       "kind": "operation",
-      "ms": 209,
-      "wallMs": 209
+      "ms": 216,
+      "wallMs": 216
      },
      {
       "kind": "target",
-      "ms": 155,
-      "wallMs": 155
+      "ms": 156,
+      "wallMs": 157
      }
     ],
-    "targetMs": 155,
+    "targetMs": 156,
     "errors": []
    },
    {
@@ -3062,11 +3074,11 @@
     ],
     "picked": "I agree to be contacted about my request",
     "correct": true,
-    "top": 0.9999509504452918,
+    "top": 0.9998736489245094,
     "status": "denied",
     "operation": {
      "choice": "CLICK",
-     "top": 0.9951,
+     "top": 0.9988,
      "forced": "CLICK",
      "correct": true
     },
@@ -3075,16 +3087,16 @@
     "decideMs": [
      {
       "kind": "operation",
-      "ms": 197,
-      "wallMs": 197
+      "ms": 180,
+      "wallMs": 181
      },
      {
       "kind": "target",
-      "ms": 153,
-      "wallMs": 154
+      "ms": 150,
+      "wallMs": 150
      }
     ],
-    "targetMs": 153,
+    "targetMs": 150,
     "errors": []
    },
    {
@@ -3119,17 +3131,17 @@
      {
       "options": 12,
       "hasExpected": true,
-      "choice": "Send message",
-      "top": 0.735
+      "choice": "I agree to be contacted about my request",
+      "top": 0.795
      }
     ],
-    "picked": "Send message",
-    "correct": true,
-    "top": 0.7353614600950051,
+    "picked": "I agree to be contacted about my request",
+    "correct": false,
+    "top": 0.7953996373536224,
     "status": "denied",
     "operation": {
      "choice": "CLICK",
-     "top": 0.99,
+     "top": 0.9983,
      "forced": "CLICK",
      "correct": true
     },
@@ -3138,16 +3150,16 @@
     "decideMs": [
      {
       "kind": "operation",
-      "ms": 199,
-      "wallMs": 200
+      "ms": 198,
+      "wallMs": 199
      },
      {
       "kind": "target",
-      "ms": 152,
-      "wallMs": 152
+      "ms": 151,
+      "wallMs": 151
      }
     ],
-    "targetMs": 152,
+    "targetMs": 151,
     "errors": []
    },
    {
@@ -3188,11 +3200,11 @@
     ],
     "picked": "FAQ",
     "correct": true,
-    "top": 0.99992802175036,
+    "top": 0.9999344935200801,
     "status": "denied",
     "operation": {
      "choice": "CLICK",
-     "top": 0.9901,
+     "top": 0.999,
      "forced": "CLICK",
      "correct": true
     },
@@ -3201,16 +3213,16 @@
     "decideMs": [
      {
       "kind": "operation",
-      "ms": 193,
-      "wallMs": 193
+      "ms": 176,
+      "wallMs": 176
      },
      {
       "kind": "target",
-      "ms": 149,
-      "wallMs": 162
+      "ms": 150,
+      "wallMs": 150
      }
     ],
-    "targetMs": 149,
+    "targetMs": 150,
     "errors": []
    },
    {
@@ -3246,16 +3258,16 @@
       "options": 12,
       "hasExpected": true,
       "choice": "Service status",
-      "top": 0.998
+      "top": 0.993
      }
     ],
     "picked": "Service status",
     "correct": true,
-    "top": 0.9977895602229083,
+    "top": 0.9932628741446791,
     "status": "denied",
     "operation": {
      "choice": "CLICK",
-     "top": 0.9161,
+     "top": 0.9979,
      "forced": "CLICK",
      "correct": true
     },
@@ -3264,16 +3276,16 @@
     "decideMs": [
      {
       "kind": "operation",
-      "ms": 203,
-      "wallMs": 204
+      "ms": 200,
+      "wallMs": 201
      },
      {
       "kind": "target",
-      "ms": 154,
-      "wallMs": 154
+      "ms": 155,
+      "wallMs": 155
      }
     ],
-    "targetMs": 154,
+    "targetMs": 155,
     "errors": []
    },
    {
@@ -3314,11 +3326,11 @@
     ],
     "picked": "Home",
     "correct": true,
-    "top": 0.999995941328535,
+    "top": 0.9999825754576472,
     "status": "denied",
     "operation": {
      "choice": "CLICK",
-     "top": 0.9888,
+     "top": 0.9992,
      "forced": "CLICK",
      "correct": true
     },
@@ -3327,8 +3339,8 @@
     "decideMs": [
      {
       "kind": "operation",
-      "ms": 203,
-      "wallMs": 203
+      "ms": 198,
+      "wallMs": 198
      },
      {
       "kind": "target",
@@ -3372,16 +3384,16 @@
       "options": 3,
       "hasExpected": true,
       "choice": "Accept all",
-      "top": 0.999
+      "top": 1
      }
     ],
     "picked": "Accept all",
     "correct": true,
-    "top": 0.9994472207779669,
+    "top": 0.9998704967086146,
     "status": "denied",
     "operation": {
      "choice": "CLICK",
-     "top": 0.9917,
+     "top": 0.9991,
      "forced": "CLICK",
      "correct": true
     },
@@ -3390,16 +3402,16 @@
     "decideMs": [
      {
       "kind": "operation",
-      "ms": 113,
-      "wallMs": 113
+      "ms": 131,
+      "wallMs": 131
      },
      {
       "kind": "target",
-      "ms": 83,
-      "wallMs": 83
+      "ms": 84,
+      "wallMs": 84
      }
     ],
-    "targetMs": 83,
+    "targetMs": 84,
     "errors": []
    },
    {
@@ -3440,11 +3452,11 @@
     ],
     "picked": "Reject non-essential",
     "correct": true,
-    "top": 0.9999255891703276,
+    "top": 0.9999424168791426,
     "status": "denied",
     "operation": {
      "choice": "CLICK",
-     "top": 0.9952,
+     "top": 0.9988,
      "forced": "CLICK",
      "correct": true
     },
@@ -3453,16 +3465,16 @@
     "decideMs": [
      {
       "kind": "operation",
-      "ms": 135,
-      "wallMs": 136
+      "ms": 118,
+      "wallMs": 118
      },
      {
       "kind": "target",
-      "ms": 87,
+      "ms": 86,
       "wallMs": 87
      }
     ],
-    "targetMs": 87,
+    "targetMs": 86,
     "errors": []
    },
    {
@@ -3498,16 +3510,16 @@
       "options": 3,
       "hasExpected": true,
       "choice": "Manage preferences",
-      "top": 0.969
+      "top": 0.958
      }
     ],
     "picked": "Manage preferences",
     "correct": true,
-    "top": 0.9690207067451267,
+    "top": 0.9581831633054044,
     "status": "denied",
     "operation": {
      "choice": "CLICK",
-     "top": 0.9919,
+     "top": 0.9988,
      "forced": "CLICK",
      "correct": true
     },
@@ -3516,16 +3528,16 @@
     "decideMs": [
      {
       "kind": "operation",
-      "ms": 131,
-      "wallMs": 131
+      "ms": 134,
+      "wallMs": 134
      },
      {
       "kind": "target",
-      "ms": 85,
-      "wallMs": 85
+      "ms": 84,
+      "wallMs": 84
      }
     ],
-    "targetMs": 85,
+    "targetMs": 84,
     "errors": []
    },
    {
@@ -3561,16 +3573,16 @@
       "options": 3,
       "hasExpected": true,
       "choice": "Reject non-essential",
-      "top": 1
+      "top": 0.999
      }
     ],
     "picked": "Reject non-essential",
     "correct": true,
-    "top": 0.9995500358814492,
+    "top": 0.9994138569029776,
     "status": "denied",
     "operation": {
      "choice": "CLICK",
-     "top": 0.9897,
+     "top": 0.9981,
      "forced": "CLICK",
      "correct": true
     },
@@ -3579,16 +3591,16 @@
     "decideMs": [
      {
       "kind": "operation",
-      "ms": 136,
-      "wallMs": 137
+      "ms": 114,
+      "wallMs": 114
      },
      {
       "kind": "target",
-      "ms": 85,
-      "wallMs": 86
+      "ms": 83,
+      "wallMs": 83
      }
     ],
-    "targetMs": 85,
+    "targetMs": 83,
     "errors": []
    },
    {
@@ -3625,16 +3637,16 @@
       "options": 3,
       "hasExpected": true,
       "choice": "Reject non-essential",
-      "top": 0.984
+      "top": 0.98
      }
     ],
     "picked": "Reject non-essential",
     "correct": true,
-    "top": 0.9837296617936565,
+    "top": 0.9800059503161856,
     "status": "denied",
     "operation": {
      "choice": "CLICK",
-     "top": 0.9932,
+     "top": 0.9987,
      "forced": "CLICK",
      "correct": true
     },
@@ -3644,15 +3656,15 @@
      {
       "kind": "operation",
       "ms": 132,
-      "wallMs": 133
+      "wallMs": 132
      },
      {
       "kind": "target",
-      "ms": 84,
-      "wallMs": 84
+      "ms": 87,
+      "wallMs": 88
      }
     ],
-    "targetMs": 84,
+    "targetMs": 87,
     "errors": []
    },
    {
@@ -3688,17 +3700,17 @@
      {
       "options": 3,
       "hasExpected": true,
-      "choice": "Accept all",
-      "top": 0.359
+      "choice": "Reject non-essential",
+      "top": 0.344
      }
     ],
-    "picked": "Accept all",
+    "picked": "Reject non-essential",
     "correct": true,
-    "top": 0.35864106172927906,
+    "top": 0.34398285478577756,
     "status": "uncertain",
     "operation": {
      "choice": "CLICK",
-     "top": 0.97,
+     "top": 0.6853,
      "forced": "CLICK",
      "correct": true
     },
@@ -3707,16 +3719,16 @@
     "decideMs": [
      {
       "kind": "operation",
-      "ms": 122,
-      "wallMs": 123
+      "ms": 135,
+      "wallMs": 135
      },
      {
       "kind": "target",
-      "ms": 92,
-      "wallMs": 92
+      "ms": 91,
+      "wallMs": 91
      }
     ],
-    "targetMs": 92,
+    "targetMs": 91,
     "errors": []
    },
    {
@@ -3752,35 +3764,35 @@
      {
       "options": 3,
       "hasExpected": true,
-      "choice": "Manage preferences",
-      "top": 0.336
+      "choice": "Reject non-essential",
+      "top": 0.348
      }
     ],
-    "picked": "Manage preferences",
-    "correct": false,
-    "top": 0.33637441828505477,
+    "picked": "Reject non-essential",
+    "correct": true,
+    "top": 0.3482965271753345,
     "status": "uncertain",
     "operation": {
-     "choice": "CLICK",
-     "top": 0.9859,
+     "choice": "BLOCKED",
+     "top": 0.588,
      "forced": "CLICK",
-     "correct": true
+     "correct": false
     },
     "value": null,
     "expectedValueKey": null,
     "decideMs": [
      {
       "kind": "operation",
-      "ms": 131,
-      "wallMs": 132
+      "ms": 115,
+      "wallMs": 115
      },
      {
       "kind": "target",
-      "ms": 84,
-      "wallMs": 84
+      "ms": 83,
+      "wallMs": 83
      }
     ],
-    "targetMs": 84,
+    "targetMs": 83,
     "errors": []
    },
    {
@@ -3816,16 +3828,16 @@
       "options": 18,
       "hasExpected": true,
       "choice": "Add Nimbus tote (green) to cart",
-      "top": 0.914
+      "top": 0.765
      }
     ],
     "picked": "Add Nimbus tote (green) to cart",
     "correct": true,
-    "top": 0.9139106736150657,
+    "top": 0.7646870030215597,
     "status": "denied",
     "operation": {
      "choice": "CLICK",
-     "top": 0.9895,
+     "top": 0.9991,
      "forced": "CLICK",
      "correct": true
     },
@@ -3839,11 +3851,11 @@
      },
      {
       "kind": "target",
-      "ms": 223,
-      "wallMs": 224
+      "ms": 222,
+      "wallMs": 222
      }
     ],
-    "targetMs": 223,
+    "targetMs": 222,
     "errors": []
    },
    {
@@ -3879,16 +3891,16 @@
       "options": 18,
       "hasExpected": true,
       "choice": "Add Orbit clock (grey) to cart",
-      "top": 0.987
+      "top": 0.749
      }
     ],
     "picked": "Add Orbit clock (grey) to cart",
     "correct": true,
-    "top": 0.9871964534208373,
+    "top": 0.7492384751204869,
     "status": "denied",
     "operation": {
      "choice": "CLICK",
-     "top": 0.9926,
+     "top": 0.9991,
      "forced": "CLICK",
      "correct": true
     },
@@ -3897,16 +3909,16 @@
     "decideMs": [
      {
       "kind": "operation",
-      "ms": 276,
-      "wallMs": 276
+      "ms": 270,
+      "wallMs": 270
      },
      {
       "kind": "target",
-      "ms": 233,
-      "wallMs": 233
+      "ms": 227,
+      "wallMs": 228
      }
     ],
-    "targetMs": 233,
+    "targetMs": 227,
     "errors": []
    },
    {
@@ -3942,16 +3954,16 @@
       "options": 18,
       "hasExpected": true,
       "choice": "Add Aurora mug (grey) to cart",
-      "top": 0.781
+      "top": 0.646
      }
     ],
     "picked": "Add Aurora mug (grey) to cart",
     "correct": true,
-    "top": 0.7811022662314374,
+    "top": 0.6464651931588732,
     "status": "denied",
     "operation": {
      "choice": "CLICK",
-     "top": 0.9867,
+     "top": 0.9991,
      "forced": "CLICK",
      "correct": true
     },
@@ -3960,16 +3972,16 @@
     "decideMs": [
      {
       "kind": "operation",
-      "ms": 266,
-      "wallMs": 266
+      "ms": 256,
+      "wallMs": 257
      },
      {
       "kind": "target",
-      "ms": 222,
-      "wallMs": 222
+      "ms": 229,
+      "wallMs": 229
      }
     ],
-    "targetMs": 222,
+    "targetMs": 229,
     "errors": []
    },
    {
@@ -4005,16 +4017,16 @@
       "options": 18,
       "hasExpected": true,
       "choice": "Add Fjord bowl (green) to cart",
-      "top": 0.688
+      "top": 0.496
      }
     ],
     "picked": "Add Fjord bowl (green) to cart",
     "correct": true,
-    "top": 0.6876374436982992,
-    "status": "denied",
+    "top": 0.4963331944186366,
+    "status": "uncertain",
     "operation": {
      "choice": "CLICK",
-     "top": 0.99,
+     "top": 0.999,
      "forced": "CLICK",
      "correct": true
     },
@@ -4023,16 +4035,16 @@
     "decideMs": [
      {
       "kind": "operation",
-      "ms": 271,
-      "wallMs": 272
+      "ms": 273,
+      "wallMs": 274
      },
      {
       "kind": "target",
-      "ms": 225,
-      "wallMs": 225
+      "ms": 229,
+      "wallMs": 229
      }
     ],
-    "targetMs": 225,
+    "targetMs": 229,
     "errors": []
    },
    {
@@ -4068,16 +4080,16 @@
       "options": 18,
       "hasExpected": true,
       "choice": "Add Cedar candle (grey) to cart",
-      "top": 0.538
+      "top": 0.964
      }
     ],
     "picked": "Add Cedar candle (grey) to cart",
     "correct": true,
-    "top": 0.5376903024511084,
-    "status": "uncertain",
+    "top": 0.9635421662910362,
+    "status": "denied",
     "operation": {
      "choice": "CLICK",
-     "top": 0.989,
+     "top": 0.9959,
      "forced": "CLICK",
      "correct": true
     },
@@ -4086,16 +4098,16 @@
     "decideMs": [
      {
       "kind": "operation",
-      "ms": 267,
-      "wallMs": 268
+      "ms": 270,
+      "wallMs": 270
      },
      {
       "kind": "target",
-      "ms": 226,
-      "wallMs": 226
+      "ms": 221,
+      "wallMs": 222
      }
     ],
-    "targetMs": 226,
+    "targetMs": 221,
     "errors": []
    },
    {
@@ -4140,10 +4152,10 @@
     "top": 1,
     "status": "denied",
     "operation": {
-     "choice": "CLICK",
-     "top": 0.6661,
+     "choice": "TYPE_TEXT",
+     "top": 0.9029,
      "forced": "TYPE_TEXT",
-     "correct": false
+     "correct": true
     },
     "value": {
      "choice": "email",
@@ -4154,13 +4166,13 @@
     "decideMs": [
      {
       "kind": "operation",
-      "ms": 271,
-      "wallMs": 272
+      "ms": 260,
+      "wallMs": 261
      },
      {
       "kind": "target",
-      "ms": 68,
-      "wallMs": 68
+      "ms": 67,
+      "wallMs": 89
      },
      {
       "kind": "value",
@@ -4168,7 +4180,7 @@
       "wallMs": 66
      }
     ],
-    "targetMs": 68,
+    "targetMs": 67,
     "errors": []
    },
    {
@@ -4204,16 +4216,16 @@
       "options": 18,
       "hasExpected": true,
       "choice": "Cart",
-      "top": 0.996
+      "top": 0.999
      }
     ],
     "picked": "Cart",
     "correct": true,
-    "top": 0.9960577182392383,
+    "top": 0.9994881023911831,
     "status": "denied",
     "operation": {
      "choice": "CLICK",
-     "top": 0.994,
+     "top": 0.9986,
      "forced": "CLICK",
      "correct": true
     },
@@ -4222,16 +4234,16 @@
     "decideMs": [
      {
       "kind": "operation",
-      "ms": 259,
-      "wallMs": 260
+      "ms": 266,
+      "wallMs": 266
      },
      {
       "kind": "target",
-      "ms": 219,
-      "wallMs": 219
+      "ms": 221,
+      "wallMs": 222
      }
     ],
-    "targetMs": 219,
+    "targetMs": 221,
     "errors": []
    },
    {
@@ -4272,11 +4284,11 @@
     ],
     "picked": "Stores",
     "correct": true,
-    "top": 0.9994823004884574,
+    "top": 0.9990399195446023,
     "status": "denied",
     "operation": {
      "choice": "CLICK",
-     "top": 0.9796,
+     "top": 0.9989,
      "forced": "CLICK",
      "correct": true
     },
@@ -4285,16 +4297,16 @@
     "decideMs": [
      {
       "kind": "operation",
-      "ms": 274,
-      "wallMs": 274
+      "ms": 252,
+      "wallMs": 253
      },
      {
       "kind": "target",
-      "ms": 223,
-      "wallMs": 223
+      "ms": 226,
+      "wallMs": 227
      }
     ],
-    "targetMs": 223,
+    "targetMs": 226,
     "errors": []
    }
   ]
@@ -4302,11 +4314,11 @@
  "llm": {
   "model": "google/gemma-4-26b-a4b",
   "cases": 54,
-  "correct": 48,
-  "accuracyTop1": 0.889,
+  "correct": 49,
+  "accuracyTop1": 0.907,
   "ms": {
-   "p50": 1762,
-   "p95": 9030
+   "p50": 2101,
+   "p95": 14484
   },
   "rows": [
    {
@@ -4314,378 +4326,378 @@
     "answer": "[8]",
     "picked": "Add Aurora mug (blue) to cart",
     "correct": true,
-    "ms": 2907
+    "ms": 10825
    },
    {
     "i": 1,
     "answer": "[12]",
     "picked": "Add Nimbus tote (red) to cart",
     "correct": true,
-    "ms": 1207
+    "ms": 1242
    },
    {
     "i": 2,
     "answer": "[16]",
     "picked": "Add Cedar candle (green) to cart",
     "correct": true,
-    "ms": 1762
+    "ms": 1769
    },
    {
     "i": 3,
     "answer": "[17]",
     "picked": "Add Harbor throw (blue) to cart",
     "correct": true,
-    "ms": 1192
+    "ms": 1208
    },
    {
     "i": 4,
     "answer": "[21]",
     "picked": "Add Lumen lamp (red) to cart",
     "correct": true,
-    "ms": 1251
+    "ms": 1270
    },
    {
     "i": 5,
     "answer": "[25]",
     "picked": "Add Fjord bowl (green) to cart",
     "correct": true,
-    "ms": 1702
+    "ms": 1729
    },
    {
     "i": 6,
     "answer": "[26]",
     "picked": "Add Sable apron (blue) to cart",
     "correct": true,
-    "ms": 1228
+    "ms": 1262
    },
    {
     "i": 7,
     "answer": "[30]",
     "picked": "Add Tidal vase (red) to cart",
     "correct": true,
-    "ms": 1209
+    "ms": 1259
    },
    {
     "i": 8,
     "answer": "[34]",
     "picked": "Add Ember kettle (green) to cart",
     "correct": true,
-    "ms": 1661
+    "ms": 1701
    },
    {
     "i": 9,
     "answer": "[35]",
     "picked": "Add Meadow napkins (blue) to cart",
     "correct": true,
-    "ms": 1214
+    "ms": 1281
    },
    {
     "i": 10,
     "answer": "[39]",
     "picked": "Add Quill notebook (red) to cart",
     "correct": true,
-    "ms": 1213
+    "ms": 1294
    },
    {
     "i": 11,
     "answer": "[43]",
     "picked": "Add Orbit clock (green) to cart",
     "correct": true,
-    "ms": 1713
+    "ms": 1801
    },
    {
     "i": 12,
     "answer": "[32]",
     "picked": "Add Ember kettle (blue) to cart",
     "correct": true,
-    "ms": 1216
+    "ms": 1322
    },
    {
     "i": 13,
     "answer": "[21]",
     "picked": "Add Lumen lamp (red) to cart",
     "correct": true,
-    "ms": 1338
+    "ms": 1475
    },
    {
     "i": 14,
     "answer": "[10]",
     "picked": "Add Aurora mug (green) to cart",
     "correct": true,
-    "ms": 1627
+    "ms": 1791
    },
    {
     "i": 15,
     "answer": "[11]",
     "picked": "Add Nimbus tote (blue) to cart",
     "correct": true,
-    "ms": 1348
+    "ms": 1471
    },
    {
     "i": 16,
     "answer": "[5]",
     "picked": "Cart",
     "correct": true,
-    "ms": 2206
+    "ms": 2398
    },
    {
     "i": 17,
     "answer": "[7]",
     "picked": "Checkout",
     "correct": true,
-    "ms": 6602
+    "ms": 4901
    },
    {
     "i": 18,
     "answer": "[2]",
     "picked": "Sale",
     "correct": true,
-    "ms": 1416
+    "ms": 1540
    },
    {
     "i": 19,
     "answer": "[1]",
     "picked": "New in",
     "correct": true,
-    "ms": 1579
+    "ms": 1682
    },
    {
     "i": 20,
     "answer": "[0]",
     "picked": "Home",
     "correct": true,
-    "ms": 1173
+    "ms": 1813
    },
    {
     "i": 21,
     "answer": "[3]",
     "picked": "Search products",
     "correct": true,
-    "ms": 1459
+    "ms": 2035
    },
    {
     "i": 22,
     "answer": "[4]",
     "picked": "Sort by\" (currently \"Featured",
     "correct": true,
-    "ms": 2053
+    "ms": 2144
    },
    {
     "i": 23,
     "answer": "[3]",
     "picked": "Full name",
     "correct": true,
-    "ms": 2193
+    "ms": 2101
    },
    {
     "i": 24,
-    "answer": "[3]",
-    "picked": "Full name",
-    "correct": false,
-    "ms": 9030
+    "answer": "[4]",
+    "picked": "Email address",
+    "correct": true,
+    "ms": 21045
    },
    {
     "i": 25,
     "answer": "[6]",
     "picked": "Topic",
     "correct": true,
-    "ms": 1909
+    "ms": 1979
    },
    {
     "i": 26,
     "answer": "[3]",
     "picked": "Full name",
     "correct": false,
-    "ms": 3738
+    "ms": 8862
    },
    {
     "i": 27,
     "answer": "[3]",
     "picked": "Full name",
     "correct": false,
-    "ms": 14351
+    "ms": 19793
    },
    {
     "i": 28,
     "answer": "[6]",
     "picked": "Topic",
     "correct": true,
-    "ms": 2228
+    "ms": 2304
    },
    {
     "i": 29,
     "answer": "[4]",
     "picked": "Email address",
     "correct": true,
-    "ms": 2148
+    "ms": 2561
    },
    {
     "i": 30,
     "answer": "[8]",
     "picked": "I agree to be contacted about my request",
     "correct": true,
-    "ms": 4346
+    "ms": 3685
    },
    {
     "i": 31,
     "answer": "[3]",
     "picked": "Full name",
     "correct": false,
-    "ms": 18793
+    "ms": 14484
    },
    {
     "i": 32,
     "answer": "[3]",
     "picked": "Full name",
     "correct": false,
-    "ms": 4104
+    "ms": 7148
    },
    {
     "i": 33,
     "answer": "[11]",
     "picked": "Clear form",
     "correct": true,
-    "ms": 3372
+    "ms": 3383
    },
    {
     "i": 34,
     "answer": "[8]",
     "picked": "I agree to be contacted about my request",
     "correct": true,
-    "ms": 1098
+    "ms": 2350
    },
    {
     "i": 35,
     "answer": "[3]",
     "picked": "Full name",
     "correct": false,
-    "ms": 4545
+    "ms": 5601
    },
    {
     "i": 36,
     "answer": "[1]",
     "picked": "FAQ",
     "correct": true,
-    "ms": 1339
+    "ms": 1824
    },
    {
     "i": 37,
     "answer": "[2]",
     "picked": "Service status",
     "correct": true,
-    "ms": 1793
+    "ms": 1834
    },
    {
     "i": 38,
     "answer": "[0]",
     "picked": "Home",
     "correct": true,
-    "ms": 1525
+    "ms": 2121
    },
    {
     "i": 39,
     "answer": "[0]",
     "picked": "Accept all\" in \"We use cookies",
     "correct": true,
-    "ms": 1613
+    "ms": 2322
    },
    {
     "i": 40,
     "answer": "[1]",
     "picked": "Reject non-essential\" in \"We use cookies",
     "correct": true,
-    "ms": 2085
+    "ms": 3277
    },
    {
     "i": 41,
     "answer": "[2]",
     "picked": "Manage preferences\" in \"We use cookies",
     "correct": true,
-    "ms": 2240
+    "ms": 3166
    },
    {
     "i": 42,
     "answer": "[1]",
     "picked": "Reject non-essential\" in \"We use cookies",
     "correct": true,
-    "ms": 2962
+    "ms": 3602
    },
    {
     "i": 43,
     "answer": "[0]",
     "picked": "Accept all\" in \"We use cookies",
     "correct": true,
-    "ms": 3983
+    "ms": 2865
    },
    {
     "i": 44,
     "answer": "[0]",
     "picked": "Accept all\" in \"We use cookies",
     "correct": true,
-    "ms": 3035
+    "ms": 4665
    },
    {
     "i": 45,
     "answer": "[0]",
     "picked": "Accept all\" in \"We use cookies",
     "correct": true,
-    "ms": 2920
+    "ms": 3412
    },
    {
     "i": 46,
     "answer": "[4]",
     "picked": "Add Nimbus tote (green) to cart",
     "correct": true,
-    "ms": 2289
+    "ms": 2806
    },
    {
     "i": 47,
     "answer": "[15]",
     "picked": "Add Orbit clock (grey) to cart",
     "correct": true,
-    "ms": 1461
+    "ms": 1690
    },
    {
     "i": 48,
     "answer": "[7]",
     "picked": "Add Aurora mug (grey) to cart",
     "correct": true,
-    "ms": 1081
+    "ms": 1405
    },
    {
     "i": 49,
     "answer": "[12]",
     "picked": "Add Fjord bowl (green) to cart",
     "correct": true,
-    "ms": 1585
+    "ms": 1694
    },
    {
     "i": 50,
     "answer": "[11]",
     "picked": "Add Cedar candle (grey) to cart",
     "correct": true,
-    "ms": 1544
+    "ms": 1697
    },
    {
     "i": 51,
-    "answer": "[16]",
+    "answer": "16",
     "picked": "Your email for the newsletter",
     "correct": true,
-    "ms": 2463
+    "ms": 3029
    },
    {
     "i": 52,
     "answer": "[2]",
     "picked": "Cart",
     "correct": true,
-    "ms": 3934
+    "ms": 4514
    },
    {
     "i": 53,
     "answer": "[1]",
     "picked": "Stores",
     "correct": true,
-    "ms": 2288
+    "ms": 2454
    }
   ]
  },
@@ -4697,407 +4709,10 @@
     "rep": 0,
     "success": true,
     "ended": "turn-ended",
-    "wallMs": 76180,
-    "llmSteps": 17,
-    "inputTokens": 73542,
-    "outputTokens": 3498,
-    "actOffered": false,
-    "pageActions": 7,
-    "controlPageCalls": 10,
-    "actCalls": 0,
-    "actSteps": 0,
-    "actStatuses": [],
-    "actMessages": [],
-    "vonDecides": 0,
-    "vonFailed": 0,
-    "vonMs": 0,
-    "vonBootMs": [],
-    "approvals": [
-     "Read the interactive elements on this page",
-     "Let the agent control 127.0.0.1:51219?",
-     "Click “Send message”",
-     "View the tab you are currently on"
-    ],
-    "toolCalls": [
-     "ReadPage",
-     "GetTool",
-     "ControlPage",
-     "ControlPage",
-     "ControlPage",
-     "ToolSearch",
-     "GetTool",
-     "RequestPageControl",
-     "ControlPage",
-     "ControlPage",
-     "ControlPage",
-     "ControlPage",
-     "ControlPage",
-     "ControlPage",
-     "ReadPage",
-     "ControlPage"
-    ],
-    "pageState": {
-     "fullname": "Ada Lovelace",
-     "email": "ada@example.com",
-     "phone": "",
-     "topic": "Billing",
-     "message": "My last invoice was charged twice.",
-     "consent": "on"
-    },
-    "lastReply": null
-   },
-   {
-    "task": "form",
-    "arm": "on",
-    "rep": 0,
-    "success": false,
-    "ended": "turn-ended",
-    "wallMs": 38418,
-    "llmSteps": 8,
-    "inputTokens": 25559,
-    "outputTokens": 2453,
-    "actOffered": false,
-    "pageActions": 0,
-    "controlPageCalls": 3,
-    "actCalls": 0,
-    "actSteps": 0,
-    "actStatuses": [],
-    "actMessages": [],
-    "vonDecides": 0,
-    "vonFailed": 0,
-    "vonMs": 0,
-    "vonBootMs": [],
-    "approvals": [
-     "Read the interactive elements on this page"
-    ],
-    "toolCalls": [
-     "ReadPage",
-     "GetTool",
-     "ControlPage",
-     "ControlPage",
-     "ToolSearch",
-     "ControlPage",
-     "ToolSearch"
-    ],
-    "pageState": null,
-    "lastReply": null
-   },
-   {
-    "task": "form",
-    "arm": "forced",
-    "rep": 0,
-    "success": false,
-    "ended": "turn-ended",
-    "wallMs": 49000,
-    "llmSteps": 11,
-    "inputTokens": 37959,
-    "outputTokens": 3264,
-    "actOffered": false,
-    "pageActions": 0,
-    "controlPageCalls": 5,
-    "actCalls": 0,
-    "actSteps": 0,
-    "actStatuses": [],
-    "actMessages": [],
-    "vonDecides": 0,
-    "vonFailed": 0,
-    "vonMs": 0,
-    "vonBootMs": [],
-    "approvals": [
-     "Read the interactive elements on this page"
-    ],
-    "toolCalls": [
-     "ReadPage",
-     "GetTool",
-     "ControlPage",
-     "ControlPage",
-     "ToolSearch",
-     "ControlPage",
-     "ToolSearch",
-     "ControlPage",
-     "ControlPage",
-     "ToolSearch"
-    ],
-    "pageState": null,
-    "lastReply": null
-   },
-   {
-    "task": "shop",
-    "arm": "off",
-    "rep": 0,
-    "success": true,
-    "ended": "turn-ended",
-    "wallMs": 37767,
-    "llmSteps": 9,
-    "inputTokens": 35175,
-    "outputTokens": 1263,
-    "actOffered": false,
-    "pageActions": 1,
-    "controlPageCalls": 3,
-    "actCalls": 0,
-    "actSteps": 0,
-    "actStatuses": [],
-    "actMessages": [],
-    "vonDecides": 0,
-    "vonFailed": 0,
-    "vonMs": 0,
-    "vonBootMs": [],
-    "approvals": [
-     "Read the interactive elements on this page",
-     "Let the agent control 127.0.0.1:51219?",
-     "Click “Add Aurora mug (blue) to cart”"
-    ],
-    "toolCalls": [
-     "GetTool",
-     "ReadPage",
-     "GetTool",
-     "ControlPage",
-     "ControlPage",
-     "GetTool",
-     "RequestPageControl",
-     "ControlPage"
-    ],
-    "pageState": [
-     "Aurora mug (blue)"
-    ],
-    "lastReply": null
-   },
-   {
-    "task": "shop",
-    "arm": "on",
-    "rep": 0,
-    "success": true,
-    "ended": "turn-ended",
-    "wallMs": 38804,
-    "llmSteps": 9,
-    "inputTokens": 38375,
-    "outputTokens": 1484,
-    "actOffered": true,
-    "pageActions": 1,
-    "controlPageCalls": 3,
-    "actCalls": 0,
-    "actSteps": 0,
-    "actStatuses": [],
-    "actMessages": [],
-    "vonDecides": 0,
-    "vonFailed": 0,
-    "vonMs": 0,
-    "vonBootMs": [],
-    "approvals": [
-     "Read the interactive elements on this page",
-     "Let the agent control 127.0.0.1:51219?",
-     "Click “Add Aurora mug (blue) to cart”"
-    ],
-    "toolCalls": [
-     "ReadPage",
-     "GetTool",
-     "ControlPage",
-     "ControlPage",
-     "ToolSearch",
-     "GetTool",
-     "RequestPageControl",
-     "ControlPage"
-    ],
-    "pageState": [
-     "Aurora mug (blue)"
-    ],
-    "lastReply": null
-   },
-   {
-    "task": "shop",
-    "arm": "forced",
-    "rep": 0,
-    "success": true,
-    "ended": "turn-ended",
-    "wallMs": 40434,
-    "llmSteps": 7,
-    "inputTokens": 29888,
-    "outputTokens": 966,
-    "actOffered": true,
-    "pageActions": 1,
-    "controlPageCalls": 1,
-    "actCalls": 1,
-    "actSteps": 1,
-    "actStatuses": [
-     "repeat"
-    ],
-    "actMessages": [
-     "would repeat CLICK on [8] twice in a row"
-    ],
-    "vonDecides": 8,
-    "vonFailed": 0,
-    "vonMs": 2466,
-    "vonBootMs": [
-     5385
-    ],
-    "approvals": [
-     "Read the interactive elements on this page",
-     "Let the agent control 127.0.0.1:51219?",
-     "Click “Add Aurora mug (blue) to cart”"
-    ],
-    "toolCalls": [
-     "ReadPage",
-     "GetTool",
-     "ControlPage",
-     "GetTool",
-     "RequestPageControl",
-     "Act"
-    ],
-    "pageState": [
-     "Aurora mug (blue)"
-    ],
-    "lastReply": null
-   },
-   {
-    "task": "dialog",
-    "arm": "off",
-    "rep": 0,
-    "success": true,
-    "ended": "turn-ended",
-    "wallMs": 36737,
-    "llmSteps": 7,
-    "inputTokens": 32793,
-    "outputTokens": 998,
-    "actOffered": false,
-    "pageActions": 2,
-    "controlPageCalls": 2,
-    "actCalls": 0,
-    "actSteps": 0,
-    "actStatuses": [],
-    "actMessages": [],
-    "vonDecides": 0,
-    "vonFailed": 0,
-    "vonMs": 0,
-    "vonBootMs": [],
-    "approvals": [
-     "Read the interactive elements on this page",
-     "Let the agent control 127.0.0.1:51219?",
-     "Click “Reject non-essential”",
-     "Click “Add Nimbus tote (green) to cart”"
-    ],
-    "toolCalls": [
-     "ToolSearch",
-     "ReadPage",
-     "GetTool",
-     "RequestPageControl",
-     "ControlPage",
-     "ControlPage"
-    ],
-    "pageState": {
-     "consent": "essential",
-     "cart": [
-      "Nimbus tote (green)"
-     ]
-    },
-    "lastReply": null
-   },
-   {
-    "task": "dialog",
-    "arm": "on",
-    "rep": 0,
-    "success": true,
-    "ended": "turn-ended",
-    "wallMs": 36995,
-    "llmSteps": 7,
-    "inputTokens": 34776,
-    "outputTokens": 629,
-    "actOffered": true,
-    "pageActions": 2,
-    "controlPageCalls": 2,
-    "actCalls": 0,
-    "actSteps": 0,
-    "actStatuses": [],
-    "actMessages": [],
-    "vonDecides": 0,
-    "vonFailed": 0,
-    "vonMs": 0,
-    "vonBootMs": [],
-    "approvals": [
-     "Read the interactive elements on this page",
-     "Let the agent control 127.0.0.1:51219?",
-     "Click “Reject non-essential”",
-     "Click “Add Nimbus tote (green) to cart”"
-    ],
-    "toolCalls": [
-     "ToolSearch",
-     "ReadPage",
-     "GetTool",
-     "RequestPageControl",
-     "ControlPage",
-     "ControlPage"
-    ],
-    "pageState": {
-     "consent": "essential",
-     "cart": [
-      "Nimbus tote (green)"
-     ]
-    },
-    "lastReply": null
-   },
-   {
-    "task": "dialog",
-    "arm": "forced",
-    "rep": 0,
-    "success": true,
-    "ended": "turn-ended",
-    "wallMs": 71621,
-    "llmSteps": 10,
-    "inputTokens": 35926,
-    "outputTokens": 1635,
-    "actOffered": true,
-    "pageActions": 2,
-    "controlPageCalls": 2,
-    "actCalls": 2,
-    "actSteps": 2,
-    "actStatuses": [
-     "uncertain",
-     "repeat"
-    ],
-    "actMessages": [
-     "unsure which control to use (p=0.14)",
-     "would repeat CLICK on [4] twice in a row"
-    ],
-    "vonDecides": 8,
-    "vonFailed": 0,
-    "vonMs": 2320,
-    "vonBootMs": [
-     32236
-    ],
-    "approvals": [
-     "Read the interactive elements on this page",
-     "Let the agent control 127.0.0.1:51219?",
-     "Click “Reject non-essential”",
-     "Click “Add Nimbus tote (green) to cart”"
-    ],
-    "toolCalls": [
-     "ReadPage",
-     "GetTool",
-     "ControlPage",
-     "ControlPage",
-     "ToolSearch",
-     "GetTool",
-     "RequestPageControl",
-     "Act",
-     "Act"
-    ],
-    "pageState": {
-     "consent": "essential",
-     "cart": [
-      "Nimbus tote (green)"
-     ]
-    },
-    "lastReply": null
-   },
-   {
-    "task": "form",
-    "arm": "off",
-    "rep": 1,
-    "success": true,
-    "ended": "turn-ended",
-    "wallMs": 43458,
-    "llmSteps": 12,
-    "inputTokens": 47416,
-    "outputTokens": 1495,
+    "wallMs": 57985,
+    "llmSteps": 13,
+    "inputTokens": 54436,
+    "outputTokens": 1805,
     "actOffered": false,
     "pageActions": 6,
     "controlPageCalls": 7,
@@ -5111,13 +4726,14 @@
     "vonBootMs": [],
     "approvals": [
      "Read the interactive elements on this page",
-     "Let the agent control 127.0.0.1:51219?",
+     "Let the agent control 127.0.0.1:50473?",
      "Click “Send message”"
     ],
     "toolCalls": [
      "ReadPage",
      "GetTool",
      "ControlPage",
+     "ToolSearch",
      "GetTool",
      "RequestPageControl",
      "ControlPage",
@@ -5140,376 +4756,14 @@
    {
     "task": "form",
     "arm": "on",
-    "rep": 1,
+    "rep": 0,
     "success": true,
     "ended": "turn-ended",
-    "wallMs": 73901,
-    "llmSteps": 20,
-    "inputTokens": 80502,
-    "outputTokens": 4023,
+    "wallMs": 54918,
+    "llmSteps": 13,
+    "inputTokens": 56143,
+    "outputTokens": 2048,
     "actOffered": true,
-    "pageActions": 6,
-    "controlPageCalls": 15,
-    "actCalls": 0,
-    "actSteps": 0,
-    "actStatuses": [],
-    "actMessages": [],
-    "vonDecides": 0,
-    "vonFailed": 0,
-    "vonMs": 0,
-    "vonBootMs": [],
-    "approvals": [
-     "Read the interactive elements on this page",
-     "Let the agent control 127.0.0.1:51219?",
-     "Click “Send message”"
-    ],
-    "toolCalls": [
-     "ReadPage",
-     "GetTool",
-     "ControlPage",
-     "ControlPage",
-     "ControlPage",
-     "ControlPage",
-     "ControlPage",
-     "ControlPage",
-     "ControlPage",
-     "ControlPage",
-     "ControlPage",
-     "GetTool",
-     "RequestPageControl",
-     "ControlPage",
-     "ControlPage",
-     "ControlPage",
-     "ControlPage",
-     "ControlPage",
-     "ControlPage"
-    ],
-    "pageState": {
-     "fullname": "Ada Lovelace",
-     "email": "ada@example.com",
-     "phone": "",
-     "topic": "Billing",
-     "message": "My last invoice was charged twice.",
-     "consent": "on"
-    },
-    "lastReply": null
-   },
-   {
-    "task": "form",
-    "arm": "forced",
-    "rep": 1,
-    "success": false,
-    "ended": "turn-ended",
-    "wallMs": 105425,
-    "llmSteps": 19,
-    "inputTokens": 65046,
-    "outputTokens": 6255,
-    "actOffered": false,
-    "pageActions": 0,
-    "controlPageCalls": 13,
-    "actCalls": 0,
-    "actSteps": 0,
-    "actStatuses": [],
-    "actMessages": [],
-    "vonDecides": 0,
-    "vonFailed": 0,
-    "vonMs": 0,
-    "vonBootMs": [],
-    "approvals": [
-     "Read the interactive elements on this page"
-    ],
-    "toolCalls": [
-     "ReadPage",
-     "GetTool",
-     "ControlPage",
-     "ControlPage",
-     "ControlPage",
-     "ControlPage",
-     "ToolSearch",
-     "ControlPage",
-     "ControlPage",
-     "ControlPage",
-     "ControlPage",
-     "ControlPage",
-     "ControlPage",
-     "ControlPage",
-     "ControlPage",
-     "ToolSearch",
-     "ControlPage",
-     "ToolSearch"
-    ],
-    "pageState": null,
-    "lastReply": null
-   },
-   {
-    "task": "shop",
-    "arm": "off",
-    "rep": 1,
-    "success": false,
-    "ended": "turn-ended",
-    "wallMs": 17814,
-    "llmSteps": 7,
-    "inputTokens": 25715,
-    "outputTokens": 917,
-    "actOffered": false,
-    "pageActions": 0,
-    "controlPageCalls": 2,
-    "actCalls": 0,
-    "actSteps": 0,
-    "actStatuses": [],
-    "actMessages": [],
-    "vonDecides": 0,
-    "vonFailed": 0,
-    "vonMs": 0,
-    "vonBootMs": [],
-    "approvals": [
-     "Read the interactive elements on this page"
-    ],
-    "toolCalls": [
-     "ReadPage",
-     "GetTool",
-     "ControlPage",
-     "ControlPage",
-     "ToolSearch",
-     "ToolSearch"
-    ],
-    "pageState": [],
-    "lastReply": null
-   },
-   {
-    "task": "shop",
-    "arm": "on",
-    "rep": 1,
-    "success": true,
-    "ended": "turn-ended",
-    "wallMs": 31203,
-    "llmSteps": 8,
-    "inputTokens": 33291,
-    "outputTokens": 846,
-    "actOffered": true,
-    "pageActions": 1,
-    "controlPageCalls": 3,
-    "actCalls": 0,
-    "actSteps": 0,
-    "actStatuses": [],
-    "actMessages": [],
-    "vonDecides": 0,
-    "vonFailed": 0,
-    "vonMs": 0,
-    "vonBootMs": [],
-    "approvals": [
-     "Read the interactive elements on this page",
-     "Let the agent control 127.0.0.1:51219?",
-     "Click “Add Aurora mug (blue) to cart”"
-    ],
-    "toolCalls": [
-     "ReadPage",
-     "GetTool",
-     "ControlPage",
-     "ControlPage",
-     "GetTool",
-     "RequestPageControl",
-     "ControlPage"
-    ],
-    "pageState": [
-     "Aurora mug (blue)"
-    ],
-    "lastReply": null
-   },
-   {
-    "task": "shop",
-    "arm": "forced",
-    "rep": 1,
-    "success": true,
-    "ended": "turn-ended",
-    "wallMs": 34717,
-    "llmSteps": 5,
-    "inputTokens": 27077,
-    "outputTokens": 787,
-    "actOffered": true,
-    "pageActions": 1,
-    "controlPageCalls": 0,
-    "actCalls": 1,
-    "actSteps": 1,
-    "actStatuses": [
-     "uncertain"
-    ],
-    "actMessages": [
-     "unsure of the next operation (p=0.31)"
-    ],
-    "vonDecides": 5,
-    "vonFailed": 0,
-    "vonMs": 1940,
-    "vonBootMs": [
-     7248
-    ],
-    "approvals": [
-     "Let the agent control 127.0.0.1:51219?",
-     "Click “Add Aurora mug (blue) to cart”"
-    ],
-    "toolCalls": [
-     "ToolSearch",
-     "GetTool",
-     "RequestPageControl",
-     "Act"
-    ],
-    "pageState": [
-     "Aurora mug (blue)"
-    ],
-    "lastReply": null
-   },
-   {
-    "task": "dialog",
-    "arm": "off",
-    "rep": 1,
-    "success": true,
-    "ended": "turn-ended",
-    "wallMs": 28001,
-    "llmSteps": 8,
-    "inputTokens": 26295,
-    "outputTokens": 855,
-    "actOffered": false,
-    "pageActions": 2,
-    "controlPageCalls": 3,
-    "actCalls": 0,
-    "actSteps": 0,
-    "actStatuses": [],
-    "actMessages": [],
-    "vonDecides": 0,
-    "vonFailed": 0,
-    "vonMs": 0,
-    "vonBootMs": [],
-    "approvals": [
-     "Read the interactive elements on this page",
-     "Let the agent control 127.0.0.1:51219?",
-     "Click “Reject non-essential”",
-     "Click “Add Nimbus tote (green) to cart”"
-    ],
-    "toolCalls": [
-     "ReadPage",
-     "GetTool",
-     "ControlPage",
-     "GetTool",
-     "RequestPageControl",
-     "ControlPage",
-     "ControlPage"
-    ],
-    "pageState": {
-     "consent": "essential",
-     "cart": [
-      "Nimbus tote (green)"
-     ]
-    },
-    "lastReply": null
-   },
-   {
-    "task": "dialog",
-    "arm": "on",
-    "rep": 1,
-    "success": true,
-    "ended": "turn-ended",
-    "wallMs": 41305,
-    "llmSteps": 10,
-    "inputTokens": 35052,
-    "outputTokens": 1462,
-    "actOffered": true,
-    "pageActions": 2,
-    "controlPageCalls": 4,
-    "actCalls": 0,
-    "actSteps": 0,
-    "actStatuses": [],
-    "actMessages": [],
-    "vonDecides": 0,
-    "vonFailed": 0,
-    "vonMs": 0,
-    "vonBootMs": [],
-    "approvals": [
-     "Read the interactive elements on this page",
-     "Let the agent control 127.0.0.1:51219?",
-     "Click “Reject non-essential”",
-     "Click “Add Nimbus tote (green) to cart”"
-    ],
-    "toolCalls": [
-     "ReadPage",
-     "GetTool",
-     "ControlPage",
-     "ControlPage",
-     "ToolSearch",
-     "GetTool",
-     "RequestPageControl",
-     "ControlPage",
-     "ControlPage"
-    ],
-    "pageState": {
-     "consent": "essential",
-     "cart": [
-      "Nimbus tote (green)"
-     ]
-    },
-    "lastReply": null
-   },
-   {
-    "task": "dialog",
-    "arm": "forced",
-    "rep": 1,
-    "success": true,
-    "ended": "turn-ended",
-    "wallMs": 52297,
-    "llmSteps": 7,
-    "inputTokens": 33695,
-    "outputTokens": 1392,
-    "actOffered": true,
-    "pageActions": 2,
-    "controlPageCalls": 0,
-    "actCalls": 2,
-    "actSteps": 2,
-    "actStatuses": [
-     "uncertain",
-     "repeat"
-    ],
-    "actMessages": [
-     "unsure which control to use (p=0.12)",
-     "would repeat CLICK on [4] twice in a row"
-    ],
-    "vonDecides": 8,
-    "vonFailed": 0,
-    "vonMs": 2099,
-    "vonBootMs": [
-     7768
-    ],
-    "approvals": [
-     "Read the interactive elements on this page",
-     "Let the agent control 127.0.0.1:51219?",
-     "Click “Reject non-essential”",
-     "Click “Add Nimbus tote (green) to cart”"
-    ],
-    "toolCalls": [
-     "ReadPage",
-     "ToolSearch",
-     "GetTool",
-     "RequestPageControl",
-     "Act",
-     "Act"
-    ],
-    "pageState": {
-     "consent": "essential",
-     "cart": [
-      "Nimbus tote (green)"
-     ]
-    },
-    "lastReply": null
-   },
-   {
-    "task": "form",
-    "arm": "off",
-    "rep": 2,
-    "success": true,
-    "ended": "turn-ended",
-    "wallMs": 56994,
-    "llmSteps": 14,
-    "inputTokens": 59550,
-    "outputTokens": 2537,
-    "actOffered": false,
     "pageActions": 6,
     "controlPageCalls": 7,
     "actCalls": 0,
@@ -5522,7 +4776,7 @@
     "vonBootMs": [],
     "approvals": [
      "Read the interactive elements on this page",
-     "Let the agent control 127.0.0.1:51219?",
+     "Let the agent control 127.0.0.1:50473?",
      "Click “Send message”",
      "View the tab you are currently on"
     ],
@@ -5530,7 +4784,6 @@
      "ReadPage",
      "GetTool",
      "ControlPage",
-     "ToolSearch",
      "GetTool",
      "RequestPageControl",
      "ControlPage",
@@ -5553,14 +4806,370 @@
    },
    {
     "task": "form",
-    "arm": "on",
-    "rep": 2,
+    "arm": "forced",
+    "rep": 0,
     "success": true,
     "ended": "turn-ended",
-    "wallMs": 61123,
-    "llmSteps": 15,
-    "inputTokens": 69289,
-    "outputTokens": 2569,
+    "wallMs": 88707,
+    "llmSteps": 16,
+    "inputTokens": 73164,
+    "outputTokens": 4393,
+    "actOffered": true,
+    "pageActions": 7,
+    "controlPageCalls": 8,
+    "actCalls": 1,
+    "actSteps": 1,
+    "actStatuses": [
+     "uncertain"
+    ],
+    "actMessages": [
+     "unsure of the next operation (p=0.54)"
+    ],
+    "vonDecides": 4,
+    "vonFailed": 0,
+    "vonMs": 821,
+    "vonBootMs": [
+     8047
+    ],
+    "approvals": [
+     "Read the interactive elements on this page",
+     "Let the agent control 127.0.0.1:50473?",
+     "Click “Send message”",
+     "View the tab you are currently on"
+    ],
+    "toolCalls": [
+     "ReadPage",
+     "GetTool",
+     "ControlPage",
+     "ControlPage",
+     "ToolSearch",
+     "GetTool",
+     "RequestPageControl",
+     "Act",
+     "ControlPage",
+     "ControlPage",
+     "ControlPage",
+     "ControlPage",
+     "ControlPage",
+     "ReadPage",
+     "ControlPage"
+    ],
+    "pageState": {
+     "fullname": "Ada Lovelace",
+     "email": "ada@example.com",
+     "phone": "",
+     "topic": "Billing",
+     "message": "My last invoice was charged twice.",
+     "consent": "on"
+    },
+    "lastReply": null
+   },
+   {
+    "task": "shop",
+    "arm": "off",
+    "rep": 0,
+    "success": true,
+    "ended": "turn-ended",
+    "wallMs": 35259,
+    "llmSteps": 9,
+    "inputTokens": 37088,
+    "outputTokens": 987,
+    "actOffered": false,
+    "pageActions": 1,
+    "controlPageCalls": 3,
+    "actCalls": 0,
+    "actSteps": 0,
+    "actStatuses": [],
+    "actMessages": [],
+    "vonDecides": 0,
+    "vonFailed": 0,
+    "vonMs": 0,
+    "vonBootMs": [],
+    "approvals": [
+     "Read the interactive elements on this page",
+     "Let the agent control 127.0.0.1:50473?",
+     "Click “Add Aurora mug (blue) to cart”"
+    ],
+    "toolCalls": [
+     "ReadPage",
+     "GetTool",
+     "ControlPage",
+     "ControlPage",
+     "ToolSearch",
+     "GetTool",
+     "RequestPageControl",
+     "ControlPage"
+    ],
+    "pageState": [
+     "Aurora mug (blue)"
+    ],
+    "lastReply": null
+   },
+   {
+    "task": "shop",
+    "arm": "on",
+    "rep": 0,
+    "success": true,
+    "ended": "turn-ended",
+    "wallMs": 28766,
+    "llmSteps": 5,
+    "inputTokens": 21284,
+    "outputTokens": 588,
+    "actOffered": true,
+    "pageActions": 1,
+    "controlPageCalls": 1,
+    "actCalls": 0,
+    "actSteps": 0,
+    "actStatuses": [],
+    "actMessages": [],
+    "vonDecides": 0,
+    "vonFailed": 0,
+    "vonMs": 0,
+    "vonBootMs": [],
+    "approvals": [
+     "Read the interactive elements on this page",
+     "Let the agent control 127.0.0.1:50473?",
+     "Click “Add Aurora mug (blue) to cart”"
+    ],
+    "toolCalls": [
+     "ReadPage",
+     "GetTool",
+     "RequestPageControl",
+     "ControlPage"
+    ],
+    "pageState": [
+     "Aurora mug (blue)"
+    ],
+    "lastReply": null
+   },
+   {
+    "task": "shop",
+    "arm": "forced",
+    "rep": 0,
+    "success": false,
+    "ended": "turn-ended",
+    "wallMs": 48923,
+    "llmSteps": 7,
+    "inputTokens": 30181,
+    "outputTokens": 1532,
+    "actOffered": true,
+    "pageActions": 1,
+    "controlPageCalls": 1,
+    "actCalls": 1,
+    "actSteps": 1,
+    "actStatuses": [
+     "done"
+    ],
+    "actMessages": [],
+    "vonDecides": 5,
+    "vonFailed": 0,
+    "vonMs": 2027,
+    "vonBootMs": [
+     6776
+    ],
+    "approvals": [
+     "Read the interactive elements on this page",
+     "Let the agent control 127.0.0.1:50473?",
+     "Click “Add Aurora mug (green) to cart”"
+    ],
+    "toolCalls": [
+     "ReadPage",
+     "GetTool",
+     "ControlPage",
+     "GetTool",
+     "RequestPageControl",
+     "Act"
+    ],
+    "pageState": [
+     "Aurora mug (green)"
+    ],
+    "lastReply": null
+   },
+   {
+    "task": "dialog",
+    "arm": "off",
+    "rep": 0,
+    "success": true,
+    "ended": "turn-ended",
+    "wallMs": 38371,
+    "llmSteps": 10,
+    "inputTokens": 32772,
+    "outputTokens": 1398,
+    "actOffered": false,
+    "pageActions": 2,
+    "controlPageCalls": 5,
+    "actCalls": 0,
+    "actSteps": 0,
+    "actStatuses": [],
+    "actMessages": [],
+    "vonDecides": 0,
+    "vonFailed": 0,
+    "vonMs": 0,
+    "vonBootMs": [],
+    "approvals": [
+     "Read the interactive elements on this page",
+     "Let the agent control 127.0.0.1:50473?",
+     "Click “Reject non-essential”",
+     "Click “Add Nimbus tote (green) to cart”"
+    ],
+    "toolCalls": [
+     "ReadPage",
+     "GetTool",
+     "ControlPage",
+     "ControlPage",
+     "ControlPage",
+     "GetTool",
+     "RequestPageControl",
+     "ControlPage",
+     "ControlPage"
+    ],
+    "pageState": {
+     "consent": "essential",
+     "cart": [
+      "Nimbus tote (green)"
+     ]
+    },
+    "lastReply": null
+   },
+   {
+    "task": "dialog",
+    "arm": "on",
+    "rep": 0,
+    "success": true,
+    "ended": "turn-ended",
+    "wallMs": 35454,
+    "llmSteps": 8,
+    "inputTokens": 27629,
+    "outputTokens": 984,
+    "actOffered": true,
+    "pageActions": 2,
+    "controlPageCalls": 3,
+    "actCalls": 0,
+    "actSteps": 0,
+    "actStatuses": [],
+    "actMessages": [],
+    "vonDecides": 0,
+    "vonFailed": 0,
+    "vonMs": 0,
+    "vonBootMs": [],
+    "approvals": [
+     "Read the interactive elements on this page",
+     "Let the agent control 127.0.0.1:50473?",
+     "Click “Reject non-essential”",
+     "Click “Add Nimbus tote (green) to cart”"
+    ],
+    "toolCalls": [
+     "ReadPage",
+     "GetTool",
+     "ControlPage",
+     "GetTool",
+     "RequestPageControl",
+     "ControlPage",
+     "ControlPage"
+    ],
+    "pageState": {
+     "consent": "essential",
+     "cart": [
+      "Nimbus tote (green)"
+     ]
+    },
+    "lastReply": null
+   },
+   {
+    "task": "dialog",
+    "arm": "forced",
+    "rep": 0,
+    "success": true,
+    "ended": "turn-ended",
+    "wallMs": 41749,
+    "llmSteps": 8,
+    "inputTokens": 27580,
+    "outputTokens": 1001,
+    "actOffered": true,
+    "pageActions": 2,
+    "controlPageCalls": 1,
+    "actCalls": 2,
+    "actSteps": 2,
+    "actStatuses": [
+     "done",
+     "done"
+    ],
+    "actMessages": [],
+    "vonDecides": 6,
+    "vonFailed": 0,
+    "vonMs": 1376,
+    "vonBootMs": [
+     7541
+    ],
+    "approvals": [
+     "Read the interactive elements on this page",
+     "Let the agent control 127.0.0.1:50473?",
+     "Click “Reject non-essential”",
+     "Click “Add Nimbus tote (green) to cart”"
+    ],
+    "toolCalls": [
+     "ReadPage",
+     "GetTool",
+     "ControlPage",
+     "GetTool",
+     "RequestPageControl",
+     "Act",
+     "Act"
+    ],
+    "pageState": {
+     "consent": "essential",
+     "cart": [
+      "Nimbus tote (green)"
+     ]
+    },
+    "lastReply": null
+   },
+   {
+    "task": "form",
+    "arm": "off",
+    "rep": 1,
+    "success": false,
+    "ended": "turn-ended",
+    "wallMs": 22103,
+    "llmSteps": 8,
+    "inputTokens": 25552,
+    "outputTokens": 1529,
+    "actOffered": false,
+    "pageActions": 0,
+    "controlPageCalls": 3,
+    "actCalls": 0,
+    "actSteps": 0,
+    "actStatuses": [],
+    "actMessages": [],
+    "vonDecides": 0,
+    "vonFailed": 0,
+    "vonMs": 0,
+    "vonBootMs": [],
+    "approvals": [
+     "Read the interactive elements on this page"
+    ],
+    "toolCalls": [
+     "ReadPage",
+     "GetTool",
+     "ControlPage",
+     "ControlPage",
+     "ToolSearch",
+     "ToolSearch",
+     "ControlPage"
+    ],
+    "pageState": null,
+    "lastReply": null
+   },
+   {
+    "task": "form",
+    "arm": "on",
+    "rep": 1,
+    "success": true,
+    "ended": "turn-ended",
+    "wallMs": 46442,
+    "llmSteps": 12,
+    "inputTokens": 51116,
+    "outputTokens": 1740,
     "actOffered": true,
     "pageActions": 6,
     "controlPageCalls": 7,
@@ -5574,95 +5183,15 @@
     "vonBootMs": [],
     "approvals": [
      "Read the interactive elements on this page",
-     "Let the agent control 127.0.0.1:51219?",
-     "Click “Send message”",
-     "View the tab you are currently on"
-    ],
-    "toolCalls": [
-     "ReadPage",
-     "GetTool",
-     "ControlPage",
-     "GetTool",
-     "RequestPageControl",
-     "ControlPage",
-     "ControlPage",
-     "ControlPage",
-     "ControlPage",
-     "ControlPage",
-     "ControlPage",
-     "ReadPage",
-     "GetTool",
-     "HighlightContent"
-    ],
-    "pageState": {
-     "fullname": "Ada Lovelace",
-     "email": "ada@example.com",
-     "phone": "",
-     "topic": "Billing",
-     "message": "My last invoice was charged twice.",
-     "consent": "on"
-    },
-    "lastReply": null
-   },
-   {
-    "task": "form",
-    "arm": "forced",
-    "rep": 2,
-    "success": true,
-    "ended": "turn-ended",
-    "wallMs": 190896,
-    "llmSteps": 29,
-    "inputTokens": 133482,
-    "outputTokens": 12043,
-    "actOffered": true,
-    "pageActions": 6,
-    "controlPageCalls": 19,
-    "actCalls": 3,
-    "actSteps": 0,
-    "actStatuses": [
-     "uncertain",
-     "uncertain",
-     "uncertain"
-    ],
-    "actMessages": [
-     "unsure of the next operation (p=0.38)",
-     "unsure of the next operation (p=0.53)",
-     "unsure of the next operation (p=0.44)"
-    ],
-    "vonDecides": 3,
-    "vonFailed": 0,
-    "vonMs": 775,
-    "vonBootMs": [
-     16482
-    ],
-    "approvals": [
-     "Read the interactive elements on this page",
-     "Let the agent control 127.0.0.1:51219?",
+     "Let the agent control 127.0.0.1:50473?",
      "Click “Send message”"
     ],
     "toolCalls": [
      "ReadPage",
      "GetTool",
      "ControlPage",
-     "ControlPage",
-     "ControlPage",
-     "ControlPage",
-     "ControlPage",
-     "ControlPage",
-     "ToolSearch",
-     "ControlPage",
-     "ControlPage",
-     "ControlPage",
-     "ControlPage",
-     "ControlPage",
-     "ControlPage",
-     "ControlPage",
      "GetTool",
      "RequestPageControl",
-     "Act",
-     "Act",
-     "Act",
-     "Checkpoint",
      "ControlPage",
      "ControlPage",
      "ControlPage",
@@ -5681,18 +5210,545 @@
     "lastReply": null
    },
    {
+    "task": "form",
+    "arm": "forced",
+    "rep": 1,
+    "success": false,
+    "ended": "turn-ended",
+    "wallMs": 85795,
+    "llmSteps": 18,
+    "inputTokens": 70809,
+    "outputTokens": 6660,
+    "actOffered": false,
+    "pageActions": 0,
+    "controlPageCalls": 6,
+    "actCalls": 0,
+    "actSteps": 0,
+    "actStatuses": [],
+    "actMessages": [],
+    "vonDecides": 0,
+    "vonFailed": 0,
+    "vonMs": 0,
+    "vonBootMs": [],
+    "approvals": [
+     "Read the interactive elements on this page"
+    ],
+    "toolCalls": [
+     "ReadPage",
+     "GetTool",
+     "ControlPage",
+     "ControlPage",
+     "ToolSearch",
+     "ControlPage",
+     "ToolSearch",
+     "ToolSearch",
+     "ControlPage",
+     "ToolSearch",
+     "ToolSearch",
+     "ToolSearch",
+     "ToolSearch",
+     "ControlPage",
+     "ToolSearch",
+     "ControlPage",
+     "ToolSearch"
+    ],
+    "pageState": null,
+    "lastReply": null
+   },
+   {
     "task": "shop",
     "arm": "off",
+    "rep": 1,
+    "success": true,
+    "ended": "turn-ended",
+    "wallMs": 29680,
+    "llmSteps": 7,
+    "inputTokens": 28346,
+    "outputTokens": 536,
+    "actOffered": false,
+    "pageActions": 1,
+    "controlPageCalls": 2,
+    "actCalls": 0,
+    "actSteps": 0,
+    "actStatuses": [],
+    "actMessages": [],
+    "vonDecides": 0,
+    "vonFailed": 0,
+    "vonMs": 0,
+    "vonBootMs": [],
+    "approvals": [
+     "Read the interactive elements on this page",
+     "Let the agent control 127.0.0.1:50473?",
+     "Click “Add Aurora mug (blue) to cart”"
+    ],
+    "toolCalls": [
+     "ReadPage",
+     "GetTool",
+     "ControlPage",
+     "GetTool",
+     "RequestPageControl",
+     "ControlPage"
+    ],
+    "pageState": [
+     "Aurora mug (blue)"
+    ],
+    "lastReply": null
+   },
+   {
+    "task": "shop",
+    "arm": "on",
+    "rep": 1,
+    "success": true,
+    "ended": "turn-ended",
+    "wallMs": 23509,
+    "llmSteps": 7,
+    "inputTokens": 29000,
+    "outputTokens": 528,
+    "actOffered": true,
+    "pageActions": 1,
+    "controlPageCalls": 2,
+    "actCalls": 0,
+    "actSteps": 0,
+    "actStatuses": [],
+    "actMessages": [],
+    "vonDecides": 0,
+    "vonFailed": 0,
+    "vonMs": 0,
+    "vonBootMs": [],
+    "approvals": [
+     "Read the interactive elements on this page",
+     "Let the agent control 127.0.0.1:50473?",
+     "Click “Add Aurora mug (blue) to cart”"
+    ],
+    "toolCalls": [
+     "ReadPage",
+     "GetTool",
+     "ControlPage",
+     "GetTool",
+     "RequestPageControl",
+     "ControlPage"
+    ],
+    "pageState": [
+     "Aurora mug (blue)"
+    ],
+    "lastReply": null
+   },
+   {
+    "task": "shop",
+    "arm": "forced",
+    "rep": 1,
+    "success": true,
+    "ended": "turn-ended",
+    "wallMs": 58666,
+    "llmSteps": 8,
+    "inputTokens": 36980,
+    "outputTokens": 1408,
+    "actOffered": true,
+    "pageActions": 1,
+    "controlPageCalls": 2,
+    "actCalls": 1,
+    "actSteps": 0,
+    "actStatuses": [
+     "uncertain"
+    ],
+    "actMessages": [
+     "unsure of the next operation (p=0.33)"
+    ],
+    "vonDecides": 1,
+    "vonFailed": 0,
+    "vonMs": 808,
+    "vonBootMs": [
+     16990
+    ],
+    "approvals": [
+     "Read the interactive elements on this page",
+     "Let the agent control 127.0.0.1:50473?",
+     "Click “Add Aurora mug (blue) to cart”"
+    ],
+    "toolCalls": [
+     "ReadPage",
+     "GetTool",
+     "ControlPage",
+     "GetTool",
+     "RequestPageControl",
+     "Act",
+     "ControlPage"
+    ],
+    "pageState": [
+     "Aurora mug (blue)"
+    ],
+    "lastReply": null
+   },
+   {
+    "task": "dialog",
+    "arm": "off",
+    "rep": 1,
+    "success": true,
+    "ended": "turn-ended",
+    "wallMs": 29700,
+    "llmSteps": 9,
+    "inputTokens": 31010,
+    "outputTokens": 937,
+    "actOffered": false,
+    "pageActions": 2,
+    "controlPageCalls": 3,
+    "actCalls": 0,
+    "actSteps": 0,
+    "actStatuses": [],
+    "actMessages": [],
+    "vonDecides": 0,
+    "vonFailed": 0,
+    "vonMs": 0,
+    "vonBootMs": [],
+    "approvals": [
+     "Read the interactive elements on this page",
+     "Let the agent control 127.0.0.1:50473?",
+     "Click “Reject non-essential”",
+     "Click “Add Nimbus tote (green) to cart”"
+    ],
+    "toolCalls": [
+     "ReadPage",
+     "GetTool",
+     "ControlPage",
+     "ToolSearch",
+     "GetTool",
+     "RequestPageControl",
+     "ControlPage",
+     "ControlPage"
+    ],
+    "pageState": {
+     "consent": "essential",
+     "cart": [
+      "Nimbus tote (green)"
+     ]
+    },
+    "lastReply": null
+   },
+   {
+    "task": "dialog",
+    "arm": "on",
+    "rep": 1,
+    "success": true,
+    "ended": "turn-ended",
+    "wallMs": 34012,
+    "llmSteps": 8,
+    "inputTokens": 27394,
+    "outputTokens": 908,
+    "actOffered": true,
+    "pageActions": 2,
+    "controlPageCalls": 3,
+    "actCalls": 0,
+    "actSteps": 0,
+    "actStatuses": [],
+    "actMessages": [],
+    "vonDecides": 0,
+    "vonFailed": 0,
+    "vonMs": 0,
+    "vonBootMs": [],
+    "approvals": [
+     "Read the interactive elements on this page",
+     "Let the agent control 127.0.0.1:50473?",
+     "Click “Reject non-essential”",
+     "Click “Add Nimbus tote (green) to cart”"
+    ],
+    "toolCalls": [
+     "ReadPage",
+     "GetTool",
+     "ControlPage",
+     "GetTool",
+     "RequestPageControl",
+     "ControlPage",
+     "ControlPage"
+    ],
+    "pageState": {
+     "consent": "essential",
+     "cart": [
+      "Nimbus tote (green)"
+     ]
+    },
+    "lastReply": null
+   },
+   {
+    "task": "dialog",
+    "arm": "forced",
+    "rep": 1,
+    "success": true,
+    "ended": "turn-ended",
+    "wallMs": 53941,
+    "llmSteps": 10,
+    "inputTokens": 35616,
+    "outputTokens": 1850,
+    "actOffered": true,
+    "pageActions": 2,
+    "controlPageCalls": 2,
+    "actCalls": 2,
+    "actSteps": 2,
+    "actStatuses": [
+     "done",
+     "done"
+    ],
+    "actMessages": [],
+    "vonDecides": 6,
+    "vonFailed": 0,
+    "vonMs": 1454,
+    "vonBootMs": [
+     8672
+    ],
+    "approvals": [
+     "Read the interactive elements on this page",
+     "Let the agent control 127.0.0.1:50473?",
+     "Click “Reject non-essential”",
+     "Click “Add Nimbus tote (green) to cart”"
+    ],
+    "toolCalls": [
+     "ReadPage",
+     "GetTool",
+     "ControlPage",
+     "ControlPage",
+     "ToolSearch",
+     "GetTool",
+     "RequestPageControl",
+     "Act",
+     "Act"
+    ],
+    "pageState": {
+     "consent": "essential",
+     "cart": [
+      "Nimbus tote (green)"
+     ]
+    },
+    "lastReply": null
+   },
+   {
+    "task": "form",
+    "arm": "off",
+    "rep": 2,
+    "success": true,
+    "ended": "turn-ended",
+    "wallMs": 38758,
+    "llmSteps": 12,
+    "inputTokens": 47232,
+    "outputTokens": 1387,
+    "actOffered": false,
+    "pageActions": 6,
+    "controlPageCalls": 7,
+    "actCalls": 0,
+    "actSteps": 0,
+    "actStatuses": [],
+    "actMessages": [],
+    "vonDecides": 0,
+    "vonFailed": 0,
+    "vonMs": 0,
+    "vonBootMs": [],
+    "approvals": [
+     "Read the interactive elements on this page",
+     "Let the agent control 127.0.0.1:50473?",
+     "Click “Send message”"
+    ],
+    "toolCalls": [
+     "ReadPage",
+     "GetTool",
+     "ControlPage",
+     "GetTool",
+     "RequestPageControl",
+     "ControlPage",
+     "ControlPage",
+     "ControlPage",
+     "ControlPage",
+     "ControlPage",
+     "ControlPage"
+    ],
+    "pageState": {
+     "fullname": "Ada Lovelace",
+     "email": "ada@example.com",
+     "phone": "",
+     "topic": "Billing",
+     "message": "My last invoice was charged twice.",
+     "consent": "on"
+    },
+    "lastReply": null
+   },
+   {
+    "task": "form",
+    "arm": "on",
+    "rep": 2,
+    "success": true,
+    "ended": "turn-ended",
+    "wallMs": 56974,
+    "llmSteps": 14,
+    "inputTokens": 62062,
+    "outputTokens": 2854,
+    "actOffered": true,
+    "pageActions": 7,
+    "controlPageCalls": 8,
+    "actCalls": 0,
+    "actSteps": 0,
+    "actStatuses": [],
+    "actMessages": [],
+    "vonDecides": 0,
+    "vonFailed": 0,
+    "vonMs": 0,
+    "vonBootMs": [],
+    "approvals": [
+     "Read the interactive elements on this page",
+     "Let the agent control 127.0.0.1:50473?",
+     "Click “Send message”",
+     "View the tab you are currently on"
+    ],
+    "toolCalls": [
+     "ReadPage",
+     "GetTool",
+     "ControlPage",
+     "GetTool",
+     "RequestPageControl",
+     "ControlPage",
+     "ControlPage",
+     "ControlPage",
+     "ControlPage",
+     "ControlPage",
+     "ControlPage",
+     "ReadPage",
+     "ControlPage"
+    ],
+    "pageState": {
+     "fullname": "Ada Lovelace",
+     "email": "ada@example.com",
+     "phone": "",
+     "topic": "Billing",
+     "message": "My last invoice was charged twice.",
+     "consent": "on"
+    },
+    "lastReply": null
+   },
+   {
+    "task": "form",
+    "arm": "forced",
     "rep": 2,
     "success": false,
     "ended": "turn-ended",
-    "wallMs": 24712,
-    "llmSteps": 11,
-    "inputTokens": 42314,
-    "outputTokens": 1543,
+    "wallMs": 23607,
+    "llmSteps": 8,
+    "inputTokens": 25883,
+    "outputTokens": 1708,
     "actOffered": false,
     "pageActions": 0,
-    "controlPageCalls": 4,
+    "controlPageCalls": 3,
+    "actCalls": 0,
+    "actSteps": 0,
+    "actStatuses": [],
+    "actMessages": [],
+    "vonDecides": 0,
+    "vonFailed": 0,
+    "vonMs": 0,
+    "vonBootMs": [],
+    "approvals": [
+     "Read the interactive elements on this page"
+    ],
+    "toolCalls": [
+     "ReadPage",
+     "GetTool",
+     "ControlPage",
+     "ControlPage",
+     "ToolSearch",
+     "ControlPage",
+     "ToolSearch"
+    ],
+    "pageState": null,
+    "lastReply": null
+   },
+   {
+    "task": "shop",
+    "arm": "off",
+    "rep": 2,
+    "success": true,
+    "ended": "turn-ended",
+    "wallMs": 23565,
+    "llmSteps": 7,
+    "inputTokens": 28243,
+    "outputTokens": 534,
+    "actOffered": false,
+    "pageActions": 1,
+    "controlPageCalls": 2,
+    "actCalls": 0,
+    "actSteps": 0,
+    "actStatuses": [],
+    "actMessages": [],
+    "vonDecides": 0,
+    "vonFailed": 0,
+    "vonMs": 0,
+    "vonBootMs": [],
+    "approvals": [
+     "Read the interactive elements on this page",
+     "Let the agent control 127.0.0.1:50473?",
+     "Click “Add Aurora mug (blue) to cart”"
+    ],
+    "toolCalls": [
+     "ReadPage",
+     "GetTool",
+     "ControlPage",
+     "GetTool",
+     "RequestPageControl",
+     "ControlPage"
+    ],
+    "pageState": [
+     "Aurora mug (blue)"
+    ],
+    "lastReply": null
+   },
+   {
+    "task": "shop",
+    "arm": "on",
+    "rep": 2,
+    "success": true,
+    "ended": "turn-ended",
+    "wallMs": 33252,
+    "llmSteps": 9,
+    "inputTokens": 37971,
+    "outputTokens": 951,
+    "actOffered": true,
+    "pageActions": 1,
+    "controlPageCalls": 3,
+    "actCalls": 0,
+    "actSteps": 0,
+    "actStatuses": [],
+    "actMessages": [],
+    "vonDecides": 0,
+    "vonFailed": 0,
+    "vonMs": 0,
+    "vonBootMs": [],
+    "approvals": [
+     "Read the interactive elements on this page",
+     "Let the agent control 127.0.0.1:50473?",
+     "Click “Add Aurora mug (blue) to cart”"
+    ],
+    "toolCalls": [
+     "ReadPage",
+     "GetTool",
+     "ControlPage",
+     "ControlPage",
+     "ToolSearch",
+     "GetTool",
+     "RequestPageControl",
+     "ControlPage"
+    ],
+    "pageState": [
+     "Aurora mug (blue)"
+    ],
+    "lastReply": null
+   },
+   {
+    "task": "shop",
+    "arm": "forced",
+    "rep": 2,
+    "success": false,
+    "ended": "turn-ended",
+    "wallMs": 57054,
+    "llmSteps": 18,
+    "inputTokens": 77759,
+    "outputTokens": 4013,
+    "actOffered": false,
+    "pageActions": 0,
+    "controlPageCalls": 9,
     "actCalls": 0,
     "actSteps": 0,
     "actStatuses": [],
@@ -5713,94 +5769,17 @@
      "ToolSearch",
      "ControlPage",
      "ToolSearch",
+     "ControlPage",
+     "ToolSearch",
+     "ControlPage",
+     "ControlPage",
+     "ControlPage",
+     "ToolSearch",
+     "ControlPage",
      "ToolSearch",
      "ToolSearch"
     ],
     "pageState": [],
-    "lastReply": null
-   },
-   {
-    "task": "shop",
-    "arm": "on",
-    "rep": 2,
-    "success": true,
-    "ended": "turn-ended",
-    "wallMs": 26375,
-    "llmSteps": 7,
-    "inputTokens": 28838,
-    "outputTokens": 447,
-    "actOffered": true,
-    "pageActions": 1,
-    "controlPageCalls": 2,
-    "actCalls": 0,
-    "actSteps": 0,
-    "actStatuses": [],
-    "actMessages": [],
-    "vonDecides": 0,
-    "vonFailed": 0,
-    "vonMs": 0,
-    "vonBootMs": [],
-    "approvals": [
-     "Read the interactive elements on this page",
-     "Let the agent control 127.0.0.1:51219?",
-     "Click “Add Aurora mug (blue) to cart”"
-    ],
-    "toolCalls": [
-     "ReadPage",
-     "GetTool",
-     "ControlPage",
-     "GetTool",
-     "RequestPageControl",
-     "ControlPage"
-    ],
-    "pageState": [
-     "Aurora mug (blue)"
-    ],
-    "lastReply": null
-   },
-   {
-    "task": "shop",
-    "arm": "forced",
-    "rep": 2,
-    "success": true,
-    "ended": "turn-ended",
-    "wallMs": 43874,
-    "llmSteps": 7,
-    "inputTokens": 29146,
-    "outputTokens": 686,
-    "actOffered": true,
-    "pageActions": 1,
-    "controlPageCalls": 1,
-    "actCalls": 1,
-    "actSteps": 1,
-    "actStatuses": [
-     "uncertain"
-    ],
-    "actMessages": [
-     "unsure of the next operation (p=0.41)"
-    ],
-    "vonDecides": 5,
-    "vonFailed": 0,
-    "vonMs": 2006,
-    "vonBootMs": [
-     10374
-    ],
-    "approvals": [
-     "Read the interactive elements on this page",
-     "Let the agent control 127.0.0.1:51219?",
-     "Click “Add Aurora mug (blue) to cart”"
-    ],
-    "toolCalls": [
-     "ReadPage",
-     "GetTool",
-     "ControlPage",
-     "GetTool",
-     "RequestPageControl",
-     "Act"
-    ],
-    "pageState": [
-     "Aurora mug (blue)"
-    ],
     "lastReply": null
    },
    {
@@ -5809,13 +5788,13 @@
     "rep": 2,
     "success": true,
     "ended": "turn-ended",
-    "wallMs": 33128,
-    "llmSteps": 9,
-    "inputTokens": 30973,
-    "outputTokens": 1071,
+    "wallMs": 50286,
+    "llmSteps": 12,
+    "inputTokens": 41482,
+    "outputTokens": 2572,
     "actOffered": false,
     "pageActions": 2,
-    "controlPageCalls": 3,
+    "controlPageCalls": 6,
     "actCalls": 0,
     "actSteps": 0,
     "actStatuses": [],
@@ -5826,15 +5805,18 @@
     "vonBootMs": [],
     "approvals": [
      "Read the interactive elements on this page",
-     "Let the agent control 127.0.0.1:51219?",
+     "Let the agent control 127.0.0.1:50473?",
      "Click “Reject non-essential”",
      "Click “Add Nimbus tote (green) to cart”"
     ],
     "toolCalls": [
-     "ReadPage",
      "GetTool",
+     "ReadPage",
+     "ControlPage",
+     "ControlPage",
      "ControlPage",
      "ToolSearch",
+     "ControlPage",
      "GetTool",
      "RequestPageControl",
      "ControlPage",
@@ -5854,10 +5836,10 @@
     "rep": 2,
     "success": true,
     "ended": "turn-ended",
-    "wallMs": 34130,
-    "llmSteps": 10,
-    "inputTokens": 35746,
-    "outputTokens": 1131,
+    "wallMs": 27480,
+    "llmSteps": 8,
+    "inputTokens": 27790,
+    "outputTokens": 983,
     "actOffered": true,
     "pageActions": 2,
     "controlPageCalls": 3,
@@ -5871,7 +5853,7 @@
     "vonBootMs": [],
     "approvals": [
      "Read the interactive elements on this page",
-     "Let the agent control 127.0.0.1:51219?",
+     "Let the agent control 127.0.0.1:50473?",
      "Click “Reject non-essential”",
      "Click “Add Nimbus tote (green) to cart”"
     ],
@@ -5879,8 +5861,6 @@
      "ReadPage",
      "GetTool",
      "ControlPage",
-     "ToolSearch",
-     "ToolSearch",
      "GetTool",
      "RequestPageControl",
      "ControlPage",
@@ -5900,32 +5880,29 @@
     "rep": 2,
     "success": true,
     "ended": "turn-ended",
-    "wallMs": 46743,
-    "llmSteps": 10,
-    "inputTokens": 35088,
-    "outputTokens": 1376,
+    "wallMs": 46977,
+    "llmSteps": 8,
+    "inputTokens": 27871,
+    "outputTokens": 1015,
     "actOffered": true,
     "pageActions": 2,
-    "controlPageCalls": 2,
+    "controlPageCalls": 1,
     "actCalls": 2,
     "actSteps": 2,
     "actStatuses": [
-     "uncertain",
-     "repeat"
+     "done",
+     "done"
     ],
-    "actMessages": [
-     "unsure which control to use (p=0.14)",
-     "would repeat CLICK on [4] twice in a row"
-    ],
-    "vonDecides": 8,
+    "actMessages": [],
+    "vonDecides": 6,
     "vonFailed": 0,
-    "vonMs": 1889,
+    "vonMs": 1539,
     "vonBootMs": [
-     7619
+     9615
     ],
     "approvals": [
      "Read the interactive elements on this page",
-     "Let the agent control 127.0.0.1:51219?",
+     "Let the agent control 127.0.0.1:50473?",
      "Click “Reject non-essential”",
      "Click “Add Nimbus tote (green) to cart”"
     ],
@@ -5933,8 +5910,6 @@
      "ReadPage",
      "GetTool",
      "ControlPage",
-     "ControlPage",
-     "ToolSearch",
      "GetTool",
      "RequestPageControl",
      "Act",
@@ -5953,16 +5928,16 @@
    "byArm": {
     "off": {
      "runs": 9,
-     "success": 7,
-     "wallMsMedian": 36737,
-     "wallMsMean": 39421,
-     "llmStepsMean": 10.4,
+     "success": 8,
+     "wallMsMedian": 35259,
+     "wallMsMean": 36190,
+     "llmStepsMean": 9.7,
      "llmStepsMedian": 9,
-     "tokensMedian": 36438,
-     "tokensMean": 43106,
-     "inputTokensMean": 41530,
-     "outputTokensMean": 1575,
-     "pageActionsMean": 2.9,
+     "tokensMedian": 34170,
+     "tokensMean": 37538,
+     "inputTokensMean": 36240,
+     "outputTokensMean": 1298,
+     "pageActionsMean": 2.3,
      "actCalls": 0,
      "actSteps": 0,
      "actNonDone": 0,
@@ -5973,45 +5948,45 @@
     },
     "on": {
      "runs": 9,
-     "success": 8,
-     "wallMsMedian": 38418,
-     "wallMsMean": 42473,
-     "llmStepsMean": 10.4,
-     "llmStepsMedian": 9,
-     "tokensMedian": 36514,
-     "tokensMean": 44052,
-     "inputTokensMean": 42381,
-     "outputTokensMean": 1672,
-     "pageActionsMean": 2.3,
+     "success": 9,
+     "wallMsMedian": 34012,
+     "wallMsMean": 37867,
+     "llmStepsMean": 9.3,
+     "llmStepsMedian": 8,
+     "tokensMedian": 29528,
+     "tokensMean": 39108,
+     "inputTokensMean": 37821,
+     "outputTokensMean": 1287,
+     "pageActionsMean": 3.1,
      "actCalls": 0,
      "actSteps": 0,
      "actNonDone": 0,
      "actStatuses": {},
      "vonDecides": 0,
      "vonMs": 0,
-     "approvalsMean": 3.2
+     "approvalsMean": 3.6
     },
     "forced": {
      "runs": 9,
-     "success": 7,
-     "wallMsMedian": 49000,
-     "wallMsMean": 70556,
-     "llmStepsMean": 11.7,
-     "llmStepsMedian": 10,
-     "tokensMedian": 36464,
-     "tokensMean": 50635,
-     "inputTokensMean": 47479,
-     "outputTokensMean": 3156,
+     "success": 5,
+     "wallMsMedian": 53941,
+     "wallMsMean": 56158,
+     "llmStepsMean": 11.2,
+     "llmStepsMedian": 8,
+     "tokensMedian": 37466,
+     "tokensMean": 47714,
+     "inputTokensMean": 45094,
+     "outputTokensMean": 2620,
      "pageActionsMean": 1.7,
-     "actCalls": 12,
-     "actSteps": 9,
-     "actNonDone": 12,
+     "actCalls": 9,
+     "actSteps": 8,
+     "actNonDone": 2,
      "actStatuses": {
-      "repeat": 4,
-      "uncertain": 8
+      "uncertain": 2,
+      "done": 7
      },
-     "vonDecides": 45,
-     "vonMs": 13495,
+     "vonDecides": 28,
+     "vonMs": 8025,
      "approvalsMean": 2.8
     }
    },
@@ -6019,15 +5994,35 @@
     "form": {
      "off": {
       "runs": 3,
+      "success": 2,
+      "wallMsMedian": 38758,
+      "wallMsMean": 39615,
+      "llmStepsMean": 11,
+      "llmStepsMedian": 12,
+      "tokensMedian": 48619,
+      "tokensMean": 43980,
+      "inputTokensMean": 42407,
+      "outputTokensMean": 1574,
+      "pageActionsMean": 4,
+      "actCalls": 0,
+      "actSteps": 0,
+      "actNonDone": 0,
+      "actStatuses": {},
+      "vonDecides": 0,
+      "vonMs": 0,
+      "approvalsMean": 2.3
+     },
+     "on": {
+      "runs": 3,
       "success": 3,
-      "wallMsMedian": 56994,
-      "wallMsMean": 58877,
-      "llmStepsMean": 14.3,
-      "llmStepsMedian": 14,
-      "tokensMedian": 62087,
-      "tokensMean": 62679,
-      "inputTokensMean": 60169,
-      "outputTokensMean": 2510,
+      "wallMsMedian": 54918,
+      "wallMsMean": 52778,
+      "llmStepsMean": 13,
+      "llmStepsMedian": 13,
+      "tokensMedian": 58191,
+      "tokensMean": 58654,
+      "inputTokensMean": 56440,
+      "outputTokensMean": 2214,
       "pageActionsMean": 6.3,
       "actCalls": 0,
       "actSteps": 0,
@@ -6037,81 +6032,61 @@
       "vonMs": 0,
       "approvalsMean": 3.7
      },
-     "on": {
-      "runs": 3,
-      "success": 2,
-      "wallMsMedian": 61123,
-      "wallMsMean": 57814,
-      "llmStepsMean": 14.3,
-      "llmStepsMedian": 15,
-      "tokensMedian": 71858,
-      "tokensMean": 61465,
-      "inputTokensMean": 58450,
-      "outputTokensMean": 3015,
-      "pageActionsMean": 4,
-      "actCalls": 0,
-      "actSteps": 0,
-      "actNonDone": 0,
-      "actStatuses": {},
-      "vonDecides": 0,
-      "vonMs": 0,
-      "approvalsMean": 2.7
-     },
      "forced": {
       "runs": 3,
       "success": 1,
-      "wallMsMedian": 105425,
-      "wallMsMean": 115107,
-      "llmStepsMean": 19.7,
-      "llmStepsMedian": 19,
-      "tokensMedian": 71301,
-      "tokensMean": 86016,
-      "inputTokensMean": 78829,
-      "outputTokensMean": 7187,
-      "pageActionsMean": 2,
-      "actCalls": 3,
-      "actSteps": 0,
-      "actNonDone": 3,
+      "wallMsMedian": 85795,
+      "wallMsMean": 66036,
+      "llmStepsMean": 14,
+      "llmStepsMedian": 16,
+      "tokensMedian": 77469,
+      "tokensMean": 60872,
+      "inputTokensMean": 56619,
+      "outputTokensMean": 4254,
+      "pageActionsMean": 2.3,
+      "actCalls": 1,
+      "actSteps": 1,
+      "actNonDone": 1,
       "actStatuses": {
-       "uncertain": 3
+       "uncertain": 1
       },
-      "vonDecides": 3,
-      "vonMs": 775,
-      "approvalsMean": 1.7
+      "vonDecides": 4,
+      "vonMs": 821,
+      "approvalsMean": 2
      }
     },
     "shop": {
      "off": {
       "runs": 3,
-      "success": 1,
-      "wallMsMedian": 24712,
-      "wallMsMean": 26764,
-      "llmStepsMean": 9,
-      "llmStepsMedian": 9,
-      "tokensMedian": 36438,
-      "tokensMean": 35642,
-      "inputTokensMean": 34401,
-      "outputTokensMean": 1241,
-      "pageActionsMean": 0.3,
+      "success": 3,
+      "wallMsMedian": 29680,
+      "wallMsMean": 29501,
+      "llmStepsMean": 7.7,
+      "llmStepsMedian": 7,
+      "tokensMedian": 28882,
+      "tokensMean": 31911,
+      "inputTokensMean": 31226,
+      "outputTokensMean": 686,
+      "pageActionsMean": 1,
       "actCalls": 0,
       "actSteps": 0,
       "actNonDone": 0,
       "actStatuses": {},
       "vonDecides": 0,
       "vonMs": 0,
-      "approvalsMean": 1.7
+      "approvalsMean": 3
      },
      "on": {
       "runs": 3,
       "success": 3,
-      "wallMsMedian": 31203,
-      "wallMsMean": 32127,
-      "llmStepsMean": 8,
-      "llmStepsMedian": 8,
-      "tokensMedian": 34137,
-      "tokensMean": 34427,
-      "inputTokensMean": 33501,
-      "outputTokensMean": 926,
+      "wallMsMedian": 28766,
+      "wallMsMean": 28509,
+      "llmStepsMean": 7,
+      "llmStepsMedian": 7,
+      "tokensMedian": 29528,
+      "tokensMean": 30107,
+      "inputTokensMean": 29418,
+      "outputTokensMean": 689,
       "pageActionsMean": 1,
       "actCalls": 0,
       "actSteps": 0,
@@ -6123,40 +6098,40 @@
      },
      "forced": {
       "runs": 3,
-      "success": 3,
-      "wallMsMedian": 40434,
-      "wallMsMean": 39675,
-      "llmStepsMean": 6.3,
-      "llmStepsMedian": 7,
-      "tokensMedian": 29832,
-      "tokensMean": 29517,
-      "inputTokensMean": 28704,
-      "outputTokensMean": 813,
-      "pageActionsMean": 1,
-      "actCalls": 3,
-      "actSteps": 3,
-      "actNonDone": 3,
+      "success": 1,
+      "wallMsMedian": 57054,
+      "wallMsMean": 54881,
+      "llmStepsMean": 11,
+      "llmStepsMedian": 8,
+      "tokensMedian": 38388,
+      "tokensMean": 50624,
+      "inputTokensMean": 48307,
+      "outputTokensMean": 2318,
+      "pageActionsMean": 0.7,
+      "actCalls": 2,
+      "actSteps": 1,
+      "actNonDone": 1,
       "actStatuses": {
-       "repeat": 1,
-       "uncertain": 2
+       "done": 1,
+       "uncertain": 1
       },
-      "vonDecides": 18,
-      "vonMs": 6412,
-      "approvalsMean": 2.7
+      "vonDecides": 6,
+      "vonMs": 2835,
+      "approvalsMean": 2.3
      }
     },
     "dialog": {
      "off": {
       "runs": 3,
       "success": 3,
-      "wallMsMedian": 33128,
-      "wallMsMean": 32622,
-      "llmStepsMean": 8,
-      "llmStepsMedian": 8,
-      "tokensMedian": 32044,
-      "tokensMean": 30995,
-      "inputTokensMean": 30020,
-      "outputTokensMean": 975,
+      "wallMsMedian": 38371,
+      "wallMsMean": 39452,
+      "llmStepsMean": 10.3,
+      "llmStepsMedian": 10,
+      "tokensMedian": 34170,
+      "tokensMean": 36724,
+      "inputTokensMean": 35088,
+      "outputTokensMean": 1636,
       "pageActionsMean": 2,
       "actCalls": 0,
       "actSteps": 0,
@@ -6169,14 +6144,14 @@
      "on": {
       "runs": 3,
       "success": 3,
-      "wallMsMedian": 36995,
-      "wallMsMean": 37477,
-      "llmStepsMean": 9,
-      "llmStepsMedian": 10,
-      "tokensMedian": 36514,
-      "tokensMean": 36265,
-      "inputTokensMean": 35191,
-      "outputTokensMean": 1074,
+      "wallMsMedian": 34012,
+      "wallMsMean": 32315,
+      "llmStepsMean": 8,
+      "llmStepsMedian": 8,
+      "tokensMedian": 28613,
+      "tokensMean": 28563,
+      "inputTokensMean": 27604,
+      "outputTokensMean": 958,
       "pageActionsMean": 2,
       "actCalls": 0,
       "actSteps": 0,
@@ -6189,24 +6164,23 @@
      "forced": {
       "runs": 3,
       "success": 3,
-      "wallMsMedian": 52297,
-      "wallMsMean": 56887,
-      "llmStepsMean": 9,
-      "llmStepsMedian": 10,
-      "tokensMedian": 36464,
-      "tokensMean": 36371,
-      "inputTokensMean": 34903,
-      "outputTokensMean": 1468,
+      "wallMsMedian": 46977,
+      "wallMsMean": 47556,
+      "llmStepsMean": 8.7,
+      "llmStepsMedian": 8,
+      "tokensMedian": 28886,
+      "tokensMean": 31644,
+      "inputTokensMean": 30356,
+      "outputTokensMean": 1289,
       "pageActionsMean": 2,
       "actCalls": 6,
       "actSteps": 6,
-      "actNonDone": 6,
+      "actNonDone": 0,
       "actStatuses": {
-       "uncertain": 3,
-       "repeat": 3
+       "done": 6
       },
-      "vonDecides": 24,
-      "vonMs": 6308,
+      "vonDecides": 18,
+      "vonMs": 4369,
       "approvalsMean": 4
      }
     }
@@ -6446,9 +6420,9 @@
   }
  },
  "verdict": [
-  "p50 decide 219 ms <= ~300 ms: latency OK (84/84 MatMulNBits nodes on WebGPU; 1369 nodes on WebGPU, 540 partitioned to CPU)",
-  "grounding Von 0.963 vs LLM 0.889 (delta 0.074): not clearly below the LLM",
-  "first-operation gate cleared in 42/54 grounding cases (correct operation AND above the gate in 40; expected control in the candidate set in 54/54); e2e: 12/12 Act calls ended non-done, 9 Act actions in total",
-  "WebGPU parity max|dp| 0.00243, argmax flips 0 (4 golden cases)"
+  "p50 decide 220 ms <= ~300 ms: latency OK (84/84 MatMulNBits nodes on WebGPU; 1369 nodes on WebGPU, 540 partitioned to CPU)",
+  "grounding Von 0.963 vs LLM 0.907 (delta 0.056): not clearly below the LLM",
+  "first-operation gate cleared in 51/54 grounding cases (correct operation AND above the gate in 45; expected control in the candidate set in 54/54); e2e: 2/9 Act calls ended non-done, 8 Act actions in total",
+  "WebGPU parity max|dp| 0.00733, argmax flips 0 (4 golden cases)"
  ]
 }
