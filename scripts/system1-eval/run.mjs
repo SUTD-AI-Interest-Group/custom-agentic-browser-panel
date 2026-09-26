@@ -351,7 +351,7 @@ async function phaseGrounding(ctx, lab, fixtureUrl) {
       llmInput: targets[0] ? { state: targets[0].req.state, instructions: targets[0].req.questions[targets[0].key].instructions, options: candidateOptions } : null,
     }
     out.push(row)
-    log(`ground ${i} ${c.page} "${c.goal}" → ${row.picked} p=${round(row.top, 3)} ${row.correct ? 'OK' : 'WRONG'}${row.tournament ? ' (tournament)' : ''} op=${operation?.choice}/${round(operation?.top, 2)}${operation?.correct ? '' : ` (expected ${r.forced})`} rank=${row.candidateRank} ${row.targetMs}ms`)
+    log(`ground ${i} ${c.page} "${c.goal}" → ${row.picked} p=${round(row.top, 3)} ${row.correct ? 'OK' : 'WRONG'}${row.tournament ? ' (tournament)' : ''} op=${operation?.choice}/${round(operation?.top, 2)}${row.operation?.correct ? '' : ` (expected ${r.forced})`} rank=${row.candidateRank} ${row.targetMs}ms`)
   }
   await tab.close()
   return out

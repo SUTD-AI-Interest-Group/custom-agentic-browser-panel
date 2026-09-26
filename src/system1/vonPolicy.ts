@@ -3,10 +3,16 @@
 // shares, then asks Von lazily: `operation`, then `target_<OP>` over that
 // operation's targets only, then `value`, and `blocked_reason` after BLOCKED.
 //
-// Why the controls live in the prefix: Von 1.2 scores each option against the
-// prefix ALONE — options never attend to each other. Anything a question must
-// discriminate on has to be in the state, and a target option only "sees" its
-// sibling controls (the 36 other "Add … to cart" buttons) through this block.
+// Why the controls live in the OPERATION head's prefix: Von 1.2 scores each
+// option against the prefix ALONE — options never attend to each other — so an
+// operation option ("Click one of the listed controls") can only tell CLICK
+// from SCROLL_DOWN if the state says what is on screen. A target head's options
+// ARE the controls, each carrying its own line, so its state omits the list:
+// measured 2026-09-27 (eval README), listing the controls in every head cost
+// ~10× the tokens per pass (shop page: 4.4 s per pick vs 0.2 s) and dropped
+// grounding from 0.685 to 0.481 — the marker's own line drowned in 40 copies
+// of its siblings. Each head's prefix carries exactly what it must
+// discriminate on, nothing more.
 //
 // Every renderer here is exported so the fine-tune pipeline can render a
 // training row through the very code that builds the request at inference —
@@ -51,8 +57,12 @@ export function renderControl(c: BrowserControl): string {
   return parts.join(' ')
 }
 
-/** The shared state block. `shownIds` is the ranked selection; lines render in document order. */
-export function renderState(ctx: DecisionContext, shownIds: readonly number[]): string {
+/**
+ * The shared state block. `shownIds` is the ranked selection; lines render in
+ * document order. `controls: false` renders the block without the control
+ * list — what the target and value heads get, whose options are the controls.
+ */
+export function renderState(ctx: DecisionContext, shownIds: readonly number[], opts: { controls?: boolean } = {}): string {
   const { observation: obs, space } = ctx
   const yn = (b: boolean) => (b ? 'yes' : 'no')
   const lines = [
@@ -61,12 +71,14 @@ export function renderState(ctx: DecisionContext, shownIds: readonly number[]): 
     `State: scroll down: ${yn(obs.state.canScrollDown)}; scroll up: ${yn(obs.state.canScrollUp)}` +
       (obs.state.focusedId !== undefined ? `; focused: [${obs.state.focusedId}]` : ''),
   ]
-  const byId = new Map(obs.controls.map((c) => [c.id, c]))
-  const shown = [...shownIds].sort((a, b) => a - b).map((id) => byId.get(id)).filter((c): c is BrowserControl => !!c)
-  if (obs.controls.length === 0) lines.push('Controls: none')
-  else {
-    lines.push(shown.length < obs.controls.length ? `Controls (${shown.length} of ${obs.controls.length} shown):` : `Controls (${obs.controls.length}):`)
-    for (const c of shown) lines.push(renderControl(c))
+  if (opts.controls !== false) {
+    const byId = new Map(obs.controls.map((c) => [c.id, c]))
+    const shown = [...shownIds].sort((a, b) => a - b).map((id) => byId.get(id)).filter((c): c is BrowserControl => !!c)
+    if (obs.controls.length === 0) lines.push('Controls: none')
+    else {
+      lines.push(shown.length < obs.controls.length ? `Controls (${shown.length} of ${obs.controls.length} shown):` : `Controls (${obs.controls.length}):`)
+      for (const c of shown) lines.push(renderControl(c))
+    }
   }
   lines.push(`Provided values: ${space.valueKeys.join(', ') || 'none'}`)
   const recent = ctx.steps.slice(-RECENT_STEPS)
@@ -159,13 +171,16 @@ export function createVonPolicy(decide: (req: DecideRequest) => Promise<DecideRe
       const { space, observation: obs } = ctx
       const byId = new Map(obs.controls.map((c) => [c.id, c]))
       let shown = space.shown
-      let state = renderState(ctx, shown)
       let ms = 0
       // One question, with the token-budget fallback: on Von's over-length
-      // error, shrink the shown list once (never below MIN_SHOWN) and retry;
-      // a second overflow is the caller's problem, stated, never silent.
-      const ask = async (questions: Record<string, DecideQuestion>): Promise<DecideResult> => {
+      // error, shrink the shown list (never below MIN_SHOWN) and retry; once
+      // it cannot shrink further the overflow is the caller's problem, stated,
+      // never silent. Only the operation head lists the controls; a target
+      // head's overflow (its options) cannot be shrunk here and is bounded by
+      // TARGET_CHUNK instead.
+      const ask = async (questions: Record<string, DecideQuestion>, withControls: boolean): Promise<DecideResult> => {
         for (;;) {
+          const state = renderState(ctx, shown, { controls: withControls })
           try {
             const r = await decide({ state, questions })
             ms += r.ms
@@ -173,14 +188,13 @@ export function createVonPolicy(decide: (req: DecideRequest) => Promise<DecideRe
           } catch (err) {
             if (!isTooLong(err)) throw err
             const next = Math.max(MIN_SHOWN, Math.floor(shown.length / 2))
-            if (next >= shown.length) throw new PolicyInputError('the page is too dense for the local model even with the shortest control list')
+            if (!withControls || next >= shown.length) throw new PolicyInputError('the page is too dense for the local model even with the shortest control list')
             shown = shown.slice(0, next)
-            state = renderState(ctx, shown)
           }
         }
       }
 
-      const opRes = await ask({ operation: operationQuestion(space) })
+      const opRes = await ask({ operation: operationQuestion(space) }, true)
       const op = opRes.answers.operation
       const decision: BrowserDecision = { operation: op.choice as BrowserOperation, confidence: { operation: op.top }, ms }
       if (op.top < threshold) return { ...decision, ms }
@@ -192,14 +206,14 @@ export function createVonPolicy(decide: (req: DecideRequest) => Promise<DecideRe
         if (pool.length > TARGET_CHUNK) {
           const winners: BrowserControl[] = []
           for (const chunk of targetChunks(pool)) {
-            const r = await ask({ [key]: targetQuestion(decision.operation, chunk) })
+            const r = await ask({ [key]: targetQuestion(decision.operation, chunk) }, false)
             const w = chunk.find((c) => String(c.id) === r.answers[key].choice)
             if (!w) throw new Error('System-1 returned an unknown choice')
             winners.push(w)
           }
           finalists = winners
         }
-        const r = await ask({ [key]: targetQuestion(decision.operation, finalists) })
+        const r = await ask({ [key]: targetQuestion(decision.operation, finalists) }, false)
         const ans = r.answers[key]
         decision.confidence.target = ans.top
         decision.ranked = Object.entries(ans.probabilities)
@@ -212,13 +226,13 @@ export function createVonPolicy(decide: (req: DecideRequest) => Promise<DecideRe
         if (isFieldOperation(decision.operation)) {
           const control = byId.get(decision.targetId)
           if (control) {
-            const v = await ask({ value: valueQuestion(control, ctx.values) })
+            const v = await ask({ value: valueQuestion(control, ctx.values) }, false)
             decision.valueKey = v.answers.value.choice
             decision.confidence.value = v.answers.value.top
           }
         }
       } else if (decision.operation === 'BLOCKED') {
-        const b = await ask({ blocked_reason: blockedQuestion() })
+        const b = await ask({ blocked_reason: blockedQuestion() }, true)
         decision.blockedReason = b.answers.blocked_reason.choice as BlockedReason
         decision.confidence.blockedReason = b.answers.blocked_reason.top
       }

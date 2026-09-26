@@ -99,6 +99,15 @@ describe('renderState', () => {
     ].join('\n'))
   })
 
+  it('omits the control list for the target/value heads (controls: false) and keeps everything else', () => {
+    const ctx = ctxOf([el(0), el(1)], { values: { v: 'x' } })
+    const s = renderState(ctx, [0, 1], { controls: false })
+    expect(s).not.toContain('Controls')
+    expect(s).not.toContain('[0]')
+    expect(s).toContain('Provided values: v')
+    expect(s).toContain('State: scroll down')
+  })
+
   it('says how many controls are hidden, and renders the empty cases', () => {
     const ctx = ctxOf([el(0), el(1), el(2)])
     expect(renderState(ctx, [1])).toContain('Controls (1 of 3 shown):\n[1] button "Button 1" → click\nProvided values: none\nRecent actions: none')
@@ -149,7 +158,10 @@ describe('createVonPolicy.decide', () => {
     expect(d.ranked?.[0]).toEqual({ id: 2, p: 0.7 })
     expect(d.ranked).toHaveLength(3)
     expect(s.calls.map((c) => Object.keys(c.questions))).toEqual([['operation'], ['target_CLICK']])
-    expect(s.calls[0].state).toBe(s.calls[1].state)
+    // The operation head's state lists the controls; the target head's does not (its options are the controls).
+    expect(s.calls[0].state).toContain('Controls (3):')
+    expect(s.calls[1].state).not.toContain('Controls')
+    expect(s.calls[1].state).toContain('Goal: add the blue mug to the cart')
     // Target options are the control lines, over CLICK targets only (all three here), keyed by id.
     expect(s.calls[1].questions.target_CLICK.options).toEqual({ '0': '[0] button "Cart" → click', '1': '[1] textbox "Email" → click, type', '2': '[2] button "Add blue mug" → click' })
   })
@@ -198,6 +210,13 @@ describe('createVonPolicy.decide', () => {
     await expect(createVonPolicy(hopeless.decide).decide(ctxOf(elements))).rejects.toBeInstanceOf(PolicyInputError)
     // 50 → 25 → 12 → 10 → stop (never below MIN_SHOWN)
     expect(hopeless.calls.map((c) => (c.state.match(/^\[\d+\]/gm) ?? []).length)).toEqual([50, 25, 12, MIN_SHOWN])
+
+    // A target head cannot shrink its way out: its overflow is stated at once.
+    const targetOverflow = scripted({ operation: 'CLICK', target: '0' })
+    let n = 0
+    const decideT = async (req: DecideRequest) => { n++; if ('target_CLICK' in req.questions) throw Object.assign(new Error('long'), { code: 'too-long' }); return targetOverflow.decide(req) }
+    await expect(createVonPolicy(decideT).decide(ctxOf([el(0), el(1)]))).rejects.toBeInstanceOf(PolicyInputError)
+    expect(n).toBe(2)
   })
 
   it('surfaces an unknown target choice as an error, and any other engine error verbatim', async () => {
