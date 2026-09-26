@@ -30,10 +30,16 @@ NEG = -30000.0  # representable in fp16; exp() underflows to exactly 0 either wa
 PROB_TOL = 0.03
 
 
-def load_reference():
+def load_reference(checkpoint=None):
+    """The pinned Von 1.2, or a fine-tuned directory written by scripts/von-finetune/train.py."""
     files = ["config.json", "model.safetensors", "option_marker.pt", "tokenizer.json",
              "tokenizer_config.json", "marker_calibration.json"]
-    paths = {f: hf_hub_download(REPO, f, revision=REVISION) for f in files}
+    if checkpoint:
+        paths = {f: os.path.join(checkpoint, f) for f in files}
+        missing = [f for f, p in paths.items() if not os.path.exists(p)]
+        assert not missing, f"--checkpoint {checkpoint} lacks {missing}"
+    else:
+        paths = {f: hf_hub_download(REPO, f, revision=REVISION) for f in files}
     ckpt_dir = os.path.dirname(paths["config.json"])
     model = OptionMarkerModel(base_model_id=ckpt_dir)
     model.load_state_dict(torch.load(paths["option_marker.pt"], map_location="cpu", weights_only=True), strict=True)
@@ -218,12 +224,17 @@ def main():
     ap.add_argument("--ship", choices=["q8", "fp16w"], help="ship this variant instead of the first to pass the gate")
     ap.add_argument("--accept-drift", action="store_true", help="with --ship: ship it even if it fails parity")
     ap.add_argument("--out", default=OUT, help=f"output directory (default {OUT})")
+    ap.add_argument("--checkpoint", default=None,
+                    help="export a fine-tuned dir (scripts/von-finetune/train.py) instead of the pinned Von 1.2")
     args = ap.parse_args()
     if bool(args.ship) != args.accept_drift:
         ap.error("--ship and --accept-drift go together (without them the gate picks the variant)")
     out = args.out
     os.makedirs(out, exist_ok=True)
-    model, calib, paths = load_reference()
+    model, calib, paths = load_reference(args.checkpoint)
+    # A fine-tuned export must not rewrite the committed golden fixture (its
+    # logits are the pinned model's); it gets its own copy beside the ship set.
+    golden_path = os.path.join(out, "von-golden.json") if args.checkpoint else GOLDEN
     tok = model.tokenizer
     w = int(model.encoder.config.sliding_window)
     print(f"[export] sliding_window={w} mask={model.mask_token_id}")
@@ -348,7 +359,10 @@ def main():
     manifest = {
         "format": 1, "model": von["model"], "variant": name, "requiresShaderF16": requires_f16,
         "parity": parity,  # provenance only: the extension ignores it
-        "source": {"repo": REPO, "revision": REVISION},
+        "source": {"repo": REPO, "revision": REVISION,
+                   **({"finetune": {"optionMarkerSha256": sha256(paths["option_marker.pt"]),
+                                    "calibration": {"temperature": von["temperature"], "calibrationMap": von["calibrationMap"]}}}
+                      if args.checkpoint else {})},
         "files": [{"path": f, "bytes": os.path.getsize(os.path.join(out, f)),
                    "sha256": sha256(os.path.join(out, f))} for f in files],
     }
@@ -365,10 +379,10 @@ def main():
         golden["cases"].append({**case, "packed": packed, "ids": ids, "optionIds": oid, "positionIds": pid,
                                 "markers": mk, "stateTokens": st, "logits": ref.tolist(),
                                 "probs": calibrate(ref, st, calib)})
-    os.makedirs(os.path.dirname(GOLDEN), exist_ok=True)
-    with open(GOLDEN, "w") as f:
+    os.makedirs(os.path.dirname(golden_path), exist_ok=True)
+    with open(golden_path, "w") as f:
         json.dump(golden, f)
-    print(f"[export] wrote {GOLDEN}")
+    print(f"[export] wrote {golden_path}")
 
 
 if __name__ == "__main__":

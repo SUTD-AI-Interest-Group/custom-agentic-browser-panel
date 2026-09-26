@@ -277,7 +277,8 @@ async function phaseDownload(panel) {
 
 // ---------------------------------------------------------------------------
 async function phaseParity(lab) {
-  const golden = JSON.parse(fs.readFileSync(path.join(repo, 'src/system1/__fixtures__/von-golden.json'), 'utf8'))
+  // A fine-tuned export carries its own golden (export.py --checkpoint writes it beside the ship set).
+  const golden = JSON.parse(fs.readFileSync(env.EVAL_GOLDEN ?? path.join(repo, 'src/system1/__fixtures__/von-golden.json'), 'utf8'))
   const rows = []
   for (const [i, c] of golden.cases.entries()) {
     const options = Object.fromEntries(c.options.map((o, k) => [String(k), o]))

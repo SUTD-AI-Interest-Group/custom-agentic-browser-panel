@@ -26,3 +26,6 @@ dist/
 .superpowers/
 
 scripts/export-von/out/
+
+# Von fine-tuning pipeline outputs (pages, teacher labels, rendered rows, checkpoints)
+scripts/von-finetune/data/

@@ -8,7 +8,8 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-export const REPORT_PATH = path.join(path.dirname(fileURLToPath(import.meta.url)), 'report.json')
+// EVAL_REPORT lets a candidate model (e.g. a fine-tune) report beside, not over, the baseline.
+export const REPORT_PATH = process.env.EVAL_REPORT ?? path.join(path.dirname(fileURLToPath(import.meta.url)), 'report.json')
 const SECTIONS = ['env', 'download', 'parity', 'bootMs', 'model', 'grounding', 'llm', 'e2e', 'epPlacement']
 const round = (x, n = 3) => Math.round(x * 10 ** n) / 10 ** n
 
