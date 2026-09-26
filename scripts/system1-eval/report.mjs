@@ -43,7 +43,9 @@ export function verdict(r) {
     out.push(`grounding Von ${g.accuracyTop1} vs LLM ${r.llm.accuracyTop1} (delta ${round(d)})${d < -0.05 ? ': Von clearly below the LLM: KILL condition met' : ': not clearly below the LLM'}`)
   }
   if (g) {
-    let clause = `first-move gate cleared in ${g.moveAboveGate}/${g.cases} grounding cases`
+    const gate = g.operationAboveGate ?? g.moveAboveGate
+    let clause = `first-operation gate cleared in ${gate}/${g.cases} grounding cases` +
+      (g.operationCorrectAboveGate != null ? ` (correct operation AND above the gate in ${g.operationCorrectAboveGate}; expected control in the candidate set in ${g.expectedInSpace}/${g.cases})` : '')
     const rows = r.e2e?.rows ?? []
     const acts = rows.flatMap((x) => x.actStatuses ?? [])
     if (acts.length) {

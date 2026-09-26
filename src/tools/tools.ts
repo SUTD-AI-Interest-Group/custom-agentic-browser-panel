@@ -43,6 +43,7 @@ import { saveArtifact, updateArtifactContent } from '../data/artifacts'
 import { createProposeResearchTool } from './research'
 import type { System1Runtime } from '../system1/runtime'
 import { runActLoop, ACT_DEFAULT_STEPS, ACT_MAX_STEPS, type ActResult, type ExecOutcome } from '../system1/actLoop'
+import { createVonPolicy } from '../system1/vonPolicy'
 import { buildCatalog, searchCatalog, partitionToolNames, type CatalogEntry } from './toolDiscovery'
 import {
   hasElementChanged,
@@ -50,6 +51,7 @@ import {
   runControlStep,
   type ControlSession,
   type ControlSpec,
+  type ElementIdentity,
 } from './pageControl'
 
 // ---------------------------------------------------------------------------
@@ -538,7 +540,14 @@ export function createAgentTools(
   // step logic (session/tab checks, foreground park, presence re-mount, origin-drift
   // handling, the point-of-no-return card with its post-approval re-check, and
   // runControlStep) without duplicating it. Verbatim move — see ControlPage below.
-  const controlStep = async (spec: ControlSpec) => {
+  //
+  // `expect` is the Act loop's revalidation (candidate-action doc §30): what
+  // the policy saw at spec.index. Checked against THIS body's own fresh
+  // snapshot, so it costs no extra injection, and refused as `stale` before
+  // the point-of-no-return card — a card must describe what will actually
+  // happen. ControlPage passes none: the chat model's indices come from its
+  // own last read and it re-reads on failure.
+  const controlStep = async (spec: ControlSpec, opts: { expect?: ElementIdentity } = {}) => {
     const session = pageControl.session()
     if (!session || !session.active)
       return { error: 'No page-control session is open. Call RequestPageControl first.' }
@@ -607,6 +616,7 @@ export function createAgentTools(
       return { error: `Cannot read this page (${err instanceof Error ? err.message : String(err)}).` }
     }
     const el = spec.index !== undefined ? snap.elements[spec.index] : undefined
+    if (opts.expect && hasElementChanged(opts.expect, el)) return { stale: true as const }
     const por = isPointOfNoReturn(spec, el, session.origin)
     if (por) {
       const approved = await requestApproval({
@@ -1659,7 +1669,7 @@ export function createAgentTools(
 
     Act: tool({
       description:
-        `Experimental fast page control. Within an open page-control session, hand a short routine sub-goal ("add the blue variant to the cart", "fill the shipping form") to a local decision model that takes up to ${ACT_MAX_STEPS} steps (click, type, select, scroll, wait) without waiting on you. It can only type/select values you pass in \`values\` (by name, verbatim), never navigates, and never touches password/payment fields. Submits and leaving the site still ask the user. ALWAYS read the returned status: done/blocked/uncertain/denied/drifted/repeat/capped/error/parked/aborted — on anything but done, continue with ControlPage (uncertain returns the top candidates). Use ControlPage for single precise actions, sensitive fields and navigation. Call Act one at a time; don't combine with ControlPage in the same step.`,
+        `Experimental fast page control. Within an open page-control session, hand a short routine sub-goal ("add the blue variant to the cart", "fill the shipping form") to a local decision model that takes up to ${ACT_MAX_STEPS} steps (CLICK, TYPE_TEXT, SELECT_OPTION, SCROLL_DOWN/UP, WAIT) chosen only from the controls actually on screen, without waiting on you. It can only type/select values you pass in \`values\` (by name, verbatim), never navigates, and never touches password/payment fields. Submits and leaving the site still ask the user. ALWAYS read the returned status: done/blocked/uncertain/denied/drifted/repeat/capped/error/parked/aborted — on anything but done, continue with ControlPage (uncertain returns the top candidates; blocked carries a reason; each step reports success/no_change/stale). Use ControlPage for single precise actions, sensitive fields and navigation. Call Act one at a time; don't combine with ControlPage in the same step.`,
       inputSchema: z.object({
         // Bounded: the goal is embedded in every prompt the local model packs,
         // and an unbounded one would overflow its small token budget.
@@ -1677,12 +1687,13 @@ export function createAgentTools(
         // loop reads the page and asks the local model before its first step.
         if (!(await isForeground(tab))) return parkFor(tab, 'act on this page')
         const tabId = tab.id
-        const result = await runActLoop({ goal, values, maxSteps }, {
+        const { transitions: _transitions, ...result } = await runActLoop({ goal, values, maxSteps }, {
           snapshot: () => snapshotPage(tabId),
-          decide: (req) => system1!.decide(req),
+          policy: createVonPolicy((req) => system1!.decide(req)),
           aborted: () => abortSignal?.aborted === true,
-          execute: async (spec): Promise<ExecOutcome> => {
-            const r = (await controlStep(spec)) as Record<string, unknown>
+          execute: async (action): Promise<ExecOutcome> => {
+            const r = (await controlStep(action.spec, { expect: action.expect?.fingerprint })) as Record<string, unknown>
+            if (r.stale) return { kind: 'stale' }
             if (r.denied) return { kind: 'denied' }
             if (r.parked) return { kind: 'parked', note: String(r.note ?? '') }
             if (r.drifted) return { kind: 'drifted', message: String(r.message ?? ''), elements: r.elements as string | undefined }
@@ -1691,6 +1702,9 @@ export function createAgentTools(
             return { kind: 'ok', elements: String(r.elements ?? '') }
           },
         })
+        // Transitions carry page text for the eval (which calls runActLoop
+        // directly); they never reach the model or storage.
+        void _transitions
         // `values` are never echoed. Steps carry labels and indices, but the page
         // itself reflects what was typed — the next snapshot's registry renders a
         // field's current value, and an unlabeled field's name falls back to it —

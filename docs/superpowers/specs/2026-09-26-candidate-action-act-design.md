@@ -251,10 +251,10 @@ dataset gains nothing from unasked heads.
 `uncertain` with a stated reason. The list is truncated explicitly with a count,
 never the tokens silently.
 
-**Eval LLM policy** (`scripts/system1-eval/llmPolicy.mjs`, not shipped): the
-same `renderState` plus "Answer with the operation and, if any, the [N] of the
-target" to LM Studio at temperature 0. This is what makes the Von-vs-LLM
-comparison fair (doc §46–48).
+**Eval LLM baseline** (`run.mjs`'s `llm` phase, not shipped): the same rendered
+state block and the same target options Von's final round saw, put to LM Studio
+at temperature 0 with "answer with the [N]". No separate module: reusing the
+recorded request is what makes the Von-vs-LLM comparison fair (doc §46–48).
 
 ## 5. Validation and execution
 
@@ -371,8 +371,7 @@ do not depend on the format) and the old-format fine-tune remains the candidate.
 
 ## Files
 
-New: `src/system1/{observation,candidates,policy,vonPolicy,validate}.ts` + tests,
-`scripts/system1-eval/llmPolicy.mjs`.
+New: `src/system1/{observation,candidates,policy,vonPolicy,validate}.ts` + tests.
 Touched: `src/system1/actLoop.ts` (+test), `src/platform/domIndex.ts` (+test),
 `src/tools/pageControl.ts` (`hasElementChanged` type), `src/tools/tools.ts`
 (`controlStep` expect, `Act` wiring), `src/ui/Chat.tsx` if the Act card reads

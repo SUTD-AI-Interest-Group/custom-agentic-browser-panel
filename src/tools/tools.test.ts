@@ -469,12 +469,12 @@ describe('Act (System-1)', () => {
       return { ok: true, message: 'typed', registry: `[0] email "Email" value="${SECRET}"`, origin: 'https://example.com' }
     })
     const decide = vi.fn()
-      .mockResolvedValueOnce(answer('move', 'act'))
-      .mockResolvedValueOnce(answer('target', '0'))
+      .mockResolvedValueOnce(answer('operation', 'TYPE_TEXT'))
+      .mockResolvedValueOnce(answer('target_TYPE_TEXT', '0'))
       .mockResolvedValueOnce(answer('value', 'email'))
-      .mockResolvedValueOnce(answer('move', 'act'))
+      .mockResolvedValueOnce(answer('operation', 'TYPE_TEXT'))
       // Low-confidence target → `uncertain`, which returns candidates + elements.
-      .mockResolvedValueOnce({ answers: { target: { choice: '1', probabilities: { '1': 0.4, '0': 0.3 }, top: 0.4, confidence: 0.1 } }, ms: 1 })
+      .mockResolvedValueOnce({ answers: { target_TYPE_TEXT: { choice: '1', probabilities: { '1': 0.4, '0': 0.3 }, top: 0.4, confidence: 0.1 } }, ms: 1 })
     const tools = buildInSession(decide)
     const r = (await (tools.Act as any).execute(
       { goal: 'fill the email', values: { email: SECRET } },
@@ -511,9 +511,9 @@ describe('Act (System-1)', () => {
 
   describe('maps every controlStep outcome to an Act status', () => {
     const clickFirst = () => vi.fn()
-      .mockResolvedValueOnce(answer('move', 'act'))
-      .mockResolvedValueOnce(answer('target', '0'))
-      .mockResolvedValue(answer('move', 'DONE'))
+      .mockResolvedValueOnce(answer('operation', 'CLICK'))
+      .mockResolvedValueOnce(answer('target_CLICK', '0'))
+      .mockResolvedValue(answer('operation', 'DONE'))
     const run = (tools: any) => (tools.Act as any).execute({ goal: 'click it' }, { toolCallId: 't', messages: [] })
 
     it('denied — the point-of-no-return card is refused', async () => {
@@ -581,7 +581,7 @@ describe('Act (System-1)', () => {
     const ctrl = new AbortController()
     const decide = vi.fn(async () => {
       ctrl.abort() // Stop pressed while the first step is being decided
-      return answer('move', 'scroll_down')
+      return answer('operation', 'SCROLL_DOWN')
     })
     const tools = buildInSession(decide)
     const r = (await (tools.Act as any).execute(

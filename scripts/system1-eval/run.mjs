@@ -305,40 +305,53 @@ async function phaseGrounding(ctx, lab, fixtureUrl) {
     for (const sel of c.setup ?? []) await tab.click(sel)
     await sleep(150)
     const tabId = await lab.evaluate(async (u) => (await chrome.tabs.query({})).find((t) => t.url === u)?.id, tab.url())
-    const r = await lab.evaluate(([id, goal, values]) => globalThis.__s1eval.groundCase(id, goal, values), [tabId, c.goal, c.values])
     const expected = [].concat(c.expect.name)
+    const r = await lab.evaluate(([id, goal, values, exp]) => globalThis.__s1eval.groundCase(id, goal, values, exp), [tabId, c.goal, c.values, expected])
     const targets = r.calls.filter((k) => k.kind === 'target')
-    const final = targets.at(-1)?.res?.answers?.target
+    const last = targets.at(-1)
+    const final = last?.res?.answers?.[last.key]
     const byIdx = new Map(r.elements.map((e) => [String(e.index), e]))
     const picked = final ? byIdx.get(final.choice) : undefined
-    const move = r.calls.find((k) => k.kind === 'move')?.res?.answers?.move
+    const operation = r.calls.find((k) => k.kind === 'operation')?.res?.answers?.operation
     const value = r.calls.find((k) => k.kind === 'value')?.res?.answers?.value
     const expectedPresent = r.elements.some((e) => expected.includes(e.name))
-    const candidateOptions = targets.length > 1 ? Object.assign({}, ...targets.slice(0, -1).map((k) => k.req.questions.target.options)) : targets[0]?.req.questions.target.options
+    const candidateOptions = targets.length > 1 ? Object.assign({}, ...targets.slice(0, -1).map((k) => k.req.questions[k.key].options)) : targets[0]?.req.questions[targets[0].key].options
+    // Candidate-generation metrics (doc §52): was the right control in the
+    // forced operation's target list at all, at what rank, and was it among
+    // the controls the state block showed? A miss here is the candidate
+    // builder's error, not the policy's.
+    const space = r.transitions?.[0]?.space
+    const expectedId = r.elements.find((e) => expected.includes(e.name))?.index
+    const targetList = space && r.forced ? space.targets[r.forced] ?? [] : []
+    const expectedInSpace = expectedId !== undefined && targetList.includes(expectedId)
     const row = {
-      i, page: c.page, goal: c.goal, expected, expectedPresent,
+      i, page: c.page, goal: c.goal, expected, expectedPresent, expectedInSpace,
+      candidateRank: expectedInSpace ? targetList.indexOf(expectedId) + 1 : null,
+      expectedShown: expectedId !== undefined && !!space?.shown.includes(expectedId),
       nElements: r.elements.length, nCandidates: candidateOptions ? Object.keys(candidateOptions).length : 0,
+      space: space ? { operations: space.operations, stats: space.stats } : null,
       tournament: targets.length > 1,
       // Every target round: the tournament's chunk rounds, then the final one.
       rounds: targets.map((k) => {
-        const a = k.res?.answers?.target
-        const opts = Object.keys(k.req.questions.target.options)
+        const a = k.res?.answers?.[k.key]
+        const opts = Object.keys(k.req.questions[k.key].options)
         const hasExpected = opts.some((o) => expected.includes(byIdx.get(o)?.name))
         return { options: opts.length, hasExpected, choice: a ? byIdx.get(a.choice)?.name : null, top: round(a?.top, 3) }
       }),
       picked: picked?.name ?? null, correct: !!picked && expected.includes(picked.name), top: final?.top ?? null,
       status: r.status,
-      move: move ? { choice: move.choice, top: round(move.top) } : null,
+      // The operation head's REAL answer (it was forced to `forced` for the target measurement).
+      operation: operation ? { choice: operation.choice, top: round(operation.top), forced: r.forced, correct: operation.choice === r.forced } : null,
       value: value ? { choice: value.choice, top: round(value.top), correct: c.expect.valueKey ? value.choice === c.expect.valueKey : null } : null,
       expectedValueKey: c.expect.valueKey ?? null,
       decideMs: r.calls.filter((k) => k.res).map((k) => ({ kind: k.kind, ms: k.res.ms, wallMs: k.res.wallMs })),
       targetMs: targets.reduce((a, k) => a + (k.res?.ms ?? 0), 0),
       errors: r.calls.filter((k) => k.error).map((k) => k.error),
-      // For the LLM baseline: the same state and the same full candidate list.
-      llmInput: targets[0] ? { state: targets[0].req.state, instructions: targets[0].req.questions.target.instructions, options: candidateOptions } : null,
+      // For the LLM baseline: the same state block and the same full candidate list.
+      llmInput: targets[0] ? { state: targets[0].req.state, instructions: targets[0].req.questions[targets[0].key].instructions, options: candidateOptions } : null,
     }
     out.push(row)
-    log(`ground ${i} ${c.page} "${c.goal}" → ${row.picked} p=${round(row.top, 3)} ${row.correct ? 'OK' : 'WRONG'}${row.tournament ? ' (tournament)' : ''} move=${move?.choice}/${round(move?.top, 2)} ${row.targetMs}ms`)
+    log(`ground ${i} ${c.page} "${c.goal}" → ${row.picked} p=${round(row.top, 3)} ${row.correct ? 'OK' : 'WRONG'}${row.tournament ? ' (tournament)' : ''} op=${operation?.choice}/${round(operation?.top, 2)}${operation?.correct ? '' : ` (expected ${r.forced})`} rank=${row.candidateRank} ${row.targetMs}ms`)
   }
   await tab.close()
   return out
@@ -363,21 +376,26 @@ function summarizeGrounding(rows) {
     })),
     tournamentCases: rows.filter((r) => r.tournament).length,
     tournamentCorrect: rows.filter((r) => r.tournament && r.correct).length,
-    moveActRate: round(rows.filter((r) => r.move?.choice === 'act').length / rows.length, 3),
-    moveActAboveGate: rows.filter((r) => r.move?.choice === 'act' && r.move.top >= 0.6).length,
-    // The loop's FIRST gate: a move below ACT_CONFIDENCE returns `uncertain`
-    // before any target is chosen, so this is how often the shipped loop would
-    // get past its first question on these pages at all.
-    moveAboveGate: rows.filter((r) => r.move && r.move.top >= 0.6).length,
-    moveTop: { p50: pct(rows.filter((r) => r.move).map((r) => r.move.top), 50), max: Math.max(...rows.filter((r) => r.move).map((r) => r.move.top)) },
-    moveChoices: rows.reduce((a, r) => { const k = r.move?.choice ?? 'none'; a[k] = (a[k] ?? 0) + 1; return a }, {}),
+    // Candidate generation (doc §52): the right control was a target of the
+    // expected operation / was shown in the state block / its rank in the list.
+    expectedInSpace: rows.filter((r) => r.expectedInSpace).length,
+    expectedShown: rows.filter((r) => r.expectedShown).length,
+    candidateRank: { p50: pct(rows.filter((r) => r.candidateRank).map((r) => r.candidateRank), 50), max: Math.max(0, ...rows.filter((r) => r.candidateRank).map((r) => r.candidateRank)) },
+    operationCorrect: rows.filter((r) => r.operation?.correct).length,
+    operationCorrectAboveGate: rows.filter((r) => r.operation?.correct && r.operation.top >= 0.6).length,
+    // The loop's FIRST gate: an operation below ACT_CONFIDENCE returns
+    // `uncertain` before any target is chosen, so this is how often the shipped
+    // loop would get past its first question on these pages at all.
+    operationAboveGate: rows.filter((r) => r.operation && r.operation.top >= 0.6).length,
+    operationTop: { p50: pct(rows.filter((r) => r.operation).map((r) => r.operation.top), 50), max: Math.max(...rows.filter((r) => r.operation).map((r) => r.operation.top)) },
+    operationChoices: rows.reduce((a, r) => { const k = r.operation?.choice ?? 'none'; a[k] = (a[k] ?? 0) + 1; return a }, {}),
     // Tournament diagnosis: did the chunk containing the right element pick it?
     tournamentChunkWins: rows.filter((r) => r.tournament).filter((r) => r.rounds.slice(0, -1).some((x) => x.hasExpected && r.expected.includes(x.choice))).length,
     valueKey: { asked: valueRows.length, correct: valueRows.filter((r) => r.value.correct).length },
     decideMs: {
       all: { n: all.length, p50: pct(all.map((d) => d.ms), 50), p95: pct(all.map((d) => d.ms), 95), max: Math.max(...all.map((d) => d.ms)) },
       warm: { n: warm.length, p50: pct(warm, 50), p95: pct(warm, 95) },
-      move: { p50: pct(byKind('move'), 50), p95: pct(byKind('move'), 95) },
+      operation: { p50: pct(byKind('operation'), 50), p95: pct(byKind('operation'), 95) },
       target: { p50: pct(byKind('target'), 50), p95: pct(byKind('target'), 95) },
       value: { p50: pct(byKind('value'), 50), p95: pct(byKind('value'), 95) },
       targetPickPerCase: { p50: pct(rows.map((r) => r.targetMs), 50), p95: pct(rows.map((r) => r.targetMs), 95) },
@@ -647,7 +665,8 @@ function printSummary(r, skipped) {
     const g = r.grounding
     console.log(`Grounding: ${g.correct}/${g.cases} = ${g.accuracyTop1}  (tournament ${g.tournamentCorrect}/${g.tournamentCases})`, JSON.stringify(g.byPage))
     console.log(`Tournament: the chunk holding the right element picked it in ${g.tournamentChunkWins}/${g.tournamentCases}`)
-    console.log(`Move question: ${g.moveAboveGate}/${g.cases} above ACT_CONFIDENCE (p50 top ${g.moveTop.p50}, max ${g.moveTop.max})`, JSON.stringify(g.moveChoices))
+    console.log(`Candidate set: expected control a target in ${g.expectedInSpace}/${g.cases}, shown in the state block in ${g.expectedShown}/${g.cases}, rank p50 ${g.candidateRank.p50} max ${g.candidateRank.max}`)
+    console.log(`Operation question: correct ${g.operationCorrect}/${g.cases}, above ACT_CONFIDENCE ${g.operationAboveGate}/${g.cases}, correct AND above ${g.operationCorrectAboveGate}/${g.cases} (p50 top ${g.operationTop.p50}, max ${g.operationTop.max})`, JSON.stringify(g.operationChoices))
     console.log(`Value key: ${g.valueKey.correct}/${g.valueKey.asked} (asked only when the target cleared the gate)`)
     console.log('decide ms:', JSON.stringify(g.decideMs))
     console.table(g.thresholds)

@@ -202,9 +202,12 @@ export function isPointOfNoReturn(
  * card is still on screen — the user approves what the card said, but the
  * element that actually gets clicked may no longer match it.
  */
+/** The identity fields compared — also the shape src/system1/observation.ts's ControlFingerprint carries. */
+export type ElementIdentity = Pick<IndexedElement, 'name' | 'type' | 'href' | 'sensitive' | 'tag'>
+
 export function hasElementChanged(
-  before: IndexedElement | undefined,
-  after: IndexedElement | undefined,
+  before: ElementIdentity | undefined,
+  after: ElementIdentity | undefined,
 ): boolean {
   if (!before && !after) return false
   if (!before || !after) return true

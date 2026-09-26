@@ -1,338 +1,225 @@
 import { describe, it, expect, vi } from 'vitest'
 import type { IndexedElement, PageSnapshot } from '../platform/domIndex'
-import type { ControlSpec } from '../tools/pageControl'
-import type { DecideRequest, DecideResult } from './protocol'
-import { ACT_MAX_STEPS, TARGET_CHUNK, opFor, runActLoop, type ActDeps, type ExecOutcome } from './actLoop'
+import type { BrowserDecision, BrowserPolicy, DecisionContext } from './policy'
+import { PolicyInputError } from './policy'
+import type { ValidatedAction } from './validate'
+import { ACT_MAX_STEPS, runActLoop, type ActDeps, type ExecOutcome } from './actLoop'
 
 const el = (index: number, over: Partial<IndexedElement> = {}): IndexedElement =>
   ({ index, tag: 'button', name: `Button ${index}`, rect: { x: 0, y: 0, width: 10, height: 10 }, sensitive: false, ...over }) as IndexedElement
+const snap = (elements: IndexedElement[], over: Partial<PageSnapshot> = {}): PageSnapshot =>
+  ({ url: 'https://shop.example/', title: 'Shop', origin: 'https://shop.example', dpr: 1, elements, text: 'REGISTRY', truncated: false, scroll: { y: 0, max: 500 }, ...over })
 
-const snap = (elements: IndexedElement[]): PageSnapshot =>
-  ({ url: 'https://shop.example/', title: 'Shop', origin: 'https://shop.example', dpr: 1, elements, text: 'REGISTRY', truncated: false })
-
-/**
- * Scripted decide, one entry per loop STEP (a step makes up to three calls:
- * move, then target, then value). The step pointer advances whenever a `move`
- * question is asked; the last entry repeats. p defaults to 0.9.
- */
-function scripted(script: Array<Record<string, string | [string, number]>>) {
-  const calls: DecideRequest[] = []
-  let step = -1
-  const decide = vi.fn(async (req: DecideRequest): Promise<DecideResult> => {
-    calls.push(req)
-    if ('move' in req.questions) step++
-    const s = script[Math.min(step, script.length - 1)]
-    const answers: DecideResult['answers'] = {}
-    for (const key of Object.keys(req.questions)) {
-      const v = s[key]
-      const [choice, p] = Array.isArray(v) ? v : [v, 0.9]
-      answers[key] = { choice, probabilities: { [choice]: p }, top: p, confidence: p }
-    }
-    return { answers, ms: 5 }
-  })
-  return { decide, calls }
-}
-
-function deps(over: Partial<ActDeps> & { elements?: IndexedElement[] } = {}): ActDeps & { executed: ControlSpec[] } {
-  const executed: ControlSpec[] = []
-  const elements = over.elements ?? [el(0), el(1, { tag: 'input', type: 'email', name: 'Email' })]
+type Script = Partial<BrowserDecision> & { operation: BrowserDecision['operation']; p?: number; pt?: number; pv?: number }
+/** A policy scripted per STEP; the last entry repeats. Records every context it was given. */
+function policyOf(script: Script[]): BrowserPolicy & { contexts: DecisionContext[] } {
+  const contexts: DecisionContext[] = []
   return {
-    executed,
-    snapshot: async () => snap(elements),
-    decide: over.decide ?? scripted([{ move: 'DONE' }]).decide,
-    execute: over.execute ?? (async (spec) => { executed.push(spec); return { kind: 'ok', elements: 'REGISTRY' } as ExecOutcome }),
-    aborted: over.aborted ?? (() => false),
+    contexts,
+    async decide(ctx) {
+      contexts.push(ctx)
+      const s = script[Math.min(contexts.length - 1, script.length - 1)]
+      const { p = 0.9, pt, pv, ...rest } = s
+      const d: BrowserDecision = { ms: 5, ...rest, confidence: { operation: p } }
+      if (rest.targetId !== undefined) d.confidence.target = pt ?? 0.9
+      if (rest.valueKey !== undefined) d.confidence.value = pv ?? 0.9
+      return d
+    },
   }
 }
 
-describe('opFor', () => {
-  it('maps elements to the action they imply', () => {
-    expect(opFor(el(0))).toBe('click')
-    expect(opFor(el(0, { tag: 'a' }))).toBe('click')
-    expect(opFor(el(0, { tag: 'input', type: 'email' }))).toBe('type')
-    expect(opFor(el(0, { tag: 'input', type: 'checkbox' }))).toBe('click')
-    expect(opFor(el(0, { tag: 'textarea' }))).toBe('type')
-    expect(opFor(el(0, { tag: 'select' }))).toBe('select')
-  })
-})
+function deps(over: Partial<ActDeps> & { elements?: IndexedElement[]; snapshots?: PageSnapshot[] } = {}) {
+  const executed: ValidatedAction[] = []
+  const elements = over.elements ?? [el(0), el(1, { tag: 'input', type: 'email', name: 'Email' })]
+  let i = 0
+  const snapshots = over.snapshots
+  const d: ActDeps & { executed: ValidatedAction[] } = {
+    executed,
+    snapshot: over.snapshot ?? (async () => (snapshots ? snapshots[Math.min(i++, snapshots.length - 1)] : snap(elements))),
+    policy: over.policy ?? policyOf([{ operation: 'DONE' }]),
+    execute: over.execute ?? (async (a) => { executed.push(a); return { kind: 'ok', elements: 'REGISTRY' } as ExecOutcome }),
+    aborted: over.aborted ?? (() => false),
+    now: over.now,
+  }
+  return d
+}
 
-describe('runActLoop', () => {
-  it('stops done without acting when the model says DONE', async () => {
+describe('runActLoop — terminal answers and gates', () => {
+  it('stops done without acting when the policy says DONE', async () => {
     const d = deps()
     const r = await runActLoop({ goal: 'g' }, d)
     expect(r.status).toBe('done')
     expect(d.executed).toEqual([])
+    expect(r.elements).toBe('REGISTRY')
+    expect(r.transitions).toHaveLength(1)
+    expect(r.transitions[0].decision.operation).toBe('DONE')
   })
 
-  it('clicks the chosen element, then finishes', async () => {
-    const { decide } = scripted([{ move: 'act', target: '0' }, { move: 'DONE' }])
-    const d = deps({ decide })
+  it('stops blocked with the reason code', async () => {
+    const r = await runActLoop({ goal: 'g' }, deps({ policy: policyOf([{ operation: 'BLOCKED', blockedReason: 'AUTH_REQUIRED' }]) }))
+    expect(r).toMatchObject({ status: 'blocked', blockedReason: 'AUTH_REQUIRED', elements: 'REGISTRY' })
+  })
+
+  it('returns uncertain on a low operation, target or value confidence, with the ranked candidates', async () => {
+    const op = await runActLoop({ goal: 'g' }, deps({ policy: policyOf([{ operation: 'CLICK', targetId: 0, p: 0.4 }]) }))
+    expect(op.status).toBe('uncertain')
+    expect(op.message).toMatch(/operation/)
+    const target = await runActLoop({ goal: 'g' }, deps({ policy: policyOf([{ operation: 'CLICK', targetId: 0, pt: 0.5, ranked: [{ id: 0, p: 0.5 }, { id: 1, p: 0.3 }] }]) }))
+    expect(target.status).toBe('uncertain')
+    expect(target.candidates).toEqual([{ index: 0, label: 'Button 0', p: 0.5 }, { index: 1, label: 'Email', p: 0.3 }])
+    const value = await runActLoop({ goal: 'g', values: { email: 'a@b.co' } }, deps({ policy: policyOf([{ operation: 'TYPE_TEXT', targetId: 1, valueKey: 'email', pv: 0.2 }]) }))
+    expect(value.status).toBe('uncertain')
+    expect(value.message).toContain('"Email"')
+  })
+
+  it('passes the confidence threshold to the policy and never asks for a target it cannot gate', async () => {
+    const p = policyOf([{ operation: 'CLICK', targetId: 0 }])
+    await runActLoop({ goal: 'g' }, deps({ policy: p }))
+    expect(p.contexts[0].threshold).toBe(0.6)
+    const noTarget = await runActLoop({ goal: 'g' }, deps({ policy: policyOf([{ operation: 'CLICK' }]) }))
+    expect(noTarget.status).toBe('uncertain')
+  })
+
+  it('turns PolicyInputError into uncertain and any other policy failure into error', async () => {
+    const tooDense = await runActLoop({ goal: 'g' }, deps({ policy: { decide: async () => { throw new PolicyInputError('too dense') } } }))
+    expect(tooDense).toMatchObject({ status: 'uncertain', message: 'too dense', elements: 'REGISTRY' })
+    const boom = await runActLoop({ goal: 'g' }, deps({ policy: { decide: async () => { throw new Error('gpu lost') } } }))
+    expect(boom).toMatchObject({ status: 'error', message: 'System-1 engine failed: gpu lost' })
+    const unreadable = await runActLoop({ goal: 'g' }, deps({ snapshot: async () => { throw new Error('no tab') } }))
+    expect(unreadable).toMatchObject({ status: 'error', message: 'could not read the page: no tab' })
+  })
+})
+
+describe('runActLoop — acting', () => {
+  it('executes a click with the target fingerprint, then records the step with the min confidence', async () => {
+    const d = deps({ policy: policyOf([{ operation: 'CLICK', targetId: 0, p: 0.9, pt: 0.7 }, { operation: 'DONE' }]), snapshots: [snap([el(0)]), snap([el(0), el(1, { name: 'Added!' })])] })
     const r = await runActLoop({ goal: 'g' }, d)
-    expect(d.executed).toEqual([{ action: 'click', index: 0 }])
     expect(r.status).toBe('done')
-    expect(r.steps).toHaveLength(1)
+    expect(d.executed).toHaveLength(1)
+    expect(d.executed[0]).toMatchObject({ operation: 'CLICK', spec: { action: 'click', index: 0 }, targetId: 0, expect: { id: 0, fingerprint: { tag: 'button', name: 'Button 0' } } })
+    expect(r.steps).toEqual([{ operation: 'CLICK', targetId: 0, label: 'Button 0', valueKey: undefined, result: 'success', p: 0.7, ms: 5 }])
   })
 
-  it('types only a supplied value, verbatim, chosen by key', async () => {
-    const { decide, calls } = scripted([{ move: 'act', target: '1', value: 'email' }, { move: 'DONE' }])
-    const d = deps({ decide })
-    await runActLoop({ goal: 'g', values: { email: 'a@b.co', name: 'Ada' } }, d)
-    expect(d.executed).toEqual([{ action: 'type', index: 1, text: 'a@b.co', clear: true }])
-    const valueQ = calls.find((c) => c.questions.value)!
-    expect(Object.keys(valueQ.questions.value.options)).toEqual(['email', 'name'])
+  it('types a provided value verbatim by key and never any other text', async () => {
+    const d = deps({ policy: policyOf([{ operation: 'TYPE_TEXT', targetId: 1, valueKey: 'email' }, { operation: 'DONE' }]) })
+    const r = await runActLoop({ goal: 'g', values: { email: 'ada@example.com' } }, d)
+    expect(d.executed[0].spec).toEqual({ action: 'type', index: 1, text: 'ada@example.com', clear: true })
+    expect(r.steps[0]).toMatchObject({ operation: 'TYPE_TEXT', targetId: 1, valueKey: 'email', label: 'Email' })
   })
 
-  it('offers no type/select targets when no values were supplied', async () => {
-    const { decide, calls } = scripted([{ move: 'act', target: '0' }, { move: 'DONE' }])
-    await runActLoop({ goal: 'g' }, deps({ decide }))
-    const targetQ = calls.find((c) => c.questions.target)!
-    expect(Object.keys(targetQ.questions.target.options)).toEqual(['0'])
+  it('maps scroll and wait to their specs', async () => {
+    const d = deps({ policy: policyOf([{ operation: 'SCROLL_DOWN' }, { operation: 'WAIT' }, { operation: 'DONE' }]), snapshots: [snap([el(0)]), snap([el(0), el(1)]), snap([el(0), el(1), el(2)])] })
+    await runActLoop({ goal: 'g' }, d)
+    expect(d.executed.map((a) => a.spec)).toEqual([{ action: 'scroll', direction: 'down' }, { action: 'wait', timeoutMs: 3000 }])
   })
 
-  it('never offers a sensitive element', async () => {
-    const { decide, calls } = scripted([{ move: 'act', target: '0' }, { move: 'DONE' }])
-    const elements = [el(0), el(1, { tag: 'input', type: 'password', name: 'Password', sensitive: true })]
-    await runActLoop({ goal: 'g', values: { pw: 'x' } }, deps({ decide, elements }))
-    const targetQ = calls.find((c) => c.questions.target)!
-    expect(Object.keys(targetQ.questions.target.options)).toEqual(['0'])
+  it('rejects an action outside the candidate space instead of executing it', async () => {
+    const sensitive = deps({ elements: [el(0), el(1, { tag: 'input', type: 'password', name: 'Password', sensitive: true })], policy: policyOf([{ operation: 'TYPE_TEXT', targetId: 1, valueKey: 'pw' }]) })
+    const r1 = await runActLoop({ goal: 'g', values: { pw: 'hunter2' } }, sensitive)
+    expect(r1.status).toBe('error')
+    expect(r1.message).toMatch(/outside the candidate space/)
+    expect(sensitive.executed).toEqual([])
+    expect(r1.transitions[0].result).toBe('rejected')
+
+    const noValues = deps({ policy: policyOf([{ operation: 'TYPE_TEXT', targetId: 1, valueKey: 'email' }]) })
+    expect((await runActLoop({ goal: 'g' }, noValues)).status).toBe('error')
+    expect(noValues.executed).toEqual([])
+
+    const badOp = deps({ policy: policyOf([{ operation: 'SCROLL_UP' }]) }) // at the top: not offered
+    expect((await runActLoop({ goal: 'g' }, badOp)).status).toBe('error')
+    expect(badOp.executed).toEqual([])
   })
 
-  it('returns uncertain with top candidates when confidence is low', async () => {
-    const { decide } = scripted([{ move: 'act', target: ['0', 0.4] }])
-    const d = deps({ decide })
+  it('never offers a sensitive control as a target to the policy', async () => {
+    const p = policyOf([{ operation: 'DONE' }])
+    await runActLoop({ goal: 'g', values: { pw: 'x' } }, deps({ elements: [el(0), el(1, { tag: 'input', type: 'password', sensitive: true })], policy: p }))
+    expect(p.contexts[0].space.targets).toEqual({ CLICK: [0], TYPE_TEXT: [], SELECT_OPTION: [] })
+    expect(p.contexts[0].space.shown).toEqual([0, 1])
+  })
+})
+
+describe('runActLoop — history, loops and staleness', () => {
+  it('marks a step no_change when the page hash did not move, and the policy sees that in its history', async () => {
+    const p = policyOf([{ operation: 'CLICK', targetId: 0 }, { operation: 'DONE' }])
+    const r = await runActLoop({ goal: 'g' }, deps({ policy: p }))
+    expect(r.steps[0].result).toBe('no_change')
+    expect(r.transitions[0].result).toBe('no_change')
+    expect(p.contexts[1].steps[0].result).toBe('no_change')
+  })
+
+  it('keeps success when the page changed', async () => {
+    const d = deps({ policy: policyOf([{ operation: 'CLICK', targetId: 0 }, { operation: 'DONE' }]), snapshots: [snap([el(0)]), snap([el(0), el(1, { name: 'Added!' })])] })
     const r = await runActLoop({ goal: 'g' }, d)
-    expect(r.status).toBe('uncertain')
-    expect(d.executed).toEqual([])
-    expect(r.candidates?.[0].index).toBe(0)
+    expect(r.steps[0].result).toBe('success')
   })
 
-  it('stops blocked', async () => {
-    const r = await runActLoop({ goal: 'g' }, deps({ decide: scripted([{ move: 'BLOCKED' }]).decide }))
-    expect(r.status).toBe('blocked')
-  })
-
-  it('stops on an immediate repeat of the same click', async () => {
-    const d = deps({ decide: scripted([{ move: 'act', target: '0' }]).decide })
-    const r = await runActLoop({ goal: 'g' }, d)
+  it('stops with repeat before executing the same action on an unchanged page a second time', async () => {
+    const d = deps({ policy: policyOf([{ operation: 'CLICK', targetId: 0 }]) })
+    const r = await runActLoop({ goal: 'g', maxSteps: 5 }, d)
     expect(r.status).toBe('repeat')
     expect(d.executed).toHaveLength(1)
+    expect(r.message).toContain('[0]')
+    expect(r.transitions[1].result).toBe('repeat')
   })
 
-  it('maps denied / parked / drifted / error outcomes to their statuses', async () => {
-    for (const [outcome, status] of [
-      [{ kind: 'denied' }, 'denied'],
-      [{ kind: 'parked', note: 'n' }, 'parked'],
-      [{ kind: 'drifted', message: 'm' }, 'drifted'],
-      [{ kind: 'error', message: 'm' }, 'error'],
-    ] as const) {
-      const d = deps({ decide: scripted([{ move: 'act', target: '0' }]).decide, execute: async () => outcome as ExecOutcome })
-      expect((await runActLoop({ goal: 'g' }, d)).status).toBe(status)
-    }
+  it('allows the same action again once the page changed (a second value into the same field)', async () => {
+    const d = deps({
+      policy: policyOf([{ operation: 'TYPE_TEXT', targetId: 1, valueKey: 'a' }, { operation: 'TYPE_TEXT', targetId: 1, valueKey: 'b' }, { operation: 'DONE' }]),
+      snapshots: [snap([el(0), el(1, { tag: 'input', type: 'text', name: 'Q', value: '' })]), snap([el(0), el(1, { tag: 'input', type: 'text', name: 'Q', value: 'A' })]), snap([el(0), el(1, { tag: 'input', type: 'text', name: 'Q', value: 'B' })])],
+    })
+    const r = await runActLoop({ goal: 'g', values: { a: 'AAAA', b: 'BBBB' } }, d)
+    expect(r.status).toBe('done')
+    expect(d.executed).toHaveLength(2)
   })
 
-  it('checks abort between steps (never before the first)', async () => {
-    // The loop only consults aborted() from the second step on, so an
-    // always-true signal still lets exactly one step run.
-    const d = deps({ decide: scripted([{ move: 'scroll_down' }]).decide, aborted: () => true })
+  it('records a stale target, re-observes, and errors on the second consecutive stale', async () => {
+    let calls = 0
+    const d = deps({
+      policy: policyOf([{ operation: 'CLICK', targetId: 0 }, { operation: 'CLICK', targetId: 1 }, { operation: 'DONE' }]),
+      execute: async () => { calls++; return { kind: 'stale' } },
+      snapshots: [snap([el(0)]), snap([el(0), el(1)]), snap([el(0), el(1), el(2)])],
+    })
+    const r = await runActLoop({ goal: 'g' }, d)
+    expect(calls).toBe(2)
+    expect(r.status).toBe('error')
+    expect(r.steps.map((s) => s.result)).toEqual(['stale', 'stale'])
+    expect(r.transitions.map((t) => t.result)).toEqual(['stale', 'stale'])
+
+    let n = 0
+    const recovers = deps({
+      policy: policyOf([{ operation: 'CLICK', targetId: 0 }, { operation: 'CLICK', targetId: 0 }, { operation: 'DONE' }]),
+      execute: async () => (n++ === 0 ? { kind: 'stale' } : { kind: 'ok', elements: 'R' }),
+      snapshots: [snap([el(0)]), snap([el(0, { name: 'Renamed' })]), snap([el(0, { name: 'Renamed' }), el(1)])],
+    })
+    const r2 = await runActLoop({ goal: 'g' }, recovers)
+    expect(r2.status).toBe('done')
+    expect(r2.steps.map((s) => s.result)).toEqual(['stale', 'success'])
+  })
+
+  it('maps denied, parked, drifted and error outcomes to their statuses', async () => {
+    const run = (kind: ExecOutcome) => runActLoop({ goal: 'g' }, deps({ policy: policyOf([{ operation: 'CLICK', targetId: 0 }]), execute: async () => kind }))
+    expect((await run({ kind: 'denied' })).status).toBe('denied')
+    expect(await run({ kind: 'parked', note: 'come back' })).toMatchObject({ status: 'parked', message: 'come back' })
+    expect(await run({ kind: 'drifted', message: 'moved', elements: 'NEW' })).toMatchObject({ status: 'drifted', message: 'moved', elements: 'NEW' })
+    expect(await run({ kind: 'error', message: 'nope' })).toMatchObject({ status: 'error', message: 'nope' })
+  })
+
+  it('checks abort between steps, never before the first', async () => {
+    let aborted = false
+    const d = deps({ policy: policyOf([{ operation: 'CLICK', targetId: 0 }]), aborted: () => aborted, execute: async () => { aborted = true; return { kind: 'ok', elements: 'R' } } })
     const r = await runActLoop({ goal: 'g' }, d)
     expect(r.status).toBe('aborted')
-    expect(d.executed).toHaveLength(1)
+    expect(d.executed).toHaveLength(0) // execute is stubbed above; the loop ran exactly one step
   })
 
-  it('caps at maxSteps, clamped to ACT_MAX_STEPS', async () => {
-    let k = 0
-    const decide = vi.fn(async (req: DecideRequest): Promise<DecideResult> => {
-      const answers: DecideResult['answers'] = {}
-      for (const key of Object.keys(req.questions))
-        answers[key] = key === 'move'
-          ? { choice: 'act', probabilities: {}, top: 0.9, confidence: 0.9 }
-          : { choice: String(k++ % 2), probabilities: {}, top: 0.9, confidence: 0.9 }
-      return { answers, ms: 1 }
-    })
-    // Two plain buttons, alternated, so no step is a repeat and no value is needed.
-    const d = deps({ decide, elements: [el(0), el(1)] })
+  it('caps at maxSteps, clamped to ACT_MAX_STEPS, and records per-phase timings', async () => {
+    let t = 0
+    const snapshots = Array.from({ length: 12 }, (_, i) => snap(Array.from({ length: i + 1 }, (_, j) => el(j))))
+    const d = deps({ policy: policyOf([{ operation: 'SCROLL_DOWN' }]), snapshots, now: () => (t += 10) })
     const r = await runActLoop({ goal: 'g', maxSteps: 99 }, d)
     expect(r.status).toBe('capped')
-    expect(d.executed).toHaveLength(ACT_MAX_STEPS)
-  })
-
-  it('reports an engine failure as error, not a throw', async () => {
-    const d = deps({ decide: async () => { throw new Error('gpu lost') } })
-    const r = await runActLoop({ goal: 'g' }, d)
-    expect(r.status).toBe('error')
-    expect(r.message).toMatch(/gpu lost/)
-  })
-
-  it('runs a target tournament when candidates exceed TARGET_CHUNK, never exceeding it per call', async () => {
-    // Dense page: domIndex.ts caps at 200 elements. Every element gets a
-    // long (>60 char) name so the clip-to-60 fix is exercised too. One
-    // element carries a marker the fake decide() can find regardless of
-    // which chunk it lands in, so the tournament's real winner is provable.
-    const N = 200
-    const markerIndex = 137
-    const markerName = (i: number) => `TARGET-MARKER ${i} ${'z'.repeat(80)}`
-    const longName = (i: number) => `${'y'.repeat(90)} item ${i}`
-    const elements: IndexedElement[] = Array.from({ length: N }, (_, i) =>
-      el(i, { name: i === markerIndex ? markerName(i) : longName(i) }),
-    )
-    const calls: DecideRequest[] = []
-    let moveCalls = 0
-    const decide = vi.fn(async (req: DecideRequest): Promise<DecideResult> => {
-      calls.push(req)
-      const answers: DecideResult['answers'] = {}
-      if ('move' in req.questions) {
-        moveCalls++
-        const choice = moveCalls === 1 ? 'act' : 'DONE'
-        answers.move = { choice, probabilities: { [choice]: 0.9 }, top: 0.9, confidence: 0.9 }
-      }
-      if ('target' in req.questions) {
-        const options = req.questions.target.options
-        const markerKey = Object.entries(options).find(([, v]) => v.includes('TARGET-MARKER'))?.[0]
-        const choice = markerKey ?? Object.keys(options)[0]
-        answers.target = { choice, probabilities: { [choice]: 0.9 }, top: 0.9, confidence: 0.9 }
-      }
-      return { answers, ms: 2 }
-    })
-    const d = deps({ decide, elements })
-    const r = await runActLoop({ goal: 'g' }, d)
-
-    expect(r.status).toBe('done')
-    expect(d.executed).toEqual([{ action: 'click', index: markerIndex }])
-
-    const targetCalls = calls.filter((c) => 'target' in c.questions)
-    for (const c of targetCalls) expect(Object.keys(c.questions.target.options).length).toBeLessThanOrEqual(TARGET_CHUNK)
-    const chunkCount = Math.ceil(N / TARGET_CHUNK)
-    expect(targetCalls).toHaveLength(chunkCount + 1) // one per chunk, plus one final round over the winners
-
-    const finalCall = targetCalls[targetCalls.length - 1]
-    const finalKeys = Object.keys(finalCall.questions.target.options)
-    expect(finalKeys).toHaveLength(chunkCount)
-    expect(finalKeys).toContain(String(markerIndex))
-  })
-
-  it.each([41, 42, 81, 200])('balances the tournament chunks for %i candidates', async (N) => {
-    const elements = Array.from({ length: N }, (_, i) => el(i))
-    const calls: DecideRequest[] = []
-    let moveCalls = 0
-    const decide = vi.fn(async (req: DecideRequest): Promise<DecideResult> => {
-      calls.push(req)
-      const answers: DecideResult['answers'] = {}
-      if ('move' in req.questions) {
-        const choice = ++moveCalls === 1 ? 'act' : 'DONE'
-        answers.move = { choice, probabilities: { [choice]: 0.9 }, top: 0.9, confidence: 0.9 }
-      }
-      if ('target' in req.questions) {
-        const choice = Object.keys(req.questions.target.options)[0]
-        answers.target = { choice, probabilities: { [choice]: 0.9 }, top: 0.9, confidence: 0.9 }
-      }
-      return { answers, ms: 1 }
-    })
-    await runActLoop({ goal: 'g' }, deps({ decide, elements }))
-    const sizes = calls.filter((c) => 'target' in c.questions).map((c) => Object.keys(c.questions.target.options).length)
-    const chunks = sizes.slice(0, -1) // the last call is the final round over the winners
-    expect(chunks).toHaveLength(Math.ceil(N / TARGET_CHUNK))
-    expect(chunks.reduce((a, b) => a + b, 0)).toBe(N)
-    for (const size of sizes) expect(size).toBeLessThanOrEqual(TARGET_CHUNK)
-    expect(Math.max(...chunks) - Math.min(...chunks)).toBeLessThanOrEqual(1)
-  })
-
-  it('describes a checkbox by its checked state, never its "on" value', async () => {
-    const { decide, calls } = scripted([{ move: 'act', target: '0' }, { move: 'DONE' }])
-    const elements = [
-      el(0, { tag: 'input', type: 'checkbox', name: 'Gift wrap', value: 'on', checked: false }),
-      el(1, { tag: 'input', type: 'checkbox', name: 'Subscribe', value: 'on', checked: true }),
-    ]
-    await runActLoop({ goal: 'g' }, deps({ decide, elements }))
-    const options = calls.find((c) => c.questions.target)!.questions.target.options
-    expect(options['0']).toContain('(unchecked)')
-    expect(options['1']).toContain('(checked)')
-    expect(JSON.stringify(options)).not.toContain('currently')
-  })
-
-  it('neutralizes exact-case special tokens in element names before they reach the model', async () => {
-    const { decide, calls } = scripted([{ move: 'act', target: '0' }, { move: 'DONE' }])
-    const elements = [el(0, { name: 'Buy [MASK] now' })]
-    await runActLoop({ goal: 'g' }, deps({ decide, elements }))
-    const targetQ = calls.find((c) => c.questions.target)!
-    const optionText = Object.values(targetQ.questions.target.options)[0]
-    expect(optionText).not.toContain('[MASK]')
-    expect(optionText).toContain('[mask]')
-  })
-
-  it('reports an unknown target choice as error rather than throwing', async () => {
-    const decide = vi.fn(async (req: DecideRequest): Promise<DecideResult> => {
-      const answers: DecideResult['answers'] = {}
-      for (const key of Object.keys(req.questions))
-        answers[key] = key === 'move'
-          ? { choice: 'act', probabilities: {}, top: 0.9, confidence: 0.9 }
-          : { choice: 'nonexistent', probabilities: {}, top: 0.9, confidence: 0.9 }
-      return { answers, ms: 1 }
-    })
-    const r = await runActLoop({ goal: 'g' }, deps({ decide }))
-    expect(r.status).toBe('error')
-    expect(r.message).toMatch(/unknown choice/i)
-  })
-
-  it('reports an unknown value choice as error rather than a broken type', async () => {
-    const decide = vi.fn(async (req: DecideRequest): Promise<DecideResult> => {
-      const answers: DecideResult['answers'] = {}
-      if ('move' in req.questions) answers.move = { choice: 'act', probabilities: {}, top: 0.9, confidence: 0.9 }
-      if ('target' in req.questions) answers.target = { choice: '1', probabilities: {}, top: 0.9, confidence: 0.9 }
-      if ('value' in req.questions) answers.value = { choice: 'bogus', probabilities: {}, top: 0.9, confidence: 0.9 }
-      return { answers, ms: 1 }
-    })
-    const r = await runActLoop({ goal: 'g', values: { email: 'a@b.co' } }, deps({ decide }))
-    expect(r.status).toBe('error')
-    expect(r.message).toMatch(/unknown choice/i)
-  })
-
-  it('returns uncertain when confidence on the value question is low, without executing', async () => {
-    const { decide } = scripted([{ move: 'act', target: '1', value: ['email', 0.4] }])
-    const d = deps({ decide })
-    const r = await runActLoop({ goal: 'g', values: { email: 'a@b.co' } }, d)
-    expect(r.status).toBe('uncertain')
-    expect(d.executed).toEqual([])
-  })
-
-  it('neutralizes special tokens in an element role', async () => {
-    const { decide, calls } = scripted([{ move: 'act', target: '0' }, { move: 'DONE' }])
-    const elements = [el(0, { role: '[MASK] click me' })]
-    await runActLoop({ goal: 'g' }, deps({ decide, elements }))
-    const targetQ = calls.find((c) => c.questions.target)!
-    const optionText = Object.values(targetQ.questions.target.options)[0]
-    expect(optionText).not.toContain('[MASK]')
-    expect(optionText).toContain('[mask]')
-  })
-
-  it('neutralizes special tokens in the value question option text', async () => {
-    const { decide, calls } = scripted([{ move: 'act', target: '1', value: 'note' }, { move: 'DONE' }])
-    const elements = [el(0), el(1, { tag: 'input', type: 'email', name: 'Email' })]
-    await runActLoop({ goal: 'g', values: { note: 'say [MASK] please' } }, deps({ decide, elements }))
-    const valueQ = calls.find((c) => c.questions.value)!
-    const optionText = valueQ.questions.value.options.note
-    expect(optionText).not.toContain('[MASK]')
-    expect(optionText).toContain('[mask]')
-  })
-
-  it('clips an oversized page title out of the state prefix', async () => {
-    const { decide, calls } = scripted([{ move: 'DONE' }])
-    const longTitle = 'T'.repeat(5000)
-    const customSnap: PageSnapshot = { ...snap([el(0)]), title: longTitle }
-    const d = deps({ decide, snapshot: async () => customSnap })
-    await runActLoop({ goal: 'g' }, d)
-    expect(calls.length).toBeGreaterThan(0)
-    for (const c of calls) expect(c.state).not.toContain(longTitle)
-  })
-
-  it('reports an unknown move choice as error rather than silently treating it as act', async () => {
-    const decide = vi.fn(async (req: DecideRequest): Promise<DecideResult> => {
-      const answers: DecideResult['answers'] = {}
-      for (const key of Object.keys(req.questions))
-        answers[key] = { choice: 'not_a_real_move', probabilities: {}, top: 0.9, confidence: 0.9 }
-      return { answers, ms: 1 }
-    })
-    const r = await runActLoop({ goal: 'g' }, deps({ decide }))
-    expect(r.status).toBe('error')
-    expect(r.message).toMatch(/unknown choice/i)
+    expect(r.steps).toHaveLength(ACT_MAX_STEPS)
+    expect(r.transitions[0].ms).toEqual({ observe: 10, policy: 10, execute: 10 })
+    expect(r.transitions[0].space.stats.controls).toBe(1)
   })
 })

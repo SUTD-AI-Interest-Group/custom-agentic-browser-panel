@@ -940,3 +940,73 @@ describe('domIndex — checkbox/radio report checked state, not "on"', () => {
     ])
   })
 })
+
+// The candidate-action layer (src/system1/candidates.ts) withholds CLICK from a
+// disabled control and TYPE_TEXT from a read-only one, and offers SCROLL_* only
+// when the page can scroll — but only if the walker actually records those
+// facts. Runs the real buildInteractiveIndex against fixtures for each.
+describe('domIndex — disabled / read-only / focus / scroll facts', () => {
+  it('records `:disabled` and aria-disabled, and never the flag when enabled', () => {
+    document.body.innerHTML = '<button disabled aria-label="Go"></button>'
+    const button = document.querySelector('button') as HTMLElement
+    stubLayoutFor(button)
+    const buildInteractiveIndex = extractInjected('buildInteractiveIndex')
+    const entry = (buildInteractiveIndex('data-agent-idx', 200).elements as Array<{ disabled?: true }>)[0]
+    expect(entry?.disabled).toBe(true)
+
+    document.body.innerHTML = '<div role="button" aria-disabled="true" aria-label="Go"></div>'
+    const div = document.querySelector('div') as HTMLElement
+    stubLayoutFor(div)
+    const aria = (buildInteractiveIndex('data-agent-idx', 200).elements as Array<{ disabled?: true }>)[0]
+    expect(aria?.disabled).toBe(true)
+
+    document.body.innerHTML = '<button aria-label="Go"></button>'
+    const enabled = document.querySelector('button') as HTMLElement
+    stubLayoutFor(enabled)
+    const on = (buildInteractiveIndex('data-agent-idx', 200).elements as Array<{ disabled?: true }>)[0]
+    expect(on?.disabled).toBeUndefined()
+  })
+
+  it('records a disabled <fieldset> ancestor through `:disabled`', () => {
+    document.body.innerHTML = '<fieldset disabled><input aria-label="Ref"></fieldset>'
+    const input = document.querySelector('input') as HTMLElement
+    stubLayoutFor(input)
+    const buildInteractiveIndex = extractInjected('buildInteractiveIndex')
+    const entry = (buildInteractiveIndex('data-agent-idx', 200).elements as Array<{ disabled?: true }>)[0]
+    expect(entry?.disabled).toBe(true)
+  })
+
+  it('records readOnly and aria-readonly', () => {
+    document.body.innerHTML = '<input readonly aria-label="Ref">'
+    const input = document.querySelector('input') as HTMLElement
+    stubLayoutFor(input)
+    const buildInteractiveIndex = extractInjected('buildInteractiveIndex')
+    const entry = (buildInteractiveIndex('data-agent-idx', 200).elements as Array<{ readonly?: true }>)[0]
+    expect(entry?.readonly).toBe(true)
+
+    document.body.innerHTML = '<div role="textbox" aria-readonly="true" aria-label="Ref"></div>'
+    const div = document.querySelector('div') as HTMLElement
+    stubLayoutFor(div)
+    const aria = (buildInteractiveIndex('data-agent-idx', 200).elements as Array<{ readonly?: true }>)[0]
+    expect(aria?.readonly).toBe(true)
+  })
+
+  it('reports the focused element by index, and the scroll extent', () => {
+    document.body.innerHTML = '<button aria-label="Go"></button>'
+    const button = document.querySelector('button') as HTMLElement
+    stubLayoutFor(button)
+    button.focus()
+    const buildInteractiveIndex = extractInjected('buildInteractiveIndex')
+    const result = buildInteractiveIndex('data-agent-idx', 200)
+    expect(result.focusedIndex).toBe(0)
+    expect(result.scroll).toEqual({ y: 0, max: expect.any(Number) })
+    expect(result.scroll.max).toBeGreaterThanOrEqual(0)
+  })
+
+  it('renders (disabled) and (read-only) in the registry text', () => {
+    const base = { index: 0, tag: 'button', name: 'Go', rect: { x: 0, y: 0, width: 1, height: 1 }, sensitive: false }
+    expect(serializeRegistry([{ ...base, disabled: true }])).toContain('(disabled)')
+    expect(serializeRegistry([{ ...base, tag: 'input', readonly: true }])).toContain('(read-only)')
+    expect(serializeRegistry([base])).not.toMatch(/disabled|read-only/)
+  })
+})
