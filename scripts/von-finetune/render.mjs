@@ -4,15 +4,21 @@
 // would send for that state, in the record format of Von's own trainer:
 // {state, question, options:[{id, description}], label}.
 //
-//   node scripts/von-finetune/render.mjs [--done-per-act 0.6]
+//   node scripts/von-finetune/render.mjs [--done-per-act 0.6] [--head act|lazy]
 //
-// Heads rendered: `operation` (state WITH the control list), `target_<OP>`
-// (state without it; the options are the controls, incl. the TARGET_CHUNK
-// tournament's chunk and final rounds) and `value`. `blocked_reason` has no
-// labels and stays zero-shot. Episode labels transfer by construction:
-// move `act` → the sibling target's own operation (CLICK, or TYPE_TEXT /
-// SELECT_OPTION when values exist), `scroll_down` → SCROLL_DOWN, DONE/BLOCKED
-// unchanged.
+// `--head act` (default, 2026-09-30): the single-pass act head — one `act`
+// question per decision whose options are every (control, action) pair plus
+// the global moves (createVonActPolicy), state WITHOUT the control list. A
+// target episode → label `<id>:<op>`; a move episode → the move (`act` moves
+// are covered by their sibling target episode, which renders the identical
+// row). Above ACT_CHUNK element options: chunk rows (element options only,
+// only when the label is an element) and a final row (chunk winners + moves).
+// `--head lazy`: the previous heads — `operation` (state WITH the control
+// list), `target_<OP>` (state without it; incl. the TARGET_CHUNK tournament's
+// chunk and final rounds). Both: `value` rows; `blocked_reason` has no labels
+// and stays zero-shot. Episode labels transfer by construction: move `act` →
+// the sibling target's own operation (CLICK, or TYPE_TEXT / SELECT_OPTION when
+// values exist), `scroll_down` → SCROLL_DOWN, DONE/BLOCKED unchanged.
 //
 // Output: data/train.jsonl, data/val.jsonl, data/render-stats.json.
 import fs from 'node:fs'
@@ -23,8 +29,10 @@ import { DATA, log, promptLib, readJsonl, rng, shuffle, writeJsonl } from './lib
 const { values: args } = parseArgs({
   options: {
     'done-per-act': { type: 'string', default: '0.6' },
+    head: { type: 'string', default: 'act' },
   },
 })
+if (!['act', 'lazy'].includes(args.head)) throw new Error(`--head must be act or lazy, got ${args.head}`)
 const lib = await promptLib()
 const pages = new Map(readJsonl(path.join(DATA, 'pages.jsonl')).map((p) => [p.pageId, p]))
 const episodes = readJsonl(path.join(DATA, 'episodes.jsonl'))
@@ -81,6 +89,43 @@ function contextOf(ep) {
   return { ctx, space, byId, valueKeys }
 }
 
+/**
+ * The single-pass head's rows for one episode: the act question over every
+ * (control, action) pair + the moves, mirroring createVonActPolicy — one row
+ * when the element options fit ACT_CHUNK; above it, a chunk row (element
+ * options only, only when the label is an element option) and a final row
+ * (the target or the other chunks' most goal-like control, plus the moves).
+ */
+function actRowsFor(ep, ctx, space, byId, valueKeys, meta, state) {
+  let label
+  let target
+  if (ep.kind === 'move') {
+    if (ep.label === 'act') return [] // its sibling target episode renders the identical row
+    label = ep.label === 'scroll_down' ? 'SCROLL_DOWN' : ep.label // DONE | BLOCKED
+    if (!space.operations.includes(label)) return []
+  } else {
+    target = byId.get(ep.label)
+    if (!target || !target.actions.length) return []
+    const op = operationFor(target, valueKeys)
+    if (!space.targets[op].includes(target.id)) return []
+    label = `${target.id}:${op}`
+  }
+  const elements = lib.actElementOptions(space, byId)
+  const moves = lib.actMoveOptions(space)
+  const row = (options, round) => {
+    const q = lib.actQuestion(options)
+    return { state, question: q.instructions, options: toOptions(q), label, meta: { ...meta, kind: 'act', op: target ? label.split(':')[1] : label, round, pool: options.length } }
+  }
+  const chunks = lib.balancedChunks(elements, lib.ACT_CHUNK)
+  if (chunks.length === 1) return [row([...elements, ...moves], 'single')]
+  const has = (ch) => target && ch.some((o) => o.control?.id === target.id && o.id === label)
+  const best = (ch) => [...ch].sort((a, b) => overlap(ep.goal, b.control) - overlap(ep.goal, a.control))[0]
+  const winners = chunks.map((ch) => (has(ch) ? ch.find((o) => o.id === label) : best(ch)))
+  const rows = [row([...winners, ...moves], 'final')]
+  if (target) rows.unshift(row(chunks.find(has), 'chunk'))
+  return rows
+}
+
 function rowsFor(ep) {
   const c = contextOf(ep)
   if (!c) return []
@@ -88,6 +133,8 @@ function rowsFor(ep) {
   const meta = { kind: ep.kind, pageId: ep.pageId, site: ep.site, split: ep.split, category: ep.category, writer: ep.writer, composed: !!ep.composed }
   const withControls = lib.renderState(ctx, space.shown)
   const withoutControls = lib.renderState(ctx, space.shown, { controls: false })
+
+  if (args.head === 'act' && ep.kind !== 'value') return actRowsFor(ep, ctx, space, byId, valueKeys, meta, withoutControls)
 
   if (ep.kind === 'move') {
     let label
@@ -134,8 +181,9 @@ function rowsFor(ep) {
  * clears the gate on (eval 2026-09-27: 8/54).
  */
 function balance(rows, r) {
-  const isDone = (x) => x.meta.kind === 'operation' && x.meta.op === 'DONE'
-  const acts = rows.filter((x) => x.meta.kind === 'operation' && lib.isElementOperation(x.meta.op)).length
+  const isMoveRow = (x) => x.meta.kind === 'operation' || x.meta.kind === 'act'
+  const isDone = (x) => isMoveRow(x) && x.meta.op === 'DONE'
+  const acts = rows.filter((x) => isMoveRow(x) && lib.isElementOperation(x.meta.op)).length
   const done = shuffle(rows.filter(isDone), r).slice(0, Math.round(acts * Number(args['done-per-act'])))
   return shuffle([...rows.filter((x) => !isDone(x)), ...done], r)
 }
@@ -143,7 +191,7 @@ function balance(rows, r) {
 function stats(rows) {
   const out = {}
   for (const x of rows) {
-    const k = x.meta.kind === 'operation' ? `operation:${x.meta.op}` : x.meta.kind === 'target' ? `target:${x.meta.op}:${x.meta.round}` : x.meta.kind
+    const k = x.meta.kind === 'operation' ? `operation:${x.meta.op}` : x.meta.kind === 'target' ? `target:${x.meta.op}:${x.meta.round}` : x.meta.kind === 'act' ? `act:${x.meta.op}:${x.meta.round}` : x.meta.kind
     out[k] = (out[k] ?? 0) + 1
   }
   out.total = rows.length
@@ -158,6 +206,6 @@ const train = balance(all.filter((x) => x.meta.split === 'train'), r)
 const val = balance(all.filter((x) => x.meta.split === 'val'), r)
 writeJsonl(path.join(DATA, 'train.jsonl'), train)
 writeJsonl(path.join(DATA, 'val.jsonl'), val)
-const summary = { episodes: episodes.length, rendered: all.length, train: stats(train), val: stats(val) }
+const summary = { head: args.head, episodes: episodes.length, rendered: all.length, train: stats(train), val: stats(val) }
 fs.writeFileSync(path.join(DATA, 'render-stats.json'), JSON.stringify(summary, null, 2))
 log(JSON.stringify(summary, null, 2))

@@ -17,9 +17,9 @@
 // Every renderer here is exported so the fine-tune pipeline can render a
 // training row through the very code that builds the request at inference —
 // a train/serve skew here would be silent.
-import type { DecideQuestion, DecideRequest, DecideResult } from './protocol'
+import type { DecideAnswer, DecideQuestion, DecideRequest, DecideResult } from './protocol'
 import { clip, type BrowserControl, type ElementAction } from './observation'
-import { isElementOperation, isFieldOperation, OPERATION_ORDER, type BrowserOperation, type CandidateActionSpace, type ElementOperation } from './candidates'
+import { ELEMENT_OPERATIONS, isElementOperation, isFieldOperation, OPERATION_ORDER, type BrowserOperation, type CandidateActionSpace, type ElementOperation } from './candidates'
 import { BLOCKED_REASONS, PolicyInputError, type BlockedReason, type BrowserDecision, type BrowserPolicy, type DecisionContext } from './policy'
 
 /**
@@ -44,8 +44,8 @@ export const neutralize = (s: string): string => s.replace(SPECIAL_TOKENS, (m) =
 
 const ACTION_WORD: Record<ElementAction, string> = { click: 'click', type_text: 'type', select_option: 'select' }
 
-/** One control line — the state block's line AND the target option's text, byte-identical. */
-export function renderControl(c: BrowserControl): string {
+/** The control line without its actions suffix — shared by renderControl and renderControlAction so the two can never drift. */
+function renderControlLine(c: BrowserControl): string[] {
   const parts = [`[${c.id}]`, neutralize(c.role), `"${clip(neutralize(c.name || '(unnamed)'), 60)}"`]
   if (c.group) parts.push(`in "${clip(neutralize(c.group), 40)}"`)
   if (c.checked !== undefined) parts.push(c.checked ? '(checked)' : '(unchecked)')
@@ -53,8 +53,21 @@ export function renderControl(c: BrowserControl): string {
   if (c.sensitive) parts.push('(sensitive)')
   else if (!c.states.enabled) parts.push('(disabled)')
   else if (c.kind !== 'click' && !c.states.editable) parts.push('(read-only)')
+  return parts
+}
+
+/** One control line — the state block's line AND the target option's text, byte-identical. */
+export function renderControl(c: BrowserControl): string {
+  const parts = renderControlLine(c)
   if (c.actions.length) parts.push(`→ ${c.actions.map((a) => ACTION_WORD[a]).join(', ')}`)
   return parts.join(' ')
+}
+
+const OP_ACTION: Record<ElementOperation, ElementAction> = { CLICK: 'click', TYPE_TEXT: 'type_text', SELECT_OPTION: 'select_option' }
+
+/** The single-pass head's option text: the control line with exactly ONE action — `[12] textbox "Email" → type`. */
+export function renderControlAction(c: BrowserControl, op: ElementOperation): string {
+  return [...renderControlLine(c), `→ ${ACTION_WORD[OP_ACTION[op]]}`].join(' ')
 }
 
 /**
@@ -160,15 +173,20 @@ export function missingFieldQuestion(pool: readonly BrowserControl[]): DecideQue
  * default with no question really asked — so k chunks of near-equal size.
  */
 export function targetChunks<T>(pool: readonly T[]): T[][] {
-  if (pool.length <= TARGET_CHUNK) return [[...pool]]
-  const k = Math.ceil(pool.length / TARGET_CHUNK)
+  return balancedChunks(pool, TARGET_CHUNK)
+}
+
+/** k near-equal chunks of at most `size`, in the pool's order; one chunk when the pool fits. */
+export function balancedChunks<T>(pool: readonly T[], size: number): T[][] {
+  if (pool.length <= size) return [[...pool]]
+  const k = Math.ceil(pool.length / size)
   const base = Math.floor(pool.length / k)
   const extra = pool.length % k
   const chunks: T[][] = []
   for (let c = 0, i = 0; c < k; c++) {
-    const size = base + (c < extra ? 1 : 0)
-    chunks.push(pool.slice(i, i + size))
-    i += size
+    const n = base + (c < extra ? 1 : 0)
+    chunks.push(pool.slice(i, i + n))
+    i += n
   }
   return chunks
 }
@@ -234,29 +252,151 @@ export function createVonPolicy(decide: (req: DecideRequest) => Promise<DecideRe
         decision.targetId = Number(ans.choice)
         if (ans.top < threshold) return { ...decision, ms }
 
-        if (isFieldOperation(decision.operation)) {
-          const control = byId.get(decision.targetId)
-          if (control) {
-            const v = await ask({ value: valueQuestion(control, ctx.values) }, false)
-            decision.valueKey = v.answers.value.choice
-            decision.confidence.value = v.answers.value.top
-          }
-        }
+        if (isFieldOperation(decision.operation)) await askValue(decision, ctx, byId, ask)
       } else if (decision.operation === 'BLOCKED') {
-        const b = await ask({ blocked_reason: blockedQuestion() }, true)
-        decision.blockedReason = b.answers.blocked_reason.choice as BlockedReason
-        decision.confidence.blockedReason = b.answers.blocked_reason.top
-        if (decision.blockedReason === 'MISSING_USER_DATA') {
-          const fields = obs.controls.filter((c) => c.actions.includes('type_text') || c.actions.includes('select_option'))
-          if (fields.length > 0) {
-            const m = await ask({ missing_field: missingFieldQuestion(fields.slice(0, TARGET_CHUNK)) }, false)
-            const id = Number(m.answers.missing_field.choice)
-            if (byId.has(id)) {
-              decision.missingFieldId = id
-              decision.confidence.missingField = m.answers.missing_field.top
+        await askBlocked(decision, ctx, byId, ask)
+      }
+      return { ...decision, ms }
+    },
+  }
+}
+
+type Ask = (questions: Record<string, DecideQuestion>, withControls: boolean) => Promise<DecideResult>
+
+/** The value head: which provided key belongs in the chosen field. Shared by both policies. */
+async function askValue(decision: BrowserDecision, ctx: DecisionContext, byId: Map<number, BrowserControl>, ask: Ask): Promise<void> {
+  const control = decision.targetId !== undefined ? byId.get(decision.targetId) : undefined
+  if (!control) return
+  const v = await ask({ value: valueQuestion(control, ctx.values) }, false)
+  decision.valueKey = v.answers.value.choice
+  decision.confidence.value = v.answers.value.top
+}
+
+/** After BLOCKED: the reason, then (for MISSING_USER_DATA) which editable field lacks a value. Shared by both policies. */
+async function askBlocked(decision: BrowserDecision, ctx: DecisionContext, byId: Map<number, BrowserControl>, ask: Ask): Promise<void> {
+  const b = await ask({ blocked_reason: blockedQuestion() }, true)
+  decision.blockedReason = b.answers.blocked_reason.choice as BlockedReason
+  decision.confidence.blockedReason = b.answers.blocked_reason.top
+  if (decision.blockedReason !== 'MISSING_USER_DATA') return
+  const fields = ctx.observation.controls.filter((c) => c.actions.includes('type_text') || c.actions.includes('select_option'))
+  if (fields.length === 0) return
+  const m = await ask({ missing_field: missingFieldQuestion(fields.slice(0, TARGET_CHUNK)) }, false)
+  const id = Number(m.answers.missing_field.choice)
+  if (byId.has(id)) {
+    decision.missingFieldId = id
+    decision.confidence.missingField = m.answers.missing_field.top
+  }
+}
+
+// ---------------------------------------------------------------------------
+// The single-pass act head — jev-ultrafast's "one request per decision"
+// (2026-09-30). ONE question whose options are every (control, action) pair
+// the candidate space allows, each its own option (`[12] textbox "Email" →
+// type` and `[12] textbox "Email" → click` are two options), plus the global
+// moves. The state block omits the control list: the options ARE the
+// controls, and the operation is implied by the chosen option. A click step
+// is therefore one Von pass (was two, operation then target); a field step
+// adds the value head. Above ACT_CHUNK element options the tournament runs
+// over element options only and the final round adds the moves, so a move
+// competes against the best control from every chunk, never a chunk's
+// leftovers. Trained on rows rendered by exactly these functions
+// (scripts/von-finetune/render.mjs --head act).
+
+/** Element options per pass before the tournament kicks in. ~20 tokens each + a ~150-token state fits Von's 4096 with room. */
+export const ACT_CHUNK = 120
+/** The tournament never chunks below this on an over-length pack. */
+export const MIN_ACT_CHUNK = 16
+export const ACT_INSTRUCTIONS = 'Choose the next browser action toward the goal: one listed control with its action, or a move.'
+
+export interface ActOption {
+  /** `${controlId}:${operation}` for an element option, the operation name for a move. */
+  id: string
+  text: string
+  operation: BrowserOperation
+  control?: BrowserControl
+}
+
+/** Every (control, operation) pair the space allows, in the space's ranked control order, operations in the fixed order. */
+export function actElementOptions(space: CandidateActionSpace, byId: Map<number, BrowserControl>): ActOption[] {
+  const allowed = Object.fromEntries(ELEMENT_OPERATIONS.map((op) => [op, new Set(space.targets[op])])) as Record<ElementOperation, Set<number>>
+  const out: ActOption[] = []
+  for (const id of space.ranked) {
+    const control = byId.get(id)
+    if (!control) continue
+    for (const op of ELEMENT_OPERATIONS) if (allowed[op].has(id)) out.push({ id: `${id}:${op}`, text: renderControlAction(control, op), operation: op, control })
+  }
+  return out
+}
+
+/** The global moves the space offers (scroll/wait/done/blocked), in the fixed order. */
+export function actMoveOptions(space: CandidateActionSpace): ActOption[] {
+  return OPERATION_ORDER.filter((op) => !isElementOperation(op) && space.operations.includes(op)).map((op) => ({ id: op, text: OPERATION_TEXT[op], operation: op }))
+}
+
+export function actQuestion(options: readonly ActOption[]): DecideQuestion {
+  return { instructions: ACT_INSTRUCTIONS, options: Object.fromEntries(options.map((o) => [o.id, o.text])) }
+}
+
+export function createVonActPolicy(decide: (req: DecideRequest) => Promise<DecideResult>): BrowserPolicy {
+  return {
+    async decide(ctx: DecisionContext): Promise<BrowserDecision> {
+      const threshold = ctx.threshold ?? 0
+      const { space, observation: obs } = ctx
+      const byId = new Map(obs.controls.map((c) => [c.id, c]))
+      const state = renderState(ctx, space.shown, { controls: false })
+      let ms = 0
+      const ask: Ask = async (questions) => {
+        const r = await decide({ state, questions })
+        ms += r.ms
+        return r
+      }
+      const elements = actElementOptions(space, byId)
+      const moves = actMoveOptions(space)
+      const byOption = new Map([...elements, ...moves].map((o) => [o.id, o]))
+
+      let size = ACT_CHUNK
+      let answer: DecideAnswer
+      for (;;) {
+        try {
+          let finalists = elements
+          if (elements.length > size) {
+            const winners: ActOption[] = []
+            for (const chunk of balancedChunks(elements, size)) {
+              const r = await ask({ act: actQuestion(chunk) }, false)
+              const w = chunk.find((o) => o.id === r.answers.act.choice)
+              if (!w) throw new Error('System-1 returned an unknown choice')
+              winners.push(w)
             }
+            finalists = winners
           }
+          answer = (await ask({ act: actQuestion([...finalists, ...moves]) }, false)).answers.act
+          break
+        } catch (err) {
+          // Over-length: the state cannot shrink (no list), so chunk finer — down to MIN_ACT_CHUNK, then it is the caller's problem, stated.
+          if (!isTooLong(err)) throw err
+          const next = Math.max(MIN_ACT_CHUNK, Math.floor(size / 2))
+          if (next >= size) throw new PolicyInputError('the page is too dense for the local model even in the smallest chunks')
+          size = next
         }
+      }
+
+      const chosen = byOption.get(answer.choice)
+      if (!chosen) throw new Error('System-1 returned an unknown choice')
+      const decision: BrowserDecision = { operation: chosen.operation, confidence: { operation: answer.top }, ms }
+      const ranked = Object.entries(answer.probabilities)
+        .map(([id, p]) => ({ o: byOption.get(id), p }))
+        .filter((x): x is { o: ActOption & { control: BrowserControl }; p: number } => !!x.o?.control)
+        .sort((a, b) => b.p - a.p)
+        .slice(0, 3)
+        .map((x) => ({ id: x.o.control.id, p: x.p }))
+      if (ranked.length) decision.ranked = ranked
+      if (chosen.control) {
+        decision.targetId = chosen.control.id
+        decision.confidence.target = answer.top
+        if (answer.top < threshold) return { ...decision, ms }
+        if (isFieldOperation(chosen.operation)) await askValue(decision, ctx, byId, ask)
+      } else if (chosen.operation === 'BLOCKED') {
+        await askBlocked(decision, ctx, byId, ask)
       }
       return { ...decision, ms }
     },

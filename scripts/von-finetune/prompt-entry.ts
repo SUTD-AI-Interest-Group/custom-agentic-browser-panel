@@ -9,6 +9,7 @@ export { buildObservation, buildControl, clip, opFor } from '../../src/system1/o
 export { buildCandidateSpace, isElementOperation, isFieldOperation, SHOWN_CONTROLS } from '../../src/system1/candidates'
 export {
   blockedQuestion, operationQuestion, renderControl, renderState, targetChunks, targetQuestion, valueQuestion, TARGET_CHUNK,
+  actElementOptions, actMoveOptions, actQuestion, balancedChunks, ACT_CHUNK,
 } from '../../src/system1/vonPolicy'
 export { packPrompt } from '../../src/system1/von'
 

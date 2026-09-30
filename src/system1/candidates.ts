@@ -23,6 +23,8 @@ export interface CandidateActionSpace {
   targets: Record<ElementOperation, number[]>
   /** Ranked ids the state block lists (≤ SHOWN_CONTROLS). */
   shown: number[]
+  /** EVERY control id in ranked order (sensitive ones included, so the single-pass head can list them unactionable in the same order). */
+  ranked: number[]
   valueKeys: string[]
   stats: { controls: number; eligible: number; shown: number; hidden: number }
 }
@@ -94,6 +96,7 @@ export function buildCandidateSpace(input: {
     operations,
     targets,
     shown,
+    ranked: ranked.map((c) => c.id),
     valueKeys,
     stats: { controls: observation.controls.length, eligible, shown: shown.length, hidden: observation.controls.length - shown.length },
   }

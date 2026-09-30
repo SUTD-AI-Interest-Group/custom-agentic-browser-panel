@@ -48,6 +48,10 @@ import { closeTabs } from '../platform/tabs'
 import { listTabFacts } from '../platform/tabIndex'
 import { snapshotPage } from '../platform/domIndex'
 import { runControlStep, type ControlSession } from './pageControl'
+// The Act tests below script the LAZY policy's questions (operation →
+// target_<OP> → value); the wiring picks the head from src/system1/head.ts,
+// whose default is the single-pass act head (tested in vonPolicy.test.ts).
+vi.mock('../system1/head', () => ({ ACT_HEAD: 'lazy' }))
 import type { IndexedElement, PageSnapshot } from '../platform/domIndex'
 import type { TabFacts } from './tabPolicy'
 

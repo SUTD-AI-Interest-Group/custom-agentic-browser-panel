@@ -10,8 +10,9 @@
 // wrapper around that worker.
 import { snapshotPage, type PageSnapshot } from '../../src/platform/domIndex'
 import { runActLoop } from '../../src/system1/actLoop'
+import { ACT_HEAD } from '../../src/system1/head'
 import { opFor } from '../../src/system1/observation'
-import { createVonPolicy } from '../../src/system1/vonPolicy'
+import { createVonActPolicy, createVonPolicy } from '../../src/system1/vonPolicy'
 import type { ValidatedAction } from '../../src/system1/validate'
 import { fileUrl, WEIGHTS_PIN } from '../../src/system1/weights'
 import type { DecideRequest, DecideResult, System1WorkerReply } from '../../src/system1/protocol'
@@ -58,11 +59,14 @@ function decide(req: DecideRequest): Promise<DecideResult & { wallMs: number }> 
   }).then((r) => ({ ...r, wallMs: Math.round(performance.now() - t0) }))
 }
 
-type Kind = 'operation' | 'target' | 'value' | 'blocked_reason'
+type Kind = 'operation' | 'target' | 'value' | 'blocked_reason' | 'missing_field'
 interface Call { kind: Kind; key: string; req: DecideRequest; res?: DecideResult & { wallMs: number }; error?: string }
 
+// The single-pass `act` head is recorded as a `target` call: its rounds ARE
+// the target rounds (chunk, final) and its choice `<id>:<op>` names the
+// target, so run.mjs's per-round metrics read both heads the same way.
 const kindOf = (key: string): Kind =>
-  key === 'operation' ? 'operation' : key.startsWith('target_') ? 'target' : key === 'value' ? 'value' : 'blocked_reason'
+  key === 'operation' ? 'operation' : key.startsWith('target_') || key === 'act' ? 'target' : key === 'value' ? 'value' : key === 'missing_field' ? 'missing_field' : 'blocked_reason'
 
 /**
  * The operation the expected element implies — what the operation head is
@@ -80,37 +84,52 @@ function forcedOperation(snap: PageSnapshot | null, expected: string[], values: 
 
 /**
  * One grounding case: the real loop, one step, with two interventions that
- * isolate the TARGET head — the operation answer is recorded but forced to the
- * expected element's operation, and execute() records the validated action and
- * reports `denied` so nothing on the page is touched.
+ * isolate the TARGET head — under the lazy head the operation answer is
+ * recorded but forced to the expected element's operation; under the single
+ * act head there is nothing to force (the operation is implied by the chosen
+ * option, and `operationAnswer` reports it against the expected one) — and
+ * execute() records the validated action and reports `denied` so nothing on
+ * the page is touched.
  */
 async function groundCase(tabId: number, goal: string, values: Record<string, string>, expected: string[]) {
   const calls: Call[] = []
   let snap: PageSnapshot | null = null
   let action: ValidatedAction | null = null
   let forced: string | null = null
+  const wrapped = async (req: DecideRequest) => {
+    const key = Object.keys(req.questions)[0]
+    const call: Call = { kind: kindOf(key), key, req }
+    calls.push(call)
+    try { call.res = await decide(req) } catch (err) { call.error = String(err); throw err }
+    if (call.kind === 'operation') {
+      forced = forcedOperation(snap, expected, values)
+      return { ...call.res, answers: { operation: { choice: forced, probabilities: { [forced]: 1 }, top: 1, confidence: 1 } } }
+    }
+    return call.res
+  }
+  const policy = ACT_HEAD === 'single' ? createVonActPolicy(wrapped) : createVonPolicy(wrapped)
   const result = await runActLoop({ goal, values, maxSteps: 1 }, {
     snapshot: async () => (snap = await snapshotPage(tabId)),
     aborted: () => false,
     execute: async (a) => { action = a; return { kind: 'denied' } },
-    policy: createVonPolicy(async (req) => {
-      const key = Object.keys(req.questions)[0]
-      const call: Call = { kind: kindOf(key), key, req }
-      calls.push(call)
-      try { call.res = await decide(req) } catch (err) { call.error = String(err); throw err }
-      if (call.kind === 'operation') {
-        forced = forcedOperation(snap, expected, values)
-        return { ...call.res, answers: { operation: { choice: forced, probabilities: { [forced]: 1 }, top: 1, confidence: 1 } } }
-      }
-      return call.res
-    }),
+    policy,
   })
   const s = snap as PageSnapshot | null
+  if (ACT_HEAD === 'single') forced = forcedOperation(s, expected, values)
+  const decision = result.transitions[0]?.decision
+  // The operation the head actually chose, vs the expected element's: under
+  // the lazy head the recorded (unforced) operation answer; under the single
+  // head the decision's operation with the act head's own confidence.
+  const operationAnswer = ACT_HEAD === 'single'
+    ? decision ? { choice: decision.operation, top: decision.confidence.operation } : null
+    : (() => { const c = calls.find((k) => k.kind === 'operation'); const a = c?.res?.answers?.operation; return a ? { choice: a.choice, top: a.top } : null })()
   return {
+    head: ACT_HEAD,
     status: result.status,
     message: result.message,
     action,
     forced,
+    operationAnswer,
     transitions: result.transitions,
     elements: s ? s.elements.map((e) => ({ index: e.index, name: e.name, tag: e.tag, type: e.type, role: e.role, sensitive: e.sensitive, disabled: e.disabled, readonly: e.readonly })) : [],
     calls: calls.map((c) => ({ kind: c.kind, key: c.key, req: c.req, res: c.res, error: c.error })),

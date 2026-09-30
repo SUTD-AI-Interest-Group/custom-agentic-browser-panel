@@ -43,7 +43,8 @@ import { saveArtifact, updateArtifactContent } from '../data/artifacts'
 import { createProposeResearchTool } from './research'
 import type { System1Runtime } from '../system1/runtime'
 import { runActLoop, ACT_DEFAULT_STEPS, ACT_MAX_STEPS, type ActResult, type ExecOutcome } from '../system1/actLoop'
-import { createVonPolicy } from '../system1/vonPolicy'
+import { createVonActPolicy, createVonPolicy } from '../system1/vonPolicy'
+import { ACT_HEAD } from '../system1/head'
 import { buildCatalog, searchCatalog, partitionToolNames, type CatalogEntry } from './toolDiscovery'
 import {
   hasElementChanged,
@@ -1711,7 +1712,7 @@ export function createAgentTools(
         const tabId = tab.id
         const { transitions: _transitions, ...result } = await runActLoop({ goal, values, maxSteps }, {
           snapshot: () => snapshotPage(tabId),
-          policy: createVonPolicy((req) => system1!.decide(req)),
+          policy: (ACT_HEAD === 'single' ? createVonActPolicy : createVonPolicy)((req) => system1!.decide(req)),
           aborted: () => abortSignal?.aborted === true,
           execute: async (action): Promise<ExecOutcome> => {
             const r = (await controlStep(action.spec, {

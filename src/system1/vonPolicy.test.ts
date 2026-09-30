@@ -4,7 +4,7 @@ import type { DecideRequest, DecideResult } from './protocol'
 import { buildObservation } from './observation'
 import { buildCandidateSpace } from './candidates'
 import { PolicyInputError, type DecisionContext } from './policy'
-import { createVonPolicy, operationQuestion, renderControl, renderState, targetChunks, TARGET_CHUNK, MIN_SHOWN } from './vonPolicy'
+import { ACT_CHUNK, MIN_ACT_CHUNK, actElementOptions, actMoveOptions, balancedChunks, createVonActPolicy, createVonPolicy, operationQuestion, renderControl, renderControlAction, renderState, targetChunks, TARGET_CHUNK, MIN_SHOWN } from './vonPolicy'
 
 const el = (index: number, over: Partial<IndexedElement> = {}): IndexedElement =>
   ({ index, tag: 'button', name: `Button ${index}`, rect: { x: 0, y: 0, width: 10, height: 10 }, sensitive: false, ...over }) as IndexedElement
@@ -241,5 +241,94 @@ describe('createVonPolicy.decide', () => {
     expect(d.targetId).toBe(99)
     const boom = { decide: async () => { throw new Error('gpu lost') } }
     await expect(createVonPolicy(boom.decide).decide(ctxOf([el(0)]))).rejects.toThrow('gpu lost')
+  })
+})
+
+describe('the single-pass act head', () => {
+  const page = () => [el(0, { name: 'Cart' }), el(1, { tag: 'input', type: 'text', name: 'Email' }), el(2, { name: 'Add blue mug' }), el(3, { tag: 'input', type: 'password', name: 'Password', sensitive: true })]
+
+  it('renders one option per (control, action) pair in ranked order, byte-identical to the control line with a single action, plus the moves', () => {
+    const ctx = ctxOf(page(), { values: { email: 'a@b.co' }, snap: { scroll: { y: 0, max: 400 } } })
+    const byId = new Map(ctx.observation.controls.map((c) => [c.id, c]))
+    const elements = actElementOptions(ctx.space, byId)
+    // Ranked: the goal's lexical match first, then the field (values exist), then the rest; the sensitive control has no option at all.
+    expect(ctx.space.ranked).toEqual([2, 1, 0, 3])
+    expect(elements.map((o) => o.id)).toEqual(['2:CLICK', '1:CLICK', '1:TYPE_TEXT', '0:CLICK'])
+    expect(elements.map((o) => o.text)).toEqual(['[2] button "Add blue mug" → click', '[1] textbox "Email" → click', '[1] textbox "Email" → type', '[0] button "Cart" → click'])
+    expect(renderControlAction(byId.get(1)!, 'TYPE_TEXT')).toBe('[1] textbox "Email" → type')
+    expect(actMoveOptions(ctx.space).map((o) => o.id)).toEqual(['SCROLL_DOWN', 'WAIT', 'DONE', 'BLOCKED'])
+    // No values: no type option for the field.
+    const noValues = ctxOf(page())
+    expect(actElementOptions(noValues.space, new Map(noValues.observation.controls.map((c) => [c.id, c]))).map((o) => o.id)).toEqual(['2:CLICK', '0:CLICK', '1:CLICK'])
+  })
+
+  it('decides a click in ONE pass, state without the control list, operation implied by the option', async () => {
+    const s = scripted({ act: ['2:CLICK', 0.8] })
+    const d = await createVonActPolicy(s.decide).decide(ctxOf(page()))
+    expect(d).toMatchObject({ operation: 'CLICK', targetId: 2, confidence: { operation: 0.8, target: 0.8 }, ms: 7 })
+    expect(d.ranked?.[0]).toEqual({ id: 2, p: 0.8 })
+    expect(d.ranked?.every((r) => typeof r.id === 'number')).toBe(true)
+    expect(s.calls).toHaveLength(1)
+    expect(s.calls[0].state).not.toContain('Controls')
+    expect(s.calls[0].state).toContain('Goal: add the blue mug to the cart')
+    // No scroll facts in this fixture: both scroll moves are offered.
+    expect(Object.keys(s.calls[0].questions.act.options)).toEqual(['2:CLICK', '0:CLICK', '1:CLICK', 'SCROLL_DOWN', 'SCROLL_UP', 'WAIT', 'DONE', 'BLOCKED'])
+  })
+
+  it('adds only the value head for a field option, and the blocked follow-ups for BLOCKED', async () => {
+    const s = scripted({ act: '1:TYPE_TEXT', value: ['email', 0.7] })
+    const d = await createVonActPolicy(s.decide).decide(ctxOf(page(), { values: { email: 'a@b.co', name: 'Ada' } }))
+    expect(d).toMatchObject({ operation: 'TYPE_TEXT', targetId: 1, valueKey: 'email', confidence: { operation: 0.9, target: 0.9, value: 0.7 } })
+    expect(s.calls.map((c) => Object.keys(c.questions))).toEqual([['act'], ['value']])
+
+    const done = scripted({ act: 'DONE' })
+    const d2 = await createVonActPolicy(done.decide).decide(ctxOf(page()))
+    expect(d2).toMatchObject({ operation: 'DONE', confidence: { operation: 0.9 } })
+    expect(d2.targetId).toBeUndefined()
+    expect(done.calls).toHaveLength(1)
+
+    const blocked = scripted({ act: 'BLOCKED', blocked_reason: 'MISSING_USER_DATA', missing_field: '1' })
+    const d3 = await createVonActPolicy(blocked.decide).decide(ctxOf(page()))
+    expect(d3).toMatchObject({ operation: 'BLOCKED', blockedReason: 'MISSING_USER_DATA', missingFieldId: 1 })
+    expect(blocked.calls.map((c) => Object.keys(c.questions))).toEqual([['act'], ['blocked_reason'], ['missing_field']])
+  })
+
+  it('stops after the act head when it is below the threshold', async () => {
+    const low = scripted({ act: ['1:TYPE_TEXT', 0.3], value: 'email' })
+    const d = await createVonActPolicy(low.decide).decide({ ...ctxOf(page(), { values: { email: 'x' } }), threshold: 0.4 })
+    expect(d.valueKey).toBeUndefined()
+    expect(low.calls).toHaveLength(1)
+  })
+
+  it('runs the tournament over element options only above ACT_CHUNK, and the final round adds the moves', async () => {
+    const elements = Array.from({ length: ACT_CHUNK + 2 }, (_, i) => el(i))
+    const s = scripted({ act: (req) => { const ids = Object.keys(req.questions.act.options); const els = ids.filter((k) => k.includes(':')); return [els[els.length - 1], ids.some((k) => k === 'DONE') ? 0.8 : 0.95] } })
+    const d = await createVonActPolicy(s.decide).decide(ctxOf(elements))
+    expect(s.calls).toHaveLength(3)
+    expect(Object.keys(s.calls[0].questions.act.options).some((k) => k === 'DONE')).toBe(false)
+    expect(Object.keys(s.calls[2].questions.act.options)).toEqual(expect.arrayContaining(['WAIT', 'DONE', 'BLOCKED']))
+    expect(Object.keys(s.calls[2].questions.act.options).filter((k) => k.includes(':'))).toHaveLength(2)
+    expect(d.confidence.target).toBe(0.8)
+    expect(d.operation).toBe('CLICK')
+  })
+
+  it('chunks finer on an over-length pack, then gives up with PolicyInputError', async () => {
+    const elements = Array.from({ length: 40 }, (_, i) => el(i))
+    let n = 0
+    const decideT = async (req: DecideRequest) => {
+      n++
+      const els = Object.keys(req.questions.act.options).filter((k) => k.includes(':'))
+      if (els.length > 20) throw Object.assign(new Error('long'), { code: 'too-long' })
+      const choice = els[0]
+      return { answers: { act: { choice, probabilities: { [choice]: 0.9 }, top: 0.9, confidence: 0.9 } }, ms: 1 }
+    }
+    const d = await createVonActPolicy(decideT).decide(ctxOf(elements))
+    expect(d.operation).toBe('CLICK')
+    // 40 in one round overflowed → chunks of 60/2=30 overflow → 15 → wait, chunking halves from ACT_CHUNK: 120 → 60 → 30 → 15 is below MIN_ACT_CHUNK, so 16.
+    expect(n).toBeGreaterThan(1)
+    const hopeless = async () => { throw Object.assign(new Error('long'), { code: 'too-long' }) }
+    await expect(createVonActPolicy(hopeless).decide(ctxOf(elements))).rejects.toBeInstanceOf(PolicyInputError)
+    expect(MIN_ACT_CHUNK).toBeLessThan(ACT_CHUNK)
+    expect(balancedChunks([1, 2, 3, 4, 5], 2).map((c) => c.length)).toEqual([2, 2, 1])
   })
 })

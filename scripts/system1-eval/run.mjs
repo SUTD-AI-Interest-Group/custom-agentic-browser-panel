@@ -41,6 +41,10 @@ const PHASES = new Set((env.EVAL_PHASES ?? 'download,parity,grounding,llm,e2e').
 const OUT_DIR = path.resolve(env.EVAL_OUT ?? fs.mkdtempSync(path.join(os.tmpdir(), 'system1-eval-')))
 const PROFILE = env.EVAL_PROFILE ? path.resolve(env.EVAL_PROFILE) : fs.mkdtempSync(path.join(os.tmpdir(), 'system1-profile-'))
 const CHROMIUM = env.EVAL_CHROMIUM ?? findChromium()
+// Which Von policy the harness grounds through (and what the built extension
+// under EVAL_DIST must have been built with): the single-pass act head or the
+// lazy multi-head policy. See src/system1/head.ts.
+const HEAD = env.EVAL_HEAD === 'lazy' ? 'lazy' : 'single'
 const { chromium } = require(env.EVAL_PLAYWRIGHT ?? 'playwright')
 
 function findChromium() {
@@ -89,7 +93,8 @@ function bundleHarness() {
     path.join(here, 'harness.ts'), '--bundle', '--format=iife', '--platform=browser', '--target=es2022',
     // MODE too: weightsManifest.ts honours the pin override only in this mode.
     `--define:import.meta.env.MODE=${JSON.stringify('system1-eval')}`,
-    `--define:import.meta.env.VITE_SYSTEM1_PIN=${JSON.stringify(pin)}`, `--outfile=${out}`, '--log-level=warning',
+    `--define:import.meta.env.VITE_SYSTEM1_PIN=${JSON.stringify(pin)}`,
+    `--define:import.meta.env.VITE_SYSTEM1_HEAD=${JSON.stringify(HEAD)}`, `--outfile=${out}`, '--log-level=warning',
   ])
   return fs.readFileSync(out, 'utf8')
 }
@@ -101,6 +106,7 @@ async function main() {
   log('out', OUT_DIR, '| profile', PROFILE)
   const startedAt = new Date().toISOString()
   const report = { env: {}, skipped: [] }
+  report.env.head = HEAD
   const lmUp = await fetch(`${LM_URL}/models`).then((r) => r.ok, () => false)
   report.env.lmStudio = lmUp ? 'up' : 'down'
   if (!lmUp) {
@@ -312,8 +318,11 @@ async function phaseGrounding(ctx, lab, fixtureUrl) {
     const last = targets.at(-1)
     const final = last?.res?.answers?.[last.key]
     const byIdx = new Map(r.elements.map((e) => [String(e.index), e]))
-    const picked = final ? byIdx.get(final.choice) : undefined
-    const operation = r.calls.find((k) => k.kind === 'operation')?.res?.answers?.operation
+    // The single act head's option ids are `<id>:<op>` (moves have no id at all); the lazy target head's are plain ids.
+    const idOf = (choice) => (choice == null ? undefined : String(choice).split(':')[0])
+    const isElementChoice = (choice) => choice != null && /^\d+/.test(String(choice))
+    const picked = final && isElementChoice(final.choice) ? byIdx.get(idOf(final.choice)) : undefined
+    const operation = r.operationAnswer
     const value = r.calls.find((k) => k.kind === 'value')?.res?.answers?.value
     const expectedPresent = r.elements.some((e) => expected.includes(e.name))
     const candidateOptions = targets.length > 1 ? Object.assign({}, ...targets.slice(0, -1).map((k) => k.req.questions[k.key].options)) : targets[0]?.req.questions[targets[0].key].options
@@ -336,12 +345,13 @@ async function phaseGrounding(ctx, lab, fixtureUrl) {
       rounds: targets.map((k) => {
         const a = k.res?.answers?.[k.key]
         const opts = Object.keys(k.req.questions[k.key].options)
-        const hasExpected = opts.some((o) => expected.includes(byIdx.get(o)?.name))
-        return { options: opts.length, hasExpected, choice: a ? byIdx.get(a.choice)?.name : null, top: round(a?.top, 3) }
+        const hasExpected = opts.some((o) => isElementChoice(o) && expected.includes(byIdx.get(idOf(o))?.name))
+        return { options: opts.length, hasExpected, choice: a ? (isElementChoice(a.choice) ? byIdx.get(idOf(a.choice))?.name : a.choice) : null, top: round(a?.top, 3) }
       }),
       picked: picked?.name ?? null, correct: !!picked && expected.includes(picked.name), top: final?.top ?? null,
       status: r.status,
-      // The operation head's REAL answer (it was forced to `forced` for the target measurement).
+      head: r.head,
+      // The operation head's REAL answer (lazy: it was forced to `forced` for the target measurement; single: implied by the chosen option).
       operation: operation ? { choice: operation.choice, top: round(operation.top), forced: r.forced, correct: operation.choice === r.forced } : null,
       value: value ? { choice: value.choice, top: round(value.top), correct: c.expect.valueKey ? value.choice === c.expect.valueKey : null } : null,
       expectedValueKey: c.expect.valueKey ?? null,
@@ -429,7 +439,7 @@ async function phaseLlm(grounding) {
     } catch (err) { error = String(err) }
     const ms = Date.now() - t0
     const idx = content.match(/\d+/)?.[0]
-    const line = idx !== undefined ? options[idx] : undefined
+    const line = idx !== undefined ? (options[idx] ?? Object.entries(options).find(([k]) => k.split(':')[0] === idx)?.[1]) : undefined
     // The option text is describe()'s `[i] kind "name" → op`; recover the name.
     const name = line?.match(/"(.*)"/)?.[1]
     const correct = !!name && g.expected.some((e) => name === e || name.startsWith(e.slice(0, 59)))
@@ -633,6 +643,8 @@ function summarizeE2e(rows) {
     actNonDone: rs.flatMap((r) => r.actStatuses).filter((s) => s !== 'done').length,
     actStatuses: rs.flatMap((r) => r.actStatuses).reduce((a, s) => { a[s] = (a[s] ?? 0) + 1; return a }, {}),
     vonDecides: rs.reduce((a, r) => a + r.vonDecides, 0), vonMs: rs.reduce((a, r) => a + r.vonMs, 0),
+    // Von passes per Act action (jev-ultrafast's Flights run: 17 requests for 11 actions); null with no Act actions.
+    vonPerActStep: (() => { const steps = rs.reduce((a, r) => a + r.actSteps, 0); return steps ? round(rs.reduce((a, r) => a + r.vonDecides, 0) / steps, 2) : null })(),
     approvalsMean: round(rs.reduce((a, r) => a + r.approvals.length, 0) / rs.length, 1),
   })
   return {
@@ -673,7 +685,7 @@ function printSummary(r, skipped) {
     console.table(g.thresholds)
   }
   if (r.llm) console.log(`LLM baseline (${r.llm.model}): ${r.llm.correct}/${r.llm.cases} = ${r.llm.accuracyTop1}, p50 ${r.llm.ms.p50} ms, p95 ${r.llm.ms.p95} ms`)
-  if (r.e2e?.summary) console.table(Object.fromEntries(Object.entries(r.e2e.summary.byArm).map(([a, x]) => [a, { runs: x.runs, success: x.success, wallMedS: Math.round(x.wallMsMedian / 1000), llmStepsMed: x.llmStepsMedian, tokensMed: x.tokensMedian, tokensMean: x.tokensMean, actions: x.pageActionsMean, actCalls: x.actCalls, actNonDone: x.actNonDone, vonMs: x.vonMs }])))
+  if (r.e2e?.summary) console.table(Object.fromEntries(Object.entries(r.e2e.summary.byArm).map(([a, x]) => [a, { runs: x.runs, success: x.success, wallMedS: Math.round(x.wallMsMedian / 1000), llmStepsMed: x.llmStepsMedian, tokensMed: x.tokensMedian, tokensMean: x.tokensMean, actions: x.pageActionsMean, actCalls: x.actCalls, actSteps: x.actSteps, actNonDone: x.actNonDone, vonMs: x.vonMs, vonPerStep: x.vonPerActStep }])))
   for (const s of skipped) console.log('SKIPPED', s)
   for (const v of r.verdict) console.log('VERDICT', v)
 }
