@@ -34,8 +34,9 @@ const { values: args } = parseArgs({
     corpus: { type: 'string', multiple: true, default: [] },
     // The typed-instruction heads (spec §3, first batch): t1 done, t2 missing field, t4 submit, t5 committing. `none` skips them.
     typed: { type: 'string', default: 't1,t2,t4,t5' },
-    // Per-head row caps after balancing (t2/t4 uncapped unless named).
-    'typed-cap': { type: 'string', default: 't1=4000,t5=6000' },
+    // Per-head row caps after balancing, applied per split. A value ≤ 1 is a fraction of that split's act-head rows (so val
+    // keeps train's composition); > 1 is an absolute count. t2/t4 are uncapped unless named.
+    'typed-cap': { type: 'string', default: 't1=0.1,t5=0.2' },
   },
 })
 if (!['act', 'lazy'].includes(args.head)) throw new Error(`--head must be act or lazy, got ${args.head}`)
@@ -303,10 +304,13 @@ function balance(rows, r) {
   const t1yes = out.filter((x) => x.meta.kind === 't1_done' && x.label === 'yes').length
   const t1no = shuffle(out.filter((x) => x.meta.kind === 't1_done' && x.label === 'no'), r).slice(0, 2 * t1yes)
   out = [...out.filter((x) => !(x.meta.kind === 't1_done' && x.label === 'no')), ...t1no]
-  // Per-head caps, so a head with tens of thousands of candidate rows cannot dominate an epoch.
+  // Per-head caps, so a head with tens of thousands of candidate rows cannot dominate an epoch. A fractional cap is
+  // relative to this split's act-head rows, so val's composition mirrors train's whatever their sizes.
+  const actRows = out.filter(isMoveRow).length
   for (const [head, cap] of Object.entries(CAPS)) {
     const kind = { t1: 't1_done', t2: 't2_field', t4: 't4_submit', t5: 't5_commit' }[head] ?? head
-    const mine = shuffle(out.filter((x) => x.meta.kind === kind), r).slice(0, cap)
+    const n = cap <= 1 ? Math.round(cap * actRows) : cap
+    const mine = shuffle(out.filter((x) => x.meta.kind === kind), r).slice(0, n)
     out = [...out.filter((x) => x.meta.kind !== kind), ...mine]
   }
   return shuffle(out, r)

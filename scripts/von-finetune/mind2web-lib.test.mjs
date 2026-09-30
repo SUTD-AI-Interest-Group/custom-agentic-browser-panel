@@ -143,6 +143,25 @@ describe('buildRegistry', () => {
     expect(by[5]).toBeUndefined()
     expect(by[70]).toBeUndefined()
   })
+  it('registers controls inside an <iframe> subtree (Mind2Web flattens frames into the dump; the HTML parser would read them as text)', () => {
+    const html = `<html backend_node_id="1"><body backend_node_id="2"><iframe backend_node_id="3" title="Widget"><html backend_node_id="4"><body backend_node_id="5"><form backend_node_id="6" aria_label="Pay"><button backend_node_id="7"><text backend_node_id="8">Pay now</text></button></form><template backend_node_id="9"><a backend_node_id="10"><text backend_node_id="11">Hidden</text></a></template></body></html></iframe></body></html>`
+    const cands = [parseCandidate(cand(1, 'html', { bounding_box_rect: '0,0,1280,900' })), parseCandidate(cand(7, 'button')), parseCandidate(cand(10, 'a'))]
+    const reg = buildRegistry(html, cands, '7')
+    const by = Object.fromEntries(reg.elements.map((e) => [e.nodeId, e]))
+    expect(by[7]).toMatchObject({ name: 'Pay now', type: 'submit', ancestorName: 'Pay', form: '6' })
+    expect(by[10]).toMatchObject({ name: 'Hidden' })
+  })
+  it('stays linear on a dialog that wraps thousands of controls (the eBay page: 6,010 candidates took 102 s unmemoized)', () => {
+    const n = 3000
+    const links = Array.from({ length: n }, (_, i) => `<a backend_node_id="${100 + i}"><text backend_node_id="${10000 + i}">Item ${i}</text></a>`).join('\n')
+    const html = `<html backend_node_id="1"><body backend_node_id="2"><div backend_node_id="3" role="dialog"><h2 backend_node_id="4"><text backend_node_id="5">Sign in</text></h2>${links}</div></body></html>`
+    const cands = [parseCandidate(cand(1, 'html', { bounding_box_rect: '0,0,1280,90000' })), ...Array.from({ length: n }, (_, i) => parseCandidate(cand(100 + i, 'a', { bounding_box_rect: `0,${i * 30},200,20` })))]
+    const t0 = Date.now()
+    const reg = buildRegistry(html, cands, '100')
+    expect(reg.elements).toHaveLength(n)
+    expect(reg.elements[n - 1].ancestorName).toBe('Sign in')
+    expect(Date.now() - t0).toBeLessThan(2000)
+  })
   it('without a target, sibling and same-class decoys are not pulled in', () => {
     const r2 = buildRegistry(HTML, ALL, undefined)
     expect(r2.elements.map((e) => e.nodeId)).not.toContain('51')

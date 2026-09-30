@@ -63,7 +63,9 @@ for (const split of args.splits.split(',').filter(Boolean)) {
   for await (const rows of tasksOf(file)) {
     if (tasks >= limit) break
     tasks++
+    const t1 = Date.now()
     const out = convertTask(rows, { rng: rng(rows[0].annotation_id) })
+    if (Date.now() - t1 > 3000) log(`slow task ${rows[0].annotation_id} (${rows[0].website}, ${rows.length} steps): ${Math.round((Date.now() - t1) / 1000)}s`)
     s.rows += rows.length
     s.tasks++
     s.pages += out.pages.length
@@ -76,7 +78,7 @@ for (const split of args.splits.split(',').filter(Boolean)) {
       sites.add(p.site)
       if (p.split === 'val') valSites.add(p.site)
     }
-    if (s.tasks % 100 === 0) log(`${split}: ${s.tasks} tasks · ${s.pages} pages · ${s.episodes} episodes · ${Math.round((Date.now() - t0) / 1000)}s`)
+    if (s.tasks % 25 === 0) log(`${split}: ${s.tasks} tasks · ${s.pages} pages · ${s.episodes} episodes · ${Math.round((Date.now() - t0) / 1000)}s`)
   }
   stats.splits[split] = s
   log(`${split}: ${JSON.stringify(s)} in ${Math.round((Date.now() - t0) / 1000)}s`)

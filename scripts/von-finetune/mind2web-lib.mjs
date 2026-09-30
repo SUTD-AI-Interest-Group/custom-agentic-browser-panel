@@ -129,14 +129,25 @@ function sensitiveOf(el, tag, a, accessible) {
   )
 }
 
-const dialogTitleOf = (d) => {
+/**
+ * A dialog's title, computed once per dialog node: the heading scan walks the
+ * dialog's whole subtree, and every registered control inside it climbs to
+ * it — unmemoized that is quadratic, and an eBay page with 6,010 candidates
+ * under a page-wrapping dialog took 102 s (the regression test pins it).
+ */
+const dialogTitleOf = (d, memo) => {
+  if (memo.has(d)) return memo.get(d)
   const aria = d.getAttribute('aria_label')
-  if (aria) return aria.trim().slice(0, 120)
-  const h = d.querySelector('h1,h2,h3,h4,h5,h6')
-  return h ? collapse(h.textContent).slice(0, 120) : ''
+  let title = aria ? aria.trim().slice(0, 120) : ''
+  if (!title) {
+    const h = d.querySelector('h1,h2,h3,h4,h5,h6')
+    title = h ? collapse(h.textContent).slice(0, 120) : ''
+  }
+  memo.set(d, title)
+  return title
 }
 /** domIndex's ancestorNameOf over Mind2Web's underscore attribute names. */
-function ancestorNameOf(el) {
+function ancestorNameOf(el, memo) {
   let node = el.parentElement
   let depth = 0
   while (node && depth++ < 40) {
@@ -145,7 +156,7 @@ function ancestorNameOf(el) {
       const aria = node.getAttribute('aria_label')
       if (aria) return aria.trim().slice(0, 120)
     } else if (role === 'dialog' || role === 'alertdialog') {
-      const t = dialogTitleOf(node)
+      const t = dialogTitleOf(node, memo)
       if (t) return t
     } else if (node.hasAttribute('onclick') || /^(button|link|menuitem)$/.test(role)) {
       const aria = node.getAttribute('aria_label')
@@ -183,8 +194,18 @@ function registered(c, el, target, targetEl, sameClass) {
  * step; `targetNodeId` marks the human's target so it is always registered
  * and its decoys are pulled in.
  */
+/**
+ * Mind2Web flattens every frame into the page dump, so an <iframe> carries
+ * its document as child markup — which the HTML parser reads as raw text,
+ * losing every control inside (537 targets in the first full run). The
+ * same for <template>, whose children land in an unreachable fragment.
+ * Renaming the tags keeps the subtree parseable; a candidate's own tag still
+ * comes from the candidate record, so nothing downstream sees the rename.
+ */
+export const parseable = (html) => html.replace(/<(\/?)(iframe|template)\b/gi, '<$1$2-x')
+
 export function buildRegistry(html, candidates, targetNodeId) {
-  const dom = new JSDOM(html)
+  const dom = new JSDOM(parseable(html))
   try {
     const doc = dom.window.document
     const byNode = new Map(candidates.filter((c) => visible(c.rect)).map((c) => [c.nodeId, c]))
@@ -195,6 +216,7 @@ export function buildRegistry(html, candidates, targetNodeId) {
     const root = candidates.find((c) => c.tag === 'html') ?? candidates.find((c) => c.tag === 'body')
     const scrollHeight = Math.max(root ? root.rect.height : 0, ...candidates.map((c) => (visible(c.rect) ? c.rect.y + c.rect.height : 0)), VIEWPORT.height)
     const sameClass = { n: 0 }
+    const dialogTitles = new Map()
     const elements = []
     for (const el of doc.querySelectorAll('[backend_node_id]')) {
       const c = byNode.get(el.getAttribute('backend_node_id'))
@@ -216,7 +238,7 @@ export function buildRegistry(html, candidates, targetNodeId) {
         value: toggle ? undefined : valueOf(c.tag, a, el),
         checked: toggle ? a.input_checked === 'true' : undefined,
         sensitive: sensitiveOf(el, c.tag, a, name),
-        ancestorName: ancestorNameOf(el) || undefined,
+        ancestorName: ancestorNameOf(el, dialogTitles) || undefined,
         form: form ? (form.getAttribute('backend_node_id') ?? undefined) : undefined,
         options: c.tag === 'select' ? optionsOf(el) : undefined,
         rect: c.rect,
