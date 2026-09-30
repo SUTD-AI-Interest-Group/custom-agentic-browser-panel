@@ -121,3 +121,6 @@ export async function askJson(model, system, user, { maxTokens = 4096, retries =
 }
 
 export const tmp = (name) => fs.mkdtempSync(path.join(os.tmpdir(), name))
+
+/** First DNS label of a site (`ikea.com`, `www.ikea.com`, `ikea` → `ikea`): the key every corpus shares for the site-level split. */
+export const siteKey = (site) => String(site).toLowerCase().replace(/^www\./, '').split('.')[0]
