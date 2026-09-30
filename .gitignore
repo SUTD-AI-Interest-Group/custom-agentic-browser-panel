@@ -29,3 +29,6 @@ scripts/export-von/out/
 
 # Von fine-tuning pipeline outputs (pages, teacher labels, rendered rows, checkpoints)
 scripts/von-finetune/data/
+
+# Python bytecode from py_compile / uv runs of the maintainer scripts
+__pycache__/
