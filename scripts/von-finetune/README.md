@@ -171,6 +171,30 @@ Re-run the real eval on the fine-tuned export. The feature earns its place only 
 Otherwise the kill criterion stands. Record the numbers in
 `scripts/system1-eval/README.md` either way.
 
+## Results — the act-head fine-tune (2026-09-30)
+
+`render.mjs --head act` rows (2,743 train / 363 val, 12 held-out sites), 3
+epochs = 396 optimizer steps on the M4 Max (MPS, grad checkpointing), 72.7 min,
+best at step 250. Export `data/act-head/onnx` in the main checkout (gitignored;
+q8, manifest sha256 `fb63645a…`) passes the parity gate (CPU max|Δp| 0.0098,
+fp16w 0.0007, invariance 1e-5); the checkpoint, rows and logs sit beside it in
+`data/act-head/`.
+
+**Offline val**, one `act` head instead of `operation` + `target_<OP>`:
+
+| step | val top-1 | coverage at the 0.6 gate | accuracy on the covered | calibration T |
+|---|---|---|---|---|
+| 0 (base Von 1.2) | 0.240 (act 0.208, value 0.762) | 0.785 | 0.256 | — |
+| 250 (saved) | **0.939** | 0.939 | 0.971 | 1.389 |
+| 396 | 0.939 | 0.953 | 0.962 | 1.464 |
+
+Real-browser numbers: `scripts/system1-eval/README.md`, "Results — 2026-09-30",
+run B (grounding 0.926 at one pass per click step). A CPU pass over public
+System-One benchmarks the same day found no forgetting from either fine-tune
+(jabr v2 0.724 → 0.718–0.721 with ECE 0.145 → ~0.06; a 492-row DecisionBench
+subsample 0.490 → 0.520; one small-n regression on JevBench's "original"
+choice items, 0.72 → 0.50, n=36, identical for both fine-tunes).
+
 ## Results — second fine-tune, candidate-action rows (2026-09-27)
 
 Same 4,921 episodes, re-rendered (4,644 train rows / 115 sites, 643 val rows / 12

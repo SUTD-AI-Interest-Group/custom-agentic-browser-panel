@@ -1,5 +1,12 @@
 # Closing the loop gap with jev-ultrafast — plan
 
+Status (2026-09-30): phases 1 and 2 implemented and measured — see
+`scripts/system1-eval/README.md` "Results — 2026-09-30" (runs A and B) and
+`scripts/von-finetune/README.md` "Results — the act-head fine-tune". Two loop
+rules were added from what the runs showed: a first would-be repeat excludes
+its (operation, target) and asks again; an action the page refuses does the
+same instead of ending the call.
+
 Source study: browser-use/jev-ultrafast (commit 1231850) scopes TypeSafe's Jev
 exactly as our candidate-action `Act` scopes Von — the harness owns the action
 space, the model picks an operation and a row. Its 7-second Google Flights run

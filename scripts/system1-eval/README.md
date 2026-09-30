@@ -137,9 +137,85 @@ Per task, forced arm (success · wall · Act):
   Studio was generating; the other 65 forced-arm passes took 18.7 s. Not seen
   before; watch for it in run B.
 
-### Run B — the act-head fine-tune, single-pass head, new loop with the retry
+### Run B — the act-head fine-tune, single-pass head, new loop with the retry (`report.json` is this run)
 
-(pending)
+`scripts/von-finetune/render.mjs --head act` on the same 4,921 episodes (2,743
+train / 363 val rows), 3 epochs on the M4 Max (72.7 min; best at step 250, val
+top-1 0.939, coverage 0.939 at the 0.6 gate with 0.971 on the covered), export
+q8 (manifest `fb63645a…`, parity gate CPU max|Δp| 0.0098). `EVAL_HEAD=single`.
+Parity, grounding and the LLM baseline ran 08:18–08:24 UTC; the e2e phase then
+hung on the panel reload (see the note below) and was rerun 08:52–09:22 UTC
+with one browser context per run. Compared with the lazy fine-tune's numbers
+from 27 Sep (its harness had the old loop):
+
+| | lazy fine-tune (27 Sep) | **act-head fine-tune, single pass** | gemma (this run) |
+|---|---|---|---|
+| grounding top-1 | 52/54 = 0.963 | **50/54 = 0.926** (shop 23/23 · form 15/16 · dialog 12/15) | 51/54 = 0.944 |
+| operation implied | 51/54 above the gate (a separate head) | 50/54 correct in the same pass (CLICK 44, TYPE_TEXT 5, SELECT_OPTION 3; BLOCKED 2×, wrong) | |
+| target above 0.6 · accuracy · confident-but-wrong | 51/54 · 0.961 · 2 | 46/54 · 0.935 · 3 (at 0.4: 52/54 · 0.923 · 4) | |
+| Von passes per click step | 2 (operation ~256 ms + target ~222 ms; shop tournament 641 ms) | **1** (p50 400 ms; shop 817 ms, 47 options in one pass; value head 250 ms) | 1.7 s per completion |
+| WebGPU parity · boot | 0.0073 · 1.2 s | 0.0098, 0 flips · 1.27 s | |
+
+The four grounding misses: two "subscribe to the newsletter" goals (one
+`BLOCKED` at p 0.99, one clicking Subscribe instead of typing the email),
+"write the message" (clicked Send at 0.87), and one `BLOCKED` at 0.55 on the
+dialog page. The single head's calibrated tops scale with the option count
+(p50 0.96 overall, but 0.36–0.50 on several 47-option shop cases), which is
+what the 0.4 try line is for.
+
+| arm | success | wall median | LLM steps median | tokens median | page actions / run | Act calls → statuses → actions | Von passes / ms |
+|---|---|---|---|---|---|---|---|
+| off | 9/9 | 38 s | 9 | 35.8k | 3.0 | — | — |
+| on | 8/9 | 31 s | 8 | 29.8k | 2.3 | 0 | — |
+| forced | 6/9 | 56 s | 10 | 38.5k | 2.2 | 18 → done 9, error 6, parked 2, uncertain 1 → 11 actions | 35 / 18.2 s (520 ms avg) |
+
+Per task, forced arm (success · wall · Act):
+
+| task | rep 0 | rep 1 | rep 2 |
+|---|---|---|---|
+| form | ✓ 207 s · 7 calls: 6 `error`, 1 `done` | ✗ 145 s · never called | ✗ 116 s · `done`, `uncertain`, `done` (5 actions; a premature `done`) |
+| shop | ✓ 47 s · parked, then 1 `done` | ✗ 56 s · never called | ✓ 37 s · 1 `done` |
+| dialog | ✓ 45 s · 1 `done`, both clicks | ✓ 29 s · parked, then 1 `done`, both clicks | ✓ 73 s · 2 `done` |
+
+- **One pass per step works end to end.** Dialog forced: all three runs, both
+  clicks by `Act` in ONE call (2 passes, 0.7–1.4 s), `done` on its own; rep 1
+  at 29 s is the fastest dialog run of the day (off 38 s median). Shop: the one
+  correct click at p 1.0.
+- **The six `error` calls are one bug, now fixed structurally.** All in form
+  rep 0: the head chose the Topic dropdown (`6:SELECT_OPTION`, nine training
+  rows) six calls running and the value head handed it a key whose text
+  matched no option ("no option matching «Message»"), so `selectOption`
+  failed and each refusal ended the call. Commit 9d65d5b makes a refused
+  action a `failed` step that excludes that (operation, target) for the rest
+  of the call (`MAX_FAILED_ACTIONS` 2), so the next decision must be another
+  control — unit-tested; the targeted e2e verification is recorded below when
+  run. The data fix (more `SELECT_OPTION` rows, option enumeration) stands.
+- **Forms still hand back or over-claim.** Rep 2's `done` after one field was
+  sealed by the chat model despite the description now asking it to re-read;
+  rep 1 never called `Act` (the chat model's no-session loop, also 2 of the 3
+  `on`-arm failures across runs A and B).
+- **Warm-on-grant is hidden but not free.** The engine now boots on the
+  page-control grant, concurrently with the chat model's next generation:
+  10–35 s under that GPU contention (1.27 s alone), paid in every `on`-arm run
+  too. The `on` arm is nevertheless the fastest arm (31 s median), so the
+  contention cost is small; a forced run's first `Act` call still waits for
+  it when the grant was recent.
+- **Harness note.** In three attempts on two builds the panel's
+  `page.reload()` (and a fresh `goto` on the same page) hung past 30 s after a
+  chat turn, while a clean profile reloads in 100 ms; a replacement page
+  became the active tab and the chat bound to itself. `run.mjs` now launches
+  one persistent context per e2e run (weights cached in the profile) and
+  retries a run once on a hung reload; cause not found.
+
+**Decision.** The single-pass head grounds within two cases of the lazy pair
+of heads (0.926 vs 0.963; the LLM 0.944) at one pass per click step, and the
+loop changes remove the `Act` wall-time penalty where the model is competent
+(dialog 45 s vs 38 s off, with the fastest run of the day). Forced-arm success
+is 6/9 (run A 5/8, 27 Sep 5/9); every forced failure is a form (the
+`SELECT_OPTION` data gap, a premature `done`, or the chat model never calling
+`Act`). Stays behind the toggle. Next: `SELECT_OPTION` and multi-field form
+episodes, option enumeration for dropdowns, and page text in the state (all
+need a re-collect); the chat model must re-read after `done`.
 
 ## Results — 2026-09-27: the candidate-action representation, base Von
 
