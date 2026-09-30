@@ -9,10 +9,12 @@ afterEach(() => {
 })
 
 describe('WEIGHTS_PIN', () => {
-  it('is the committed empty pin when no override is set', async () => {
+  it('is the committed published pin when no override is set — a commit sha and a manifest hash, never a branch', async () => {
     vi.resetModules()
     const { WEIGHTS_PIN } = await import('./weightsManifest')
-    expect(WEIGHTS_PIN).toEqual({ repo: '', revision: '', manifestSha256: '' })
+    expect(WEIGHTS_PIN).toEqual({ repo: 'ks-ang/von-browser-act', revision: '7a0aeb2b98b3904147c1febebbc85f6c882d3e84', manifestSha256: 'fb63645a22d39308ad7ed9bcf3fce4c02057be158415a372348e8c3363b23e51' })
+    expect(WEIGHTS_PIN.revision).toMatch(/^[0-9a-f]{40}$/)
+    expect(WEIGHTS_PIN.manifestSha256).toMatch(/^[0-9a-f]{64}$/)
   })
 
   it('ignores VITE_SYSTEM1_PIN outside a system1-eval build', async () => {
@@ -20,7 +22,7 @@ describe('WEIGHTS_PIN', () => {
     vi.stubEnv('VITE_SYSTEM1_PIN', JSON.stringify({ repo: 'me/von', revision: 'abc123', manifestSha256: 'f'.repeat(64) }))
     vi.resetModules()
     const { WEIGHTS_PIN } = await import('./weightsManifest')
-    expect(WEIGHTS_PIN).toEqual({ repo: '', revision: '', manifestSha256: '' })
+    expect(WEIGHTS_PIN).toEqual({ repo: 'ks-ang/von-browser-act', revision: '7a0aeb2b98b3904147c1febebbc85f6c882d3e84', manifestSha256: 'fb63645a22d39308ad7ed9bcf3fce4c02057be158415a372348e8c3363b23e51' })
   })
 
   it('does not even parse a malformed override outside a system1-eval build', async () => {
@@ -28,7 +30,7 @@ describe('WEIGHTS_PIN', () => {
     vi.stubEnv('VITE_SYSTEM1_PIN', 'not json')
     vi.resetModules()
     const { WEIGHTS_PIN } = await import('./weightsManifest')
-    expect(WEIGHTS_PIN.repo).toBe('')
+    expect(WEIGHTS_PIN.repo).toBe('ks-ang/von-browser-act')
   })
 
   it('honours a well-formed VITE_SYSTEM1_PIN override in a system1-eval build', async () => {

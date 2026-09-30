@@ -40,10 +40,11 @@ agent capabilities" (LM Studio `google/gemma-4-26b-a4b` is the only model endpoi
 
 ## Running it
 
-The model is not published yet, so build an eval extension with the pin override
-(never commit a build). The override is honoured only under `--mode system1-eval`
-— an ordinary build ignores it, and hides the Experimental toggle while the
-committed pin is empty:
+The committed pin (`src/system1/weightsManifest.ts`) points at the published
+act-head export, `ks-ang/von-browser-act`. To evaluate a local, not-yet-published
+export, build an eval extension with the pin override (never commit a build). The
+override is honoured only under `--mode system1-eval` — an ordinary build ignores
+it:
 
 ```bash
 VITE_SYSTEM1_PIN='{"repo":"local/von","revision":"local","manifestSha256":"<sha256 of out/manifest.json>"}' \
