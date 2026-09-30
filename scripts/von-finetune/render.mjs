@@ -32,6 +32,10 @@ const { values: args } = parseArgs({
     head: { type: 'string', default: 'act' },
     // Extra corpora under DATA/<name>/{pages,episodes}.jsonl (e.g. `--corpus mind2web`, from mind2web.mjs), merged with the teacher corpus.
     corpus: { type: 'string', multiple: true, default: [] },
+    // The typed-instruction heads (spec §3, first batch): t1 done, t2 missing field, t4 submit, t5 committing. `none` skips them.
+    typed: { type: 'string', default: 't1,t2,t4,t5' },
+    // Per-head row caps after balancing (t2/t4 uncapped unless named).
+    'typed-cap': { type: 'string', default: 't1=4000,t5=6000' },
   },
 })
 if (!['act', 'lazy'].includes(args.head)) throw new Error(`--head must be act or lazy, got ${args.head}`)
@@ -52,6 +56,31 @@ const words = (s) => new Set(String(s).toLowerCase().match(/[a-z0-9]+/g) ?? [])
 const overlap = (goal, c) => { const g = words(goal); let n = 0; for (const w of words(`${c.name} ${c.group ?? ''}`)) if (g.has(w)) n++; return n }
 const toOptions = (q) => Object.entries(q.options).map(([id, description]) => ({ id, description }))
 const OP_OF_ACTION = { click: 'CLICK', type: 'TYPE_TEXT', select: 'SELECT_OPTION' }
+const ACTION_OF_OP = { CLICK: 'click', TYPE_TEXT: 'type', SELECT_OPTION: 'select' }
+
+// ---- The typed-instruction heads (spec §3). Yes/no heads use Von's own noul
+// packing: two options with explicit affirmative/negative descriptions. ----
+const T1 = {
+  question: 'Is the task complete on this page, with no further action needed?',
+  options: [
+    { id: 'yes', description: 'Yes: the goal is already achieved on this page and nothing more needs to be done.' },
+    { id: 'no', description: 'No: at least one more action is still needed to reach the goal.' },
+  ],
+}
+const T2_QUESTION = 'Which of these fields still needs a value to complete the task?'
+const T4_QUESTION = 'Which of these controls submits the form?'
+const T5_QUESTION = 'Is taking this action reversible, or does it commit to something (submit, payment, navigating away)?'
+// No `uncertain` option: an option with no labels is dead weight exactly like WAIT; the confidence gate expresses uncertainty.
+const T5_OPTIONS = [
+  { id: 'reversible', description: 'Reversible: it only changes what is shown on the page and can be backed out of.' },
+  { id: 'committing', description: 'Committing: it submits, pays, deletes, sends, signs in, or leaves the page.' },
+]
+const TYPED = new Set(args.typed === 'none' ? [] : args.typed.split(',').filter(Boolean))
+const CAPS = Object.fromEntries(args['typed-cap'].split(',').filter(Boolean).map((kv) => { const [k, v] = kv.split('='); return [k, Number(v)] }))
+/** T4/T5 are page facts, rendered once per (page, viewport) whatever the number of episodes on it. */
+const seenTyped = new Set()
+const typedRng = rng('typed')
+const metaOf = (ep) => ({ kind: ep.kind, pageId: ep.pageId, site: ep.site, split: ep.split, category: ep.category, writer: ep.writer, composed: !!ep.composed, corpus: ep.corpus, goalKind: ep.goalKind })
 
 /** The operation a control's own nature implies for this task (candidates.ts's gating, mirrored). */
 function operationFor(control, valueKeys) {
@@ -143,8 +172,78 @@ function actRowsFor(ep, ctx, space, byId, valueKeys, meta, state) {
 function rowsFor(ep) {
   const c = contextOf(ep)
   if (!c) return []
+  const head = headRowsFor(ep, c)
+  const wantsTyped = ep.kind === 'target' || (ep.kind === 'move' && ep.label === 'DONE')
+  return wantsTyped ? [...head, ...typedRowsFor(ep, c)] : head
+}
+
+/**
+ * The typed-instruction heads for one episode's state. T1 (done) for every
+ * target episode (no) and every teacher DONE move (yes); T2 (missing field)
+ * for a Mind2Web task-goal field step; T4 (submit) and T5 (committing) once
+ * per (page, viewport). T5's label IS the shipped isPointOfNoReturn over the
+ * raw element; anchors are excluded because a link's reversibility is a
+ * cross-origin fact the state text never shows.
+ */
+function typedRowsFor(ep, c) {
+  const { ctx, space } = c
+  const meta = metaOf(ep)
+  const rows = []
+  const withControls = lib.renderState(ctx, space.shown)
+  const withoutControls = lib.renderState(ctx, space.shown, { controls: false })
+  const vp = pages.get(ep.pageId)?.viewports[ep.vp]
+  const rawById = new Map((vp?.elements ?? []).map((e) => [e.index, { ...e, rect: { x: 0, y: e.y ?? 0, width: 1, height: 1 } }]))
+  const origin = ctx.observation.page.origin
+  if (TYPED.has('t1')) {
+    const label = ep.kind === 'move' && ep.label === 'DONE' ? 'yes' : 'no'
+    rows.push({ state: withControls, question: T1.question, options: T1.options, label, meta: { ...meta, kind: 't1_done', label } })
+  }
+  if (ep.kind !== 'target') return rows
+  if (TYPED.has('t2') && ep.goalKind === 'task' && lib.isFieldOperation(ep.op ?? '')) {
+    const fields = ctx.observation.controls.filter((x) => x.actions.includes('type_text') || x.actions.includes('select_option'))
+    if (fields.length >= 2 && fields.some((x) => x.id === ep.label) && (fields.some((x) => x.value) || ep.steps.length))
+      rows.push({ state: withoutControls, question: T2_QUESTION, options: fields.map((x) => ({ id: String(x.id), description: lib.renderControl(x) })), label: String(ep.label), meta: { ...meta, kind: 't2_field' } })
+  }
+  const once = `${ep.pageId}|${ep.vp}`
+  if (seenTyped.has(once)) return rows
+  seenTyped.add(once)
+  if (TYPED.has('t4')) {
+    const byForm = new Map()
+    for (const x of ctx.observation.controls) {
+      const f = rawById.get(x.id)?.form
+      if (!f || x.role !== 'button' || !x.actions.length) continue
+      if (!byForm.has(f)) byForm.set(f, [])
+      byForm.get(f).push(x)
+    }
+    for (const buttons of byForm.values()) {
+      const submitters = buttons.filter((x) => x.fingerprint.type === 'submit' || x.fingerprint.type === 'image')
+      if (buttons.length >= 2 && submitters.length === 1)
+        rows.push({ state: withoutControls, question: T4_QUESTION, options: buttons.map((x) => ({ id: String(x.id), description: lib.renderControl(x) })), label: String(submitters[0].id), meta: { ...meta, kind: 't4_submit' } })
+    }
+  }
+  if (TYPED.has('t5')) {
+    const cands = []
+    for (const x of ctx.observation.controls) {
+      if (!x.actions.length || x.fingerprint.tag === 'a') continue
+      for (const op of ['CLICK', 'TYPE_TEXT', 'SELECT_OPTION']) {
+        if (op === 'TYPE_TEXT' && !x.actions.includes('type_text')) continue
+        if (op === 'SELECT_OPTION' && !x.actions.includes('select_option')) continue
+        const el = rawById.get(x.id)
+        if (!el) continue
+        const committing = lib.isPointOfNoReturn({ action: ACTION_OF_OP[op], index: x.id }, el, origin)
+        cands.push({ x, op, label: committing ? 'committing' : 'reversible' })
+      }
+    }
+    const take = (label) => shuffle(cands.filter((k) => k.label === label), typedRng).slice(0, 2)
+    for (const k of [...take('committing'), ...take('reversible')])
+      rows.push({ state: withoutControls, question: `${T5_QUESTION}\nAction: ${lib.renderControlAction(k.x, k.op)}`, options: T5_OPTIONS, label: k.label, meta: { ...meta, kind: 't5_commit', op: k.op, label: k.label } })
+  }
+  return rows
+}
+
+function headRowsFor(ep, c) {
   const { ctx, space, byId, valueKeys } = c
-  const meta = { kind: ep.kind, pageId: ep.pageId, site: ep.site, split: ep.split, category: ep.category, writer: ep.writer, composed: !!ep.composed, corpus: ep.corpus, goalKind: ep.goalKind }
+  const meta = metaOf(ep)
   const withControls = lib.renderState(ctx, space.shown)
   const withoutControls = lib.renderState(ctx, space.shown, { controls: false })
 
@@ -199,13 +298,25 @@ function balance(rows, r) {
   const isDone = (x) => isMoveRow(x) && x.meta.op === 'DONE'
   const acts = rows.filter((x) => isMoveRow(x) && lib.isElementOperation(x.meta.op)).length
   const done = shuffle(rows.filter(isDone), r).slice(0, Math.round(acts * Number(args['done-per-act'])))
-  return shuffle([...rows.filter((x) => !isDone(x)), ...done], r)
+  let out = [...rows.filter((x) => !isDone(x)), ...done]
+  // T1: every yes, at most 2× as many no (nearly every state is a "no").
+  const t1yes = out.filter((x) => x.meta.kind === 't1_done' && x.label === 'yes').length
+  const t1no = shuffle(out.filter((x) => x.meta.kind === 't1_done' && x.label === 'no'), r).slice(0, 2 * t1yes)
+  out = [...out.filter((x) => !(x.meta.kind === 't1_done' && x.label === 'no')), ...t1no]
+  // Per-head caps, so a head with tens of thousands of candidate rows cannot dominate an epoch.
+  for (const [head, cap] of Object.entries(CAPS)) {
+    const kind = { t1: 't1_done', t2: 't2_field', t4: 't4_submit', t5: 't5_commit' }[head] ?? head
+    const mine = shuffle(out.filter((x) => x.meta.kind === kind), r).slice(0, cap)
+    out = [...out.filter((x) => x.meta.kind !== kind), ...mine]
+  }
+  return shuffle(out, r)
 }
 
 function stats(rows) {
   const out = {}
   for (const x of rows) {
-    const k = x.meta.kind === 'operation' ? `operation:${x.meta.op}` : x.meta.kind === 'target' ? `target:${x.meta.op}:${x.meta.round}` : x.meta.kind === 'act' ? `act:${x.meta.op}:${x.meta.round}` : x.meta.kind
+    const k = x.meta.kind === 'operation' ? `operation:${x.meta.op}` : x.meta.kind === 'target' ? `target:${x.meta.op}:${x.meta.round}` : x.meta.kind === 'act' ? `act:${x.meta.op}:${x.meta.round}`
+      : x.meta.kind === 't1_done' || x.meta.kind === 't5_commit' ? `${x.meta.kind}:${x.label}` : x.meta.kind
     out[k] = (out[k] ?? 0) + 1
   }
   for (const x of rows) {
