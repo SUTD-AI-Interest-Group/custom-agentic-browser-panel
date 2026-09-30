@@ -211,7 +211,8 @@ export function buildRegistry(html, candidates, targetNodeId) {
     const byNode = new Map(candidates.filter((c) => visible(c.rect)).map((c) => [c.nodeId, c]))
     const target = targetNodeId !== undefined ? byNode.get(targetNodeId) : undefined
     const targetEl = target ? doc.querySelector(`[backend_node_id="${target.nodeId}"]`) : null
-    const titleEl = doc.querySelector('title')
+    // The document's own title only: the first <title> in many dumps is an inline SVG icon's ("Chat Bubble Icon").
+    const titleEl = doc.querySelector('head > title')
     const title = titleEl ? collapse(titleEl.textContent.replace(/<[^>]+>/g, '')) : ''
     const root = candidates.find((c) => c.tag === 'html') ?? candidates.find((c) => c.tag === 'body')
     const scrollHeight = Math.max(root ? root.rect.height : 0, ...candidates.map((c) => (visible(c.rect) ? c.rect.y + c.rect.height : 0)), VIEWPORT.height)

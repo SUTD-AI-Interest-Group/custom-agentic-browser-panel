@@ -100,6 +100,12 @@ describe('buildRegistry', () => {
     expect(reg.title).toBe('Acme & Co')
     expect(reg.scrollHeight).toBe(3000)
   })
+  it("takes the document's title from <head>, never an inline SVG's <title> (the first one in many dumps is an icon's)", () => {
+    const svgFirst = `<html backend_node_id="1"><body backend_node_id="2"><svg backend_node_id="3"><title backend_node_id="4">Chat Bubble Icon</title></svg><a backend_node_id="5"><text backend_node_id="6">Home</text></a></body></html>`
+    expect(buildRegistry(svgFirst, [parseCandidate(cand(5, 'a'))], '5').title).toBe('')
+    const headed = `<html backend_node_id="1"><head backend_node_id="7"><title backend_node_id="8"><text backend_node_id="9">CarMax</text></title></head><body backend_node_id="2"><svg backend_node_id="3"><title backend_node_id="4">Chat Bubble Icon</title></svg></body></html>`
+    expect(buildRegistry(headed, [], undefined).title).toBe('CarMax')
+  })
   it('keeps document order and only what domIndex would index, plus the target and its decoys', () => {
     // 51 is the target; 53 and 55 are same-tag siblings under its parent; 60 shares its class but not its tag, so it is not a decoy.
     expect(reg.elements.map((e) => e.nodeId)).toEqual(['12', '13', '14', '16', '18', '23', '25', '33', '40', '42', '51', '53', '55'])
