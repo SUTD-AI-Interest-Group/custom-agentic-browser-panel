@@ -225,3 +225,192 @@ export function buildRegistry(html, candidates, targetNodeId) {
     dom.window.close()
   }
 }
+
+// ---------------------------------------------------------------------------
+// Viewports, goals, value keys and episodes.
+
+export const SPLIT_OF = { train: 'train', test_task: 'train', test_domain: 'train', test_website: 'val' }
+const WRITER = 'dataset:mind2web'
+const ACTION_OF_OP = { CLICK: 'click', TYPE: 'type', SELECT: 'select' }
+const OPERATION_OF_OP = { CLICK: 'CLICK', TYPE: 'TYPE_TEXT', SELECT: 'SELECT_OPTION' }
+
+const slim = (e, index, scrollY) => {
+  const { rect, ...rest } = e
+  const out = { index, ...rest, y: Math.round(rect.y - scrollY) }
+  for (const k of Object.keys(out)) if (out[k] === undefined) delete out[k]
+  return out
+}
+
+/**
+ * One or two windows over the page; the target must be visible in one — a
+ * reconstruction, not a scroll trace. Window 0 is the top of the page; a
+ * below-fold target gets a second window a third of a screen above it.
+ * Each window is capped like a real snapshot (MAX_ELEMENTS, document order),
+ * and a target past the cap is reported absent, never pulled forward.
+ */
+export function bucketViewports(registry, targetNodeId, scrollHeight, vh = VIEWPORT.height) {
+  const target = registry.elements.find((e) => e.nodeId === targetNodeId)
+  const maxScroll = Math.max(0, scrollHeight - vh)
+  const offsets = [0]
+  if (target && target.rect.y + target.rect.height > vh * 0.9) {
+    const y = Math.min(maxScroll, Math.max(0, Math.round(target.rect.y - vh / 3)))
+    if (y > 0) offsets.push(y)
+  }
+  const viewports = offsets.map((scrollY) => {
+    const inWin = registry.elements.filter((e) => e.rect.y < scrollY + vh && e.rect.y + e.rect.height > scrollY)
+    const kept = inWin.slice(0, MAX_ELEMENTS)
+    return { scrollY, truncated: inWin.length > kept.length, elements: kept.map((e, i) => slim(e, i, scrollY)) }
+  })
+  let targetVp
+  let targetIndex
+  for (let i = viewports.length - 1; i >= 0; i--) {
+    const hit = viewports[i].elements.find((e) => e.nodeId === targetNodeId)
+    if (hit) {
+      targetVp = i
+      targetIndex = hit.index
+      break
+    }
+  }
+  const tname = (target?.name ?? '').toLowerCase()
+  const sameNameOnTop = !!target && targetVp !== 0 && !!tname && viewports[0].elements.some((e) => e.nodeId !== targetNodeId && (e.name ?? '').toLowerCase() === tname)
+  return { viewports, targetVp, targetIndex, sameNameOnTop }
+}
+
+/** snake_case ≤ 30 chars, `value` when empty, `_2`… on collision (records the key in `taken`). */
+export function keyFor(name, taken) {
+  const base = collapse(name).toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 30).replace(/_+$/g, '') || 'value'
+  let key = base
+  for (let n = 2; taken.has(key); n++) key = `${base.slice(0, 30 - String(n).length - 1)}_${n}`
+  taken.add(key)
+  return key
+}
+
+const pick = (xs, r) => xs[Math.floor(r() * xs.length)]
+const q = (s, r) => (r() < 0.5 ? `"${s}"` : s)
+const CLICK_TEMPLATES = {
+  link: ['Open {n}', 'Go to {n}', 'Click the {n} link'],
+  button: ['Click {n}', 'Press the {n} button', 'Hit {n}'],
+  checkbox: ['Tick {n}', 'Check the {n} box', 'Select {n}'],
+  radio: ['Choose {n}', 'Select the {n} option'],
+  tab: ['Switch to the {n} tab', 'Open the {n} tab'],
+  option: ['Choose {n}', 'Pick {n}', 'Select {n} from the list'],
+  menuitem: ['Choose {n} from the menu', 'Pick {n}'],
+  li: ['Choose {n}', 'Pick {n}', 'Select {n} from the list'],
+  default: ['Click {n}', 'Select {n}', 'Open {n}'],
+}
+const TYPE_WITH = ['Type {v} into {n}', 'Enter {v} in the {n} field', 'Fill in {n} with {v}']
+const TYPE_SEARCH = ['Search for {v}', 'Look up {v}']
+const TYPE_WITHOUT = ['Fill in the {n} field', 'Enter a value in {n}', 'Type into {n}']
+const SELECT_WITH = ['Select {v} from the {n} dropdown', 'Set {n} to {v}', 'Choose {v} under {n}']
+const SELECT_WITHOUT = ['Pick an option in the {n} dropdown', 'Choose a value for {n}']
+
+/** A templated, deterministic per-step goal from Mind2Web's own element description. */
+export function stepGoal({ op, roleWord, name, value, withValue }, r) {
+  const n = q(collapse(name).slice(0, 60), r)
+  const v = q(collapse(value).slice(0, 60), r)
+  let t
+  if (op === 'CLICK') t = pick(CLICK_TEMPLATES[roleWord] ?? CLICK_TEMPLATES.default, r)
+  else if (op === 'TYPE') t = withValue ? pick(/search/i.test(`${roleWord} ${name}`) && r() < 0.5 ? TYPE_SEARCH : TYPE_WITH, r) : pick(TYPE_WITHOUT, r)
+  else t = withValue ? pick(SELECT_WITH, r) : pick(SELECT_WITHOUT, r)
+  return t.replace('{n}', n).replace('{v}', v)
+}
+
+const shuffleEntries = (obj, r) => {
+  const a = Object.entries(obj)
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(r() * (i + 1))
+    ;[a[i], a[j]] = [a[j], a[i]]
+  }
+  return Object.fromEntries(a)
+}
+
+const reprOf = (s) => parseRepr(s.target_action_reprs) ?? parseRepr(s.action_reprs[s.target_action_index])
+
+/**
+ * All the steps of one Mind2Web task → pages (one per converted step) and
+ * episodes in both goal kinds: the templated per-step goal (no history,
+ * unambiguous, like the teacher corpus) and the task's own description with
+ * the trajectory so far as history (the multi-field-form signal). Rows may
+ * arrive in any order. Every skip is counted, and a skipped step still lends
+ * its value key to the task and its line to later steps' history (without
+ * an index, since it has no page).
+ */
+export function convertTask(rows, { rng: r }) {
+  const steps = [...rows].sort((a, b) => a.target_action_index - b.target_action_index)
+  const skipped = {}
+  const warnings = {}
+  const count = (m, k) => {
+    m[k] = (m[k] ?? 0) + 1
+  }
+  const pages = []
+  const episodes = []
+  if (!steps.length) return { pages, episodes, skipped, warnings }
+  const first = steps[0]
+  const website = first.website
+  const origin = originFor(website)
+  const split = SPLIT_OF[first.split] ?? 'train'
+  // Value keys for the whole task, from Mind2Web's own element descriptions (present even for skipped steps).
+  const taken = new Set()
+  const keyOfStep = new Map()
+  const taskValues = {}
+  for (const s of steps) {
+    if (s.operation.op !== 'TYPE' && s.operation.op !== 'SELECT') continue
+    const key = keyFor(reprOf(s)?.name ?? '', taken)
+    keyOfStep.set(s.target_action_index, key)
+    taskValues[key] = s.operation.value
+  }
+  const history = []
+  for (const s of steps) {
+    const op = s.operation.op
+    const repr = reprOf(s) ?? { role: '', name: '', op, value: s.operation.value }
+    const hist = { action: ACTION_OF_OP[op] ?? 'click', label: repr.name.slice(0, 60), valueKey: keyOfStep.get(s.target_action_index) }
+    const done = () => {
+      history.push(Object.fromEntries(Object.entries(hist).filter(([, v]) => v !== undefined)))
+    }
+    if (s.operation.original_op === 'ENTER') { count(skipped, 'enter'); done(); continue }
+    const pos = s.pos_candidates.map(parseCandidate)
+    const neg = s.neg_candidates.map(parseCandidate)
+    const target = pickTarget(pos)
+    if (!target) { count(skipped, 'no-target'); done(); continue }
+    const registry = buildRegistry(s.cleaned_html, [...pos, ...neg], target.nodeId)
+    const tEl = registry.elements.find((e) => e.nodeId === target.nodeId)
+    if (!tEl) { count(skipped, 'target-unregistered'); done(); continue }
+    const kind = opFor(tEl)
+    if ((op === 'TYPE' && kind !== 'type') || (op === 'SELECT' && kind !== 'select')) { count(skipped, `op-mismatch:${op}:${tEl.tag}`); done(); continue }
+    if (!repr.name || !tEl.name) { count(skipped, 'unnamed-target'); done(); continue }
+    const { viewports, targetVp, targetIndex, sameNameOnTop } = bucketViewports(registry, target.nodeId, registry.scrollHeight)
+    if (targetVp === undefined) { count(skipped, 'target-truncated'); done(); continue }
+    if (op === 'SELECT' && !tEl.options?.some((o) => o.text === s.operation.value || o.value === s.operation.value)) count(warnings, 'select-value-not-in-options')
+    hist.index = targetIndex
+    const pageId = `m2w:${s.annotation_id}:${s.action_uid}`
+    const title = registry.title || website
+    pages.push({
+      pageId, corpus: 'mind2web', url: `${origin}/`, finalUrl: `${origin}/`, site: website, split, category: s.domain, subdomain: s.subdomain,
+      task: s.confirmed_task, stepIndex: s.target_action_index, stepCount: s.action_reprs.length, depth: s.target_action_index,
+      innerHeight: VIEWPORT.height, scrollHeight: registry.scrollHeight, viewportInferred: true, originPlaceholder: true,
+      viewports: viewports.map((v) => ({ scrollY: v.scrollY, title, origin, url: `${origin}/`, truncated: v.truncated, elements: v.elements })),
+    })
+    const base = { pageId, corpus: 'mind2web', split, site: website, category: s.domain, subdomain: s.subdomain, writer: WRITER, verifier: WRITER }
+    const key = keyOfStep.get(s.target_action_index)
+    const field = op !== 'CLICK'
+    // Distractors for the step goal are the task's OTHER values (document order, at most two): realistic, and rarely more exist.
+    const distractors = Object.fromEntries(Object.entries(taskValues).filter(([k]) => k !== key).slice(0, 2))
+    const emit = (goalKind, goal, values, hist0, vp) => {
+      const b = { ...base, goalKind, goal, vp, values, steps: hist0 }
+      episodes.push({ ...b, kind: 'target', label: targetIndex, op: OPERATION_OF_OP[op] })
+      if (field && Object.keys(values).length >= 2) episodes.push({ ...b, kind: 'value', field: targetIndex, label: key })
+      episodes.push({ ...b, kind: 'move', label: 'act' })
+      if (vp > 0 && !sameNameOnTop) episodes.push({ ...b, vp: 0, kind: 'move', label: 'scroll_down' })
+    }
+    // Step goal: this step's own human description, no history. Half the field goals hide the value: those get a BLOCKED twin without it.
+    const withValue = !field || r() < 0.5
+    const goal = stepGoal({ op, roleWord: repr.role, name: repr.name, value: s.operation.value, withValue }, r)
+    const stepValues = field ? shuffleEntries({ [key]: s.operation.value, ...distractors }, r) : {}
+    emit('step', goal, stepValues, [], targetVp)
+    if (field && !withValue) episodes.push({ ...base, goalKind: 'step', goal, vp: targetVp, values: distractors, steps: [], kind: 'move', label: 'BLOCKED' })
+    // Task goal: the whole task with the trajectory so far.
+    emit('task', s.confirmed_task, shuffleEntries(taskValues, r), history.map((h) => ({ ...h })), targetVp)
+    done()
+  }
+  return { pages, episodes, skipped, warnings }
+}
