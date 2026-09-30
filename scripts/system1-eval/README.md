@@ -53,7 +53,10 @@ EVAL_DIST=/tmp/dist-eval EVAL_PROFILE=/tmp/s1-profile \
 EVAL_PLAYWRIGHT=/path/to/node_modules/playwright node scripts/system1-eval/ep-placement.mjs webgpu
 ```
 
-`EVAL_PROFILE` reuses a browser profile so the 616 MB weights download once.
+`EVAL_HEAD=single|lazy` (default single) must match the head the extension under
+`EVAL_DIST` was built with (`VITE_SYSTEM1_HEAD`, honoured only under
+`--mode system1-eval`) and the fine-tune under `EVAL_MODEL_DIR` was trained for
+(`render.mjs --head`). `EVAL_PROFILE` reuses a browser profile so the 616 MB weights download once.
 `EVAL_CHROMIUM` overrides the Chrome for Testing binary (branded Chrome ignores
 `--load-extension`). If LM Studio is down, `llm` and `e2e` are skipped and say so.
 
@@ -61,6 +64,82 @@ EVAL_PLAYWRIGHT=/path/to/node_modules/playwright node scripts/system1-eval/ep-pl
 in `report.json`, with no browser and no model. `report.json` is written only by
 `report.mjs`. Every invocation appends to its `runs` list the phases it produced, so
 the file records which run each section came from.
+
+## Results — 2026-09-30: the jev-ultrafast loop, and the single-pass act head
+
+A study of [browser-use/jev-ultrafast](https://github.com/browser-use/jev-ultrafast)
+(commit 1231850) found it scopes TypeSafe's Jev exactly as the candidate-action
+`Act` scopes Von — the harness owns the action space, the model picks an
+operation and a row — and that its 7 s Google Flights run comes from the loop
+around the model: one request per decision, a 50–200 ms settle, no confidence
+gate, the page text in the state, trusted input. Two rounds landed here
+(plan: `docs/superpowers/plans/2026-09-30-jev-loop-rebuild.md`):
+
+- **The loop** (commit 976f3f2): `settle: 'quick'` for a non-committing Act
+  step (50 ms quiet / 250 ms cap; a typed combobox waits for `[role=option]`
+  up to 400 ms) and the post-action snapshot reused as the next observation
+  (two page reads per action, was three); `ACT_TRY_CONFIDENCE` 0.4 — a
+  decision between it and 0.6 is *tentative*, executed only when
+  `controlStep` finds it is not a point of no return; three consecutive
+  non-WAIT `no_change` steps end the call; WAIT may repeat once; the engine
+  boots on the page-control grant; `checked`/`disabled` join the stale
+  check; `BLOCKED`/`MISSING_USER_DATA` names the field. Then (commit f8db84f)
+  a would-be repeat excludes that (operation, target) from the space and asks
+  the policy once more before ending the call.
+- **The single-pass act head** (commit d2f9b27): `createVonActPolicy` asks
+  ONE question over every (control, action) pair plus the global moves, state
+  without the control list — one Von pass per click step (was two), value
+  head for a field. `src/system1/head.ts` selects it (default) or the lazy
+  policy; `render.mjs --head act` renders its training rows through the same
+  functions.
+
+### Run A — the existing fine-tune (lazy heads) on the new loop, before the exclusion retry
+
+`EVAL_PHASES=download,e2e`, the second fine-tune's export (manifest
+`33e4bc66…`, lazy-format rows), `EVAL_HEAD=lazy`, 06:31–07:04 UTC. The 27th
+run (dialog/forced rep 2) was lost to the harness: the panel's `page.reload()`
+hung past 30 s and run.mjs crashed before writing its report (now caught —
+`reloadPanel` falls back to a fresh navigation and a thrown run becomes a
+`harness-error` row). The 26 rows below are re-derived from the log; the Act
+messages were recovered from the profile's IndexedDB.
+
+| arm | success | wall median | LLM steps median | tokens median | page actions / run | Act calls → statuses → actions | Von passes / ms |
+|---|---|---|---|---|---|---|---|
+| off | 9/9 | 46 s | 9 | 35.1k | 3.0 | — | — |
+| on | 5/9 | 36 s | 8 | 29.7k | 0.9 | 0 | — |
+| forced | 5/8 | 90 s | 12 | 64.0k | 3.8 | 14 → done 4, uncertain 3, repeat 7 → 23 actions | 70 / 44.9 s (one 26 s stall; the other 65 average 290 ms) |
+
+Per task, forced arm (success · wall · Act):
+
+| task | rep 0 | rep 1 | rep 2 |
+|---|---|---|---|
+| form | ✓ 196 s · 5 calls, 10 actions | ✗ 167 s · 3 calls, 8 actions | ✓ 89 s · 2 calls, 8 actions |
+| shop | ✗ 49 s · never called | ✓ 42 s · 1 `done` | ✓ 91 s · 1 `done` (the 26 s Von stall) |
+| dialog | ✓ 47 s · 2 `done`, 2 actions | ✗ 122 s · never called | lost (harness) |
+
+- **Where the model is competent, the Act penalty is gone.** Dialog rep 0:
+  both clicks by `Act`, two `done` calls, 47 s against the off arm's 50 s on
+  the same rep (the 27 Sep forced arm was 5–35 s slower than off on every
+  task). Shop rep 1: one `done` call, 42 s vs 46/28/30 s off. Six Von passes
+  for two actions.
+- **Forms: Act now acts, but one field per call.** Every form call typed one
+  value and then chose the *same field again* ("would repeat TYPE_TEXT on [4]
+  twice in a row", 4×), re-typed a value the field already held
+  (`no_change`, 2×), or said "possibly done" at p 0.51–0.59 (3×) — the lazy
+  fine-tune's known mid-form weakness (its rows have no multi-field
+  trajectories). Each hand-back cost a chat-model turn, which is why forced
+  form runs are 89–196 s for 8–10 actions. That is what the exclusion retry
+  (f8db84f) targets: the first repeat now narrows the space and asks again.
+- **Every `on`/forced failure with 0 Act calls is the chat model's** (never
+  opens a session, loops on "no session"): on 0/3 on the form, dialog/forced
+  rep 1. Unchanged from every earlier run.
+- **One 26 s Von pass** in shop/forced rep 2 (5 passes, 26.1 s) while LM
+  Studio was generating; the other 65 forced-arm passes took 18.7 s. Not seen
+  before; watch for it in run B.
+
+### Run B — the act-head fine-tune, single-pass head, new loop with the retry
+
+(pending)
 
 ## Results — 2026-09-27: the candidate-action representation, base Von
 

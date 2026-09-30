@@ -7,7 +7,29 @@ performed **zero** actions in 21 calls, because the move question never cleared
 can be closed. It distils page-control decisions from the two local LM Studio
 teachers into Von.
 
-## What the rows are (2026-09-27: the candidate-action representation)
+## What the rows are (2026-09-30: the single-pass act head)
+
+`render.mjs --head act` (the default) renders the rows for `createVonActPolicy`
+(`src/system1/vonPolicy.ts`): ONE `act` question per decision whose options are
+every (control, action) pair the candidate space allows — `[12] textbox "Email"
+→ type` and `[12] textbox "Email" → click` as separate options, in the space's
+ranked order — plus the global moves, with the state block WITHOUT the control
+list. Labels transfer by construction: a `target` episode → `<id>:<op>` (the op
+from `operationFor`, as before), a `scroll_down`/`DONE`/`BLOCKED` move → the
+move; a move `act` renders nothing (its sibling target episode is the identical
+row). Above `ACT_CHUNK` element options a chunk row (element options only, only
+when the label is an element) and a final row (the target or the other chunks'
+most goal-like control, plus the moves) mirror the policy's tournament. `value`
+rows are unchanged. `--head lazy` renders the previous format below.
+
+Rendered 2026-09-30 from the same 4,921 episodes: 2,743 train rows / 115 sites
+(CLICK 1,138 · TYPE_TEXT 126 · SELECT_OPTION 9 · SCROLL_DOWN 105 · DONE 851 ·
+BLOCKED 37 single-round; 129 chunk + 213 final tournament rows; 135 value),
+363 val rows / 12 held-out sites; mean 2,379 chars per row (every row carries
+the whole option list). Base Von 1.2 on the val rows: act 0.208 top-1 (the
+format is new to it), value 0.762.
+
+## What the rows were (2026-09-27: the candidate-action representation, `--head lazy`)
 
 `Act` now runs on the candidate-action layer
 (`docs/superpowers/specs/2026-09-26-candidate-action-act-design.md`): the harness
@@ -96,7 +118,7 @@ grammar suppressed qwen3.8's reasoning, and it answered with an empty string.
 export VFT_PLAYWRIGHT=/path/to/node_modules/playwright   # any Playwright install
 node scripts/von-finetune/collect.mjs                    # → data/pages.jsonl   (resumable)
 node scripts/von-finetune/label.mjs --concurrency 2      # → data/episodes.jsonl (resumable, per page)
-node scripts/von-finetune/render.mjs                     # → data/train.jsonl, val.jsonl, render-stats.json
+node scripts/von-finetune/render.mjs [--head act|lazy]   # → data/train.jsonl, val.jsonl, render-stats.json
 uv run scripts/von-finetune/train.py --eval-only         # base-model val numbers
 uv run scripts/von-finetune/train.py --epochs 2 --grad-checkpointing
 uv run scripts/export-von/export.py --checkpoint scripts/von-finetune/data/ckpt --out scripts/von-finetune/data/onnx
