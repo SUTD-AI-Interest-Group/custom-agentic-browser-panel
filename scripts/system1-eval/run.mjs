@@ -237,28 +237,23 @@ async function findExtensionId(ctx) {
   throw new Error('extension service worker not found — did --load-extension take?')
 }
 
+class PanelHung extends Error {}
+
 /**
- * `page.reload()` waits for `load`, and (2026-09-30) a panel page that has
- * held a WebGPU session sometimes never fires it again — nor does a fresh
- * `goto` on the same page — and the 30 s timeout took a whole e2e report
- * down. So a hung reload is answered with a NEW page at the panel URL (the
- * wedged one is closed best-effort, without waiting on it), and the caller
- * continues with whatever page this returns. Context-level init scripts
- * (the Von spy) apply to the new page too.
+ * `page.reload()` waits for `load`, and (2026-09-30, in every attempt) the
+ * first reload after the System-1 toggle CHANGES in storage can hang past
+ * 30 s — a fresh `goto` on the same page hangs too, and a replacement page
+ * steals the active tab the chat binds to. So a hung reload is a PanelHung,
+ * and the e2e phase answers it by retrying that run once in a new browser
+ * context, where the settings are already what the run wants and the panel
+ * loads clean (measured: the run after a hang reloaded in a second).
  */
 async function reloadPanel(panel) {
-  const url = panel.url()
   try {
     await panel.reload({ timeout: 30_000 })
     return panel
   } catch (err) {
-    log(`panel reload hung (${String(err).split('\n')[0]}); opening a fresh panel page`)
-    const ctx = panel.context()
-    const fresh = await ctx.newPage()
-    await fresh.goto(url, { waitUntil: 'domcontentloaded', timeout: 30_000 })
-    // Close the wedged page without letting its own teardown hang us.
-    void Promise.race([panel.close().catch(() => {}), sleep(5_000)])
-    return fresh
+    throw new PanelHung(`panel reload hung (${String(err).split('\n')[0]})`)
   }
 }
 
@@ -551,12 +546,23 @@ async function phaseE2e(port, fixtureUrl) {
       // Interleave arms per task so drift in LM Studio (load, heat) hits every arm alike.
       for (const mode of modes) {
         let browser = null
+        let attempt = 0
         try {
-          browser = await openBrowser(port)
-          // Context-level, so it applies to the panel's every navigation.
-          await browser.ctx.addInitScript(VON_SPY)
-          const r = await runE2e(browser.ctx, browser.panel, fixtureUrl, task, mode, rep)
-          rows.push(r.row)
+          for (;;) {
+            browser = await openBrowser(port)
+            // Context-level, so it applies to the panel's every navigation.
+            await browser.ctx.addInitScript(VON_SPY)
+            try {
+              const r = await runE2e(browser.ctx, browser.panel, fixtureUrl, task, mode, rep)
+              rows.push(r.row)
+              break
+            } catch (err) {
+              if (!(err instanceof PanelHung) || attempt++ > 0) throw err
+              log(`e2e ${task.id} [${mode}] rep ${rep}: ${err.message}; retrying once in a new context`)
+              await Promise.race([browser.ctx.close().catch(() => {}), sleep(15_000)])
+              browser = null
+            }
+          }
         } catch (err) {
           // The harness, not the agent, failed this run: record it as a failed
           // run with the error and keep going — the other 26 rows are the
