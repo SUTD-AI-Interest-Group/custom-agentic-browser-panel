@@ -188,8 +188,15 @@ Per task, forced arm (success · wall · Act):
   failed and each refusal ended the call. Commit 9d65d5b makes a refused
   action a `failed` step that excludes that (operation, target) for the rest
   of the call (`MAX_FAILED_ACTIONS` 2), so the next decision must be another
-  control — unit-tested; the targeted e2e verification is recorded below when
-  run. The data fix (more `SELECT_OPTION` rows, option enumeration) stands.
+  control. **Verified** 10:27–10:36 UTC (`EVAL_E2E_TASKS=form
+  EVAL_E2E_MODES=forced`, 3 reps, same profile and weights): form/forced
+  **3/3** (run B 1/3, run A 2/3), zero `error` calls; 11 / 4 / 3 `Act` calls
+  performing 8 / 3 / 4 actions (36 / 16 / 12 Von passes) in 204 / 161 / 117 s.
+  What remains are low-confidence terminal answers ("possibly done" 0.43,
+  "possibly blocked" 0.41–0.45, "unsure of the next operation" 0.36–0.38) that
+  hand back to the chat model, and one correct refusal of a committing step
+  (Click "Send message" at p 0.59 — the tentative band working as designed).
+  The data fix (more `SELECT_OPTION` rows, option enumeration) stands.
 - **Forms still hand back or over-claim.** Rep 2's `done` after one field was
   sealed by the chat model despite the description now asking it to re-read;
   rep 1 never called `Act` (the chat model's no-session loop, also 2 of the 3
