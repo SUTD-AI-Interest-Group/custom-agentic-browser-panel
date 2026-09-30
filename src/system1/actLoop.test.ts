@@ -3,7 +3,7 @@ import type { IndexedElement, PageSnapshot } from '../platform/domIndex'
 import type { BrowserDecision, BrowserPolicy, DecisionContext } from './policy'
 import { PolicyInputError } from './policy'
 import type { ValidatedAction } from './validate'
-import { ACT_CONFIDENCE, ACT_MAX_STEPS, ACT_TRY_CONFIDENCE, NO_PROGRESS_STEPS, runActLoop, type ActDeps, type ExecOutcome } from './actLoop'
+import { ACT_CONFIDENCE, ACT_MAX_STEPS, ACT_TRY_CONFIDENCE, MAX_FAILED_ACTIONS, NO_PROGRESS_STEPS, runActLoop, type ActDeps, type ExecOutcome } from './actLoop'
 
 const el = (index: number, over: Partial<IndexedElement> = {}): IndexedElement =>
   ({ index, tag: 'button', name: `Button ${index}`, rect: { x: 0, y: 0, width: 10, height: 10 }, sensitive: false, ...over }) as IndexedElement
@@ -313,6 +313,43 @@ describe('runActLoop — history, loops and staleness', () => {
     const r2 = await runActLoop({ goal: 'g' }, recovers)
     expect(r2.status).toBe('done')
     expect(r2.steps.map((s) => s.result)).toEqual(['stale', 'success'])
+  })
+
+  it('excludes a pair the page refused and carries on; gives up after MAX_FAILED_ACTIONS', async () => {
+    // Run B, 2026-09-30: SELECT_OPTION on the Topic dropdown with a value no
+    // option matched, six calls running, each refusal ending the call.
+    const topic = el(1, { tag: 'select', name: 'Topic' })
+    const message = el(2, { tag: 'textarea', name: 'Message' })
+    const p = policyOf([
+      { operation: 'SELECT_OPTION', targetId: 1, valueKey: 'msg' },
+      { operation: 'TYPE_TEXT', targetId: 2, valueKey: 'msg' },
+      { operation: 'DONE' },
+    ])
+    let calls = 0
+    const d = deps({
+      elements: [el(0), topic, message], policy: p,
+      execute: async (a) => (a.operation === 'SELECT_OPTION' ? { kind: 'failed', message: 'no option matching "x"' } : (calls++, { kind: 'ok', elements: 'R' })),
+      snapshots: [snap([el(0), topic, message]), snap([el(0), topic, message]), snap([el(0), topic, { ...message, value: 'x' }])],
+    })
+    const r = await runActLoop({ goal: 'g', values: { msg: 'hello there' } }, d)
+    expect(r.status).toBe('done')
+    expect(calls).toBe(1)
+    expect(r.steps.map((s) => s.operation)).toEqual(['TYPE_TEXT'])
+    expect(r.transitions.map((t) => t.result)).toEqual(['failed', 'success', undefined])
+    // The refused pair is gone from every later step's space; the control itself stays clickable.
+    expect(p.contexts[1].space.targets.SELECT_OPTION).toEqual([])
+    expect(p.contexts[1].space.operations).not.toContain('SELECT_OPTION')
+    expect(p.contexts[1].space.targets.CLICK).toContain(1)
+
+    const stubborn = deps({
+      elements: [el(0), topic, message],
+      policy: policyOf([{ operation: 'SELECT_OPTION', targetId: 1, valueKey: 'msg' }, { operation: 'TYPE_TEXT', targetId: 2, valueKey: 'msg' }]),
+      execute: async () => ({ kind: 'failed', message: 'refused' }),
+    })
+    const r2 = await runActLoop({ goal: 'g', values: { msg: 'hello there' } }, stubborn)
+    expect(r2.status).toBe('error')
+    expect(r2.message).toContain(`refused ${MAX_FAILED_ACTIONS} actions`)
+    expect(r2.steps).toEqual([])
   })
 
   it('maps denied, parked, drifted and error outcomes to their statuses', async () => {

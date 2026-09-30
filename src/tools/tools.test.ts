@@ -553,12 +553,16 @@ describe('Act (System-1)', () => {
       expect(r.message).toMatch(/Cannot read this page/)
     })
 
-    it('error — runControlStep reports ok:false', async () => {
+    it('failed — runControlStep reports ok:false: the pair is excluded and the loop goes on', async () => {
       vi.mocked(snapshotPage).mockResolvedValue(snap([el({ index: 0, name: 'Next' })]))
       vi.mocked(runControlStep).mockResolvedValue({ ok: false, message: 'element vanished', registry: 'fresh', origin: 'https://example.com' })
       const r = await run(buildInSession(clickFirst()))
-      expect(r.status).toBe('error')
-      expect(r.message).toBe('element vanished')
+      // The page refused the click (not an engine or session error): nothing
+      // is recorded as done, and the scripted policy's next answer (DONE) ends
+      // the call — the refusal did not.
+      expect(r.status).toBe('done')
+      expect(r.steps).toHaveLength(0)
+      expect(runControlStep).toHaveBeenCalledTimes(1)
     })
 
     it('ok — a successful step is recorded and the loop continues', async () => {

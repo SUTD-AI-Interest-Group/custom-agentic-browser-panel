@@ -541,8 +541,10 @@ async function phaseE2e(port, fixtureUrl) {
   // otherwise never pick it. `on` = toggle on, model free to choose.
   const modes = (env.EVAL_E2E_MODES ?? 'off,on,forced').split(',')
   const reps = Number(env.EVAL_E2E_REPS ?? 3)
+  // EVAL_E2E_TASKS narrows a verification run to some of the tasks (e.g. `form`).
+  const tasks = env.EVAL_E2E_TASKS ? TASKS.filter((t) => env.EVAL_E2E_TASKS.split(',').includes(t.id)) : TASKS
   for (let rep = 0; rep < reps; rep++) {
-    for (const task of TASKS) {
+    for (const task of tasks) {
       // Interleave arms per task so drift in LM Studio (load, heat) hits every arm alike.
       for (const mode of modes) {
         let browser = null

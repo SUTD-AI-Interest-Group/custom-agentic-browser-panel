@@ -34,6 +34,8 @@ export const ACT_CONFIDENCE = 0.6
 export const ACT_TRY_CONFIDENCE = 0.4
 /** jev-ultrafast's stop rule: this many consecutive non-WAIT actions that changed nothing end the call. */
 export const NO_PROGRESS_STEPS = 3
+/** Actions the page refused before the call gives up (each excludes its pair from the space first). */
+export const MAX_FAILED_ACTIONS = 2
 
 export type ActStatus = 'done' | 'blocked' | 'uncertain' | 'denied' | 'drifted' | 'repeat' | 'aborted' | 'capped' | 'error' | 'parked'
 export type ExecOutcome =
@@ -41,6 +43,12 @@ export type ExecOutcome =
   | { kind: 'ok'; elements: string; snapshot?: PageSnapshot }
   /** A tentative (below-ACT_CONFIDENCE) action turned out to be a point of no return — nothing was touched. */
   | { kind: 'uncertain'; message: string }
+  /**
+   * The action ran and the page refused it (a value no dropdown option matches,
+   * an element that would not take the keystroke): the page is as it was, and
+   * that (operation, target) is excluded for the rest of the call.
+   */
+  | { kind: 'failed'; message: string }
   | { kind: 'denied' }
   | { kind: 'parked'; note: string }
   | { kind: 'drifted'; message: string; elements?: string }
@@ -64,7 +72,7 @@ export interface ActTransition {
   space: { operations: BrowserOperation[]; targets: Record<ElementOperation, number[]>; shown: number[]; stats: CandidateActionSpace['stats'] }
   decision: BrowserDecision
   action?: { operation: BrowserOperation; targetId?: number; targetName?: string; valueKey?: string }
-  result?: 'success' | 'no_change' | 'stale' | 'denied' | 'parked' | 'drifted' | 'error' | 'rejected' | 'repeat' | 'uncertain'
+  result?: 'success' | 'no_change' | 'stale' | 'denied' | 'parked' | 'drifted' | 'error' | 'rejected' | 'repeat' | 'uncertain' | 'failed'
   ms: { observe: number; policy: number; execute: number }
 }
 
@@ -114,6 +122,14 @@ export async function runActLoop(
   let consecutiveStale = 0
   /** The executor's post-action snapshot, when it gave one: the next observation, without a third page read per action. */
   let pending: PageSnapshot | undefined
+  /**
+   * (operation, target) pairs the page refused this call — run B, 2026-09-30:
+   * the act head chose the Topic dropdown six calls running with a value no
+   * option matched, and each refusal ended the call. Excluded from every
+   * later step's space, so the policy must choose something else.
+   */
+  const excluded: { op: ElementOperation; id: number }[] = []
+  let failedActions = 0
 
   for (let n = 0; n < cap; n++) {
     if (n > 0 && deps.aborted()) return fin({ status: 'aborted', steps, elements: lastElements })
@@ -143,6 +159,7 @@ export async function runActLoop(
     if (recent.length === NO_PROGRESS_STEPS && recent.every((s) => s.result === 'no_change' && s.operation !== 'WAIT'))
       return fin({ status: 'repeat', steps, elements: snap.text, message: `${NO_PROGRESS_STEPS} actions in a row changed nothing on the page` })
     let space = buildCandidateSpace({ goal: input.goal, observation: obs, values, history: steps })
+    for (const x of excluded) space = withoutTarget(space, x.op, x.id)
     const byId = new Map(obs.controls.map((c) => [c.id, c]))
     const nameOf = (id: number) => clip(byId.get(id)?.name || '(unnamed)', 60)
 
@@ -272,6 +289,13 @@ export async function runActLoop(
     if (out.kind === 'uncertain') {
       transition.result = 'uncertain'
       return fin({ status: 'uncertain', steps, elements: snap.text, message: `${out.message} (p=${p.toFixed(2)})`, candidates: candidates() })
+    }
+    if (out.kind === 'failed') {
+      transition.result = 'failed'
+      if (action.targetId !== undefined && isElementOperation(action.operation)) excluded.push({ op: action.operation, id: action.targetId })
+      if (++failedActions >= MAX_FAILED_ACTIONS)
+        return fin({ status: 'error', steps, elements: snap.text, message: `the page refused ${failedActions} actions (${out.message}); continue with ControlPage` })
+      continue
     }
     if (out.kind === 'denied') { transition.result = 'denied'; return fin({ status: 'denied', steps }) }
     if (out.kind === 'parked') { transition.result = 'parked'; return fin({ status: 'parked', steps, message: out.note }) }

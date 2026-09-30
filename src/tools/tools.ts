@@ -1724,7 +1724,10 @@ export function createAgentTools(
             if (r.parked) return { kind: 'parked', note: String(r.note ?? '') }
             if (r.drifted) return { kind: 'drifted', message: String(r.message ?? ''), elements: r.elements as string | undefined }
             if (typeof r.error === 'string') return { kind: 'error', message: r.error }
-            if (r.ok === false) return { kind: 'error', message: String(r.message ?? 'the action failed') }
+            // The action itself was refused by the page (no matching option, a
+            // field that would not take the keystroke): not an engine or
+            // session error — the loop excludes that pair and goes on.
+            if (r.ok === false) return { kind: 'failed', message: String(r.message ?? 'the action failed') }
             return { kind: 'ok', elements: String(r.elements ?? ''), snapshot: r.snapshot as PageSnapshot | undefined }
           },
         })
