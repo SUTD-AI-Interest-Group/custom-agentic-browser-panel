@@ -53,7 +53,9 @@ export function parseRect(s) {
 }
 export const visible = (r) => r.x >= 0 && r.y >= 0 && r.width >= 4 && r.height >= 4 // domIndex drops < 4 px
 
-export function parseCandidate(c) {
+/** A pos/neg candidate — the dataset ships each as one JSON string whose `attributes` is itself a JSON string. */
+export function parseCandidate(raw) {
+  const c = typeof raw === 'string' ? JSON.parse(raw) : raw
   const attrs = typeof c.attributes === 'string' ? JSON.parse(c.attributes) : (c.attributes ?? {})
   return { tag: String(c.tag).toLowerCase(), nodeId: String(c.backend_node_id ?? attrs.backend_node_id), attrs, rect: parseRect(attrs.bounding_box_rect), isOriginal: !!c.is_original_target }
 }

@@ -44,6 +44,11 @@ describe('candidates', () => {
     expect(pickTarget([hidden, c])).toBe(c)
     expect(pickTarget([hidden])).toBeUndefined()
   })
+  it("accepts the dataset's own form: a candidate serialised as one JSON string", () => {
+    const c = parseCandidate(JSON.stringify({ tag: 'select', is_original_target: true, backend_node_id: '4213', attributes: JSON.stringify({ backend_node_id: '4213', bounding_box_rect: '464,247,156,40' }) }))
+    expect(c).toMatchObject({ tag: 'select', nodeId: '4213', isOriginal: true, rect: { x: 464, y: 247, width: 156, height: 40 } })
+    expect(pickTarget([c])).toBe(c)
+  })
   it('reads a Mind2Web action repr', () => {
     expect(parseRepr('[combobox]  Reservation type -> SELECT: Pickup')).toEqual({ role: 'combobox', name: 'Reservation type', op: 'SELECT', value: 'Pickup' })
     expect(parseRepr('[svg]   -> CLICK')).toEqual({ role: 'svg', name: '', op: 'CLICK', value: '' })
