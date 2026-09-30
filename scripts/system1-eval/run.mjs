@@ -135,7 +135,7 @@ async function main() {
 
     const extId = await findExtensionId(ctx)
     log('extension', extId)
-    const panel = await ctx.newPage()
+    let panel = await ctx.newPage()
     const panelUrl = `chrome-extension://${extId}/sidepanel.html`
     await panel.goto(panelUrl)
     await sleep(500)
@@ -150,7 +150,7 @@ async function main() {
     report.env.userAgent = await panel.evaluate(() => navigator.userAgent)
     report.env.chromium = `${path.basename(CHROMIUM)} ${report.env.userAgent.match(/Chrome\/([\d.]+)/)?.[1] ?? ''}`.trim()
     log('webgpu', JSON.stringify(gpu))
-    await seedSettings(panel, { system1: false })
+    panel = await seedSettings(panel, { system1: false })
 
     if (PHASES.has('download')) report.download = await phaseDownload(panel)
     const ready = await panel.evaluate(async () => !!(await chrome.storage.local.get('system1State')).system1State)
@@ -222,18 +222,27 @@ async function findExtensionId(ctx) {
 }
 
 /**
- * `page.reload()` waits for `load`, and once in 27 runs (2026-09-30, after a
- * forced Act run) the panel never fired it and the 30 s timeout took the
- * entire e2e report down. Fall back to a fresh navigation that only waits for
- * the DOM, and raise if even that fails.
+ * `page.reload()` waits for `load`, and (2026-09-30) a panel page that has
+ * held a WebGPU session sometimes never fires it again — nor does a fresh
+ * `goto` on the same page — and the 30 s timeout took a whole e2e report
+ * down. So a hung reload is answered with a NEW page at the panel URL (the
+ * wedged one is closed best-effort, without waiting on it), and the caller
+ * continues with whatever page this returns. Context-level init scripts
+ * (the Von spy) apply to the new page too.
  */
 async function reloadPanel(panel) {
   const url = panel.url()
   try {
     await panel.reload({ timeout: 30_000 })
+    return panel
   } catch (err) {
-    log(`panel reload hung (${String(err).split('\n')[0]}); navigating afresh`)
-    await panel.goto(url, { waitUntil: 'domcontentloaded', timeout: 30_000 })
+    log(`panel reload hung (${String(err).split('\n')[0]}); opening a fresh panel page`)
+    const ctx = panel.context()
+    const fresh = await ctx.newPage()
+    await fresh.goto(url, { waitUntil: 'domcontentloaded', timeout: 30_000 })
+    // Close the wedged page without letting its own teardown hang us.
+    void Promise.race([panel.close().catch(() => {}), sleep(5_000)])
+    return fresh
   }
 }
 
@@ -255,10 +264,11 @@ async function seedSettings(panel, { system1 }) {
     if (system1 !== null) base.experimental = { system1 }
     await chrome.storage.local.set({ settings: base })
   }, system1)
-  await reloadPanel(panel)
+  panel = await reloadPanel(panel)
   await sleep(1500)
   const mounted = await panel.evaluate(() => document.getElementById('root')?.childElementCount ?? 0)
   if (!mounted) throw new Error('panel React tree did not mount after seeding settings')
+  return panel
 }
 
 // ---------------------------------------------------------------------------
@@ -520,13 +530,16 @@ async function phaseE2e(ctx, panel, panelUrl, fixtureUrl) {
   // otherwise never pick it. `on` = toggle on, model free to choose.
   const modes = (env.EVAL_E2E_MODES ?? 'off,on,forced').split(',')
   const reps = Number(env.EVAL_E2E_REPS ?? 3)
-  await panel.addInitScript(VON_SPY)
+  // Context-level, so a panel page opened afresh after a hung reload is spied too.
+  await ctx.addInitScript(VON_SPY)
   for (let rep = 0; rep < reps; rep++) {
     for (const task of TASKS) {
       // Interleave arms per task so drift in LM Studio (load, heat) hits every arm alike.
       for (const mode of modes) {
         try {
-          rows.push(await runE2e(ctx, panel, fixtureUrl, task, mode, rep))
+          const r = await runE2e(ctx, panel, fixtureUrl, task, mode, rep)
+          panel = r.panel
+          rows.push(r.row)
         } catch (err) {
           // The harness, not the agent, failed this run: record it as a failed
           // run with the error and keep going — the other 26 rows are the
@@ -544,14 +557,14 @@ async function phaseE2e(ctx, panel, panelUrl, fixtureUrl) {
 }
 
 async function runE2e(ctx, panel, fixtureUrl, task, mode, rep) {
-  await seedSettings(panel, { system1: mode !== 'off' })
+  panel = await seedSettings(panel, { system1: mode !== 'off' })
   const fixture = await ctx.newPage()
   await fixture.goto(fixtureUrl(task.page))
   const tabId = await panel.evaluate(async (u) => (await chrome.tabs.query({})).find((t) => t.url === u)?.id, fixture.url())
   // The fixture must be the ACTIVE tab (the panel binds its chat to the
   // active tab of its window); the panel keeps running as a background tab.
   await panel.evaluate((id) => chrome.tabs.update(id, { active: true }), tabId)
-  await reloadPanel(panel)
+  panel = await reloadPanel(panel)
   await sleep(2500)
   const since = Date.now()
   const approvals = []
@@ -627,7 +640,7 @@ async function runE2e(ctx, panel, fixtureUrl, task, mode, rep) {
   }
   log(`e2e ${task.id} [${mode}] rep ${rep} success=${success} ${ended} ${Math.round(wallMs / 1000)}s llmSteps=${row.llmSteps} tok=${row.inputTokens}+${row.outputTokens} actions=${row.pageActions} Act×${row.actCalls} ${JSON.stringify(row.actStatuses)} von=${row.vonDecides}/${row.vonMs}ms`)
   await fixture.close()
-  return row
+  return { row, panel }
 }
 
 async function readToolParts(panel, since) {
