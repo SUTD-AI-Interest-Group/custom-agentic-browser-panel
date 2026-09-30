@@ -386,12 +386,12 @@ describe('AutofillForm — re-checks isForeground per field, not only at tool en
 describe('Act (System-1)', () => {
   function buildWith(system1?: { decide: any }) {
     return createAgentTools(async () => true, 'all-tabs', new Set(), noopPageControl, null, false, [],
-      () => 'always', 'conv-1', new Set(), undefined, undefined, undefined, system1 as any)
+      () => 'always', 'conv-1', new Set(), undefined, undefined, undefined, system1 ? { warm: vi.fn(), ...system1 } as any : undefined)
   }
 
   function buildInSession(
     decide: (req: any) => Promise<any>,
-    opts: { activeNames?: Set<string>; tab?: chrome.tabs.Tab; session?: ControlSession; requestApproval?: ApprovalGate } = {},
+    opts: { activeNames?: Set<string>; tab?: chrome.tabs.Tab; session?: ControlSession; requestApproval?: ApprovalGate; warm?: () => void } = {},
   ) {
     const session = opts.session ?? buildSession()
     const pageControl: PageControlGate = {
@@ -401,7 +401,7 @@ describe('Act (System-1)', () => {
     }
     const pageTarget: PageTarget = { resolveTab: async () => opts.tab ?? FG_TAB, park: () => {} }
     return createAgentTools(opts.requestApproval ?? (async () => true), 'all-tabs', new Set(), pageControl, null, false, [],
-      () => 'always', 'conv-1', opts.activeNames ?? new Set(), undefined, undefined, pageTarget, { decide })
+      () => 'always', 'conv-1', opts.activeNames ?? new Set(), undefined, undefined, pageTarget, { decide, warm: opts.warm ?? vi.fn() })
   }
 
   const answer = (key: string, choice: string, top = 0.9) =>
@@ -473,8 +473,8 @@ describe('Act (System-1)', () => {
       .mockResolvedValueOnce(answer('target_TYPE_TEXT', '0'))
       .mockResolvedValueOnce(answer('value', 'email'))
       .mockResolvedValueOnce(answer('operation', 'TYPE_TEXT'))
-      // Low-confidence target → `uncertain`, which returns candidates + elements.
-      .mockResolvedValueOnce({ answers: { target_TYPE_TEXT: { choice: '1', probabilities: { '1': 0.4, '0': 0.3 }, top: 0.4, confidence: 0.1 } }, ms: 1 })
+      // Target below ACT_TRY_CONFIDENCE → `uncertain`, which returns candidates + elements.
+      .mockResolvedValueOnce({ answers: { target_TYPE_TEXT: { choice: '1', probabilities: { '1': 0.35, '0': 0.3 }, top: 0.35, confidence: 0.1 } }, ms: 1 })
     const tools = buildInSession(decide)
     const r = (await (tools.Act as any).execute(
       { goal: 'fill the email', values: { email: SECRET } },
@@ -596,9 +596,12 @@ describe('Act (System-1)', () => {
   it('joins the control cluster when RequestPageControl is granted, only with a runtime', async () => {
     vi.mocked(snapshotPage).mockRejectedValue(new Error('stop here'))
     const withRuntime = new Set<string>()
-    await (buildInSession(vi.fn(), { activeNames: withRuntime }).RequestPageControl as any).execute({ plan: 'p' }, { toolCallId: 't', messages: [] })
+    const warm = vi.fn()
+    await (buildInSession(vi.fn(), { activeNames: withRuntime, warm }).RequestPageControl as any).execute({ plan: 'p' }, { toolCallId: 't', messages: [] })
     expect(withRuntime.has('ControlPage')).toBe(true)
     expect(withRuntime.has('Act')).toBe(true)
+    // The grant is the moment to boot the local model, not the first Act call.
+    expect(warm).toHaveBeenCalledTimes(1)
 
     const without = new Set<string>()
     const session = buildSession()

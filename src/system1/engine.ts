@@ -108,6 +108,17 @@ export class System1Engine {
   }
 
   /**
+   * Boot ahead of the first decide (the page-control grant is the moment):
+   * shares the same single boot promise a concurrent decide() would await, so
+   * it never starts a second worker, and a failure marks the engine unhealthy
+   * exactly as a decide-triggered boot would. Never throws.
+   */
+  warm(): Promise<void> {
+    if (!this.healthy) return Promise.resolve()
+    return this.ensure().catch(() => {})
+  }
+
+  /**
    * User-initiated teardown — the feature switched off, or its weights
    * deleted. Terminates the worker (and the WebGPU session it holds), rejects
    * anything pending and forgets readiness, so the next decide() boots fresh

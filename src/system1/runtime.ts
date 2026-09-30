@@ -8,7 +8,15 @@ import { getSystem1Engine } from './engine'
 import type { DecideRequest, DecideResult } from './protocol'
 import { CACHE_NAME, WEIGHTS_PIN, loadCachedManifest, readState, verifyCached } from './weights'
 
-export interface System1Runtime { decide(req: DecideRequest): Promise<DecideResult> }
+export interface System1Runtime {
+  decide(req: DecideRequest): Promise<DecideResult>
+  /**
+   * Start booting the engine now (fire-and-forget), so the 1.2–6 s cold boot
+   * — measured inside the first `Act` call of every panel load on 2026-09-27 —
+   * is paid while the page-control grant is being read, not inside the call.
+   */
+  warm(): void
+}
 
 // No "@webgpu/types" dependency in this project — onnxruntime-common's own
 // `TryGetGlobalType` helper falls back to `unknown` without it (see worker.ts),
@@ -59,7 +67,7 @@ export async function resolveSystem1(settings: Settings): Promise<System1Runtime
     if (!(await hasWebGpu(manifest.requiresShaderF16 === true))) return undefined
     const engine = getSystem1Engine()
     if (!engine.healthy) return undefined
-    return { decide: (req) => engine.decide(req) }
+    return { decide: (req) => engine.decide(req), warm: () => void engine.warm() }
   } catch {
     return undefined
   }

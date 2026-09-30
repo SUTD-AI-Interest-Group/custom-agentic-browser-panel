@@ -29,6 +29,7 @@ vi.mock('../platform/pageActions', () => ({
 }))
 
 const { runControlStep } = await import('./pageControl')
+const { waitForStable } = await import('../platform/pageActions')
 
 const el = (o: Partial<IndexedElement> = {}): IndexedElement => ({
   index: 3,
@@ -106,5 +107,33 @@ describe('runControlStep journal recording', () => {
       snapshot: snapWith([el()]),
     })
     expect(result.ok).toBe(true)
+  })
+})
+
+// The settle policy lives in the same chokepoint. `quick` is the Act loop's
+// jev-ultrafast-style wait for a non-committing step; the default is the full
+// DOM-quiet wait ControlPage always had. The post-action snapshot rides the
+// result so the loop can observe from it instead of reading the page again.
+describe('runControlStep settle', () => {
+  it('waits the full DOM-quiet interval by default', async () => {
+    vi.mocked(waitForStable).mockClear()
+    await step({ action: 'click', index: 3 }, [el({ tag: 'BUTTON', name: 'Go' })], session())
+    expect(waitForStable).toHaveBeenCalledWith(1, { timeoutMs: 4000 })
+  })
+
+  it('waits a couple of frames for a quick click, and for options after typing into a combobox', async () => {
+    vi.mocked(waitForStable).mockClear()
+    const r = await runControlStep({ tabId: 1, spec: { action: 'click', index: 3 }, snapshot: snapWith([el({ tag: 'BUTTON', name: 'Go' })]), settle: 'quick' })
+    expect(waitForStable).toHaveBeenCalledWith(1, { quietMs: 50, timeoutMs: 250 })
+    expect(r.snapshot).toMatchObject({ origin: snapshot.origin })
+    vi.mocked(waitForStable).mockClear()
+    await runControlStep({ tabId: 1, spec: { action: 'type', index: 3, text: 'Zur' }, snapshot: snapWith([el({ role: 'combobox', name: 'Where to?' })]), settle: 'quick' })
+    expect(waitForStable).toHaveBeenCalledWith(1, { selector: '[role="option"]', quietMs: 200, timeoutMs: 400 })
+  })
+
+  it('never quick-settles a navigation', async () => {
+    vi.mocked(waitForStable).mockClear()
+    await runControlStep({ tabId: 1, spec: { action: 'navigate', url: 'https://example.com/x' }, snapshot: snapWith([]), settle: 'quick' })
+    expect(waitForStable).toHaveBeenCalledWith(1, { timeoutMs: 8000 })
   })
 })

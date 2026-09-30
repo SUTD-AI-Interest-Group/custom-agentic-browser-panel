@@ -65,6 +65,10 @@ describe('buildControl', () => {
     expect(c.group).toBe('Passenger details')
     expect(c.states.focused).toBe(true)
     expect(c.fingerprint).toEqual({ tag: 'input', type: 'text', name: 'First name', href: undefined, sensitive: false })
+    const box = buildControl(el(3, { tag: 'input', type: 'checkbox', name: 'Agree', value: 'on', checked: false }), undefined)
+    expect(box.fingerprint).toMatchObject({ checked: false })
+    const off = buildControl(el(4, { name: 'Search', disabled: true }), undefined)
+    expect(off.fingerprint).toMatchObject({ disabled: true })
   })
 })
 

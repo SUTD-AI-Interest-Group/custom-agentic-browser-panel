@@ -84,6 +84,29 @@ describe('System1Engine', () => {
     vi.unstubAllGlobals()
   })
 
+  it('warm() boots once ahead of the first decide, shares that boot with it, and swallows a boot failure while still marking unhealthy', async () => {
+    vi.useFakeTimers()
+    stubCaches()
+    let spawned = 0
+    const engine = new System1Engine(() => { spawned++; return new FakeWorker(() => 'ok') })
+    await engine.warm()
+    expect(spawned).toBe(1)
+    const r = engine.decide(REQ)
+    await vi.advanceTimersByTimeAsync(0)
+    await expect(r).resolves.toEqual(RESULT)
+    expect(spawned).toBe(1)
+
+    const failing = new System1Engine(() => new FakeWorker(() => 'boot-fail'))
+    await expect(failing.warm()).resolves.toBeUndefined()
+    expect(failing.healthy).toBe(false)
+    // Unhealthy: a second warm() does not spin up another boot during the cooldown.
+    let again = 0
+    const cooling = new System1Engine(() => { again++; return new FakeWorker(() => 'boot-fail') })
+    await cooling.warm()
+    await cooling.warm()
+    expect(again).toBe(1)
+  })
+
   it('goes unhealthy after a decide timeout, and recovers once the cooldown elapses', async () => {
     vi.useFakeTimers()
     stubCaches()

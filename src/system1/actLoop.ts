@@ -18,11 +18,29 @@ export { TARGET_CHUNK } from './vonPolicy'
 
 export const ACT_DEFAULT_STEPS = 6
 export const ACT_MAX_STEPS = 8
+/** At or above this calibrated top (per head asked) the step executes freely. */
 export const ACT_CONFIDENCE = 0.6
+/**
+ * Between this and ACT_CONFIDENCE the step is TENTATIVE: it executes only if
+ * the executor finds it is not a point of no return (a wrong non-committing
+ * click on the granted page is the accepted worst case, undoable via the
+ * journal — jev-ultrafast executes the argmax unconditionally and leans on
+ * freshness + no-progress + verification instead). Below it the loop hands
+ * back. Terminal answers (DONE/BLOCKED) always need ACT_CONFIDENCE: a claim
+ * the chat model will act on deserves the higher bar. Measured 2026-09-27 on
+ * the fine-tune: the 0.4→0.6 band adds 11 points of coverage for one more
+ * confident-but-wrong target out of 54.
+ */
+export const ACT_TRY_CONFIDENCE = 0.4
+/** jev-ultrafast's stop rule: this many consecutive non-WAIT actions that changed nothing end the call. */
+export const NO_PROGRESS_STEPS = 3
 
 export type ActStatus = 'done' | 'blocked' | 'uncertain' | 'denied' | 'drifted' | 'repeat' | 'aborted' | 'capped' | 'error' | 'parked'
 export type ExecOutcome =
-  | { kind: 'ok'; elements: string }
+  /** `snapshot` is the executor's own post-action read; when present the loop observes from it instead of reading the page again. */
+  | { kind: 'ok'; elements: string; snapshot?: PageSnapshot }
+  /** A tentative (below-ACT_CONFIDENCE) action turned out to be a point of no return — nothing was touched. */
+  | { kind: 'uncertain'; message: string }
   | { kind: 'denied' }
   | { kind: 'parked'; note: string }
   | { kind: 'drifted'; message: string; elements?: string }
@@ -44,7 +62,7 @@ export interface ActTransition {
   space: { operations: BrowserOperation[]; targets: Record<ElementOperation, number[]>; shown: number[]; stats: CandidateActionSpace['stats'] }
   decision: BrowserDecision
   action?: { operation: BrowserOperation; targetId?: number; targetName?: string; valueKey?: string }
-  result?: 'success' | 'no_change' | 'stale' | 'denied' | 'parked' | 'drifted' | 'error' | 'rejected' | 'repeat'
+  result?: 'success' | 'no_change' | 'stale' | 'denied' | 'parked' | 'drifted' | 'error' | 'rejected' | 'repeat' | 'uncertain'
   ms: { observe: number; policy: number; execute: number }
 }
 
@@ -55,6 +73,8 @@ export interface ActResult {
   message?: string
   elements?: string
   blockedReason?: BlockedReason
+  /** With `blocked`/MISSING_USER_DATA: the field the policy says lacks a value, so the caller can supply it and call again. */
+  missingField?: { index: number; label: string }
 }
 export interface ActRun extends ActResult {
   transitions: ActTransition[]
@@ -90,13 +110,16 @@ export async function runActLoop(
   /** The observation hash BEFORE the last successful action — equal to the next hash means that action changed nothing. */
   let lastHash: string | undefined
   let consecutiveStale = 0
+  /** The executor's post-action snapshot, when it gave one: the next observation, without a third page read per action. */
+  let pending: PageSnapshot | undefined
 
   for (let n = 0; n < cap; n++) {
     if (n > 0 && deps.aborted()) return fin({ status: 'aborted', steps, elements: lastElements })
     const t0 = now()
     let snap: PageSnapshot
     try {
-      snap = await deps.snapshot()
+      snap = pending ?? (await deps.snapshot())
+      pending = undefined
     } catch (err) {
       return fin({ status: 'error', steps, message: `could not read the page: ${err instanceof Error ? err.message : String(err)}` })
     }
@@ -110,6 +133,13 @@ export async function runActLoop(
         if (lt) lt.result = 'no_change'
       }
     }
+    // No progress: the last NO_PROGRESS_STEPS actions all left the page as it
+    // was. A WAIT that changes nothing is what a loading page looks like and
+    // does not count; anything else repeated that often is a loop the
+    // hash-repeat rule below cannot see (each step a *different* futile action).
+    const recent = steps.slice(-NO_PROGRESS_STEPS)
+    if (recent.length === NO_PROGRESS_STEPS && recent.every((s) => s.result === 'no_change' && s.operation !== 'WAIT'))
+      return fin({ status: 'repeat', steps, elements: snap.text, message: `${NO_PROGRESS_STEPS} actions in a row changed nothing on the page` })
     const space = buildCandidateSpace({ goal: input.goal, observation: obs, values, history: steps })
     const byId = new Map(obs.controls.map((c) => [c.id, c]))
     const nameOf = (id: number) => clip(byId.get(id)?.name || '(unnamed)', 60)
@@ -117,7 +147,7 @@ export async function runActLoop(
     const t1 = now()
     let decision: BrowserDecision
     try {
-      decision = await deps.policy.decide({ goal: input.goal, observation: obs, space, values, steps, threshold: ACT_CONFIDENCE })
+      decision = await deps.policy.decide({ goal: input.goal, observation: obs, space, values, steps, threshold: ACT_TRY_CONFIDENCE })
     } catch (err) {
       if (err instanceof PolicyInputError) return fin({ status: 'uncertain', steps, message: err.message, elements: snap.text })
       return fin({ status: 'error', steps, message: `System-1 engine failed: ${err instanceof Error ? err.message : String(err)}` })
@@ -131,25 +161,33 @@ export async function runActLoop(
     }
     transitions.push(transition)
 
-    if (decision.confidence.operation < ACT_CONFIDENCE)
-      return fin({ status: 'uncertain', steps, message: `unsure of the next operation (p=${decision.confidence.operation.toFixed(2)})`, elements: snap.text })
-    if (decision.operation === 'DONE') return fin({ status: 'done', steps, elements: snap.text })
-    if (decision.operation === 'BLOCKED') return fin({ status: 'blocked', steps, elements: snap.text, blockedReason: decision.blockedReason })
+    const candidates = () => (decision.ranked ?? []).map((r) => ({ index: r.id, label: byId.get(r.id)?.name ?? '', p: r.p }))
+    const pOp = decision.confidence.operation
+    if (pOp < ACT_TRY_CONFIDENCE)
+      return fin({ status: 'uncertain', steps, message: `unsure of the next operation (p=${pOp.toFixed(2)})`, elements: snap.text, candidates: candidates() })
+    if (decision.operation === 'DONE') {
+      if (pOp < ACT_CONFIDENCE) return fin({ status: 'uncertain', steps, message: `possibly done (p=${pOp.toFixed(2)}) — verify the page`, elements: snap.text })
+      return fin({ status: 'done', steps, elements: snap.text })
+    }
+    if (decision.operation === 'BLOCKED') {
+      if (pOp < ACT_CONFIDENCE) return fin({ status: 'uncertain', steps, message: `possibly blocked (p=${pOp.toFixed(2)})`, elements: snap.text })
+      const missing = decision.missingFieldId
+      const missingField = missing !== undefined && byId.has(missing) ? { index: missing, label: nameOf(missing) } : undefined
+      return fin({
+        status: 'blocked', steps, elements: snap.text, blockedReason: decision.blockedReason, missingField,
+        message: missingField ? `needs a value for [${missingField.index}] "${missingField.label}" — pass it in values and call Act again` : undefined,
+      })
+    }
 
-    let p = decision.confidence.operation
+    let p = pOp
     if (isElementOperation(decision.operation)) {
       const tp = decision.confidence.target
-      if (tp === undefined || tp < ACT_CONFIDENCE) {
-        return fin({
-          status: 'uncertain', steps, elements: snap.text,
-          message: `unsure which control to use (p=${(tp ?? 0).toFixed(2)})`,
-          candidates: (decision.ranked ?? []).map((r) => ({ index: r.id, label: byId.get(r.id)?.name ?? '', p: r.p })),
-        })
-      }
+      if (tp === undefined || tp < ACT_TRY_CONFIDENCE)
+        return fin({ status: 'uncertain', steps, elements: snap.text, message: `unsure which control to use (p=${(tp ?? 0).toFixed(2)})`, candidates: candidates() })
       p = Math.min(p, tp)
       if (isFieldOperation(decision.operation)) {
         const vp = decision.confidence.value
-        if (vp === undefined || vp < ACT_CONFIDENCE)
+        if (vp === undefined || vp < ACT_TRY_CONFIDENCE)
           return fin({ status: 'uncertain', steps, elements: snap.text, message: `unsure which value belongs in "${nameOf(decision.targetId ?? -1)}"` })
         p = Math.min(p, vp)
       }
@@ -161,6 +199,9 @@ export async function runActLoop(
       return fin({ status: 'error', steps, message: `System-1 returned an action outside the candidate space (${v.reason})` })
     }
     const action: ValidatedAction = v.action
+    // Below ACT_CONFIDENCE the executor may only run it if it is not a point
+    // of no return; it reports `uncertain` otherwise and touches nothing.
+    if (p < ACT_CONFIDENCE) action.tentative = true
     const label = action.targetId !== undefined ? nameOf(action.targetId) : undefined
     transition.action = { operation: action.operation, targetId: action.targetId, targetName: label, valueKey: action.valueKey }
 
@@ -173,16 +214,23 @@ export async function runActLoop(
     // legitimate consecutive repeat is a different value into the same field,
     // so the value key is part of the identity; a stale step does not count,
     // since retrying the target on a fresh read is the point of `stale`.
+    // (3) WAIT is exempt from the hash rule — waiting on a page that has not
+    // changed yet is the whole point of WAIT — but not unbounded: a third
+    // consecutive WAIT that changed nothing is a loop, not loading.
     const key = `${obs.hash}|${action.operation}|${action.targetId ?? ''}`
     const prev = steps[steps.length - 1]
     const consecutive =
       prev !== undefined && prev.result !== 'stale' && action.targetId !== undefined &&
       prev.operation === action.operation && prev.targetId === action.targetId && prev.valueKey === action.valueKey
-    if (seen.has(key) || consecutive) {
+    const waitedOut =
+      action.operation === 'WAIT' && steps.length >= 2 && steps.slice(-2).every((s) => s.operation === 'WAIT' && s.result === 'no_change')
+    if ((action.operation !== 'WAIT' && seen.has(key)) || consecutive || waitedOut) {
       transition.result = 'repeat'
       return fin({
         status: 'repeat', steps, elements: snap.text,
-        message: `would repeat ${action.operation}${action.targetId !== undefined ? ` on [${action.targetId}]` : ''}${consecutive ? ' twice in a row' : ' on an unchanged page'}`,
+        message: waitedOut
+          ? 'waited twice and the page did not change'
+          : `would repeat ${action.operation}${action.targetId !== undefined ? ` on [${action.targetId}]` : ''}${consecutive ? ' twice in a row' : ' on an unchanged page'}`,
       })
     }
     seen.add(key)
@@ -200,6 +248,10 @@ export async function runActLoop(
       continue
     }
     consecutiveStale = 0
+    if (out.kind === 'uncertain') {
+      transition.result = 'uncertain'
+      return fin({ status: 'uncertain', steps, elements: snap.text, message: `${out.message} (p=${p.toFixed(2)})`, candidates: candidates() })
+    }
     if (out.kind === 'denied') { transition.result = 'denied'; return fin({ status: 'denied', steps }) }
     if (out.kind === 'parked') { transition.result = 'parked'; return fin({ status: 'parked', steps, message: out.note }) }
     if (out.kind === 'drifted') { transition.result = 'drifted'; return fin({ status: 'drifted', steps, message: out.message, elements: out.elements }) }
@@ -208,6 +260,7 @@ export async function runActLoop(
     steps.push(step)
     lastHash = obs.hash
     lastElements = out.elements
+    pending = out.snapshot
   }
   return fin({ status: 'capped', steps, elements: lastElements })
 }

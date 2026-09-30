@@ -39,8 +39,10 @@ export interface BrowserDecision {
   targetId?: number
   valueKey?: string
   blockedReason?: BlockedReason
+  /** With BLOCKED/MISSING_USER_DATA: the field the policy says lacks a provided value (a control id). */
+  missingFieldId?: number
   /** Calibrated top probability per head actually asked. */
-  confidence: { operation: number; target?: number; value?: number; blockedReason?: number }
+  confidence: { operation: number; target?: number; value?: number; blockedReason?: number; missingField?: number }
   /** The target head's top candidates (final round), for an `uncertain` hand-back. */
   ranked?: { id: number; p: number }[]
   ms: number

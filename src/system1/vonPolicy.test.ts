@@ -150,6 +150,21 @@ describe('createVonPolicy.decide', () => {
     expect(d2).toMatchObject({ operation: 'BLOCKED', blockedReason: 'AUTH_REQUIRED', confidence: { operation: 0.9, blockedReason: 0.8 }, ms: 14 })
   })
 
+  it('asks which field lacks a value after BLOCKED/MISSING_USER_DATA, over the editable fields only, even with no values supplied', async () => {
+    const s = scripted({ operation: 'BLOCKED', blocked_reason: 'MISSING_USER_DATA', missing_field: ['2', 0.7] })
+    const ctx = ctxOf([el(0), el(1, { tag: 'input', type: 'text', name: 'Email' }), el(2, { tag: 'input', type: 'text', name: 'Promo code' }), el(3, { tag: 'input', type: 'password', name: 'Password', sensitive: true })])
+    const d = await createVonPolicy(s.decide).decide(ctx)
+    expect(d).toMatchObject({ operation: 'BLOCKED', blockedReason: 'MISSING_USER_DATA', missingFieldId: 2, confidence: { missingField: 0.7 } })
+    expect(s.calls.map((c) => Object.keys(c.questions))).toEqual([['operation'], ['blocked_reason'], ['missing_field']])
+    expect(Object.keys(s.calls[2].questions.missing_field.options)).toEqual(['1', '2'])
+    expect(s.calls[2].state).not.toContain('Controls')
+    // No editable field on the page: nothing to ask.
+    const none = scripted({ operation: 'BLOCKED', blocked_reason: 'MISSING_USER_DATA' })
+    const d2 = await createVonPolicy(none.decide).decide(ctxOf([el(0)]))
+    expect(d2.missingFieldId).toBeUndefined()
+    expect(none.calls).toHaveLength(2)
+  })
+
   it('asks operation → target_CLICK for a click, sharing one state block, with ranked top-3', async () => {
     const s = scripted({ operation: 'CLICK', target: ['2', 0.7] })
     const ctx = ctxOf([el(0, { name: 'Cart' }), el(1, { tag: 'input', type: 'text', name: 'Email' }), el(2, { name: 'Add blue mug' })])

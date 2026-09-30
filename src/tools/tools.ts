@@ -547,7 +547,20 @@ export function createAgentTools(
   // the point-of-no-return card — a card must describe what will actually
   // happen. ControlPage passes none: the chat model's indices come from its
   // own last read and it re-reads on failure.
-  const controlStep = async (spec: ControlSpec, opts: { expect?: ElementIdentity } = {}) => {
+  //
+  // `settle: 'quick'` and `tentative` are the Act loop's too (jev-ultrafast's
+  // rules, 2026-09-30): a non-committing Act step waits ~50 ms for the page
+  // rather than 400 ms, and a below-ACT_CONFIDENCE ("tentative") step is
+  // refused as `uncertain` the moment it turns out to be a point of no
+  // return — both decided HERE, after the same fresh snapshot the card is
+  // built from, so a submit can never be quick-settled or run on a hunch.
+  // `snapshot: true` returns the post-action PageSnapshot for the loop's next
+  // observation; ControlPage never asks for it (an object in a tool result
+  // would land in model history).
+  const controlStep = async (
+    spec: ControlSpec,
+    opts: { expect?: ElementIdentity; settle?: 'quick' | 'full'; tentative?: boolean; snapshot?: boolean } = {},
+  ) => {
     const session = pageControl.session()
     if (!session || !session.active)
       return { error: 'No page-control session is open. Call RequestPageControl first.' }
@@ -618,6 +631,8 @@ export function createAgentTools(
     const el = spec.index !== undefined ? snap.elements[spec.index] : undefined
     if (opts.expect && hasElementChanged(opts.expect, el)) return { stale: true as const }
     const por = isPointOfNoReturn(spec, el, session.origin)
+    if (por && opts.tentative)
+      return { uncertain: true as const, message: `not confident enough for a committing step (${pointOfNoReturnSummary(spec, el)})` }
     if (por) {
       const approved = await requestApproval({
         toolName: 'ControlPage',
@@ -654,11 +669,13 @@ export function createAgentTools(
         // original (already-approved) snapshot rather than dead-end here.
       }
     }
-    const { registry, ok, message, urlChanged, origin } = await runControlStep({
+    const { registry, ok, message, urlChanged, origin, snapshot } = await runControlStep({
       tabId: tab.id,
       spec,
       snapshot: snap,
       session: pageControl.session() ?? undefined,
+      // A point of no return always gets the full settle, whatever was asked.
+      settle: opts.settle === 'quick' && !por ? 'quick' : 'full',
       beforeAct: (index) => (index === undefined ? Promise.resolve() : focusOn(tab.id!, index, spec.label)),
       afterAct: () => pulse(tab.id!),
       afterNav: async () => {
@@ -697,7 +714,7 @@ export function createAgentTools(
     }
     // Coerce to a real boolean: `urlChanged` is undefined for non-navigation
     // actions, and a tool result must not carry undefined into the history.
-    return { ok, message, urlChanged: urlChanged === true, elements: registry }
+    return { ok, message, urlChanged: urlChanged === true, elements: registry, ...(opts.snapshot ? { snapshot } : {}) }
   }
 
   const tools: ToolSet = {
@@ -1633,7 +1650,12 @@ export function createAgentTools(
         activeNames.add('ControlPage')
         activeNames.add('AutofillForm')
         activeNames.add('GetScreenshot')
-        if (system1) activeNames.add('Act')
+        if (system1) {
+          activeNames.add('Act')
+          // Boot the local model while the grant is fresh, so the first Act
+          // call does not pay the cold boot (1.2–6 s measured) itself.
+          system1.warm()
+        }
         await mountPresence(tab.id)
         // Entering active control: turn the soft dark tint on (ambient shows the
         // frame only). The spotlight/cursor come alive on the first ControlPage.
@@ -1692,14 +1714,17 @@ export function createAgentTools(
           policy: createVonPolicy((req) => system1!.decide(req)),
           aborted: () => abortSignal?.aborted === true,
           execute: async (action): Promise<ExecOutcome> => {
-            const r = (await controlStep(action.spec, { expect: action.expect?.fingerprint })) as Record<string, unknown>
+            const r = (await controlStep(action.spec, {
+              expect: action.expect?.fingerprint, settle: 'quick', tentative: action.tentative, snapshot: true,
+            })) as Record<string, unknown>
             if (r.stale) return { kind: 'stale' }
+            if (r.uncertain) return { kind: 'uncertain', message: String(r.message ?? '') }
             if (r.denied) return { kind: 'denied' }
             if (r.parked) return { kind: 'parked', note: String(r.note ?? '') }
             if (r.drifted) return { kind: 'drifted', message: String(r.message ?? ''), elements: r.elements as string | undefined }
             if (typeof r.error === 'string') return { kind: 'error', message: r.error }
             if (r.ok === false) return { kind: 'error', message: String(r.message ?? 'the action failed') }
-            return { kind: 'ok', elements: String(r.elements ?? '') }
+            return { kind: 'ok', elements: String(r.elements ?? ''), snapshot: r.snapshot as PageSnapshot | undefined }
           },
         })
         // Transitions carry page text for the eval (which calls runActLoop

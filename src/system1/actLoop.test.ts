@@ -3,7 +3,7 @@ import type { IndexedElement, PageSnapshot } from '../platform/domIndex'
 import type { BrowserDecision, BrowserPolicy, DecisionContext } from './policy'
 import { PolicyInputError } from './policy'
 import type { ValidatedAction } from './validate'
-import { ACT_MAX_STEPS, runActLoop, type ActDeps, type ExecOutcome } from './actLoop'
+import { ACT_CONFIDENCE, ACT_MAX_STEPS, ACT_TRY_CONFIDENCE, NO_PROGRESS_STEPS, runActLoop, type ActDeps, type ExecOutcome } from './actLoop'
 
 const el = (index: number, over: Partial<IndexedElement> = {}): IndexedElement =>
   ({ index, tag: 'button', name: `Button ${index}`, rect: { x: 0, y: 0, width: 10, height: 10 }, sensitive: false, ...over }) as IndexedElement
@@ -60,22 +60,56 @@ describe('runActLoop — terminal answers and gates', () => {
     expect(r).toMatchObject({ status: 'blocked', blockedReason: 'AUTH_REQUIRED', elements: 'REGISTRY' })
   })
 
-  it('returns uncertain on a low operation, target or value confidence, with the ranked candidates', async () => {
-    const op = await runActLoop({ goal: 'g' }, deps({ policy: policyOf([{ operation: 'CLICK', targetId: 0, p: 0.4 }]) }))
+  it('returns uncertain below ACT_TRY_CONFIDENCE on the operation, target or value head, with the ranked candidates', async () => {
+    const op = await runActLoop({ goal: 'g' }, deps({ policy: policyOf([{ operation: 'CLICK', targetId: 0, p: 0.3 }]) }))
     expect(op.status).toBe('uncertain')
     expect(op.message).toMatch(/operation/)
-    const target = await runActLoop({ goal: 'g' }, deps({ policy: policyOf([{ operation: 'CLICK', targetId: 0, pt: 0.5, ranked: [{ id: 0, p: 0.5 }, { id: 1, p: 0.3 }] }]) }))
+    const target = await runActLoop({ goal: 'g' }, deps({ policy: policyOf([{ operation: 'CLICK', targetId: 0, pt: 0.35, ranked: [{ id: 0, p: 0.35 }, { id: 1, p: 0.3 }] }]) }))
     expect(target.status).toBe('uncertain')
-    expect(target.candidates).toEqual([{ index: 0, label: 'Button 0', p: 0.5 }, { index: 1, label: 'Email', p: 0.3 }])
+    expect(target.candidates).toEqual([{ index: 0, label: 'Button 0', p: 0.35 }, { index: 1, label: 'Email', p: 0.3 }])
     const value = await runActLoop({ goal: 'g', values: { email: 'a@b.co' } }, deps({ policy: policyOf([{ operation: 'TYPE_TEXT', targetId: 1, valueKey: 'email', pv: 0.2 }]) }))
     expect(value.status).toBe('uncertain')
     expect(value.message).toContain('"Email"')
   })
 
-  it('passes the confidence threshold to the policy and never asks for a target it cannot gate', async () => {
+  it('executes a decision in the tentative band as tentative, and hands back if the executor finds it committing', async () => {
+    expect(ACT_TRY_CONFIDENCE).toBeLessThan(ACT_CONFIDENCE)
+    const d = deps({ policy: policyOf([{ operation: 'CLICK', targetId: 0, p: 0.9, pt: 0.45, ranked: [{ id: 0, p: 0.45 }] }, { operation: 'DONE' }]), snapshots: [snap([el(0)]), snap([el(0), el(1)])] })
+    const r = await runActLoop({ goal: 'g' }, d)
+    expect(r.status).toBe('done')
+    expect(d.executed[0].tentative).toBe(true)
+    expect(r.steps[0].p).toBe(0.45)
+
+    const confident = deps({ policy: policyOf([{ operation: 'CLICK', targetId: 0, p: 0.9, pt: 0.7 }, { operation: 'DONE' }]), snapshots: [snap([el(0)]), snap([el(0), el(1)])] })
+    await runActLoop({ goal: 'g' }, confident)
+    expect(confident.executed[0].tentative).toBeUndefined()
+
+    const refused = deps({ policy: policyOf([{ operation: 'CLICK', targetId: 0, pt: 0.5, ranked: [{ id: 0, p: 0.5 }] }]), execute: async () => ({ kind: 'uncertain', message: 'committing' }) })
+    const r2 = await runActLoop({ goal: 'g' }, refused)
+    expect(r2.status).toBe('uncertain')
+    expect(r2.message).toContain('committing')
+    expect(r2.candidates).toEqual([{ index: 0, label: 'Button 0', p: 0.5 }])
+    expect(r2.transitions[0].result).toBe('uncertain')
+    expect(r2.steps).toEqual([])
+  })
+
+  it('needs ACT_CONFIDENCE for the terminal answers, and names the missing field on BLOCKED/MISSING_USER_DATA', async () => {
+    const done = await runActLoop({ goal: 'g' }, deps({ policy: policyOf([{ operation: 'DONE', p: 0.5 }]) }))
+    expect(done.status).toBe('uncertain')
+    expect(done.message).toMatch(/possibly done/)
+    const blocked = await runActLoop({ goal: 'g' }, deps({ policy: policyOf([{ operation: 'BLOCKED', blockedReason: 'AUTH_REQUIRED', p: 0.5 }]) }))
+    expect(blocked.status).toBe('uncertain')
+    const missing = await runActLoop({ goal: 'g' }, deps({ policy: policyOf([{ operation: 'BLOCKED', blockedReason: 'MISSING_USER_DATA', missingFieldId: 1 }]) }))
+    expect(missing).toMatchObject({ status: 'blocked', blockedReason: 'MISSING_USER_DATA', missingField: { index: 1, label: 'Email' } })
+    expect(missing.message).toContain('[1] "Email"')
+    const unknownField = await runActLoop({ goal: 'g' }, deps({ policy: policyOf([{ operation: 'BLOCKED', blockedReason: 'MISSING_USER_DATA', missingFieldId: 99 }]) }))
+    expect(unknownField.missingField).toBeUndefined()
+  })
+
+  it('passes ACT_TRY_CONFIDENCE to the policy and never asks for a target it cannot gate', async () => {
     const p = policyOf([{ operation: 'CLICK', targetId: 0 }])
     await runActLoop({ goal: 'g' }, deps({ policy: p }))
-    expect(p.contexts[0].threshold).toBe(0.6)
+    expect(p.contexts[0].threshold).toBe(ACT_TRY_CONFIDENCE)
     const noTarget = await runActLoop({ goal: 'g' }, deps({ policy: policyOf([{ operation: 'CLICK' }]) }))
     expect(noTarget.status).toBe('uncertain')
   })
@@ -181,6 +215,40 @@ describe('runActLoop — history, loops and staleness', () => {
     })
     expect((await runActLoop({ goal: 'g' }, afterStale)).status).toBe('done')
     expect(n).toBe(2)
+  })
+
+  it('stops after NO_PROGRESS_STEPS consecutive actions that changed nothing, WAIT excluded', async () => {
+    // Three different clicks on an unchanged page: no hash-repeat (different targets), but no progress either.
+    const elements = [el(0), el(1), el(2), el(3)]
+    const futile = deps({ elements, policy: policyOf([{ operation: 'CLICK', targetId: 0 }, { operation: 'CLICK', targetId: 1 }, { operation: 'CLICK', targetId: 2 }, { operation: 'CLICK', targetId: 3 }]) })
+    const r = await runActLoop({ goal: 'g', maxSteps: 8 }, futile)
+    expect(r.status).toBe('repeat')
+    expect(r.message).toContain(`${NO_PROGRESS_STEPS} actions in a row`)
+    expect(futile.executed).toHaveLength(NO_PROGRESS_STEPS)
+    // Waiting on a page that is still loading is not a loop — twice. A third
+    // WAIT with nothing changed is.
+    const waiting = deps({ elements, policy: policyOf([{ operation: 'WAIT' }, { operation: 'WAIT' }, { operation: 'DONE' }]) })
+    expect((await runActLoop({ goal: 'g', maxSteps: 8 }, waiting)).status).toBe('done')
+    const waitedOut = deps({ elements, policy: policyOf([{ operation: 'WAIT' }]) })
+    const w = await runActLoop({ goal: 'g', maxSteps: 8 }, waitedOut)
+    expect(w.status).toBe('repeat')
+    expect(w.message).toContain('waited twice')
+    expect(waitedOut.executed).toHaveLength(2)
+  })
+
+  it('observes from the executor’s post-action snapshot when it gives one, instead of reading the page again', async () => {
+    let reads = 0
+    const after = snap([el(0), el(1, { name: 'Added!' })])
+    const d = deps({
+      policy: policyOf([{ operation: 'CLICK', targetId: 0 }, { operation: 'DONE' }]),
+      snapshot: async () => { reads++; return snap([el(0)]) },
+      execute: async () => ({ kind: 'ok', elements: 'R', snapshot: after }),
+    })
+    const r = await runActLoop({ goal: 'g' }, d)
+    expect(r.status).toBe('done')
+    expect(reads).toBe(1)
+    expect(r.transitions[1].observation.controls).toBe(2)
+    expect(r.steps[0].result).toBe('success')
   })
 
   it('allows the same action again once the page changed (a second value into the same field)', async () => {

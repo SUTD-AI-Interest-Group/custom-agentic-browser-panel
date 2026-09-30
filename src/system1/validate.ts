@@ -17,6 +17,12 @@ export interface ValidatedAction {
   valueKey?: string
   /** For an element operation: what the policy saw at that index. The executor must refuse if the page no longer agrees. */
   expect?: { id: number; fingerprint: ControlFingerprint }
+  /**
+   * Set by the loop, never by validation: the decision fell between
+   * ACT_TRY_CONFIDENCE and ACT_CONFIDENCE, so the executor may run it only if
+   * it is not a point of no return.
+   */
+  tentative?: boolean
 }
 
 export type Validation = { ok: true; action: ValidatedAction } | { ok: false; reason: string }

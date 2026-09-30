@@ -144,6 +144,17 @@ export function blockedQuestion(): DecideQuestion {
 }
 
 /**
+ * After BLOCKED/MISSING_USER_DATA: which field is it that lacks a value? Over
+ * every enabled, editable field on the page — regardless of whether values
+ * were supplied, since the point is that the needed one was not. Lets the
+ * result name the field so the chat model can supply it and call again,
+ * instead of falling back to a ControlPage round trip per field.
+ */
+export function missingFieldQuestion(pool: readonly BrowserControl[]): DecideQuestion {
+  return { instructions: 'Which field needs a value that was not provided?', options: Object.fromEntries(pool.map((c) => [String(c.id), renderControl(c)])) }
+}
+
+/**
  * Balanced chunks of at most TARGET_CHUNK, in the pool's (ranked) order. Fixed
  * slicing would turn 41 targets into 40 + 1, and a one-option "chunk" wins by
  * default with no question really asked — so k chunks of near-equal size.
@@ -235,6 +246,17 @@ export function createVonPolicy(decide: (req: DecideRequest) => Promise<DecideRe
         const b = await ask({ blocked_reason: blockedQuestion() }, true)
         decision.blockedReason = b.answers.blocked_reason.choice as BlockedReason
         decision.confidence.blockedReason = b.answers.blocked_reason.top
+        if (decision.blockedReason === 'MISSING_USER_DATA') {
+          const fields = obs.controls.filter((c) => c.actions.includes('type_text') || c.actions.includes('select_option'))
+          if (fields.length > 0) {
+            const m = await ask({ missing_field: missingFieldQuestion(fields.slice(0, TARGET_CHUNK)) }, false)
+            const id = Number(m.answers.missing_field.choice)
+            if (byId.has(id)) {
+              decision.missingFieldId = id
+              decision.confidence.missingField = m.answers.missing_field.top
+            }
+          }
+        }
       }
       return { ...decision, ms }
     },

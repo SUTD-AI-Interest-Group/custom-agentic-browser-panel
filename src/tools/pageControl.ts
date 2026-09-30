@@ -202,8 +202,15 @@ export function isPointOfNoReturn(
  * card is still on screen — the user approves what the card said, but the
  * element that actually gets clicked may no longer match it.
  */
-/** The identity fields compared — also the shape src/system1/observation.ts's ControlFingerprint carries. */
-export type ElementIdentity = Pick<IndexedElement, 'name' | 'type' | 'href' | 'sensitive' | 'tag'>
+/**
+ * The identity fields compared — also the shape src/system1/observation.ts's
+ * ControlFingerprint carries. `checked`/`disabled` are compared too (a toggle
+ * whose state flipped, or a control that went disabled, is no longer what the
+ * policy chose or the card described); they are optional so a caller that
+ * never recorded them compares as before.
+ */
+export type ElementIdentity = Pick<IndexedElement, 'name' | 'type' | 'href' | 'sensitive' | 'tag'> &
+  Partial<Pick<IndexedElement, 'checked' | 'disabled'>>
 
 export function hasElementChanged(
   before: ElementIdentity | undefined,
@@ -216,7 +223,9 @@ export function hasElementChanged(
     before.type !== after.type ||
     before.href !== after.href ||
     before.sensitive !== after.sensitive ||
-    before.tag !== after.tag
+    before.tag !== after.tag ||
+    before.checked !== after.checked ||
+    (before.disabled === true) !== (after.disabled === true)
   )
 }
 
@@ -242,6 +251,18 @@ export interface ControlStepDeps {
    * page instead of vanishing for the rest of the session.
    */
   afterNav?: () => Promise<void>
+  /**
+   * How long to let the page settle before the re-read. `'full'` (default)
+   * waits for the DOM to go quiet for 400 ms, capped at 4 s (8 s after a
+   * navigation) — right for a submit or a page load, and what ControlPage
+   * always gets. `'quick'` is jev-ultrafast's rule for a non-committing
+   * click or keystroke: a couple of frames (50 ms quiet, 250 ms cap), or for
+   * a typed combobox/searchbox until its options are visible (400 ms cap).
+   * Only an Act step that is NOT a point of no return asks for it — measured
+   * 2026-09-27, the full wait plus the extra re-read cost about a second per
+   * Act action on pages that had already finished changing.
+   */
+  settle?: 'quick' | 'full'
 }
 
 export interface ControlStepResult extends ActionResult {
@@ -250,6 +271,12 @@ export interface ControlStepResult extends ActionResult {
   /** Page origin after the action (empty if the re-read failed). Lets the
    *  caller re-fence the session when an action crossed origins. */
   origin: string
+  /**
+   * The post-action snapshot itself (absent if the re-read failed), so a
+   * caller that observes the page again next — the Act loop — can reuse it
+   * instead of injecting a third time per action.
+   */
+  snapshot?: PageSnapshot
 }
 
 const runRaw = (tabId: number, spec: ControlSpec): Promise<ActionResult> => {
@@ -334,14 +361,24 @@ export async function runControlStep(deps: ControlStepDeps): Promise<ControlStep
   // Let async pages settle before re-reading, instead of a fixed delay. Skip
   // for 'wait' (already waited) and 'highlight'/'scroll' (no state change).
   if (['click', 'type', 'select', 'navigate', 'press'].includes(spec.action)) {
-    await waitForStable(tabId, { timeoutMs: spec.action === 'navigate' ? 8000 : 4000 })
+    if (deps.settle === 'quick' && spec.action !== 'navigate') {
+      const el = deps.snapshot.elements.find((e) => e.index === spec.index)
+      // After typing into an autocomplete, the useful state is its suggestion
+      // list; wait for one to appear rather than for the DOM to go quiet.
+      const autocomplete = spec.action === 'type' && !!el && (el.role === 'combobox' || el.role === 'searchbox' || el.type === 'search')
+      await waitForStable(tabId, autocomplete ? { selector: '[role="option"]', quietMs: 200, timeoutMs: 400 } : { quietMs: 50, timeoutMs: 250 })
+    } else {
+      await waitForStable(tabId, { timeoutMs: spec.action === 'navigate' ? 8000 : 4000 })
+    }
   }
   let registry = '(page not re-read)'
   let origin = ''
+  let snapshot: PageSnapshot | undefined
   try {
     const snap = await snapshotPage(tabId)
     registry = snap.text
     origin = snap.origin
+    snapshot = snap
   } catch {
     registry = '(could not re-read the page)'
   }
@@ -352,5 +389,5 @@ export async function runControlStep(deps: ControlStepDeps): Promise<ControlStep
   // now, not on the next step (or never, if this was the last step).
   if (afterNav && (spec.action === 'navigate' || (origin !== '' && origin !== deps.snapshot.origin)))
     await afterNav()
-  return { ...result, registry, origin }
+  return { ...result, registry, origin, snapshot }
 }

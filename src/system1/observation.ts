@@ -19,6 +19,10 @@ export interface ControlFingerprint {
   name: string
   href?: string
   sensitive: boolean
+  /** A toggle's state at observation time: flipped since → the target is stale. */
+  checked?: boolean
+  /** Disabled at observation time (never, for a candidate); enabled → disabled since → stale. */
+  disabled?: true
 }
 
 export interface BrowserControl {
@@ -97,7 +101,7 @@ export function buildControl(el: IndexedElement, focusedIndex: number | undefine
     sensitive: el.sensitive,
     states: { enabled, editable, focused: el.index === focusedIndex },
     actions,
-    fingerprint: { tag: el.tag, type: el.type, name: el.name, href: el.href, sensitive: el.sensitive },
+    fingerprint: { tag: el.tag, type: el.type, name: el.name, href: el.href, sensitive: el.sensitive, checked: el.checked, disabled: el.disabled },
   }
   if (toggle) control.checked = el.checked
   else if (el.value && !el.sensitive) control.value = el.value
