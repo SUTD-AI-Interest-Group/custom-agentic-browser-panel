@@ -520,11 +520,15 @@ describe('Act (System-1)', () => {
       .mockResolvedValue(answer('operation', 'DONE'))
     const run = (tools: any) => (tools.Act as any).execute({ goal: 'click it' }, { toolCallId: 't', messages: [] })
 
-    it('denied — the point-of-no-return card is refused', async () => {
+    it('denied — the point-of-no-return card is refused; the card is marked as raised via Act', async () => {
       vi.mocked(snapshotPage).mockResolvedValue(snap([el({ index: 0, type: 'submit', name: 'Place order' })]))
-      const r = await run(buildInSession(clickFirst(), { requestApproval: async () => false }))
+      const seen: Parameters<ApprovalGate>[0][] = []
+      const r = await run(buildInSession(clickFirst(), { requestApproval: async (req) => { seen.push(req); return false } }))
       expect(r.status).toBe('denied')
       expect(runControlStep).not.toHaveBeenCalled()
+      // The label the card renders as the Act badge — and only that: the gate is unchanged (once, no session allow).
+      expect(seen).toHaveLength(1)
+      expect(seen[0]).toMatchObject({ toolName: 'ControlPage', once: true, via: 'Act' })
     })
 
     it('parked — the user switched away mid-loop', async () => {

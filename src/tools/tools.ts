@@ -159,6 +159,13 @@ export interface ApprovalRequest {
    * the Chrome dialog denies the whole call.
    */
   needsPermissions?: string[]
+  /**
+   * Set when the step was chosen by the local System-1 model inside an `Act`
+   * call rather than by the chat model. Purely a label for the card (an
+   * "Act" badge and ring), so the user can tell which committing steps the
+   * local model proposed; it changes nothing about the gate itself.
+   */
+  via?: 'Act'
 }
 
 export type ApprovalGate = (request: ApprovalRequest) => Promise<boolean>
@@ -560,7 +567,7 @@ export function createAgentTools(
   // would land in model history).
   const controlStep = async (
     spec: ControlSpec,
-    opts: { expect?: ElementIdentity; settle?: 'quick' | 'full'; tentative?: boolean; snapshot?: boolean } = {},
+    opts: { expect?: ElementIdentity; settle?: 'quick' | 'full'; tentative?: boolean; snapshot?: boolean; via?: 'Act' } = {},
   ) => {
     const session = pageControl.session()
     if (!session || !session.active)
@@ -600,6 +607,7 @@ export function createAgentTools(
           summary: `Keep controlling the page now that it moved to ${hostLabel(liveOrigin)}?`,
           reason: 'The page navigated to a different site on its own.',
           once: true,
+          via: opts.via,
         })
         if (!cont) {
           pageControl.endSession()
@@ -640,6 +648,7 @@ export function createAgentTools(
         summary: pointOfNoReturnSummary(spec, el),
         reason: 'This step changes state or leaves the page.',
         once: true,
+        via: opts.via,
       })
       if (!approved) return DENIED
       // The card sat on screen for however long the human took to react —
@@ -700,6 +709,7 @@ export function createAgentTools(
           summary: `Keep controlling the page now that it moved to ${hostLabel(origin)}?`,
           reason: 'The page navigated to a different site on its own.',
           once: true,
+          via: opts.via,
         })
         if (!cont) {
           pageControl.endSession()
@@ -1716,7 +1726,7 @@ export function createAgentTools(
           aborted: () => abortSignal?.aborted === true,
           execute: async (action): Promise<ExecOutcome> => {
             const r = (await controlStep(action.spec, {
-              expect: action.expect?.fingerprint, settle: 'quick', tentative: action.tentative, snapshot: true,
+              expect: action.expect?.fingerprint, settle: 'quick', tentative: action.tentative, snapshot: true, via: 'Act',
             })) as Record<string, unknown>
             if (r.stale) return { kind: 'stale' }
             if (r.uncertain) return { kind: 'uncertain', message: String(r.message ?? '') }
