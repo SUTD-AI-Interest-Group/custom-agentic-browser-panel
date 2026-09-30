@@ -115,30 +115,10 @@ async function main() {
 
   const { server, port } = await serveFixtures()
   const fixtureUrl = (p) => `http://127.0.0.1:${port}/${p}`
-  const ctx = await chromium.launchPersistentContext(PROFILE, {
-    executablePath: CHROMIUM,
-    headless: false,
-    viewport: { width: 1280, height: 900 },
-    args: [
-      `--disable-extensions-except=${DIST}`, `--load-extension=${DIST}`,
-      // The panel is driven as a background tab during e2e (the fixture tab
-      // must be the active one); keep its timers and renderer at full speed.
-      '--disable-background-timer-throttling', '--disable-renderer-backgrounding', '--disable-backgrounding-occluded-windows',
-    ],
-  })
+  let browser = await openBrowser(port)
   try {
-    // Serve the pinned Hugging Face URLs from the local export.
-    await ctx.route(`https://huggingface.co/${PIN_REPO}/resolve/${PIN_REV}/**`, (route) => {
-      const name = path.basename(new URL(route.request().url()).pathname)
-      return route.fulfill({ status: 302, headers: { location: `http://127.0.0.1:${port}/model/${name}` } })
-    })
-
-    const extId = await findExtensionId(ctx)
+    let { ctx, panel, extId } = browser
     log('extension', extId)
-    let panel = await ctx.newPage()
-    const panelUrl = `chrome-extension://${extId}/sidepanel.html`
-    await panel.goto(panelUrl)
-    await sleep(500)
     const gpu = await panel.evaluate(async () => {
       if (!navigator.gpu) return { available: false, reason: 'navigator.gpu undefined' }
       const a = await navigator.gpu.requestAdapter()
@@ -183,7 +163,17 @@ async function main() {
       else report.llm = await phaseLlm(grounding)
     }
     if (lab) await lab.close()
-    if (PHASES.has('e2e')) report.e2e = await phaseE2e(ctx, panel, panelUrl, fixtureUrl)
+    if (PHASES.has('e2e')) {
+      // Every e2e run gets its own browser context on the same profile (the
+      // weights stay cached): measured 2026-09-30, after one chat turn the
+      // panel page could no longer be reloaded (30 s hangs, in three attempts
+      // on two builds), and a replacement page steals the active tab the
+      // chat binds to. A few seconds of launch per run buys isolation and
+      // cleaner wall times.
+      await browser.ctx.close().catch(() => {})
+      browser = null
+      report.e2e = await phaseE2e(port, fixtureUrl)
+    }
 
     const measured = ['download', 'parity', 'grounding', 'llm', 'e2e'].filter((k) => PHASES.has(k))
     const { skipped, ...sections } = report
@@ -191,9 +181,35 @@ async function main() {
     if (grounding) fs.writeFileSync(path.join(OUT_DIR, 'grounding-raw.json'), JSON.stringify(grounding, null, 1))
     printSummary(written, skipped)
   } finally {
-    await ctx.close().catch(() => {})
+    if (browser) await browser.ctx.close().catch(() => {})
     server.close()
   }
+}
+
+/** A persistent context on PROFILE with the unpacked build, the Hugging Face weight URLs routed to the local server, and the panel page open. */
+async function openBrowser(port) {
+  const ctx = await chromium.launchPersistentContext(PROFILE, {
+    executablePath: CHROMIUM,
+    headless: false,
+    viewport: { width: 1280, height: 900 },
+    args: [
+      `--disable-extensions-except=${DIST}`, `--load-extension=${DIST}`,
+      // The panel is driven as a background tab during e2e (the fixture tab
+      // must be the active one); keep its timers and renderer at full speed.
+      '--disable-background-timer-throttling', '--disable-renderer-backgrounding', '--disable-backgrounding-occluded-windows',
+    ],
+  })
+  // Serve the pinned Hugging Face URLs from the local export.
+  await ctx.route(`https://huggingface.co/${PIN_REPO}/resolve/${PIN_REV}/**`, (route) => {
+    const name = path.basename(new URL(route.request().url()).pathname)
+    return route.fulfill({ status: 302, headers: { location: `http://127.0.0.1:${port}/model/${name}` } })
+  })
+  const extId = await findExtensionId(ctx)
+  const panelUrl = `chrome-extension://${extId}/sidepanel.html`
+  const panel = await ctx.newPage()
+  await panel.goto(panelUrl)
+  await sleep(500)
+  return { ctx, extId, panel, panelUrl }
 }
 
 // EVAL_PHASES=rederive: no browser, no model. Recomputes the grounding and e2e
@@ -523,22 +539,23 @@ const VON_SPY = () => {
   }
 }
 
-async function phaseE2e(ctx, panel, panelUrl, fixtureUrl) {
+async function phaseE2e(port, fixtureUrl) {
   const rows = []
   // `forced` = toggle on AND the prompt tells the model to use Act — the only
   // way to see Act's own end-to-end behaviour when the chat model would
   // otherwise never pick it. `on` = toggle on, model free to choose.
   const modes = (env.EVAL_E2E_MODES ?? 'off,on,forced').split(',')
   const reps = Number(env.EVAL_E2E_REPS ?? 3)
-  // Context-level, so a panel page opened afresh after a hung reload is spied too.
-  await ctx.addInitScript(VON_SPY)
   for (let rep = 0; rep < reps; rep++) {
     for (const task of TASKS) {
       // Interleave arms per task so drift in LM Studio (load, heat) hits every arm alike.
       for (const mode of modes) {
+        let browser = null
         try {
-          const r = await runE2e(ctx, panel, fixtureUrl, task, mode, rep)
-          panel = r.panel
+          browser = await openBrowser(port)
+          // Context-level, so it applies to the panel's every navigation.
+          await browser.ctx.addInitScript(VON_SPY)
+          const r = await runE2e(browser.ctx, browser.panel, fixtureUrl, task, mode, rep)
           rows.push(r.row)
         } catch (err) {
           // The harness, not the agent, failed this run: record it as a failed
@@ -548,7 +565,8 @@ async function phaseE2e(ctx, panel, panelUrl, fixtureUrl) {
           const error = String(err).split('\n')[0]
           log(`e2e ${task.id} [${mode}] rep ${rep} HARNESS ERROR ${error}`)
           rows.push({ task: task.id, arm: mode, rep, success: false, ended: 'harness-error', error, wallMs: 0, llmSteps: 0, inputTokens: 0, outputTokens: 0, actOffered: false, pageActions: 0, controlPageCalls: 0, actCalls: 0, actSteps: 0, actStatuses: [], actMessages: [], vonDecides: 0, vonFailed: 0, vonMs: 0, vonBootMs: [], approvals: [], toolCalls: [], pageState: null, lastReply: null })
-          for (const pg of ctx.pages()) if (!pg.url().startsWith('chrome-extension://')) await pg.close().catch(() => {})
+        } finally {
+          if (browser) await Promise.race([browser.ctx.close().catch(() => {}), sleep(15_000)])
         }
       }
     }
