@@ -95,9 +95,49 @@
    "startedAt": "2026-09-26T19:14:50.581Z",
    "finishedAt": "2026-09-26T19:43:01.195Z",
    "skipped": []
+  },
+  {
+   "phases": [
+    "download",
+    "parity",
+    "grounding",
+    "llm",
+    "e2e"
+   ],
+   "startedAt": "2026-09-30T08:18:51.593Z",
+   "finishedAt": "2026-09-30T08:26:31.995Z",
+   "skipped": []
+  },
+  {
+   "phases": [
+    "download",
+    "e2e"
+   ],
+   "startedAt": "2026-09-30T08:26:58.016Z",
+   "finishedAt": "2026-09-30T08:31:55.247Z",
+   "skipped": []
+  },
+  {
+   "phases": [
+    "download",
+    "e2e"
+   ],
+   "startedAt": "2026-09-30T08:32:34.432Z",
+   "finishedAt": "2026-09-30T08:38:20.780Z",
+   "skipped": []
+  },
+  {
+   "phases": [
+    "download",
+    "e2e"
+   ],
+   "startedAt": "2026-09-30T08:52:22.228Z",
+   "finishedAt": "2026-09-30T09:22:12.601Z",
+   "skipped": []
   }
  ],
  "env": {
+  "head": "single",
   "lmStudio": "up",
   "webgpu": {
    "available": true,
@@ -110,103 +150,103 @@
  },
  "download": {
   "status": "Ready · 620 MB",
-  "downloadMs": 2028,
-  "testDecision": "Picked [2] with p=0.99 in 69 ms",
-  "testDecisionWallMs": 2302
+  "downloadMs": 1042,
+  "testDecision": "Picked [2] with p=1.00 in 55 ms",
+  "testDecisionWallMs": 1813
  },
  "parity": {
   "cases": 4,
-  "maxDeltaP": 0.00733,
+  "maxDeltaP": 0.0098,
   "argmaxFlips": 0,
   "rows": [
    {
     "case": 0,
     "nOptions": 2,
     "tokens": 263,
-    "maxDeltaP": 0.00155,
+    "maxDeltaP": 0.00214,
     "argmaxFlip": false,
     "golden": [
-     0.9307,
-     0.0693
+     0.9411,
+     0.0589
     ],
     "webgpu": [
-     0.9323,
-     0.0677
+     0.939,
+     0.061
     ],
-    "ms": 165
+    "ms": 181
    },
    {
     "case": 1,
     "nOptions": 3,
     "tokens": 275,
-    "maxDeltaP": 0.00012,
+    "maxDeltaP": 0.0047,
     "argmaxFlip": false,
     "golden": [
-     0.4731,
-     0.498,
-     0.0288
+     0.5423,
+     0.4334,
+     0.0243
     ],
     "webgpu": [
-     0.4732,
-     0.4981,
-     0.0287
+     0.5378,
+     0.4381,
+     0.0241
     ],
-    "ms": 169
+    "ms": 178
    },
    {
     "case": 2,
     "nOptions": 5,
     "tokens": 297,
-    "maxDeltaP": 0.00733,
+    "maxDeltaP": 0.00227,
     "argmaxFlip": false,
     "golden": [
-     0.0711,
-     0.434,
-     0.1326,
-     0.1761,
-     0.1862
+     0.0026,
+     0.8961,
+     0.0757,
+     0.0172,
+     0.0085
     ],
     "webgpu": [
-     0.0701,
-     0.4413,
-     0.1328,
-     0.1719,
-     0.184
+     0.0027,
+     0.8938,
+     0.0773,
+     0.0178,
+     0.0084
     ],
-    "ms": 182
+    "ms": 205
    },
    {
     "case": 3,
     "nOptions": 5,
     "tokens": 70,
-    "maxDeltaP": 0.00226,
+    "maxDeltaP": 0.0098,
     "argmaxFlip": false,
     "golden": [
-     0.163,
-     0.0286,
-     0.0123,
-     0.0878,
-     0.7083
+     0.0483,
+     0.0113,
+     0.0128,
+     0.0688,
+     0.8588
     ],
     "webgpu": [
-     0.1607,
-     0.0292,
-     0.0125,
-     0.0898,
-     0.7078
+     0.0504,
+     0.0121,
+     0.0136,
+     0.0749,
+     0.849
     ],
-    "ms": 88
+    "ms": 102
    }
   ]
  },
- "bootMs": 1198,
+ "bootMs": 1269,
  "model": {
   "model": "von-1.2.0",
   "variant": "q8",
   "file": "model_q8.onnx",
   "bytes": 616224170,
   "cpuParity": {
-   "maxDeltaP": 0.0073,
+   "maxDeltaP": 0.0098,
    "argmaxFlips": 0,
    "probes": 9,
    "invariance": 0.00001,
@@ -216,12 +256,12 @@
  },
  "grounding": {
   "cases": 54,
-  "accuracyTop1": 0.963,
-  "correct": 52,
+  "accuracyTop1": 0.926,
+  "correct": 50,
   "byPage": {
    "shop.html": {
     "cases": 23,
-    "correct": 22
+    "correct": 23
    },
    "form.html": {
     "cases": 16,
@@ -229,99 +269,100 @@
    },
    "dialog.html": {
     "cases": 15,
-    "correct": 15
+    "correct": 12
    }
   },
-  "tournamentCases": 21,
-  "tournamentCorrect": 20,
+  "tournamentCases": 0,
+  "tournamentCorrect": 0,
   "expectedInSpace": 54,
   "expectedShown": 54,
   "candidateRank": {
    "p50": 1,
    "max": 11
   },
-  "operationCorrect": 46,
-  "operationCorrectAboveGate": 45,
-  "operationAboveGate": 51,
+  "operationCorrect": 50,
+  "operationCorrectAboveGate": 43,
+  "operationAboveGate": 46,
   "operationTop": {
-   "p50": 0.9987,
-   "max": 0.9992
+   "p50": 0.9549,
+   "max": 1
   },
   "operationChoices": {
-   "CLICK": 39,
-   "TYPE_TEXT": 14,
-   "BLOCKED": 1
+   "CLICK": 44,
+   "TYPE_TEXT": 5,
+   "SELECT_OPTION": 3,
+   "BLOCKED": 2
   },
-  "tournamentChunkWins": 20,
+  "tournamentChunkWins": 0,
   "valueKey": {
-   "asked": 10,
-   "correct": 8
+   "asked": 8,
+   "correct": 7
   },
   "decideMs": {
    "all": {
-    "n": 160,
-    "p50": 220,
-    "p95": 584,
-    "max": 613
+    "n": 64,
+    "p50": 400,
+    "p95": 871,
+    "max": 1080
    },
    "warm": {
-    "n": 148,
-    "p50": 218,
-    "p95": 584
+    "n": 61,
+    "p50": 400,
+    "p95": 832
    },
    "operation": {
-    "p50": 266,
-    "p95": 600
+    "p50": null,
+    "p95": null
    },
    "target": {
-    "p50": 221,
-    "p95": 302
+    "p50": 425,
+    "p95": 942
    },
    "value": {
-    "p50": 67,
-    "p95": 86
+    "p50": 250,
+    "p95": 308
    },
    "targetPickPerCase": {
-    "p50": 221,
-    "p95": 659
+    "p50": 425,
+    "p95": 942
    },
-   "wallP50": 220
+   "wallP50": 409
   },
   "thresholds": [
    {
     "threshold": 0.4,
     "coverage": 0.963,
     "answered": 52,
-    "accuracyOnAnswered": 0.962,
-    "wrongButConfident": 2
+    "accuracyOnAnswered": 0.923,
+    "wrongButConfident": 4
    },
    {
     "threshold": 0.5,
-    "coverage": 0.944,
-    "answered": 51,
-    "accuracyOnAnswered": 0.961,
-    "wrongButConfident": 2
+    "coverage": 0.907,
+    "answered": 49,
+    "accuracyOnAnswered": 0.918,
+    "wrongButConfident": 4
    },
    {
     "threshold": 0.6,
-    "coverage": 0.944,
-    "answered": 51,
-    "accuracyOnAnswered": 0.961,
-    "wrongButConfident": 2
+    "coverage": 0.852,
+    "answered": 46,
+    "accuracyOnAnswered": 0.935,
+    "wrongButConfident": 3
    },
    {
     "threshold": 0.7,
-    "coverage": 0.926,
-    "answered": 50,
-    "accuracyOnAnswered": 0.96,
-    "wrongButConfident": 2
+    "coverage": 0.815,
+    "answered": 44,
+    "accuracyOnAnswered": 0.932,
+    "wrongButConfident": 3
    },
    {
     "threshold": 0.8,
-    "coverage": 0.87,
-    "answered": 47,
-    "accuracyOnAnswered": 0.979,
-    "wrongButConfident": 1
+    "coverage": 0.704,
+    "answered": 38,
+    "accuracyOnAnswered": 0.921,
+    "wrongButConfident": 3
    }
   ],
   "rows": [
@@ -337,7 +378,7 @@
     "candidateRank": 1,
     "expectedShown": true,
     "nElements": 44,
-    "nCandidates": 44,
+    "nCandidates": 47,
     "space": {
      "operations": [
       "CLICK",
@@ -352,34 +393,23 @@
       "hidden": 0
      }
     },
-    "tournament": true,
+    "tournament": false,
     "rounds": [
      {
-      "options": 22,
+      "options": 47,
       "hasExpected": true,
-      "choice": "Add Aurora mug (green) to cart",
-      "top": 0.32
-     },
-     {
-      "options": 22,
-      "hasExpected": false,
-      "choice": "Cart",
-      "top": 0.902
-     },
-     {
-      "options": 2,
-      "hasExpected": false,
-      "choice": "Add Aurora mug (green) to cart",
-      "top": 0.998
+      "choice": "Add Aurora mug (blue) to cart",
+      "top": 0.497
      }
     ],
-    "picked": "Add Aurora mug (green) to cart",
-    "correct": false,
-    "top": 0.9979735055324881,
+    "picked": "Add Aurora mug (blue) to cart",
+    "correct": true,
+    "top": 0.4970103190143237,
     "status": "denied",
+    "head": "single",
     "operation": {
      "choice": "CLICK",
-     "top": 0.9992,
+     "top": 0.497,
      "forced": "CLICK",
      "correct": true
     },
@@ -387,27 +417,12 @@
     "expectedValueKey": null,
     "decideMs": [
      {
-      "kind": "operation",
-      "ms": 581,
-      "wallMs": 583
-     },
-     {
       "kind": "target",
-      "ms": 394,
-      "wallMs": 398
-     },
-     {
-      "kind": "target",
-      "ms": 287,
-      "wallMs": 288
-     },
-     {
-      "kind": "target",
-      "ms": 76,
-      "wallMs": 77
+      "ms": 956,
+      "wallMs": 972
      }
     ],
-    "targetMs": 757,
+    "targetMs": 956,
     "errors": []
    },
    {
@@ -422,7 +437,7 @@
     "candidateRank": 1,
     "expectedShown": true,
     "nElements": 44,
-    "nCandidates": 44,
+    "nCandidates": 47,
     "space": {
      "operations": [
       "CLICK",
@@ -437,34 +452,23 @@
       "hidden": 0
      }
     },
-    "tournament": true,
+    "tournament": false,
     "rounds": [
      {
-      "options": 22,
+      "options": 47,
       "hasExpected": true,
       "choice": "Add Nimbus tote (red) to cart",
-      "top": 0.91
-     },
-     {
-      "options": 22,
-      "hasExpected": false,
-      "choice": "Cart",
-      "top": 0.757
-     },
-     {
-      "options": 2,
-      "hasExpected": true,
-      "choice": "Add Nimbus tote (red) to cart",
-      "top": 1
+      "top": 0.715
      }
     ],
     "picked": "Add Nimbus tote (red) to cart",
     "correct": true,
-    "top": 0.9996260472761505,
+    "top": 0.714966599464312,
     "status": "denied",
+    "head": "single",
     "operation": {
      "choice": "CLICK",
-     "top": 0.9991,
+     "top": 0.715,
      "forced": "CLICK",
      "correct": true
     },
@@ -472,27 +476,12 @@
     "expectedValueKey": null,
     "decideMs": [
      {
-      "kind": "operation",
-      "ms": 587,
-      "wallMs": 591
-     },
-     {
       "kind": "target",
-      "ms": 305,
-      "wallMs": 309
-     },
-     {
-      "kind": "target",
-      "ms": 279,
-      "wallMs": 279
-     },
-     {
-      "kind": "target",
-      "ms": 75,
-      "wallMs": 75
+      "ms": 822,
+      "wallMs": 854
      }
     ],
-    "targetMs": 659,
+    "targetMs": 822,
     "errors": []
    },
    {
@@ -507,7 +496,7 @@
     "candidateRank": 1,
     "expectedShown": true,
     "nElements": 44,
-    "nCandidates": 44,
+    "nCandidates": 47,
     "space": {
      "operations": [
       "CLICK",
@@ -522,34 +511,23 @@
       "hidden": 0
      }
     },
-    "tournament": true,
+    "tournament": false,
     "rounds": [
      {
-      "options": 22,
+      "options": 47,
       "hasExpected": true,
       "choice": "Add Cedar candle (green) to cart",
-      "top": 0.324
-     },
-     {
-      "options": 22,
-      "hasExpected": false,
-      "choice": "Add Lumen lamp (red) to cart",
-      "top": 0.205
-     },
-     {
-      "options": 2,
-      "hasExpected": true,
-      "choice": "Add Cedar candle (green) to cart",
-      "top": 1
+      "top": 0.423
      }
     ],
     "picked": "Add Cedar candle (green) to cart",
     "correct": true,
-    "top": 0.9999367076612485,
+    "top": 0.4231348221772429,
     "status": "denied",
+    "head": "single",
     "operation": {
      "choice": "CLICK",
-     "top": 0.999,
+     "top": 0.4231,
      "forced": "CLICK",
      "correct": true
     },
@@ -557,27 +535,12 @@
     "expectedValueKey": null,
     "decideMs": [
      {
-      "kind": "operation",
-      "ms": 551,
-      "wallMs": 552
-     },
-     {
       "kind": "target",
-      "ms": 297,
-      "wallMs": 297
-     },
-     {
-      "kind": "target",
-      "ms": 286,
-      "wallMs": 286
-     },
-     {
-      "kind": "target",
-      "ms": 77,
-      "wallMs": 77
+      "ms": 871,
+      "wallMs": 887
      }
     ],
-    "targetMs": 660,
+    "targetMs": 871,
     "errors": []
    },
    {
@@ -592,7 +555,7 @@
     "candidateRank": 1,
     "expectedShown": true,
     "nElements": 44,
-    "nCandidates": 44,
+    "nCandidates": 47,
     "space": {
      "operations": [
       "CLICK",
@@ -607,34 +570,23 @@
       "hidden": 0
      }
     },
-    "tournament": true,
+    "tournament": false,
     "rounds": [
      {
-      "options": 22,
+      "options": 47,
       "hasExpected": true,
       "choice": "Add Harbor throw (blue) to cart",
-      "top": 0.689
-     },
-     {
-      "options": 22,
-      "hasExpected": false,
-      "choice": "Add Fjord bowl (red) to cart",
-      "top": 0.071
-     },
-     {
-      "options": 2,
-      "hasExpected": true,
-      "choice": "Add Harbor throw (blue) to cart",
-      "top": 1
+      "top": 0.731
      }
     ],
     "picked": "Add Harbor throw (blue) to cart",
     "correct": true,
-    "top": 0.9999944810201292,
+    "top": 0.7309908415102632,
     "status": "denied",
+    "head": "single",
     "operation": {
      "choice": "CLICK",
-     "top": 0.9991,
+     "top": 0.731,
      "forced": "CLICK",
      "correct": true
     },
@@ -642,27 +594,12 @@
     "expectedValueKey": null,
     "decideMs": [
      {
-      "kind": "operation",
-      "ms": 600,
-      "wallMs": 600
-     },
-     {
       "kind": "target",
-      "ms": 267,
-      "wallMs": 267
-     },
-     {
-      "kind": "target",
-      "ms": 302,
-      "wallMs": 302
-     },
-     {
-      "kind": "target",
-      "ms": 76,
-      "wallMs": 76
+      "ms": 832,
+      "wallMs": 848
      }
     ],
-    "targetMs": 645,
+    "targetMs": 832,
     "errors": []
    },
    {
@@ -677,7 +614,7 @@
     "candidateRank": 1,
     "expectedShown": true,
     "nElements": 44,
-    "nCandidates": 44,
+    "nCandidates": 47,
     "space": {
      "operations": [
       "CLICK",
@@ -692,34 +629,23 @@
       "hidden": 0
      }
     },
-    "tournament": true,
+    "tournament": false,
     "rounds": [
      {
-      "options": 22,
+      "options": 47,
       "hasExpected": true,
       "choice": "Add Lumen lamp (red) to cart",
-      "top": 0.788
-     },
-     {
-      "options": 22,
-      "hasExpected": false,
-      "choice": "Home",
-      "top": 0.069
-     },
-     {
-      "options": 2,
-      "hasExpected": true,
-      "choice": "Add Lumen lamp (red) to cart",
-      "top": 1
+      "top": 0.987
      }
     ],
     "picked": "Add Lumen lamp (red) to cart",
     "correct": true,
-    "top": 0.9999970615974207,
+    "top": 0.9867683816496409,
     "status": "denied",
+    "head": "single",
     "operation": {
      "choice": "CLICK",
-     "top": 0.9991,
+     "top": 0.9868,
      "forced": "CLICK",
      "correct": true
     },
@@ -727,27 +653,12 @@
     "expectedValueKey": null,
     "decideMs": [
      {
-      "kind": "operation",
-      "ms": 574,
-      "wallMs": 574
-     },
-     {
       "kind": "target",
-      "ms": 296,
-      "wallMs": 296
-     },
-     {
-      "kind": "target",
-      "ms": 276,
-      "wallMs": 276
-     },
-     {
-      "kind": "target",
-      "ms": 78,
-      "wallMs": 81
+      "ms": 821,
+      "wallMs": 838
      }
     ],
-    "targetMs": 650,
+    "targetMs": 821,
     "errors": []
    },
    {
@@ -762,7 +673,7 @@
     "candidateRank": 1,
     "expectedShown": true,
     "nElements": 44,
-    "nCandidates": 44,
+    "nCandidates": 47,
     "space": {
      "operations": [
       "CLICK",
@@ -777,34 +688,23 @@
       "hidden": 0
      }
     },
-    "tournament": true,
+    "tournament": false,
     "rounds": [
      {
-      "options": 22,
+      "options": 47,
       "hasExpected": true,
       "choice": "Add Fjord bowl (green) to cart",
-      "top": 0.293
-     },
-     {
-      "options": 22,
-      "hasExpected": false,
-      "choice": "Add Harbor throw (red) to cart",
-      "top": 0.669
-     },
-     {
-      "options": 2,
-      "hasExpected": true,
-      "choice": "Add Fjord bowl (green) to cart",
-      "top": 1
+      "top": 0.438
      }
     ],
     "picked": "Add Fjord bowl (green) to cart",
     "correct": true,
-    "top": 0.9998538515904706,
+    "top": 0.4375658142518113,
     "status": "denied",
+    "head": "single",
     "operation": {
      "choice": "CLICK",
-     "top": 0.9991,
+     "top": 0.4376,
      "forced": "CLICK",
      "correct": true
     },
@@ -812,27 +712,12 @@
     "expectedValueKey": null,
     "decideMs": [
      {
-      "kind": "operation",
-      "ms": 578,
-      "wallMs": 579
-     },
-     {
       "kind": "target",
-      "ms": 291,
-      "wallMs": 292
-     },
-     {
-      "kind": "target",
-      "ms": 273,
-      "wallMs": 273
-     },
-     {
-      "kind": "target",
-      "ms": 79,
-      "wallMs": 79
+      "ms": 821,
+      "wallMs": 838
      }
     ],
-    "targetMs": 643,
+    "targetMs": 821,
     "errors": []
    },
    {
@@ -847,7 +732,7 @@
     "candidateRank": 1,
     "expectedShown": true,
     "nElements": 44,
-    "nCandidates": 44,
+    "nCandidates": 47,
     "space": {
      "operations": [
       "CLICK",
@@ -862,34 +747,23 @@
       "hidden": 0
      }
     },
-    "tournament": true,
+    "tournament": false,
     "rounds": [
      {
-      "options": 22,
+      "options": 47,
       "hasExpected": true,
       "choice": "Add Sable apron (blue) to cart",
-      "top": 0.586
-     },
-     {
-      "options": 22,
-      "hasExpected": false,
-      "choice": "Cart",
-      "top": 0.716
-     },
-     {
-      "options": 2,
-      "hasExpected": true,
-      "choice": "Add Sable apron (blue) to cart",
-      "top": 1
+      "top": 0.907
      }
     ],
     "picked": "Add Sable apron (blue) to cart",
     "correct": true,
-    "top": 0.9997153477061825,
+    "top": 0.9066913337040237,
     "status": "denied",
+    "head": "single",
     "operation": {
      "choice": "CLICK",
-     "top": 0.9987,
+     "top": 0.9067,
      "forced": "CLICK",
      "correct": true
     },
@@ -897,27 +771,12 @@
     "expectedValueKey": null,
     "decideMs": [
      {
-      "kind": "operation",
-      "ms": 580,
-      "wallMs": 580
-     },
-     {
       "kind": "target",
-      "ms": 302,
-      "wallMs": 302
-     },
-     {
-      "kind": "target",
-      "ms": 272,
-      "wallMs": 274
-     },
-     {
-      "kind": "target",
-      "ms": 79,
-      "wallMs": 79
+      "ms": 854,
+      "wallMs": 862
      }
     ],
-    "targetMs": 653,
+    "targetMs": 854,
     "errors": []
    },
    {
@@ -932,7 +791,7 @@
     "candidateRank": 1,
     "expectedShown": true,
     "nElements": 44,
-    "nCandidates": 44,
+    "nCandidates": 47,
     "space": {
      "operations": [
       "CLICK",
@@ -947,34 +806,23 @@
       "hidden": 0
      }
     },
-    "tournament": true,
+    "tournament": false,
     "rounds": [
      {
-      "options": 22,
+      "options": 47,
       "hasExpected": true,
       "choice": "Add Tidal vase (red) to cart",
-      "top": 0.495
-     },
-     {
-      "options": 22,
-      "hasExpected": false,
-      "choice": "Add Fjord bowl (blue) to cart",
-      "top": 0.091
-     },
-     {
-      "options": 2,
-      "hasExpected": true,
-      "choice": "Add Tidal vase (red) to cart",
-      "top": 1
+      "top": 0.792
      }
     ],
     "picked": "Add Tidal vase (red) to cart",
     "correct": true,
-    "top": 0.9999914948627219,
+    "top": 0.7919437094809345,
     "status": "denied",
+    "head": "single",
     "operation": {
      "choice": "CLICK",
-     "top": 0.9991,
+     "top": 0.7919,
      "forced": "CLICK",
      "correct": true
     },
@@ -982,27 +830,12 @@
     "expectedValueKey": null,
     "decideMs": [
      {
-      "kind": "operation",
-      "ms": 578,
-      "wallMs": 578
-     },
-     {
       "kind": "target",
-      "ms": 302,
-      "wallMs": 303
-     },
-     {
-      "kind": "target",
-      "ms": 274,
-      "wallMs": 274
-     },
-     {
-      "kind": "target",
-      "ms": 75,
-      "wallMs": 75
+      "ms": 758,
+      "wallMs": 775
      }
     ],
-    "targetMs": 651,
+    "targetMs": 758,
     "errors": []
    },
    {
@@ -1017,7 +850,7 @@
     "candidateRank": 1,
     "expectedShown": true,
     "nElements": 44,
-    "nCandidates": 44,
+    "nCandidates": 47,
     "space": {
      "operations": [
       "CLICK",
@@ -1032,34 +865,23 @@
       "hidden": 0
      }
     },
-    "tournament": true,
+    "tournament": false,
     "rounds": [
      {
-      "options": 22,
+      "options": 47,
       "hasExpected": true,
       "choice": "Add Ember kettle (green) to cart",
-      "top": 0.816
-     },
-     {
-      "options": 22,
-      "hasExpected": false,
-      "choice": "Cart",
-      "top": 0.871
-     },
-     {
-      "options": 2,
-      "hasExpected": true,
-      "choice": "Add Ember kettle (green) to cart",
-      "top": 0.999
+      "top": 0.775
      }
     ],
     "picked": "Add Ember kettle (green) to cart",
     "correct": true,
-    "top": 0.9992531957916923,
+    "top": 0.7745747871266584,
     "status": "denied",
+    "head": "single",
     "operation": {
      "choice": "CLICK",
-     "top": 0.9992,
+     "top": 0.7746,
      "forced": "CLICK",
      "correct": true
     },
@@ -1067,27 +889,12 @@
     "expectedValueKey": null,
     "decideMs": [
      {
-      "kind": "operation",
-      "ms": 600,
-      "wallMs": 601
-     },
-     {
       "kind": "target",
-      "ms": 290,
-      "wallMs": 290
-     },
-     {
-      "kind": "target",
-      "ms": 265,
-      "wallMs": 265
-     },
-     {
-      "kind": "target",
-      "ms": 74,
-      "wallMs": 74
+      "ms": 766,
+      "wallMs": 775
      }
     ],
-    "targetMs": 629,
+    "targetMs": 766,
     "errors": []
    },
    {
@@ -1102,7 +909,7 @@
     "candidateRank": 1,
     "expectedShown": true,
     "nElements": 44,
-    "nCandidates": 44,
+    "nCandidates": 47,
     "space": {
      "operations": [
       "CLICK",
@@ -1117,34 +924,23 @@
       "hidden": 0
      }
     },
-    "tournament": true,
+    "tournament": false,
     "rounds": [
      {
-      "options": 22,
+      "options": 47,
       "hasExpected": true,
       "choice": "Add Meadow napkins (blue) to cart",
-      "top": 0.447
-     },
-     {
-      "options": 22,
-      "hasExpected": false,
-      "choice": "Cart",
-      "top": 0.694
-     },
-     {
-      "options": 2,
-      "hasExpected": true,
-      "choice": "Add Meadow napkins (blue) to cart",
-      "top": 1
+      "top": 0.364
      }
     ],
     "picked": "Add Meadow napkins (blue) to cart",
     "correct": true,
-    "top": 0.9997411539120801,
-    "status": "denied",
+    "top": 0.3639911918877405,
+    "status": "uncertain",
+    "head": "single",
     "operation": {
      "choice": "CLICK",
-     "top": 0.999,
+     "top": 0.364,
      "forced": "CLICK",
      "correct": true
     },
@@ -1152,27 +948,12 @@
     "expectedValueKey": null,
     "decideMs": [
      {
-      "kind": "operation",
-      "ms": 554,
-      "wallMs": 555
-     },
-     {
       "kind": "target",
-      "ms": 299,
-      "wallMs": 299
-     },
-     {
-      "kind": "target",
-      "ms": 274,
-      "wallMs": 275
-     },
-     {
-      "kind": "target",
-      "ms": 82,
-      "wallMs": 82
+      "ms": 1080,
+      "wallMs": 1096
      }
     ],
-    "targetMs": 655,
+    "targetMs": 1080,
     "errors": []
    },
    {
@@ -1187,7 +968,7 @@
     "candidateRank": 1,
     "expectedShown": true,
     "nElements": 44,
-    "nCandidates": 44,
+    "nCandidates": 47,
     "space": {
      "operations": [
       "CLICK",
@@ -1202,34 +983,23 @@
       "hidden": 0
      }
     },
-    "tournament": true,
+    "tournament": false,
     "rounds": [
      {
-      "options": 22,
+      "options": 47,
       "hasExpected": true,
       "choice": "Add Quill notebook (red) to cart",
-      "top": 0.969
-     },
-     {
-      "options": 22,
-      "hasExpected": false,
-      "choice": "Add Lumen lamp (green) to cart",
-      "top": 0.093
-     },
-     {
-      "options": 2,
-      "hasExpected": true,
-      "choice": "Add Quill notebook (red) to cart",
-      "top": 1
+      "top": 0.976
      }
     ],
     "picked": "Add Quill notebook (red) to cart",
     "correct": true,
-    "top": 0.9999905341051288,
+    "top": 0.9759173552317106,
     "status": "denied",
+    "head": "single",
     "operation": {
      "choice": "CLICK",
-     "top": 0.9929,
+     "top": 0.9759,
      "forced": "CLICK",
      "correct": true
     },
@@ -1237,27 +1007,12 @@
     "expectedValueKey": null,
     "decideMs": [
      {
-      "kind": "operation",
-      "ms": 572,
-      "wallMs": 572
-     },
-     {
       "kind": "target",
-      "ms": 297,
-      "wallMs": 297
-     },
-     {
-      "kind": "target",
-      "ms": 273,
-      "wallMs": 273
-     },
-     {
-      "kind": "target",
-      "ms": 76,
-      "wallMs": 76
+      "ms": 766,
+      "wallMs": 783
      }
     ],
-    "targetMs": 646,
+    "targetMs": 766,
     "errors": []
    },
    {
@@ -1272,7 +1027,7 @@
     "candidateRank": 1,
     "expectedShown": true,
     "nElements": 44,
-    "nCandidates": 44,
+    "nCandidates": 47,
     "space": {
      "operations": [
       "CLICK",
@@ -1287,34 +1042,23 @@
       "hidden": 0
      }
     },
-    "tournament": true,
+    "tournament": false,
     "rounds": [
      {
-      "options": 22,
+      "options": 47,
       "hasExpected": true,
       "choice": "Add Orbit clock (green) to cart",
-      "top": 0.559
-     },
-     {
-      "options": 22,
-      "hasExpected": false,
-      "choice": "Cart",
-      "top": 0.896
-     },
-     {
-      "options": 2,
-      "hasExpected": true,
-      "choice": "Add Orbit clock (green) to cart",
-      "top": 0.999
+      "top": 0.907
      }
     ],
     "picked": "Add Orbit clock (green) to cart",
     "correct": true,
-    "top": 0.9992361981195723,
+    "top": 0.9074312578336776,
     "status": "denied",
+    "head": "single",
     "operation": {
      "choice": "CLICK",
-     "top": 0.9991,
+     "top": 0.9074,
      "forced": "CLICK",
      "correct": true
     },
@@ -1322,27 +1066,12 @@
     "expectedValueKey": null,
     "decideMs": [
      {
-      "kind": "operation",
-      "ms": 569,
-      "wallMs": 569
-     },
-     {
       "kind": "target",
-      "ms": 299,
-      "wallMs": 299
-     },
-     {
-      "kind": "target",
-      "ms": 270,
-      "wallMs": 271
-     },
-     {
-      "kind": "target",
-      "ms": 74,
-      "wallMs": 75
+      "ms": 792,
+      "wallMs": 808
      }
     ],
-    "targetMs": 643,
+    "targetMs": 792,
     "errors": []
    },
    {
@@ -1357,7 +1086,7 @@
     "candidateRank": 1,
     "expectedShown": true,
     "nElements": 44,
-    "nCandidates": 44,
+    "nCandidates": 47,
     "space": {
      "operations": [
       "CLICK",
@@ -1372,34 +1101,23 @@
       "hidden": 0
      }
     },
-    "tournament": true,
+    "tournament": false,
     "rounds": [
      {
-      "options": 22,
+      "options": 47,
       "hasExpected": true,
       "choice": "Add Ember kettle (blue) to cart",
-      "top": 0.882
-     },
-     {
-      "options": 22,
-      "hasExpected": false,
-      "choice": "Add Lumen lamp (green) to cart",
-      "top": 0.201
-     },
-     {
-      "options": 2,
-      "hasExpected": true,
-      "choice": "Add Ember kettle (blue) to cart",
-      "top": 1
+      "top": 0.859
      }
     ],
     "picked": "Add Ember kettle (blue) to cart",
     "correct": true,
-    "top": 0.9999564307290196,
+    "top": 0.8591690846451652,
     "status": "denied",
+    "head": "single",
     "operation": {
      "choice": "CLICK",
-     "top": 0.9967,
+     "top": 0.8592,
      "forced": "CLICK",
      "correct": true
     },
@@ -1407,27 +1125,12 @@
     "expectedValueKey": null,
     "decideMs": [
      {
-      "kind": "operation",
-      "ms": 590,
-      "wallMs": 590
-     },
-     {
       "kind": "target",
-      "ms": 289,
-      "wallMs": 289
-     },
-     {
-      "kind": "target",
-      "ms": 261,
-      "wallMs": 262
-     },
-     {
-      "kind": "target",
-      "ms": 76,
-      "wallMs": 76
+      "ms": 742,
+      "wallMs": 759
      }
     ],
-    "targetMs": 626,
+    "targetMs": 742,
     "errors": []
    },
    {
@@ -1442,7 +1145,7 @@
     "candidateRank": 1,
     "expectedShown": true,
     "nElements": 44,
-    "nCandidates": 44,
+    "nCandidates": 47,
     "space": {
      "operations": [
       "CLICK",
@@ -1457,34 +1160,23 @@
       "hidden": 0
      }
     },
-    "tournament": true,
+    "tournament": false,
     "rounds": [
      {
-      "options": 22,
+      "options": 47,
       "hasExpected": true,
       "choice": "Add Lumen lamp (red) to cart",
-      "top": 0.745
-     },
-     {
-      "options": 22,
-      "hasExpected": false,
-      "choice": "Add Orbit clock (blue) to cart",
-      "top": 0.104
-     },
-     {
-      "options": 2,
-      "hasExpected": true,
-      "choice": "Add Lumen lamp (red) to cart",
-      "top": 1
+      "top": 0.906
      }
     ],
     "picked": "Add Lumen lamp (red) to cart",
     "correct": true,
-    "top": 0.9999856460980903,
+    "top": 0.9061739301146252,
     "status": "denied",
+    "head": "single",
     "operation": {
      "choice": "CLICK",
-     "top": 0.9988,
+     "top": 0.9062,
      "forced": "CLICK",
      "correct": true
     },
@@ -1492,27 +1184,12 @@
     "expectedValueKey": null,
     "decideMs": [
      {
-      "kind": "operation",
-      "ms": 583,
-      "wallMs": 583
-     },
-     {
       "kind": "target",
-      "ms": 285,
-      "wallMs": 285
-     },
-     {
-      "kind": "target",
-      "ms": 263,
-      "wallMs": 263
-     },
-     {
-      "kind": "target",
-      "ms": 76,
-      "wallMs": 76
+      "ms": 750,
+      "wallMs": 759
      }
     ],
-    "targetMs": 624,
+    "targetMs": 750,
     "errors": []
    },
    {
@@ -1527,7 +1204,7 @@
     "candidateRank": 1,
     "expectedShown": true,
     "nElements": 44,
-    "nCandidates": 44,
+    "nCandidates": 47,
     "space": {
      "operations": [
       "CLICK",
@@ -1542,34 +1219,23 @@
       "hidden": 0
      }
     },
-    "tournament": true,
+    "tournament": false,
     "rounds": [
      {
-      "options": 22,
+      "options": 47,
       "hasExpected": true,
       "choice": "Add Aurora mug (green) to cart",
-      "top": 0.423
-     },
-     {
-      "options": 22,
-      "hasExpected": false,
-      "choice": "Add Fjord bowl (blue) to cart",
-      "top": 0.108
-     },
-     {
-      "options": 2,
-      "hasExpected": true,
-      "choice": "Add Aurora mug (green) to cart",
-      "top": 1
+      "top": 0.352
      }
     ],
     "picked": "Add Aurora mug (green) to cart",
     "correct": true,
-    "top": 0.999982703780666,
-    "status": "denied",
+    "top": 0.3519401179458879,
+    "status": "uncertain",
+    "head": "single",
     "operation": {
      "choice": "CLICK",
-     "top": 0.9979,
+     "top": 0.3519,
      "forced": "CLICK",
      "correct": true
     },
@@ -1577,27 +1243,12 @@
     "expectedValueKey": null,
     "decideMs": [
      {
-      "kind": "operation",
-      "ms": 574,
-      "wallMs": 574
-     },
-     {
       "kind": "target",
-      "ms": 287,
-      "wallMs": 288
-     },
-     {
-      "kind": "target",
-      "ms": 263,
-      "wallMs": 263
-     },
-     {
-      "kind": "target",
-      "ms": 75,
-      "wallMs": 75
+      "ms": 763,
+      "wallMs": 771
      }
     ],
-    "targetMs": 625,
+    "targetMs": 763,
     "errors": []
    },
    {
@@ -1612,7 +1263,7 @@
     "candidateRank": 1,
     "expectedShown": true,
     "nElements": 44,
-    "nCandidates": 44,
+    "nCandidates": 47,
     "space": {
      "operations": [
       "CLICK",
@@ -1627,34 +1278,23 @@
       "hidden": 0
      }
     },
-    "tournament": true,
+    "tournament": false,
     "rounds": [
      {
-      "options": 22,
+      "options": 47,
       "hasExpected": true,
       "choice": "Add Nimbus tote (blue) to cart",
-      "top": 0.916
-     },
-     {
-      "options": 22,
-      "hasExpected": false,
-      "choice": "Add Sable apron (green) to cart",
-      "top": 0.093
-     },
-     {
-      "options": 2,
-      "hasExpected": true,
-      "choice": "Add Nimbus tote (blue) to cart",
-      "top": 1
+      "top": 0.784
      }
     ],
     "picked": "Add Nimbus tote (blue) to cart",
     "correct": true,
-    "top": 0.9999888608127331,
+    "top": 0.784352566373044,
     "status": "denied",
+    "head": "single",
     "operation": {
      "choice": "CLICK",
-     "top": 0.9911,
+     "top": 0.7844,
      "forced": "CLICK",
      "correct": true
     },
@@ -1662,27 +1302,12 @@
     "expectedValueKey": null,
     "decideMs": [
      {
-      "kind": "operation",
-      "ms": 584,
-      "wallMs": 584
-     },
-     {
       "kind": "target",
-      "ms": 288,
-      "wallMs": 288
-     },
-     {
-      "kind": "target",
-      "ms": 261,
-      "wallMs": 262
-     },
-     {
-      "kind": "target",
-      "ms": 76,
-      "wallMs": 76
+      "ms": 737,
+      "wallMs": 754
      }
     ],
-    "targetMs": 625,
+    "targetMs": 737,
     "errors": []
    },
    {
@@ -1697,7 +1322,7 @@
     "candidateRank": 1,
     "expectedShown": true,
     "nElements": 44,
-    "nCandidates": 44,
+    "nCandidates": 47,
     "space": {
      "operations": [
       "CLICK",
@@ -1712,34 +1337,23 @@
       "hidden": 0
      }
     },
-    "tournament": true,
+    "tournament": false,
     "rounds": [
      {
-      "options": 22,
+      "options": 47,
       "hasExpected": true,
       "choice": "Cart",
-      "top": 0.999
-     },
-     {
-      "options": 22,
-      "hasExpected": false,
-      "choice": "Add Ember kettle (blue) to cart",
-      "top": 0.108
-     },
-     {
-      "options": 2,
-      "hasExpected": true,
-      "choice": "Cart",
-      "top": 1
+      "top": 0.963
      }
     ],
     "picked": "Cart",
     "correct": true,
-    "top": 0.9999706899680517,
+    "top": 0.9626732160923005,
     "status": "denied",
+    "head": "single",
     "operation": {
      "choice": "CLICK",
-     "top": 0.999,
+     "top": 0.9627,
      "forced": "CLICK",
      "correct": true
     },
@@ -1747,27 +1361,12 @@
     "expectedValueKey": null,
     "decideMs": [
      {
-      "kind": "operation",
-      "ms": 585,
-      "wallMs": 585
-     },
-     {
       "kind": "target",
-      "ms": 289,
-      "wallMs": 290
-     },
-     {
-      "kind": "target",
-      "ms": 272,
-      "wallMs": 272
-     },
-     {
-      "kind": "target",
-      "ms": 70,
-      "wallMs": 71
+      "ms": 775,
+      "wallMs": 791
      }
     ],
-    "targetMs": 631,
+    "targetMs": 775,
     "errors": []
    },
    {
@@ -1782,7 +1381,7 @@
     "candidateRank": 1,
     "expectedShown": true,
     "nElements": 44,
-    "nCandidates": 44,
+    "nCandidates": 47,
     "space": {
      "operations": [
       "CLICK",
@@ -1797,22 +1396,10 @@
       "hidden": 0
      }
     },
-    "tournament": true,
+    "tournament": false,
     "rounds": [
      {
-      "options": 22,
-      "hasExpected": true,
-      "choice": "Checkout",
-      "top": 1
-     },
-     {
-      "options": 22,
-      "hasExpected": false,
-      "choice": "Add Quill notebook (green) to cart",
-      "top": 0.053
-     },
-     {
-      "options": 2,
+      "options": 47,
       "hasExpected": true,
       "choice": "Checkout",
       "top": 1
@@ -1820,11 +1407,12 @@
     ],
     "picked": "Checkout",
     "correct": true,
-    "top": 0.99999857914877,
+    "top": 0.9999813362600237,
     "status": "denied",
+    "head": "single",
     "operation": {
      "choice": "CLICK",
-     "top": 0.9991,
+     "top": 1,
      "forced": "CLICK",
      "correct": true
     },
@@ -1832,27 +1420,12 @@
     "expectedValueKey": null,
     "decideMs": [
      {
-      "kind": "operation",
-      "ms": 574,
-      "wallMs": 574
-     },
-     {
       "kind": "target",
-      "ms": 261,
-      "wallMs": 261
-     },
-     {
-      "kind": "target",
-      "ms": 300,
-      "wallMs": 301
-     },
-     {
-      "kind": "target",
-      "ms": 71,
-      "wallMs": 72
+      "ms": 791,
+      "wallMs": 808
      }
     ],
-    "targetMs": 632,
+    "targetMs": 791,
     "errors": []
    },
    {
@@ -1867,7 +1440,7 @@
     "candidateRank": 1,
     "expectedShown": true,
     "nElements": 44,
-    "nCandidates": 44,
+    "nCandidates": 47,
     "space": {
      "operations": [
       "CLICK",
@@ -1882,22 +1455,10 @@
       "hidden": 0
      }
     },
-    "tournament": true,
+    "tournament": false,
     "rounds": [
      {
-      "options": 22,
-      "hasExpected": true,
-      "choice": "Sale",
-      "top": 1
-     },
-     {
-      "options": 22,
-      "hasExpected": false,
-      "choice": "Add Sable apron (blue) to cart",
-      "top": 0.048
-     },
-     {
-      "options": 2,
+      "options": 47,
       "hasExpected": true,
       "choice": "Sale",
       "top": 1
@@ -1905,11 +1466,12 @@
     ],
     "picked": "Sale",
     "correct": true,
-    "top": 0.9999988041630644,
+    "top": 0.9999819490990558,
     "status": "denied",
+    "head": "single",
     "operation": {
      "choice": "CLICK",
-     "top": 0.9984,
+     "top": 1,
      "forced": "CLICK",
      "correct": true
     },
@@ -1917,27 +1479,12 @@
     "expectedValueKey": null,
     "decideMs": [
      {
-      "kind": "operation",
-      "ms": 553,
-      "wallMs": 554
-     },
-     {
       "kind": "target",
-      "ms": 265,
-      "wallMs": 266
-     },
-     {
-      "kind": "target",
-      "ms": 301,
-      "wallMs": 302
-     },
-     {
-      "kind": "target",
-      "ms": 71,
-      "wallMs": 71
+      "ms": 792,
+      "wallMs": 817
      }
     ],
-    "targetMs": 637,
+    "targetMs": 792,
     "errors": []
    },
    {
@@ -1952,7 +1499,7 @@
     "candidateRank": 1,
     "expectedShown": true,
     "nElements": 44,
-    "nCandidates": 44,
+    "nCandidates": 47,
     "space": {
      "operations": [
       "CLICK",
@@ -1967,22 +1514,10 @@
       "hidden": 0
      }
     },
-    "tournament": true,
+    "tournament": false,
     "rounds": [
      {
-      "options": 22,
-      "hasExpected": true,
-      "choice": "New in",
-      "top": 1
-     },
-     {
-      "options": 22,
-      "hasExpected": false,
-      "choice": "Add Ember kettle (green) to cart",
-      "top": 0.055
-     },
-     {
-      "options": 2,
+      "options": 47,
       "hasExpected": true,
       "choice": "New in",
       "top": 1
@@ -1990,11 +1525,12 @@
     ],
     "picked": "New in",
     "correct": true,
-    "top": 0.9999848457618948,
+    "top": 0.9999252919309075,
     "status": "denied",
+    "head": "single",
     "operation": {
      "choice": "CLICK",
-     "top": 0.9988,
+     "top": 0.9999,
      "forced": "CLICK",
      "correct": true
     },
@@ -2002,27 +1538,12 @@
     "expectedValueKey": null,
     "decideMs": [
      {
-      "kind": "operation",
-      "ms": 558,
-      "wallMs": 558
-     },
-     {
       "kind": "target",
-      "ms": 263,
-      "wallMs": 264
-     },
-     {
-      "kind": "target",
-      "ms": 304,
-      "wallMs": 304
-     },
-     {
-      "kind": "target",
-      "ms": 72,
-      "wallMs": 72
+      "ms": 821,
+      "wallMs": 846
      }
     ],
-    "targetMs": 639,
+    "targetMs": 821,
     "errors": []
    },
    {
@@ -2037,7 +1558,7 @@
     "candidateRank": 1,
     "expectedShown": true,
     "nElements": 44,
-    "nCandidates": 44,
+    "nCandidates": 47,
     "space": {
      "operations": [
       "CLICK",
@@ -2052,22 +1573,10 @@
       "hidden": 0
      }
     },
-    "tournament": true,
+    "tournament": false,
     "rounds": [
      {
-      "options": 22,
-      "hasExpected": true,
-      "choice": "Home",
-      "top": 1
-     },
-     {
-      "options": 22,
-      "hasExpected": false,
-      "choice": "Add Meadow napkins (green) to cart",
-      "top": 0.047
-     },
-     {
-      "options": 2,
+      "options": 47,
       "hasExpected": true,
       "choice": "Home",
       "top": 1
@@ -2075,11 +1584,12 @@
     ],
     "picked": "Home",
     "correct": true,
-    "top": 0.9999977014880846,
+    "top": 0.9999549000514818,
     "status": "denied",
+    "head": "single",
     "operation": {
      "choice": "CLICK",
-     "top": 0.9991,
+     "top": 1,
      "forced": "CLICK",
      "correct": true
     },
@@ -2087,27 +1597,12 @@
     "expectedValueKey": null,
     "decideMs": [
      {
-      "kind": "operation",
-      "ms": 613,
-      "wallMs": 613
-     },
-     {
       "kind": "target",
-      "ms": 266,
-      "wallMs": 266
-     },
-     {
-      "kind": "target",
-      "ms": 309,
-      "wallMs": 313
-     },
-     {
-      "kind": "target",
-      "ms": 71,
-      "wallMs": 71
+      "ms": 817,
+      "wallMs": 825
      }
     ],
-    "targetMs": 646,
+    "targetMs": 817,
     "errors": []
    },
    {
@@ -2122,7 +1617,7 @@
     "candidateRank": 1,
     "expectedShown": true,
     "nElements": 44,
-    "nCandidates": 1,
+    "nCandidates": 49,
     "space": {
      "operations": [
       "CLICK",
@@ -2142,19 +1637,20 @@
     "tournament": false,
     "rounds": [
      {
-      "options": 1,
+      "options": 49,
       "hasExpected": true,
       "choice": "Search products",
-      "top": 1
+      "top": 0.998
      }
     ],
     "picked": "Search products",
     "correct": true,
-    "top": 1,
+    "top": 0.9982915505559053,
     "status": "denied",
+    "head": "single",
     "operation": {
      "choice": "TYPE_TEXT",
-     "top": 0.6578,
+     "top": 0.9983,
      "forced": "TYPE_TEXT",
      "correct": true
     },
@@ -2166,22 +1662,17 @@
     "expectedValueKey": "query",
     "decideMs": [
      {
-      "kind": "operation",
-      "ms": 585,
-      "wallMs": 585
-     },
-     {
       "kind": "target",
-      "ms": 64,
-      "wallMs": 65
+      "ms": 818,
+      "wallMs": 833
      },
      {
       "kind": "value",
-      "ms": 61,
-      "wallMs": 62
+      "ms": 225,
+      "wallMs": 225
      }
     ],
-    "targetMs": 64,
+    "targetMs": 818,
     "errors": []
    },
    {
@@ -2196,7 +1687,7 @@
     "candidateRank": 1,
     "expectedShown": true,
     "nElements": 44,
-    "nCandidates": 1,
+    "nCandidates": 49,
     "space": {
      "operations": [
       "CLICK",
@@ -2216,21 +1707,22 @@
     "tournament": false,
     "rounds": [
      {
-      "options": 1,
+      "options": 49,
       "hasExpected": true,
       "choice": "Sort by",
-      "top": 1
+      "top": 0.992
      }
     ],
     "picked": "Sort by",
     "correct": true,
-    "top": 1,
+    "top": 0.9923165163567951,
     "status": "denied",
+    "head": "single",
     "operation": {
-     "choice": "TYPE_TEXT",
-     "top": 0.6885,
+     "choice": "SELECT_OPTION",
+     "top": 0.9923,
      "forced": "SELECT_OPTION",
-     "correct": false
+     "correct": true
     },
     "value": {
      "choice": "sort",
@@ -2240,22 +1732,17 @@
     "expectedValueKey": "sort",
     "decideMs": [
      {
-      "kind": "operation",
-      "ms": 593,
-      "wallMs": 593
-     },
-     {
       "kind": "target",
-      "ms": 69,
-      "wallMs": 69
+      "ms": 942,
+      "wallMs": 950
      },
      {
       "kind": "value",
-      "ms": 67,
-      "wallMs": 67
+      "ms": 258,
+      "wallMs": 267
      }
     ],
-    "targetMs": 69,
+    "targetMs": 942,
     "errors": []
    },
    {
@@ -2270,7 +1757,7 @@
     "candidateRank": 1,
     "expectedShown": true,
     "nElements": 12,
-    "nCandidates": 4,
+    "nCandidates": 20,
     "space": {
      "operations": [
       "CLICK",
@@ -2290,46 +1777,42 @@
     "tournament": false,
     "rounds": [
      {
-      "options": 4,
+      "options": 20,
       "hasExpected": true,
       "choice": "Full name",
-      "top": 0.996
+      "top": 0.998
      }
     ],
     "picked": "Full name",
     "correct": true,
-    "top": 0.995612664949204,
+    "top": 0.9984700049129439,
     "status": "denied",
+    "head": "single",
     "operation": {
      "choice": "TYPE_TEXT",
-     "top": 0.8763,
+     "top": 0.9985,
      "forced": "TYPE_TEXT",
      "correct": true
     },
     "value": {
      "choice": "fullname",
-     "top": 0.9941,
+     "top": 0.9999,
      "correct": true
     },
     "expectedValueKey": "fullname",
     "decideMs": [
      {
-      "kind": "operation",
-      "ms": 213,
-      "wallMs": 213
-     },
-     {
       "kind": "target",
-      "ms": 93,
-      "wallMs": 94
+      "ms": 400,
+      "wallMs": 418
      },
      {
       "kind": "value",
-      "ms": 81,
-      "wallMs": 81
+      "ms": 259,
+      "wallMs": 275
      }
     ],
-    "targetMs": 93,
+    "targetMs": 400,
     "errors": []
    },
    {
@@ -2344,7 +1827,7 @@
     "candidateRank": 1,
     "expectedShown": true,
     "nElements": 12,
-    "nCandidates": 4,
+    "nCandidates": 20,
     "space": {
      "operations": [
       "CLICK",
@@ -2364,46 +1847,42 @@
     "tournament": false,
     "rounds": [
      {
-      "options": 4,
+      "options": 20,
       "hasExpected": true,
       "choice": "Email address",
-      "top": 0.997
+      "top": 0.994
      }
     ],
     "picked": "Email address",
     "correct": true,
-    "top": 0.9974835562452886,
+    "top": 0.9936435683712447,
     "status": "denied",
+    "head": "single",
     "operation": {
      "choice": "TYPE_TEXT",
-     "top": 0.8545,
+     "top": 0.9936,
      "forced": "TYPE_TEXT",
      "correct": true
     },
     "value": {
      "choice": "email",
-     "top": 0.9961,
+     "top": 0.9974,
      "correct": true
     },
     "expectedValueKey": "email",
     "decideMs": [
      {
-      "kind": "operation",
-      "ms": 220,
-      "wallMs": 220
-     },
-     {
       "kind": "target",
-      "ms": 98,
-      "wallMs": 98
+      "ms": 475,
+      "wallMs": 481
      },
      {
       "kind": "value",
-      "ms": 80,
-      "wallMs": 80
+      "ms": 267,
+      "wallMs": 275
      }
     ],
-    "targetMs": 98,
+    "targetMs": 475,
     "errors": []
    },
    {
@@ -2418,7 +1897,7 @@
     "candidateRank": 1,
     "expectedShown": true,
     "nElements": 12,
-    "nCandidates": 1,
+    "nCandidates": 20,
     "space": {
      "operations": [
       "CLICK",
@@ -2438,46 +1917,42 @@
     "tournament": false,
     "rounds": [
      {
-      "options": 1,
+      "options": 20,
       "hasExpected": true,
       "choice": "Topic",
-      "top": 1
+      "top": 0.955
      }
     ],
     "picked": "Topic",
     "correct": true,
-    "top": 1,
-    "status": "uncertain",
+    "top": 0.9549145512120605,
+    "status": "denied",
+    "head": "single",
     "operation": {
-     "choice": "TYPE_TEXT",
-     "top": 0.8806,
+     "choice": "SELECT_OPTION",
+     "top": 0.9549,
      "forced": "SELECT_OPTION",
-     "correct": false
+     "correct": true
     },
     "value": {
      "choice": "fullname",
-     "top": 0.5778,
+     "top": 0.7175,
      "correct": false
     },
     "expectedValueKey": "topic",
     "decideMs": [
      {
-      "kind": "operation",
-      "ms": 196,
-      "wallMs": 197
-     },
-     {
       "kind": "target",
-      "ms": 77,
-      "wallMs": 78
+      "ms": 417,
+      "wallMs": 431
      },
      {
       "kind": "value",
-      "ms": 80,
-      "wallMs": 80
+      "ms": 308,
+      "wallMs": 325
      }
     ],
-    "targetMs": 77,
+    "targetMs": 417,
     "errors": []
    },
    {
@@ -2492,7 +1967,7 @@
     "candidateRank": 4,
     "expectedShown": true,
     "nElements": 12,
-    "nCandidates": 4,
+    "nCandidates": 20,
     "space": {
      "operations": [
       "CLICK",
@@ -2512,46 +1987,33 @@
     "tournament": false,
     "rounds": [
      {
-      "options": 4,
+      "options": 20,
       "hasExpected": true,
-      "choice": "How can we help?",
-      "top": 0.867
+      "choice": "Send message",
+      "top": 0.872
      }
     ],
-    "picked": "How can we help?",
-    "correct": true,
-    "top": 0.8670328339089606,
-    "status": "uncertain",
+    "picked": "Send message",
+    "correct": false,
+    "top": 0.8723622261543957,
+    "status": "denied",
+    "head": "single",
     "operation": {
-     "choice": "TYPE_TEXT",
-     "top": 0.8541,
+     "choice": "CLICK",
+     "top": 0.8724,
      "forced": "TYPE_TEXT",
-     "correct": true
-    },
-    "value": {
-     "choice": "email",
-     "top": 0.4714,
      "correct": false
     },
+    "value": null,
     "expectedValueKey": "message",
     "decideMs": [
      {
-      "kind": "operation",
-      "ms": 219,
-      "wallMs": 219
-     },
-     {
       "kind": "target",
-      "ms": 98,
-      "wallMs": 99
-     },
-     {
-      "kind": "value",
-      "ms": 82,
-      "wallMs": 82
+      "ms": 375,
+      "wallMs": 383
      }
     ],
-    "targetMs": 98,
+    "targetMs": 375,
     "errors": []
    },
    {
@@ -2566,7 +2028,7 @@
     "candidateRank": 1,
     "expectedShown": true,
     "nElements": 12,
-    "nCandidates": 4,
+    "nCandidates": 20,
     "space": {
      "operations": [
       "CLICK",
@@ -2586,46 +2048,42 @@
     "tournament": false,
     "rounds": [
      {
-      "options": 4,
+      "options": 20,
       "hasExpected": true,
       "choice": "Phone number",
-      "top": 0.997
+      "top": 0.999
      }
     ],
     "picked": "Phone number",
     "correct": true,
-    "top": 0.9974929124305414,
+    "top": 0.9992078854889684,
     "status": "denied",
+    "head": "single",
     "operation": {
      "choice": "TYPE_TEXT",
-     "top": 0.7979,
+     "top": 0.9992,
      "forced": "TYPE_TEXT",
      "correct": true
     },
     "value": {
      "choice": "phone",
-     "top": 0.9972,
+     "top": 0.9999,
      "correct": true
     },
     "expectedValueKey": "phone",
     "decideMs": [
      {
-      "kind": "operation",
-      "ms": 198,
-      "wallMs": 198
-     },
-     {
       "kind": "target",
-      "ms": 99,
-      "wallMs": 99
+      "ms": 392,
+      "wallMs": 409
      },
      {
       "kind": "value",
-      "ms": 86,
-      "wallMs": 86
+      "ms": 250,
+      "wallMs": 258
      }
     ],
-    "targetMs": 99,
+    "targetMs": 392,
     "errors": []
    },
    {
@@ -2640,7 +2098,7 @@
     "candidateRank": 1,
     "expectedShown": true,
     "nElements": 12,
-    "nCandidates": 1,
+    "nCandidates": 20,
     "space": {
      "operations": [
       "CLICK",
@@ -2660,21 +2118,22 @@
     "tournament": false,
     "rounds": [
      {
-      "options": 1,
+      "options": 20,
       "hasExpected": true,
       "choice": "Topic",
-      "top": 1
+      "top": 0.992
      }
     ],
     "picked": "Topic",
     "correct": true,
-    "top": 1,
+    "top": 0.9915080964286065,
     "status": "denied",
+    "head": "single",
     "operation": {
-     "choice": "TYPE_TEXT",
-     "top": 0.5733,
+     "choice": "SELECT_OPTION",
+     "top": 0.9915,
      "forced": "SELECT_OPTION",
-     "correct": false
+     "correct": true
     },
     "value": {
      "choice": "topic",
@@ -2684,22 +2143,17 @@
     "expectedValueKey": "topic",
     "decideMs": [
      {
-      "kind": "operation",
-      "ms": 214,
-      "wallMs": 215
-     },
-     {
       "kind": "target",
-      "ms": 67,
-      "wallMs": 67
+      "ms": 425,
+      "wallMs": 442
      },
      {
       "kind": "value",
-      "ms": 61,
-      "wallMs": 62
+      "ms": 250,
+      "wallMs": 267
      }
     ],
-    "targetMs": 67,
+    "targetMs": 425,
     "errors": []
    },
    {
@@ -2714,7 +2168,7 @@
     "candidateRank": 1,
     "expectedShown": true,
     "nElements": 12,
-    "nCandidates": 4,
+    "nCandidates": 20,
     "space": {
      "operations": [
       "CLICK",
@@ -2734,19 +2188,20 @@
     "tournament": false,
     "rounds": [
      {
-      "options": 4,
+      "options": 20,
       "hasExpected": true,
       "choice": "Email address",
-      "top": 0.999
+      "top": 0.991
      }
     ],
     "picked": "Email address",
     "correct": true,
-    "top": 0.9994856207988114,
+    "top": 0.9911499161110362,
     "status": "denied",
+    "head": "single",
     "operation": {
      "choice": "TYPE_TEXT",
-     "top": 0.5562,
+     "top": 0.9911,
      "forced": "TYPE_TEXT",
      "correct": true
     },
@@ -2758,22 +2213,17 @@
     "expectedValueKey": "email",
     "decideMs": [
      {
-      "kind": "operation",
-      "ms": 197,
-      "wallMs": 197
-     },
-     {
       "kind": "target",
-      "ms": 96,
-      "wallMs": 96
+      "ms": 375,
+      "wallMs": 392
      },
      {
       "kind": "value",
-      "ms": 65,
-      "wallMs": 65
+      "ms": 225,
+      "wallMs": 242
      }
     ],
-    "targetMs": 96,
+    "targetMs": 375,
     "errors": []
    },
    {
@@ -2788,7 +2238,7 @@
     "candidateRank": 6,
     "expectedShown": true,
     "nElements": 12,
-    "nCandidates": 12,
+    "nCandidates": 20,
     "space": {
      "operations": [
       "CLICK",
@@ -2808,37 +2258,33 @@
     "tournament": false,
     "rounds": [
      {
-      "options": 12,
+      "options": 20,
       "hasExpected": true,
       "choice": "I agree to be contacted about my request",
-      "top": 0.999
+      "top": 0.681
      }
     ],
     "picked": "I agree to be contacted about my request",
     "correct": true,
-    "top": 0.9989309798127011,
+    "top": 0.6811082541468463,
     "status": "denied",
+    "head": "single",
     "operation": {
-     "choice": "TYPE_TEXT",
-     "top": 0.698,
+     "choice": "CLICK",
+     "top": 0.6811,
      "forced": "CLICK",
-     "correct": false
+     "correct": true
     },
     "value": null,
     "expectedValueKey": null,
     "decideMs": [
      {
-      "kind": "operation",
-      "ms": 219,
-      "wallMs": 220
-     },
-     {
       "kind": "target",
-      "ms": 159,
-      "wallMs": 160
+      "ms": 375,
+      "wallMs": 400
      }
     ],
-    "targetMs": 159,
+    "targetMs": 375,
     "errors": []
    },
    {
@@ -2853,7 +2299,7 @@
     "candidateRank": 1,
     "expectedShown": true,
     "nElements": 12,
-    "nCandidates": 12,
+    "nCandidates": 20,
     "space": {
      "operations": [
       "CLICK",
@@ -2873,37 +2319,33 @@
     "tournament": false,
     "rounds": [
      {
-      "options": 12,
+      "options": 20,
       "hasExpected": true,
       "choice": "Send me the monthly newsletter",
-      "top": 1
+      "top": 0.852
      }
     ],
     "picked": "Send me the monthly newsletter",
     "correct": true,
-    "top": 0.9996640604864828,
+    "top": 0.8518323692966592,
     "status": "denied",
+    "head": "single",
     "operation": {
-     "choice": "TYPE_TEXT",
-     "top": 0.7883,
+     "choice": "CLICK",
+     "top": 0.8518,
      "forced": "CLICK",
-     "correct": false
+     "correct": true
     },
     "value": null,
     "expectedValueKey": null,
     "decideMs": [
      {
-      "kind": "operation",
-      "ms": 210,
-      "wallMs": 210
-     },
-     {
       "kind": "target",
-      "ms": 160,
-      "wallMs": 174
+      "ms": 384,
+      "wallMs": 408
      }
     ],
-    "targetMs": 160,
+    "targetMs": 384,
     "errors": []
    },
    {
@@ -2918,7 +2360,7 @@
     "candidateRank": 7,
     "expectedShown": true,
     "nElements": 12,
-    "nCandidates": 12,
+    "nCandidates": 20,
     "space": {
      "operations": [
       "CLICK",
@@ -2938,7 +2380,7 @@
     "tournament": false,
     "rounds": [
      {
-      "options": 12,
+      "options": 20,
       "hasExpected": true,
       "choice": "Send message",
       "top": 1
@@ -2946,29 +2388,25 @@
     ],
     "picked": "Send message",
     "correct": true,
-    "top": 0.9998136472085422,
+    "top": 0.9997875372375327,
     "status": "denied",
+    "head": "single",
     "operation": {
-     "choice": "TYPE_TEXT",
-     "top": 0.72,
+     "choice": "CLICK",
+     "top": 0.9998,
      "forced": "CLICK",
-     "correct": false
+     "correct": true
     },
     "value": null,
     "expectedValueKey": null,
     "decideMs": [
      {
-      "kind": "operation",
-      "ms": 218,
-      "wallMs": 219
-     },
-     {
       "kind": "target",
-      "ms": 156,
-      "wallMs": 156
+      "ms": 359,
+      "wallMs": 375
      }
     ],
-    "targetMs": 156,
+    "targetMs": 359,
     "errors": []
    },
    {
@@ -2983,7 +2421,7 @@
     "candidateRank": 6,
     "expectedShown": true,
     "nElements": 12,
-    "nCandidates": 12,
+    "nCandidates": 20,
     "space": {
      "operations": [
       "CLICK",
@@ -3003,37 +2441,33 @@
     "tournament": false,
     "rounds": [
      {
-      "options": 12,
+      "options": 20,
       "hasExpected": true,
       "choice": "Clear form",
-      "top": 1
+      "top": 0.991
      }
     ],
     "picked": "Clear form",
     "correct": true,
-    "top": 0.9999612367315137,
+    "top": 0.9908390563369043,
     "status": "denied",
+    "head": "single",
     "operation": {
-     "choice": "TYPE_TEXT",
-     "top": 0.8139,
+     "choice": "CLICK",
+     "top": 0.9908,
      "forced": "CLICK",
-     "correct": false
+     "correct": true
     },
     "value": null,
     "expectedValueKey": null,
     "decideMs": [
      {
-      "kind": "operation",
-      "ms": 216,
-      "wallMs": 216
-     },
-     {
       "kind": "target",
-      "ms": 156,
-      "wallMs": 157
+      "ms": 400,
+      "wallMs": 409
      }
     ],
-    "targetMs": 156,
+    "targetMs": 400,
     "errors": []
    },
    {
@@ -3048,7 +2482,7 @@
     "candidateRank": 1,
     "expectedShown": true,
     "nElements": 12,
-    "nCandidates": 12,
+    "nCandidates": 15,
     "space": {
      "operations": [
       "CLICK",
@@ -3066,7 +2500,7 @@
     "tournament": false,
     "rounds": [
      {
-      "options": 12,
+      "options": 15,
       "hasExpected": true,
       "choice": "I agree to be contacted about my request",
       "top": 1
@@ -3074,11 +2508,12 @@
     ],
     "picked": "I agree to be contacted about my request",
     "correct": true,
-    "top": 0.9998736489245094,
+    "top": 0.9999313778873485,
     "status": "denied",
+    "head": "single",
     "operation": {
      "choice": "CLICK",
-     "top": 0.9988,
+     "top": 0.9999,
      "forced": "CLICK",
      "correct": true
     },
@@ -3086,17 +2521,12 @@
     "expectedValueKey": null,
     "decideMs": [
      {
-      "kind": "operation",
-      "ms": 180,
-      "wallMs": 181
-     },
-     {
       "kind": "target",
-      "ms": 150,
-      "wallMs": 150
+      "ms": 384,
+      "wallMs": 408
      }
     ],
-    "targetMs": 150,
+    "targetMs": 384,
     "errors": []
    },
    {
@@ -3111,7 +2541,7 @@
     "candidateRank": 11,
     "expectedShown": true,
     "nElements": 12,
-    "nCandidates": 12,
+    "nCandidates": 15,
     "space": {
      "operations": [
       "CLICK",
@@ -3129,19 +2559,20 @@
     "tournament": false,
     "rounds": [
      {
-      "options": 12,
+      "options": 15,
       "hasExpected": true,
-      "choice": "I agree to be contacted about my request",
-      "top": 0.795
+      "choice": "Send message",
+      "top": 0.914
      }
     ],
-    "picked": "I agree to be contacted about my request",
-    "correct": false,
-    "top": 0.7953996373536224,
+    "picked": "Send message",
+    "correct": true,
+    "top": 0.9138120289601285,
     "status": "denied",
+    "head": "single",
     "operation": {
      "choice": "CLICK",
-     "top": 0.9983,
+     "top": 0.9138,
      "forced": "CLICK",
      "correct": true
     },
@@ -3149,17 +2580,12 @@
     "expectedValueKey": null,
     "decideMs": [
      {
-      "kind": "operation",
-      "ms": 198,
-      "wallMs": 199
-     },
-     {
       "kind": "target",
-      "ms": 151,
-      "wallMs": 151
+      "ms": 375,
+      "wallMs": 375
      }
     ],
-    "targetMs": 151,
+    "targetMs": 375,
     "errors": []
    },
    {
@@ -3174,7 +2600,7 @@
     "candidateRank": 1,
     "expectedShown": true,
     "nElements": 12,
-    "nCandidates": 12,
+    "nCandidates": 15,
     "space": {
      "operations": [
       "CLICK",
@@ -3192,7 +2618,7 @@
     "tournament": false,
     "rounds": [
      {
-      "options": 12,
+      "options": 15,
       "hasExpected": true,
       "choice": "FAQ",
       "top": 1
@@ -3200,11 +2626,12 @@
     ],
     "picked": "FAQ",
     "correct": true,
-    "top": 0.9999344935200801,
+    "top": 0.999992942393328,
     "status": "denied",
+    "head": "single",
     "operation": {
      "choice": "CLICK",
-     "top": 0.999,
+     "top": 1,
      "forced": "CLICK",
      "correct": true
     },
@@ -3212,17 +2639,12 @@
     "expectedValueKey": null,
     "decideMs": [
      {
-      "kind": "operation",
-      "ms": 176,
-      "wallMs": 176
-     },
-     {
       "kind": "target",
-      "ms": 150,
-      "wallMs": 150
+      "ms": 309,
+      "wallMs": 325
      }
     ],
-    "targetMs": 150,
+    "targetMs": 309,
     "errors": []
    },
    {
@@ -3237,7 +2659,7 @@
     "candidateRank": 1,
     "expectedShown": true,
     "nElements": 12,
-    "nCandidates": 12,
+    "nCandidates": 15,
     "space": {
      "operations": [
       "CLICK",
@@ -3255,19 +2677,20 @@
     "tournament": false,
     "rounds": [
      {
-      "options": 12,
+      "options": 15,
       "hasExpected": true,
       "choice": "Service status",
-      "top": 0.993
+      "top": 0.999
      }
     ],
     "picked": "Service status",
     "correct": true,
-    "top": 0.9932628741446791,
+    "top": 0.9994326786563206,
     "status": "denied",
+    "head": "single",
     "operation": {
      "choice": "CLICK",
-     "top": 0.9979,
+     "top": 0.9994,
      "forced": "CLICK",
      "correct": true
     },
@@ -3275,17 +2698,12 @@
     "expectedValueKey": null,
     "decideMs": [
      {
-      "kind": "operation",
-      "ms": 200,
-      "wallMs": 201
-     },
-     {
       "kind": "target",
-      "ms": 155,
-      "wallMs": 155
+      "ms": 342,
+      "wallMs": 358
      }
     ],
-    "targetMs": 155,
+    "targetMs": 342,
     "errors": []
    },
    {
@@ -3300,7 +2718,7 @@
     "candidateRank": 2,
     "expectedShown": true,
     "nElements": 12,
-    "nCandidates": 12,
+    "nCandidates": 15,
     "space": {
      "operations": [
       "CLICK",
@@ -3318,7 +2736,7 @@
     "tournament": false,
     "rounds": [
      {
-      "options": 12,
+      "options": 15,
       "hasExpected": true,
       "choice": "Home",
       "top": 1
@@ -3326,11 +2744,12 @@
     ],
     "picked": "Home",
     "correct": true,
-    "top": 0.9999825754576472,
+    "top": 0.9999922866372604,
     "status": "denied",
+    "head": "single",
     "operation": {
      "choice": "CLICK",
-     "top": 0.9992,
+     "top": 1,
      "forced": "CLICK",
      "correct": true
     },
@@ -3338,17 +2757,12 @@
     "expectedValueKey": null,
     "decideMs": [
      {
-      "kind": "operation",
-      "ms": 198,
-      "wallMs": 198
-     },
-     {
       "kind": "target",
-      "ms": 154,
-      "wallMs": 154
+      "ms": 309,
+      "wallMs": 317
      }
     ],
-    "targetMs": 154,
+    "targetMs": 309,
     "errors": []
    },
    {
@@ -3363,7 +2777,7 @@
     "candidateRank": 1,
     "expectedShown": true,
     "nElements": 3,
-    "nCandidates": 3,
+    "nCandidates": 6,
     "space": {
      "operations": [
       "CLICK",
@@ -3381,7 +2795,7 @@
     "tournament": false,
     "rounds": [
      {
-      "options": 3,
+      "options": 6,
       "hasExpected": true,
       "choice": "Accept all",
       "top": 1
@@ -3389,11 +2803,12 @@
     ],
     "picked": "Accept all",
     "correct": true,
-    "top": 0.9998704967086146,
+    "top": 0.9998911215764285,
     "status": "denied",
+    "head": "single",
     "operation": {
      "choice": "CLICK",
-     "top": 0.9991,
+     "top": 0.9999,
      "forced": "CLICK",
      "correct": true
     },
@@ -3401,17 +2816,12 @@
     "expectedValueKey": null,
     "decideMs": [
      {
-      "kind": "operation",
-      "ms": 131,
-      "wallMs": 131
-     },
-     {
       "kind": "target",
-      "ms": 84,
-      "wallMs": 84
+      "ms": 259,
+      "wallMs": 275
      }
     ],
-    "targetMs": 84,
+    "targetMs": 259,
     "errors": []
    },
    {
@@ -3426,7 +2836,7 @@
     "candidateRank": 1,
     "expectedShown": true,
     "nElements": 3,
-    "nCandidates": 3,
+    "nCandidates": 6,
     "space": {
      "operations": [
       "CLICK",
@@ -3444,7 +2854,7 @@
     "tournament": false,
     "rounds": [
      {
-      "options": 3,
+      "options": 6,
       "hasExpected": true,
       "choice": "Reject non-essential",
       "top": 1
@@ -3452,11 +2862,12 @@
     ],
     "picked": "Reject non-essential",
     "correct": true,
-    "top": 0.9999424168791426,
+    "top": 0.999870806698793,
     "status": "denied",
+    "head": "single",
     "operation": {
      "choice": "CLICK",
-     "top": 0.9988,
+     "top": 0.9999,
      "forced": "CLICK",
      "correct": true
     },
@@ -3464,17 +2875,12 @@
     "expectedValueKey": null,
     "decideMs": [
      {
-      "kind": "operation",
-      "ms": 118,
-      "wallMs": 118
-     },
-     {
       "kind": "target",
-      "ms": 86,
-      "wallMs": 87
+      "ms": 283,
+      "wallMs": 292
      }
     ],
-    "targetMs": 86,
+    "targetMs": 283,
     "errors": []
    },
    {
@@ -3489,7 +2895,7 @@
     "candidateRank": 1,
     "expectedShown": true,
     "nElements": 3,
-    "nCandidates": 3,
+    "nCandidates": 6,
     "space": {
      "operations": [
       "CLICK",
@@ -3507,19 +2913,20 @@
     "tournament": false,
     "rounds": [
      {
-      "options": 3,
+      "options": 6,
       "hasExpected": true,
       "choice": "Manage preferences",
-      "top": 0.958
+      "top": 0.949
      }
     ],
     "picked": "Manage preferences",
     "correct": true,
-    "top": 0.9581831633054044,
+    "top": 0.9486126376112358,
     "status": "denied",
+    "head": "single",
     "operation": {
      "choice": "CLICK",
-     "top": 0.9988,
+     "top": 0.9486,
      "forced": "CLICK",
      "correct": true
     },
@@ -3527,17 +2934,12 @@
     "expectedValueKey": null,
     "decideMs": [
      {
-      "kind": "operation",
-      "ms": 134,
-      "wallMs": 134
-     },
-     {
       "kind": "target",
-      "ms": 84,
-      "wallMs": 84
+      "ms": 300,
+      "wallMs": 308
      }
     ],
-    "targetMs": 84,
+    "targetMs": 300,
     "errors": []
    },
    {
@@ -3552,7 +2954,7 @@
     "candidateRank": 2,
     "expectedShown": true,
     "nElements": 3,
-    "nCandidates": 3,
+    "nCandidates": 6,
     "space": {
      "operations": [
       "CLICK",
@@ -3570,19 +2972,20 @@
     "tournament": false,
     "rounds": [
      {
-      "options": 3,
+      "options": 6,
       "hasExpected": true,
       "choice": "Reject non-essential",
-      "top": 0.999
+      "top": 0.998
      }
     ],
     "picked": "Reject non-essential",
     "correct": true,
-    "top": 0.9994138569029776,
+    "top": 0.9980117936208787,
     "status": "denied",
+    "head": "single",
     "operation": {
      "choice": "CLICK",
-     "top": 0.9981,
+     "top": 0.998,
      "forced": "CLICK",
      "correct": true
     },
@@ -3590,17 +2993,12 @@
     "expectedValueKey": null,
     "decideMs": [
      {
-      "kind": "operation",
-      "ms": 114,
-      "wallMs": 114
-     },
-     {
       "kind": "target",
-      "ms": 83,
-      "wallMs": 83
+      "ms": 275,
+      "wallMs": 292
      }
     ],
-    "targetMs": 83,
+    "targetMs": 275,
     "errors": []
    },
    {
@@ -3616,7 +3014,7 @@
     "candidateRank": 1,
     "expectedShown": true,
     "nElements": 3,
-    "nCandidates": 3,
+    "nCandidates": 6,
     "space": {
      "operations": [
       "CLICK",
@@ -3634,19 +3032,20 @@
     "tournament": false,
     "rounds": [
      {
-      "options": 3,
+      "options": 6,
       "hasExpected": true,
       "choice": "Reject non-essential",
-      "top": 0.98
+      "top": 0.994
      }
     ],
     "picked": "Reject non-essential",
     "correct": true,
-    "top": 0.9800059503161856,
+    "top": 0.9942422479612703,
     "status": "denied",
+    "head": "single",
     "operation": {
      "choice": "CLICK",
-     "top": 0.9987,
+     "top": 0.9942,
      "forced": "CLICK",
      "correct": true
     },
@@ -3654,17 +3053,12 @@
     "expectedValueKey": null,
     "decideMs": [
      {
-      "kind": "operation",
-      "ms": 132,
-      "wallMs": 132
-     },
-     {
       "kind": "target",
-      "ms": 87,
-      "wallMs": 88
+      "ms": 225,
+      "wallMs": 242
      }
     ],
-    "targetMs": 87,
+    "targetMs": 225,
     "errors": []
    },
    {
@@ -3680,7 +3074,7 @@
     "candidateRank": 1,
     "expectedShown": true,
     "nElements": 3,
-    "nCandidates": 3,
+    "nCandidates": 6,
     "space": {
      "operations": [
       "CLICK",
@@ -3698,37 +3092,38 @@
     "tournament": false,
     "rounds": [
      {
-      "options": 3,
+      "options": 6,
       "hasExpected": true,
-      "choice": "Reject non-essential",
-      "top": 0.344
+      "choice": "BLOCKED",
+      "top": 0.552
      }
     ],
-    "picked": "Reject non-essential",
-    "correct": true,
-    "top": 0.34398285478577756,
+    "picked": null,
+    "correct": false,
+    "top": 0.5522748468880824,
     "status": "uncertain",
+    "head": "single",
     "operation": {
-     "choice": "CLICK",
-     "top": 0.6853,
+     "choice": "BLOCKED",
+     "top": 0.5523,
      "forced": "CLICK",
-     "correct": true
+     "correct": false
     },
     "value": null,
     "expectedValueKey": null,
     "decideMs": [
      {
-      "kind": "operation",
-      "ms": 135,
-      "wallMs": 135
+      "kind": "target",
+      "ms": 250,
+      "wallMs": 258
      },
      {
-      "kind": "target",
-      "ms": 91,
-      "wallMs": 91
+      "kind": "blocked_reason",
+      "ms": 347,
+      "wallMs": 365
      }
     ],
-    "targetMs": 91,
+    "targetMs": 250,
     "errors": []
    },
    {
@@ -3744,7 +3139,7 @@
     "candidateRank": 1,
     "expectedShown": true,
     "nElements": 3,
-    "nCandidates": 3,
+    "nCandidates": 6,
     "space": {
      "operations": [
       "CLICK",
@@ -3762,19 +3157,20 @@
     "tournament": false,
     "rounds": [
      {
-      "options": 3,
+      "options": 6,
       "hasExpected": true,
-      "choice": "Reject non-essential",
-      "top": 0.348
+      "choice": "BLOCKED",
+      "top": 0.994
      }
     ],
-    "picked": "Reject non-essential",
-    "correct": true,
-    "top": 0.3482965271753345,
-    "status": "uncertain",
+    "picked": null,
+    "correct": false,
+    "top": 0.9937009591108191,
+    "status": "blocked",
+    "head": "single",
     "operation": {
      "choice": "BLOCKED",
-     "top": 0.588,
+     "top": 0.9937,
      "forced": "CLICK",
      "correct": false
     },
@@ -3782,17 +3178,17 @@
     "expectedValueKey": null,
     "decideMs": [
      {
-      "kind": "operation",
-      "ms": 115,
-      "wallMs": 115
+      "kind": "target",
+      "ms": 283,
+      "wallMs": 291
      },
      {
-      "kind": "target",
-      "ms": 83,
-      "wallMs": 83
+      "kind": "blocked_reason",
+      "ms": 309,
+      "wallMs": 318
      }
     ],
-    "targetMs": 83,
+    "targetMs": 283,
     "errors": []
    },
    {
@@ -3807,7 +3203,7 @@
     "candidateRank": 1,
     "expectedShown": true,
     "nElements": 18,
-    "nCandidates": 18,
+    "nCandidates": 21,
     "space": {
      "operations": [
       "CLICK",
@@ -3825,19 +3221,20 @@
     "tournament": false,
     "rounds": [
      {
-      "options": 18,
+      "options": 21,
       "hasExpected": true,
       "choice": "Add Nimbus tote (green) to cart",
-      "top": 0.765
+      "top": 0.514
      }
     ],
     "picked": "Add Nimbus tote (green) to cart",
     "correct": true,
-    "top": 0.7646870030215597,
+    "top": 0.5144254220801707,
     "status": "denied",
+    "head": "single",
     "operation": {
      "choice": "CLICK",
-     "top": 0.9991,
+     "top": 0.5144,
      "forced": "CLICK",
      "correct": true
     },
@@ -3845,17 +3242,12 @@
     "expectedValueKey": null,
     "decideMs": [
      {
-      "kind": "operation",
-      "ms": 271,
-      "wallMs": 272
-     },
-     {
       "kind": "target",
-      "ms": 222,
-      "wallMs": 222
+      "ms": 450,
+      "wallMs": 467
      }
     ],
-    "targetMs": 222,
+    "targetMs": 450,
     "errors": []
    },
    {
@@ -3870,7 +3262,7 @@
     "candidateRank": 1,
     "expectedShown": true,
     "nElements": 18,
-    "nCandidates": 18,
+    "nCandidates": 21,
     "space": {
      "operations": [
       "CLICK",
@@ -3888,19 +3280,20 @@
     "tournament": false,
     "rounds": [
      {
-      "options": 18,
+      "options": 21,
       "hasExpected": true,
       "choice": "Add Orbit clock (grey) to cart",
-      "top": 0.749
+      "top": 0.841
      }
     ],
     "picked": "Add Orbit clock (grey) to cart",
     "correct": true,
-    "top": 0.7492384751204869,
+    "top": 0.8411936107810919,
     "status": "denied",
+    "head": "single",
     "operation": {
      "choice": "CLICK",
-     "top": 0.9991,
+     "top": 0.8412,
      "forced": "CLICK",
      "correct": true
     },
@@ -3908,17 +3301,12 @@
     "expectedValueKey": null,
     "decideMs": [
      {
-      "kind": "operation",
-      "ms": 270,
-      "wallMs": 270
-     },
-     {
       "kind": "target",
-      "ms": 227,
-      "wallMs": 228
+      "ms": 476,
+      "wallMs": 500
      }
     ],
-    "targetMs": 227,
+    "targetMs": 476,
     "errors": []
    },
    {
@@ -3933,7 +3321,7 @@
     "candidateRank": 1,
     "expectedShown": true,
     "nElements": 18,
-    "nCandidates": 18,
+    "nCandidates": 21,
     "space": {
      "operations": [
       "CLICK",
@@ -3951,19 +3339,20 @@
     "tournament": false,
     "rounds": [
      {
-      "options": 18,
+      "options": 21,
       "hasExpected": true,
       "choice": "Add Aurora mug (grey) to cart",
-      "top": 0.646
+      "top": 0.797
      }
     ],
     "picked": "Add Aurora mug (grey) to cart",
     "correct": true,
-    "top": 0.6464651931588732,
+    "top": 0.7965950720833822,
     "status": "denied",
+    "head": "single",
     "operation": {
      "choice": "CLICK",
-     "top": 0.9991,
+     "top": 0.7966,
      "forced": "CLICK",
      "correct": true
     },
@@ -3971,17 +3360,12 @@
     "expectedValueKey": null,
     "decideMs": [
      {
-      "kind": "operation",
-      "ms": 256,
-      "wallMs": 257
-     },
-     {
       "kind": "target",
-      "ms": 229,
-      "wallMs": 229
+      "ms": 429,
+      "wallMs": 455
      }
     ],
-    "targetMs": 229,
+    "targetMs": 429,
     "errors": []
    },
    {
@@ -3996,7 +3380,7 @@
     "candidateRank": 1,
     "expectedShown": true,
     "nElements": 18,
-    "nCandidates": 18,
+    "nCandidates": 21,
     "space": {
      "operations": [
       "CLICK",
@@ -4014,19 +3398,20 @@
     "tournament": false,
     "rounds": [
      {
-      "options": 18,
+      "options": 21,
       "hasExpected": true,
       "choice": "Add Fjord bowl (green) to cart",
-      "top": 0.496
+      "top": 0.52
      }
     ],
     "picked": "Add Fjord bowl (green) to cart",
     "correct": true,
-    "top": 0.4963331944186366,
-    "status": "uncertain",
+    "top": 0.5199574547761976,
+    "status": "denied",
+    "head": "single",
     "operation": {
      "choice": "CLICK",
-     "top": 0.999,
+     "top": 0.52,
      "forced": "CLICK",
      "correct": true
     },
@@ -4034,17 +3419,12 @@
     "expectedValueKey": null,
     "decideMs": [
      {
-      "kind": "operation",
-      "ms": 273,
-      "wallMs": 274
-     },
-     {
       "kind": "target",
-      "ms": 229,
-      "wallMs": 229
+      "ms": 425,
+      "wallMs": 441
      }
     ],
-    "targetMs": 229,
+    "targetMs": 425,
     "errors": []
    },
    {
@@ -4059,7 +3439,7 @@
     "candidateRank": 1,
     "expectedShown": true,
     "nElements": 18,
-    "nCandidates": 18,
+    "nCandidates": 21,
     "space": {
      "operations": [
       "CLICK",
@@ -4077,19 +3457,20 @@
     "tournament": false,
     "rounds": [
      {
-      "options": 18,
+      "options": 21,
       "hasExpected": true,
       "choice": "Add Cedar candle (grey) to cart",
-      "top": 0.964
+      "top": 0.616
      }
     ],
     "picked": "Add Cedar candle (grey) to cart",
     "correct": true,
-    "top": 0.9635421662910362,
+    "top": 0.6163038904303695,
     "status": "denied",
+    "head": "single",
     "operation": {
      "choice": "CLICK",
-     "top": 0.9959,
+     "top": 0.6163,
      "forced": "CLICK",
      "correct": true
     },
@@ -4097,17 +3478,12 @@
     "expectedValueKey": null,
     "decideMs": [
      {
-      "kind": "operation",
-      "ms": 270,
-      "wallMs": 270
-     },
-     {
       "kind": "target",
-      "ms": 221,
-      "wallMs": 222
+      "ms": 400,
+      "wallMs": 400
      }
     ],
-    "targetMs": 221,
+    "targetMs": 400,
     "errors": []
    },
    {
@@ -4122,7 +3498,7 @@
     "candidateRank": 1,
     "expectedShown": true,
     "nElements": 18,
-    "nCandidates": 1,
+    "nCandidates": 22,
     "space": {
      "operations": [
       "CLICK",
@@ -4141,46 +3517,33 @@
     "tournament": false,
     "rounds": [
      {
-      "options": 1,
+      "options": 22,
       "hasExpected": true,
-      "choice": "Your email for the newsletter",
-      "top": 1
+      "choice": "Subscribe",
+      "top": 0.914
      }
     ],
-    "picked": "Your email for the newsletter",
-    "correct": true,
-    "top": 1,
+    "picked": "Subscribe",
+    "correct": false,
+    "top": 0.9142715060630016,
     "status": "denied",
+    "head": "single",
     "operation": {
-     "choice": "TYPE_TEXT",
-     "top": 0.9029,
+     "choice": "CLICK",
+     "top": 0.9143,
      "forced": "TYPE_TEXT",
-     "correct": true
+     "correct": false
     },
-    "value": {
-     "choice": "email",
-     "top": 1,
-     "correct": true
-    },
+    "value": null,
     "expectedValueKey": "email",
     "decideMs": [
      {
-      "kind": "operation",
-      "ms": 260,
-      "wallMs": 261
-     },
-     {
       "kind": "target",
-      "ms": 67,
-      "wallMs": 89
-     },
-     {
-      "kind": "value",
-      "ms": 66,
-      "wallMs": 66
+      "ms": 391,
+      "wallMs": 408
      }
     ],
-    "targetMs": 67,
+    "targetMs": 391,
     "errors": []
    },
    {
@@ -4195,7 +3558,7 @@
     "candidateRank": 1,
     "expectedShown": true,
     "nElements": 18,
-    "nCandidates": 18,
+    "nCandidates": 21,
     "space": {
      "operations": [
       "CLICK",
@@ -4213,19 +3576,20 @@
     "tournament": false,
     "rounds": [
      {
-      "options": 18,
+      "options": 21,
       "hasExpected": true,
       "choice": "Cart",
-      "top": 0.999
+      "top": 0.973
      }
     ],
     "picked": "Cart",
     "correct": true,
-    "top": 0.9994881023911831,
+    "top": 0.9726117406267673,
     "status": "denied",
+    "head": "single",
     "operation": {
      "choice": "CLICK",
-     "top": 0.9986,
+     "top": 0.9726,
      "forced": "CLICK",
      "correct": true
     },
@@ -4233,17 +3597,12 @@
     "expectedValueKey": null,
     "decideMs": [
      {
-      "kind": "operation",
-      "ms": 266,
-      "wallMs": 266
-     },
-     {
       "kind": "target",
-      "ms": 221,
-      "wallMs": 222
+      "ms": 367,
+      "wallMs": 392
      }
     ],
-    "targetMs": 221,
+    "targetMs": 367,
     "errors": []
    },
    {
@@ -4258,7 +3617,7 @@
     "candidateRank": 1,
     "expectedShown": true,
     "nElements": 18,
-    "nCandidates": 18,
+    "nCandidates": 21,
     "space": {
      "operations": [
       "CLICK",
@@ -4276,19 +3635,20 @@
     "tournament": false,
     "rounds": [
      {
-      "options": 18,
+      "options": 21,
       "hasExpected": true,
       "choice": "Stores",
-      "top": 0.999
+      "top": 1
      }
     ],
     "picked": "Stores",
     "correct": true,
-    "top": 0.9990399195446023,
+    "top": 0.9999252387098135,
     "status": "denied",
+    "head": "single",
     "operation": {
      "choice": "CLICK",
-     "top": 0.9989,
+     "top": 0.9999,
      "forced": "CLICK",
      "correct": true
     },
@@ -4296,17 +3656,12 @@
     "expectedValueKey": null,
     "decideMs": [
      {
-      "kind": "operation",
-      "ms": 252,
-      "wallMs": 253
-     },
-     {
       "kind": "target",
-      "ms": 226,
-      "wallMs": 227
+      "ms": 424,
+      "wallMs": 442
      }
     ],
-    "targetMs": 226,
+    "targetMs": 424,
     "errors": []
    }
   ]
@@ -4314,11 +3669,11 @@
  "llm": {
   "model": "google/gemma-4-26b-a4b",
   "cases": 54,
-  "correct": 49,
-  "accuracyTop1": 0.907,
+  "correct": 51,
+  "accuracyTop1": 0.944,
   "ms": {
-   "p50": 2101,
-   "p95": 14484
+   "p50": 1721,
+   "p95": 16421
   },
   "rows": [
    {
@@ -4326,378 +3681,378 @@
     "answer": "[8]",
     "picked": "Add Aurora mug (blue) to cart",
     "correct": true,
-    "ms": 10825
+    "ms": 52205
    },
    {
     "i": 1,
     "answer": "[12]",
     "picked": "Add Nimbus tote (red) to cart",
     "correct": true,
-    "ms": 1242
+    "ms": 1516
    },
    {
     "i": 2,
     "answer": "[16]",
     "picked": "Add Cedar candle (green) to cart",
     "correct": true,
-    "ms": 1769
+    "ms": 1503
    },
    {
     "i": 3,
     "answer": "[17]",
     "picked": "Add Harbor throw (blue) to cart",
     "correct": true,
-    "ms": 1208
+    "ms": 1508
    },
    {
     "i": 4,
     "answer": "[21]",
     "picked": "Add Lumen lamp (red) to cart",
     "correct": true,
-    "ms": 1270
+    "ms": 1507
    },
    {
     "i": 5,
     "answer": "[25]",
     "picked": "Add Fjord bowl (green) to cart",
     "correct": true,
-    "ms": 1729
+    "ms": 1677
    },
    {
     "i": 6,
     "answer": "[26]",
     "picked": "Add Sable apron (blue) to cart",
     "correct": true,
-    "ms": 1262
+    "ms": 1574
    },
    {
     "i": 7,
     "answer": "[30]",
     "picked": "Add Tidal vase (red) to cart",
     "correct": true,
-    "ms": 1259
+    "ms": 1556
    },
    {
     "i": 8,
     "answer": "[34]",
     "picked": "Add Ember kettle (green) to cart",
     "correct": true,
-    "ms": 1701
+    "ms": 1444
    },
    {
     "i": 9,
     "answer": "[35]",
     "picked": "Add Meadow napkins (blue) to cart",
     "correct": true,
-    "ms": 1281
+    "ms": 1482
    },
    {
     "i": 10,
     "answer": "[39]",
     "picked": "Add Quill notebook (red) to cart",
     "correct": true,
-    "ms": 1294
+    "ms": 1652
    },
    {
     "i": 11,
     "answer": "[43]",
     "picked": "Add Orbit clock (green) to cart",
     "correct": true,
-    "ms": 1801
+    "ms": 1597
    },
    {
     "i": 12,
     "answer": "[32]",
     "picked": "Add Ember kettle (blue) to cart",
     "correct": true,
-    "ms": 1322
+    "ms": 1558
    },
    {
     "i": 13,
     "answer": "[21]",
     "picked": "Add Lumen lamp (red) to cart",
     "correct": true,
-    "ms": 1475
+    "ms": 1595
    },
    {
     "i": 14,
     "answer": "[10]",
     "picked": "Add Aurora mug (green) to cart",
     "correct": true,
-    "ms": 1791
+    "ms": 1559
    },
    {
     "i": 15,
     "answer": "[11]",
     "picked": "Add Nimbus tote (blue) to cart",
     "correct": true,
-    "ms": 1471
+    "ms": 1979
    },
    {
     "i": 16,
     "answer": "[5]",
     "picked": "Cart",
     "correct": true,
-    "ms": 2398
+    "ms": 1480
    },
    {
     "i": 17,
     "answer": "[7]",
     "picked": "Checkout",
     "correct": true,
-    "ms": 4901
+    "ms": 8794
    },
    {
     "i": 18,
     "answer": "[2]",
     "picked": "Sale",
     "correct": true,
-    "ms": 1540
+    "ms": 1450
    },
    {
     "i": 19,
     "answer": "[1]",
     "picked": "New in",
     "correct": true,
-    "ms": 1682
+    "ms": 1512
    },
    {
     "i": 20,
     "answer": "[0]",
     "picked": "Home",
     "correct": true,
-    "ms": 1813
+    "ms": 1526
    },
    {
     "i": 21,
     "answer": "[3]",
     "picked": "Search products",
     "correct": true,
-    "ms": 2035
+    "ms": 3376
    },
    {
     "i": 22,
     "answer": "[4]",
     "picked": "Sort by\" (currently \"Featured",
     "correct": true,
-    "ms": 2144
+    "ms": 2467
    },
    {
     "i": 23,
     "answer": "[3]",
     "picked": "Full name",
     "correct": true,
-    "ms": 2101
+    "ms": 3997
    },
    {
     "i": 24,
     "answer": "[4]",
     "picked": "Email address",
     "correct": true,
-    "ms": 21045
+    "ms": 6588
    },
    {
     "i": 25,
     "answer": "[6]",
     "picked": "Topic",
     "correct": true,
-    "ms": 1979
+    "ms": 5665
    },
    {
     "i": 26,
     "answer": "[3]",
     "picked": "Full name",
     "correct": false,
-    "ms": 8862
+    "ms": 4527
    },
    {
     "i": 27,
-    "answer": "[3]",
-    "picked": "Full name",
-    "correct": false,
-    "ms": 19793
+    "answer": "[5]",
+    "picked": "Phone number",
+    "correct": true,
+    "ms": 36778
    },
    {
     "i": 28,
     "answer": "[6]",
     "picked": "Topic",
     "correct": true,
-    "ms": 2304
+    "ms": 8902
    },
    {
     "i": 29,
     "answer": "[4]",
     "picked": "Email address",
     "correct": true,
-    "ms": 2561
+    "ms": 16421
    },
    {
     "i": 30,
     "answer": "[8]",
     "picked": "I agree to be contacted about my request",
     "correct": true,
-    "ms": 3685
+    "ms": 2088
    },
    {
     "i": 31,
-    "answer": "[3]",
-    "picked": "Full name",
-    "correct": false,
-    "ms": 14484
+    "answer": "[9]",
+    "picked": "Send me the monthly newsletter",
+    "correct": true,
+    "ms": 4074
    },
    {
     "i": 32,
     "answer": "[3]",
     "picked": "Full name",
     "correct": false,
-    "ms": 7148
+    "ms": 7311
    },
    {
     "i": 33,
     "answer": "[11]",
     "picked": "Clear form",
     "correct": true,
-    "ms": 3383
+    "ms": 3476
    },
    {
     "i": 34,
     "answer": "[8]",
     "picked": "I agree to be contacted about my request",
     "correct": true,
-    "ms": 2350
+    "ms": 2374
    },
    {
     "i": 35,
     "answer": "[3]",
     "picked": "Full name",
     "correct": false,
-    "ms": 5601
+    "ms": 7901
    },
    {
     "i": 36,
     "answer": "[1]",
     "picked": "FAQ",
     "correct": true,
-    "ms": 1824
+    "ms": 1304
    },
    {
     "i": 37,
     "answer": "[2]",
     "picked": "Service status",
     "correct": true,
-    "ms": 1834
+    "ms": 2870
    },
    {
     "i": 38,
     "answer": "[0]",
     "picked": "Home",
     "correct": true,
-    "ms": 2121
+    "ms": 1682
    },
    {
     "i": 39,
     "answer": "[0]",
     "picked": "Accept all\" in \"We use cookies",
     "correct": true,
-    "ms": 2322
+    "ms": 2227
    },
    {
     "i": 40,
     "answer": "[1]",
     "picked": "Reject non-essential\" in \"We use cookies",
     "correct": true,
-    "ms": 3277
+    "ms": 2484
    },
    {
     "i": 41,
     "answer": "[2]",
     "picked": "Manage preferences\" in \"We use cookies",
     "correct": true,
-    "ms": 3166
+    "ms": 1721
    },
    {
     "i": 42,
     "answer": "[1]",
     "picked": "Reject non-essential\" in \"We use cookies",
     "correct": true,
-    "ms": 3602
+    "ms": 2119
    },
    {
     "i": 43,
     "answer": "[0]",
     "picked": "Accept all\" in \"We use cookies",
     "correct": true,
-    "ms": 2865
+    "ms": 3775
    },
    {
     "i": 44,
     "answer": "[0]",
     "picked": "Accept all\" in \"We use cookies",
     "correct": true,
-    "ms": 4665
+    "ms": 3068
    },
    {
     "i": 45,
     "answer": "[0]",
     "picked": "Accept all\" in \"We use cookies",
     "correct": true,
-    "ms": 3412
+    "ms": 4216
    },
    {
     "i": 46,
     "answer": "[4]",
     "picked": "Add Nimbus tote (green) to cart",
     "correct": true,
-    "ms": 2806
+    "ms": 1625
    },
    {
     "i": 47,
     "answer": "[15]",
     "picked": "Add Orbit clock (grey) to cart",
     "correct": true,
-    "ms": 1690
+    "ms": 1505
    },
    {
     "i": 48,
     "answer": "[7]",
     "picked": "Add Aurora mug (grey) to cart",
     "correct": true,
-    "ms": 1405
+    "ms": 1453
    },
    {
     "i": 49,
     "answer": "[12]",
     "picked": "Add Fjord bowl (green) to cart",
     "correct": true,
-    "ms": 1694
+    "ms": 1644
    },
    {
     "i": 50,
     "answer": "[11]",
     "picked": "Add Cedar candle (grey) to cart",
     "correct": true,
-    "ms": 1697
+    "ms": 1553
    },
    {
     "i": 51,
-    "answer": "16",
+    "answer": "[16]",
     "picked": "Your email for the newsletter",
     "correct": true,
-    "ms": 3029
+    "ms": 3979
    },
    {
     "i": 52,
     "answer": "[2]",
     "picked": "Cart",
     "correct": true,
-    "ms": 4514
+    "ms": 2374
    },
    {
     "i": 53,
     "answer": "[1]",
     "picked": "Stores",
     "correct": true,
-    "ms": 2454
+    "ms": 1380
    }
   ]
  },
@@ -4709,10 +4064,10 @@
     "rep": 0,
     "success": true,
     "ended": "turn-ended",
-    "wallMs": 57985,
-    "llmSteps": 13,
-    "inputTokens": 54436,
-    "outputTokens": 1805,
+    "wallMs": 36537,
+    "llmSteps": 12,
+    "inputTokens": 47844,
+    "outputTokens": 1697,
     "actOffered": false,
     "pageActions": 6,
     "controlPageCalls": 7,
@@ -4726,14 +4081,13 @@
     "vonBootMs": [],
     "approvals": [
      "Read the interactive elements on this page",
-     "Let the agent control 127.0.0.1:50473?",
+     "Let the agent control 127.0.0.1:58845?",
      "Click “Send message”"
     ],
     "toolCalls": [
      "ReadPage",
      "GetTool",
      "ControlPage",
-     "ToolSearch",
      "GetTool",
      "RequestPageControl",
      "ControlPage",
@@ -4759,11 +4113,404 @@
     "rep": 0,
     "success": true,
     "ended": "turn-ended",
-    "wallMs": 54918,
+    "wallMs": 48146,
     "llmSteps": 13,
-    "inputTokens": 56143,
-    "outputTokens": 2048,
+    "inputTokens": 56187,
+    "outputTokens": 2183,
     "actOffered": true,
+    "pageActions": 6,
+    "controlPageCalls": 8,
+    "actCalls": 0,
+    "actSteps": 0,
+    "actStatuses": [],
+    "actMessages": [],
+    "vonDecides": 0,
+    "vonFailed": 0,
+    "vonMs": 0,
+    "vonBootMs": [
+     31508
+    ],
+    "approvals": [
+     "Read the interactive elements on this page",
+     "Let the agent control 127.0.0.1:58845?",
+     "Click “Send message”"
+    ],
+    "toolCalls": [
+     "ReadPage",
+     "GetTool",
+     "ControlPage",
+     "ControlPage",
+     "GetTool",
+     "RequestPageControl",
+     "ControlPage",
+     "ControlPage",
+     "ControlPage",
+     "ControlPage",
+     "ControlPage",
+     "ControlPage"
+    ],
+    "pageState": {
+     "fullname": "Ada Lovelace",
+     "email": "ada@example.com",
+     "phone": "",
+     "topic": "Billing",
+     "message": "My last invoice was charged twice.",
+     "consent": "on"
+    },
+    "lastReply": null
+   },
+   {
+    "task": "form",
+    "arm": "forced",
+    "rep": 0,
+    "success": true,
+    "ended": "turn-ended",
+    "wallMs": 207276,
+    "llmSteps": 18,
+    "inputTokens": 85395,
+    "outputTokens": 9679,
+    "actOffered": true,
+    "pageActions": 7,
+    "controlPageCalls": 6,
+    "actCalls": 7,
+    "actSteps": 2,
+    "actStatuses": [
+     "error",
+     "error",
+     "done",
+     "error",
+     "error",
+     "error",
+     "error"
+    ],
+    "actMessages": [
+     "no option matching \"«Message»\" in element 6",
+     "no option matching \"«Email_address»\" in element 6",
+     "no option matching \"«Email_address»\" in element 6",
+     "no option matching \"«Email_address»\" in element 6",
+     "no option matching \"«Email_address»\" in element 6",
+     "no option matching \"«Full_name»\" in element 6"
+    ],
+    "vonDecides": 17,
+    "vonFailed": 0,
+    "vonMs": 4777,
+    "vonBootMs": [
+     13075
+    ],
+    "approvals": [
+     "Read the interactive elements on this page",
+     "Let the agent control 127.0.0.1:58845?",
+     "Click “Send message”"
+    ],
+    "toolCalls": [
+     "ReadPage",
+     "GetTool",
+     "ControlPage",
+     "GetTool",
+     "RequestPageControl",
+     "Act",
+     "Act",
+     "Act",
+     "Act",
+     "Act",
+     "Act",
+     "Act",
+     "ControlPage",
+     "ControlPage",
+     "ControlPage",
+     "ControlPage",
+     "ControlPage"
+    ],
+    "pageState": {
+     "fullname": "Ada Lovelace",
+     "email": "ada@example.com",
+     "phone": "",
+     "topic": "Billing",
+     "message": "My last invoice was charged twice.",
+     "consent": "on"
+    },
+    "lastReply": null
+   },
+   {
+    "task": "shop",
+    "arm": "off",
+    "rep": 0,
+    "success": true,
+    "ended": "turn-ended",
+    "wallMs": 39460,
+    "llmSteps": 8,
+    "inputTokens": 48432,
+    "outputTokens": 579,
+    "actOffered": false,
+    "pageActions": 1,
+    "controlPageCalls": 1,
+    "actCalls": 0,
+    "actSteps": 0,
+    "actStatuses": [],
+    "actMessages": [],
+    "vonDecides": 0,
+    "vonFailed": 0,
+    "vonMs": 0,
+    "vonBootMs": [],
+    "approvals": [
+     "Read the interactive elements on this page",
+     "Let the agent control 127.0.0.1:58845?",
+     "Click “Add Aurora mug (blue) to cart”"
+    ],
+    "toolCalls": [
+     "ToolSearch",
+     "GetTool",
+     "ReadPage",
+     "ToolSearch",
+     "GetTool",
+     "RequestPageControl",
+     "ControlPage"
+    ],
+    "pageState": [
+     "Aurora mug (blue)"
+    ],
+    "lastReply": null
+   },
+   {
+    "task": "shop",
+    "arm": "on",
+    "rep": 0,
+    "success": true,
+    "ended": "turn-ended",
+    "wallMs": 31476,
+    "llmSteps": 7,
+    "inputTokens": 29170,
+    "outputTokens": 586,
+    "actOffered": true,
+    "pageActions": 1,
+    "controlPageCalls": 2,
+    "actCalls": 0,
+    "actSteps": 0,
+    "actStatuses": [],
+    "actMessages": [],
+    "vonDecides": 0,
+    "vonFailed": 0,
+    "vonMs": 0,
+    "vonBootMs": [
+     16294
+    ],
+    "approvals": [
+     "Read the interactive elements on this page",
+     "Let the agent control 127.0.0.1:58845?",
+     "Click “Add Aurora mug (blue) to cart”"
+    ],
+    "toolCalls": [
+     "ReadPage",
+     "GetTool",
+     "ControlPage",
+     "GetTool",
+     "RequestPageControl",
+     "ControlPage"
+    ],
+    "pageState": [
+     "Aurora mug (blue)"
+    ],
+    "lastReply": null
+   },
+   {
+    "task": "shop",
+    "arm": "forced",
+    "rep": 0,
+    "success": true,
+    "ended": "turn-ended",
+    "wallMs": 46654,
+    "llmSteps": 8,
+    "inputTokens": 35685,
+    "outputTokens": 1214,
+    "actOffered": true,
+    "pageActions": 1,
+    "controlPageCalls": 1,
+    "actCalls": 2,
+    "actSteps": 1,
+    "actStatuses": [
+     "none",
+     "done"
+    ],
+    "actMessages": [],
+    "vonDecides": 2,
+    "vonFailed": 0,
+    "vonMs": 6403,
+    "vonBootMs": [
+     10534
+    ],
+    "approvals": [
+     "Read the interactive elements on this page",
+     "Let the agent control 127.0.0.1:58845?",
+     "Click “Add Aurora mug (blue) to cart”"
+    ],
+    "toolCalls": [
+     "ReadPage",
+     "GetTool",
+     "ControlPage",
+     "GetTool",
+     "RequestPageControl",
+     "Act",
+     "Act"
+    ],
+    "pageState": [
+     "Aurora mug (blue)"
+    ],
+    "lastReply": null
+   },
+   {
+    "task": "dialog",
+    "arm": "off",
+    "rep": 0,
+    "success": true,
+    "ended": "turn-ended",
+    "wallMs": 40635,
+    "llmSteps": 9,
+    "inputTokens": 31968,
+    "outputTokens": 1310,
+    "actOffered": false,
+    "pageActions": 2,
+    "controlPageCalls": 3,
+    "actCalls": 0,
+    "actSteps": 0,
+    "actStatuses": [],
+    "actMessages": [],
+    "vonDecides": 0,
+    "vonFailed": 0,
+    "vonMs": 0,
+    "vonBootMs": [],
+    "approvals": [
+     "Read the interactive elements on this page",
+     "Let the agent control 127.0.0.1:58845?",
+     "Click “Reject non-essential”",
+     "Click “Add Nimbus tote (green) to cart”"
+    ],
+    "toolCalls": [
+     "ReadPage",
+     "GetTool",
+     "ControlPage",
+     "ToolSearch",
+     "GetTool",
+     "RequestPageControl",
+     "ControlPage",
+     "ControlPage"
+    ],
+    "pageState": {
+     "consent": "essential",
+     "cart": [
+      "Nimbus tote (green)"
+     ]
+    },
+    "lastReply": null
+   },
+   {
+    "task": "dialog",
+    "arm": "on",
+    "rep": 0,
+    "success": true,
+    "ended": "turn-ended",
+    "wallMs": 38404,
+    "llmSteps": 10,
+    "inputTokens": 35429,
+    "outputTokens": 1775,
+    "actOffered": true,
+    "pageActions": 2,
+    "controlPageCalls": 4,
+    "actCalls": 0,
+    "actSteps": 0,
+    "actStatuses": [],
+    "actMessages": [],
+    "vonDecides": 0,
+    "vonFailed": 0,
+    "vonMs": 0,
+    "vonBootMs": [
+     14253
+    ],
+    "approvals": [
+     "Read the interactive elements on this page",
+     "Let the agent control 127.0.0.1:58845?",
+     "Click “Reject non-essential”",
+     "Click “Add Nimbus tote (green) to cart”"
+    ],
+    "toolCalls": [
+     "ReadPage",
+     "GetTool",
+     "ControlPage",
+     "ControlPage",
+     "ToolSearch",
+     "GetTool",
+     "RequestPageControl",
+     "ControlPage",
+     "ControlPage"
+    ],
+    "pageState": {
+     "consent": "essential",
+     "cart": [
+      "Nimbus tote (green)"
+     ]
+    },
+    "lastReply": null
+   },
+   {
+    "task": "dialog",
+    "arm": "forced",
+    "rep": 0,
+    "success": true,
+    "ended": "turn-ended",
+    "wallMs": 45453,
+    "llmSteps": 10,
+    "inputTokens": 35702,
+    "outputTokens": 1625,
+    "actOffered": true,
+    "pageActions": 2,
+    "controlPageCalls": 3,
+    "actCalls": 1,
+    "actSteps": 1,
+    "actStatuses": [
+     "done"
+    ],
+    "actMessages": [],
+    "vonDecides": 2,
+    "vonFailed": 0,
+    "vonMs": 719,
+    "vonBootMs": [
+     13586
+    ],
+    "approvals": [
+     "Read the interactive elements on this page",
+     "Let the agent control 127.0.0.1:58845?",
+     "Click “Reject non-essential”",
+     "Click “Add Nimbus tote (green) to cart”"
+    ],
+    "toolCalls": [
+     "ReadPage",
+     "GetTool",
+     "ControlPage",
+     "ControlPage",
+     "ToolSearch",
+     "GetTool",
+     "RequestPageControl",
+     "ControlPage",
+     "Act"
+    ],
+    "pageState": {
+     "consent": "essential",
+     "cart": [
+      "Nimbus tote (green)"
+     ]
+    },
+    "lastReply": null
+   },
+   {
+    "task": "form",
+    "arm": "off",
+    "rep": 1,
+    "success": true,
+    "ended": "turn-ended",
+    "wallMs": 53033,
+    "llmSteps": 13,
+    "inputTokens": 53789,
+    "outputTokens": 2269,
+    "actOffered": false,
     "pageActions": 6,
     "controlPageCalls": 7,
     "actCalls": 0,
@@ -4776,7 +4523,7 @@
     "vonBootMs": [],
     "approvals": [
      "Read the interactive elements on this page",
-     "Let the agent control 127.0.0.1:50473?",
+     "Let the agent control 127.0.0.1:58845?",
      "Click “Send message”",
      "View the tab you are currently on"
     ],
@@ -4806,52 +4553,54 @@
    },
    {
     "task": "form",
-    "arm": "forced",
-    "rep": 0,
+    "arm": "on",
+    "rep": 1,
     "success": true,
     "ended": "turn-ended",
-    "wallMs": 88707,
-    "llmSteps": 16,
-    "inputTokens": 73164,
-    "outputTokens": 4393,
+    "wallMs": 93785,
+    "llmSteps": 23,
+    "inputTokens": 94076,
+    "outputTokens": 5596,
     "actOffered": true,
-    "pageActions": 7,
-    "controlPageCalls": 8,
-    "actCalls": 1,
-    "actSteps": 1,
-    "actStatuses": [
-     "uncertain"
-    ],
-    "actMessages": [
-     "unsure of the next operation (p=0.54)"
-    ],
-    "vonDecides": 4,
+    "pageActions": 6,
+    "controlPageCalls": 17,
+    "actCalls": 0,
+    "actSteps": 0,
+    "actStatuses": [],
+    "actMessages": [],
+    "vonDecides": 0,
     "vonFailed": 0,
-    "vonMs": 821,
+    "vonMs": 0,
     "vonBootMs": [
-     8047
+     11418
     ],
     "approvals": [
      "Read the interactive elements on this page",
-     "Let the agent control 127.0.0.1:50473?",
-     "Click “Send message”",
-     "View the tab you are currently on"
+     "Let the agent control 127.0.0.1:58845?",
+     "Click “Send message”"
     ],
     "toolCalls": [
      "ReadPage",
      "GetTool",
      "ControlPage",
      "ControlPage",
+     "ControlPage",
+     "ControlPage",
+     "ControlPage",
+     "ControlPage",
+     "ControlPage",
+     "ControlPage",
+     "ControlPage",
      "ToolSearch",
+     "ControlPage",
+     "ControlPage",
      "GetTool",
      "RequestPageControl",
-     "Act",
      "ControlPage",
      "ControlPage",
      "ControlPage",
      "ControlPage",
      "ControlPage",
-     "ReadPage",
      "ControlPage"
     ],
     "pageState": {
@@ -4865,278 +4614,18 @@
     "lastReply": null
    },
    {
-    "task": "shop",
-    "arm": "off",
-    "rep": 0,
-    "success": true,
-    "ended": "turn-ended",
-    "wallMs": 35259,
-    "llmSteps": 9,
-    "inputTokens": 37088,
-    "outputTokens": 987,
-    "actOffered": false,
-    "pageActions": 1,
-    "controlPageCalls": 3,
-    "actCalls": 0,
-    "actSteps": 0,
-    "actStatuses": [],
-    "actMessages": [],
-    "vonDecides": 0,
-    "vonFailed": 0,
-    "vonMs": 0,
-    "vonBootMs": [],
-    "approvals": [
-     "Read the interactive elements on this page",
-     "Let the agent control 127.0.0.1:50473?",
-     "Click “Add Aurora mug (blue) to cart”"
-    ],
-    "toolCalls": [
-     "ReadPage",
-     "GetTool",
-     "ControlPage",
-     "ControlPage",
-     "ToolSearch",
-     "GetTool",
-     "RequestPageControl",
-     "ControlPage"
-    ],
-    "pageState": [
-     "Aurora mug (blue)"
-    ],
-    "lastReply": null
-   },
-   {
-    "task": "shop",
-    "arm": "on",
-    "rep": 0,
-    "success": true,
-    "ended": "turn-ended",
-    "wallMs": 28766,
-    "llmSteps": 5,
-    "inputTokens": 21284,
-    "outputTokens": 588,
-    "actOffered": true,
-    "pageActions": 1,
-    "controlPageCalls": 1,
-    "actCalls": 0,
-    "actSteps": 0,
-    "actStatuses": [],
-    "actMessages": [],
-    "vonDecides": 0,
-    "vonFailed": 0,
-    "vonMs": 0,
-    "vonBootMs": [],
-    "approvals": [
-     "Read the interactive elements on this page",
-     "Let the agent control 127.0.0.1:50473?",
-     "Click “Add Aurora mug (blue) to cart”"
-    ],
-    "toolCalls": [
-     "ReadPage",
-     "GetTool",
-     "RequestPageControl",
-     "ControlPage"
-    ],
-    "pageState": [
-     "Aurora mug (blue)"
-    ],
-    "lastReply": null
-   },
-   {
-    "task": "shop",
-    "arm": "forced",
-    "rep": 0,
-    "success": false,
-    "ended": "turn-ended",
-    "wallMs": 48923,
-    "llmSteps": 7,
-    "inputTokens": 30181,
-    "outputTokens": 1532,
-    "actOffered": true,
-    "pageActions": 1,
-    "controlPageCalls": 1,
-    "actCalls": 1,
-    "actSteps": 1,
-    "actStatuses": [
-     "done"
-    ],
-    "actMessages": [],
-    "vonDecides": 5,
-    "vonFailed": 0,
-    "vonMs": 2027,
-    "vonBootMs": [
-     6776
-    ],
-    "approvals": [
-     "Read the interactive elements on this page",
-     "Let the agent control 127.0.0.1:50473?",
-     "Click “Add Aurora mug (green) to cart”"
-    ],
-    "toolCalls": [
-     "ReadPage",
-     "GetTool",
-     "ControlPage",
-     "GetTool",
-     "RequestPageControl",
-     "Act"
-    ],
-    "pageState": [
-     "Aurora mug (green)"
-    ],
-    "lastReply": null
-   },
-   {
-    "task": "dialog",
-    "arm": "off",
-    "rep": 0,
-    "success": true,
-    "ended": "turn-ended",
-    "wallMs": 38371,
-    "llmSteps": 10,
-    "inputTokens": 32772,
-    "outputTokens": 1398,
-    "actOffered": false,
-    "pageActions": 2,
-    "controlPageCalls": 5,
-    "actCalls": 0,
-    "actSteps": 0,
-    "actStatuses": [],
-    "actMessages": [],
-    "vonDecides": 0,
-    "vonFailed": 0,
-    "vonMs": 0,
-    "vonBootMs": [],
-    "approvals": [
-     "Read the interactive elements on this page",
-     "Let the agent control 127.0.0.1:50473?",
-     "Click “Reject non-essential”",
-     "Click “Add Nimbus tote (green) to cart”"
-    ],
-    "toolCalls": [
-     "ReadPage",
-     "GetTool",
-     "ControlPage",
-     "ControlPage",
-     "ControlPage",
-     "GetTool",
-     "RequestPageControl",
-     "ControlPage",
-     "ControlPage"
-    ],
-    "pageState": {
-     "consent": "essential",
-     "cart": [
-      "Nimbus tote (green)"
-     ]
-    },
-    "lastReply": null
-   },
-   {
-    "task": "dialog",
-    "arm": "on",
-    "rep": 0,
-    "success": true,
-    "ended": "turn-ended",
-    "wallMs": 35454,
-    "llmSteps": 8,
-    "inputTokens": 27629,
-    "outputTokens": 984,
-    "actOffered": true,
-    "pageActions": 2,
-    "controlPageCalls": 3,
-    "actCalls": 0,
-    "actSteps": 0,
-    "actStatuses": [],
-    "actMessages": [],
-    "vonDecides": 0,
-    "vonFailed": 0,
-    "vonMs": 0,
-    "vonBootMs": [],
-    "approvals": [
-     "Read the interactive elements on this page",
-     "Let the agent control 127.0.0.1:50473?",
-     "Click “Reject non-essential”",
-     "Click “Add Nimbus tote (green) to cart”"
-    ],
-    "toolCalls": [
-     "ReadPage",
-     "GetTool",
-     "ControlPage",
-     "GetTool",
-     "RequestPageControl",
-     "ControlPage",
-     "ControlPage"
-    ],
-    "pageState": {
-     "consent": "essential",
-     "cart": [
-      "Nimbus tote (green)"
-     ]
-    },
-    "lastReply": null
-   },
-   {
-    "task": "dialog",
-    "arm": "forced",
-    "rep": 0,
-    "success": true,
-    "ended": "turn-ended",
-    "wallMs": 41749,
-    "llmSteps": 8,
-    "inputTokens": 27580,
-    "outputTokens": 1001,
-    "actOffered": true,
-    "pageActions": 2,
-    "controlPageCalls": 1,
-    "actCalls": 2,
-    "actSteps": 2,
-    "actStatuses": [
-     "done",
-     "done"
-    ],
-    "actMessages": [],
-    "vonDecides": 6,
-    "vonFailed": 0,
-    "vonMs": 1376,
-    "vonBootMs": [
-     7541
-    ],
-    "approvals": [
-     "Read the interactive elements on this page",
-     "Let the agent control 127.0.0.1:50473?",
-     "Click “Reject non-essential”",
-     "Click “Add Nimbus tote (green) to cart”"
-    ],
-    "toolCalls": [
-     "ReadPage",
-     "GetTool",
-     "ControlPage",
-     "GetTool",
-     "RequestPageControl",
-     "Act",
-     "Act"
-    ],
-    "pageState": {
-     "consent": "essential",
-     "cart": [
-      "Nimbus tote (green)"
-     ]
-    },
-    "lastReply": null
-   },
-   {
     "task": "form",
-    "arm": "off",
+    "arm": "forced",
     "rep": 1,
     "success": false,
     "ended": "turn-ended",
-    "wallMs": 22103,
-    "llmSteps": 8,
-    "inputTokens": 25552,
-    "outputTokens": 1529,
+    "wallMs": 145216,
+    "llmSteps": 25,
+    "inputTokens": 93559,
+    "outputTokens": 9029,
     "actOffered": false,
     "pageActions": 0,
-    "controlPageCalls": 3,
+    "controlPageCalls": 19,
     "actCalls": 0,
     "actSteps": 0,
     "actStatuses": [],
@@ -5149,11 +4638,28 @@
      "Read the interactive elements on this page"
     ],
     "toolCalls": [
-     "ReadPage",
      "GetTool",
+     "ReadPage",
+     "ControlPage",
      "ControlPage",
      "ControlPage",
      "ToolSearch",
+     "ControlPage",
+     "ControlPage",
+     "ControlPage",
+     "ControlPage",
+     "ControlPage",
+     "ControlPage",
+     "ControlPage",
+     "ControlPage",
+     "ControlPage",
+     "ControlPage",
+     "ControlPage",
+     "ControlPage",
+     "ControlPage",
+     "ControlPage",
+     "ControlPage",
+     "Checkpoint",
      "ToolSearch",
      "ControlPage"
     ],
@@ -5161,18 +4667,18 @@
     "lastReply": null
    },
    {
-    "task": "form",
-    "arm": "on",
+    "task": "shop",
+    "arm": "off",
     "rep": 1,
     "success": true,
     "ended": "turn-ended",
-    "wallMs": 46442,
-    "llmSteps": 12,
-    "inputTokens": 51116,
-    "outputTokens": 1740,
-    "actOffered": true,
-    "pageActions": 6,
-    "controlPageCalls": 7,
+    "wallMs": 22682,
+    "llmSteps": 7,
+    "inputTokens": 28332,
+    "outputTokens": 597,
+    "actOffered": false,
+    "pageActions": 1,
+    "controlPageCalls": 2,
     "actCalls": 0,
     "actSteps": 0,
     "actStatuses": [],
@@ -5183,8 +4689,8 @@
     "vonBootMs": [],
     "approvals": [
      "Read the interactive elements on this page",
-     "Let the agent control 127.0.0.1:50473?",
-     "Click “Send message”"
+     "Let the agent control 127.0.0.1:58845?",
+     "Click “Add Aurora mug (blue) to cart”"
     ],
     "toolCalls": [
      "ReadPage",
@@ -5192,394 +4698,66 @@
      "ControlPage",
      "GetTool",
      "RequestPageControl",
-     "ControlPage",
-     "ControlPage",
-     "ControlPage",
-     "ControlPage",
-     "ControlPage",
      "ControlPage"
     ],
-    "pageState": {
-     "fullname": "Ada Lovelace",
-     "email": "ada@example.com",
-     "phone": "",
-     "topic": "Billing",
-     "message": "My last invoice was charged twice.",
-     "consent": "on"
-    },
+    "pageState": [
+     "Aurora mug (blue)"
+    ],
     "lastReply": null
    },
    {
-    "task": "form",
+    "task": "shop",
+    "arm": "on",
+    "rep": 1,
+    "success": true,
+    "ended": "turn-ended",
+    "wallMs": 23131,
+    "llmSteps": 7,
+    "inputTokens": 29073,
+    "outputTokens": 610,
+    "actOffered": true,
+    "pageActions": 1,
+    "controlPageCalls": 2,
+    "actCalls": 0,
+    "actSteps": 0,
+    "actStatuses": [],
+    "actMessages": [],
+    "vonDecides": 0,
+    "vonFailed": 0,
+    "vonMs": 0,
+    "vonBootMs": [
+     12149
+    ],
+    "approvals": [
+     "Read the interactive elements on this page",
+     "Let the agent control 127.0.0.1:58845?",
+     "Click “Add Aurora mug (blue) to cart”"
+    ],
+    "toolCalls": [
+     "ReadPage",
+     "GetTool",
+     "ControlPage",
+     "GetTool",
+     "RequestPageControl",
+     "ControlPage"
+    ],
+    "pageState": [
+     "Aurora mug (blue)"
+    ],
+    "lastReply": null
+   },
+   {
+    "task": "shop",
     "arm": "forced",
     "rep": 1,
     "success": false,
     "ended": "turn-ended",
-    "wallMs": 85795,
-    "llmSteps": 18,
-    "inputTokens": 70809,
-    "outputTokens": 6660,
-    "actOffered": false,
-    "pageActions": 0,
-    "controlPageCalls": 6,
-    "actCalls": 0,
-    "actSteps": 0,
-    "actStatuses": [],
-    "actMessages": [],
-    "vonDecides": 0,
-    "vonFailed": 0,
-    "vonMs": 0,
-    "vonBootMs": [],
-    "approvals": [
-     "Read the interactive elements on this page"
-    ],
-    "toolCalls": [
-     "ReadPage",
-     "GetTool",
-     "ControlPage",
-     "ControlPage",
-     "ToolSearch",
-     "ControlPage",
-     "ToolSearch",
-     "ToolSearch",
-     "ControlPage",
-     "ToolSearch",
-     "ToolSearch",
-     "ToolSearch",
-     "ToolSearch",
-     "ControlPage",
-     "ToolSearch",
-     "ControlPage",
-     "ToolSearch"
-    ],
-    "pageState": null,
-    "lastReply": null
-   },
-   {
-    "task": "shop",
-    "arm": "off",
-    "rep": 1,
-    "success": true,
-    "ended": "turn-ended",
-    "wallMs": 29680,
-    "llmSteps": 7,
-    "inputTokens": 28346,
-    "outputTokens": 536,
-    "actOffered": false,
-    "pageActions": 1,
-    "controlPageCalls": 2,
-    "actCalls": 0,
-    "actSteps": 0,
-    "actStatuses": [],
-    "actMessages": [],
-    "vonDecides": 0,
-    "vonFailed": 0,
-    "vonMs": 0,
-    "vonBootMs": [],
-    "approvals": [
-     "Read the interactive elements on this page",
-     "Let the agent control 127.0.0.1:50473?",
-     "Click “Add Aurora mug (blue) to cart”"
-    ],
-    "toolCalls": [
-     "ReadPage",
-     "GetTool",
-     "ControlPage",
-     "GetTool",
-     "RequestPageControl",
-     "ControlPage"
-    ],
-    "pageState": [
-     "Aurora mug (blue)"
-    ],
-    "lastReply": null
-   },
-   {
-    "task": "shop",
-    "arm": "on",
-    "rep": 1,
-    "success": true,
-    "ended": "turn-ended",
-    "wallMs": 23509,
-    "llmSteps": 7,
-    "inputTokens": 29000,
-    "outputTokens": 528,
-    "actOffered": true,
-    "pageActions": 1,
-    "controlPageCalls": 2,
-    "actCalls": 0,
-    "actSteps": 0,
-    "actStatuses": [],
-    "actMessages": [],
-    "vonDecides": 0,
-    "vonFailed": 0,
-    "vonMs": 0,
-    "vonBootMs": [],
-    "approvals": [
-     "Read the interactive elements on this page",
-     "Let the agent control 127.0.0.1:50473?",
-     "Click “Add Aurora mug (blue) to cart”"
-    ],
-    "toolCalls": [
-     "ReadPage",
-     "GetTool",
-     "ControlPage",
-     "GetTool",
-     "RequestPageControl",
-     "ControlPage"
-    ],
-    "pageState": [
-     "Aurora mug (blue)"
-    ],
-    "lastReply": null
-   },
-   {
-    "task": "shop",
-    "arm": "forced",
-    "rep": 1,
-    "success": true,
-    "ended": "turn-ended",
-    "wallMs": 58666,
-    "llmSteps": 8,
-    "inputTokens": 36980,
-    "outputTokens": 1408,
-    "actOffered": true,
-    "pageActions": 1,
-    "controlPageCalls": 2,
-    "actCalls": 1,
-    "actSteps": 0,
-    "actStatuses": [
-     "uncertain"
-    ],
-    "actMessages": [
-     "unsure of the next operation (p=0.33)"
-    ],
-    "vonDecides": 1,
-    "vonFailed": 0,
-    "vonMs": 808,
-    "vonBootMs": [
-     16990
-    ],
-    "approvals": [
-     "Read the interactive elements on this page",
-     "Let the agent control 127.0.0.1:50473?",
-     "Click “Add Aurora mug (blue) to cart”"
-    ],
-    "toolCalls": [
-     "ReadPage",
-     "GetTool",
-     "ControlPage",
-     "GetTool",
-     "RequestPageControl",
-     "Act",
-     "ControlPage"
-    ],
-    "pageState": [
-     "Aurora mug (blue)"
-    ],
-    "lastReply": null
-   },
-   {
-    "task": "dialog",
-    "arm": "off",
-    "rep": 1,
-    "success": true,
-    "ended": "turn-ended",
-    "wallMs": 29700,
-    "llmSteps": 9,
-    "inputTokens": 31010,
-    "outputTokens": 937,
-    "actOffered": false,
-    "pageActions": 2,
-    "controlPageCalls": 3,
-    "actCalls": 0,
-    "actSteps": 0,
-    "actStatuses": [],
-    "actMessages": [],
-    "vonDecides": 0,
-    "vonFailed": 0,
-    "vonMs": 0,
-    "vonBootMs": [],
-    "approvals": [
-     "Read the interactive elements on this page",
-     "Let the agent control 127.0.0.1:50473?",
-     "Click “Reject non-essential”",
-     "Click “Add Nimbus tote (green) to cart”"
-    ],
-    "toolCalls": [
-     "ReadPage",
-     "GetTool",
-     "ControlPage",
-     "ToolSearch",
-     "GetTool",
-     "RequestPageControl",
-     "ControlPage",
-     "ControlPage"
-    ],
-    "pageState": {
-     "consent": "essential",
-     "cart": [
-      "Nimbus tote (green)"
-     ]
-    },
-    "lastReply": null
-   },
-   {
-    "task": "dialog",
-    "arm": "on",
-    "rep": 1,
-    "success": true,
-    "ended": "turn-ended",
-    "wallMs": 34012,
-    "llmSteps": 8,
-    "inputTokens": 27394,
-    "outputTokens": 908,
-    "actOffered": true,
-    "pageActions": 2,
-    "controlPageCalls": 3,
-    "actCalls": 0,
-    "actSteps": 0,
-    "actStatuses": [],
-    "actMessages": [],
-    "vonDecides": 0,
-    "vonFailed": 0,
-    "vonMs": 0,
-    "vonBootMs": [],
-    "approvals": [
-     "Read the interactive elements on this page",
-     "Let the agent control 127.0.0.1:50473?",
-     "Click “Reject non-essential”",
-     "Click “Add Nimbus tote (green) to cart”"
-    ],
-    "toolCalls": [
-     "ReadPage",
-     "GetTool",
-     "ControlPage",
-     "GetTool",
-     "RequestPageControl",
-     "ControlPage",
-     "ControlPage"
-    ],
-    "pageState": {
-     "consent": "essential",
-     "cart": [
-      "Nimbus tote (green)"
-     ]
-    },
-    "lastReply": null
-   },
-   {
-    "task": "dialog",
-    "arm": "forced",
-    "rep": 1,
-    "success": true,
-    "ended": "turn-ended",
-    "wallMs": 53941,
-    "llmSteps": 10,
-    "inputTokens": 35616,
-    "outputTokens": 1850,
-    "actOffered": true,
-    "pageActions": 2,
-    "controlPageCalls": 2,
-    "actCalls": 2,
-    "actSteps": 2,
-    "actStatuses": [
-     "done",
-     "done"
-    ],
-    "actMessages": [],
-    "vonDecides": 6,
-    "vonFailed": 0,
-    "vonMs": 1454,
-    "vonBootMs": [
-     8672
-    ],
-    "approvals": [
-     "Read the interactive elements on this page",
-     "Let the agent control 127.0.0.1:50473?",
-     "Click “Reject non-essential”",
-     "Click “Add Nimbus tote (green) to cart”"
-    ],
-    "toolCalls": [
-     "ReadPage",
-     "GetTool",
-     "ControlPage",
-     "ControlPage",
-     "ToolSearch",
-     "GetTool",
-     "RequestPageControl",
-     "Act",
-     "Act"
-    ],
-    "pageState": {
-     "consent": "essential",
-     "cart": [
-      "Nimbus tote (green)"
-     ]
-    },
-    "lastReply": null
-   },
-   {
-    "task": "form",
-    "arm": "off",
-    "rep": 2,
-    "success": true,
-    "ended": "turn-ended",
-    "wallMs": 38758,
-    "llmSteps": 12,
-    "inputTokens": 47232,
-    "outputTokens": 1387,
-    "actOffered": false,
-    "pageActions": 6,
-    "controlPageCalls": 7,
-    "actCalls": 0,
-    "actSteps": 0,
-    "actStatuses": [],
-    "actMessages": [],
-    "vonDecides": 0,
-    "vonFailed": 0,
-    "vonMs": 0,
-    "vonBootMs": [],
-    "approvals": [
-     "Read the interactive elements on this page",
-     "Let the agent control 127.0.0.1:50473?",
-     "Click “Send message”"
-    ],
-    "toolCalls": [
-     "ReadPage",
-     "GetTool",
-     "ControlPage",
-     "GetTool",
-     "RequestPageControl",
-     "ControlPage",
-     "ControlPage",
-     "ControlPage",
-     "ControlPage",
-     "ControlPage",
-     "ControlPage"
-    ],
-    "pageState": {
-     "fullname": "Ada Lovelace",
-     "email": "ada@example.com",
-     "phone": "",
-     "topic": "Billing",
-     "message": "My last invoice was charged twice.",
-     "consent": "on"
-    },
-    "lastReply": null
-   },
-   {
-    "task": "form",
-    "arm": "on",
-    "rep": 2,
-    "success": true,
-    "ended": "turn-ended",
-    "wallMs": 56974,
+    "wallMs": 55866,
     "llmSteps": 14,
-    "inputTokens": 62062,
-    "outputTokens": 2854,
-    "actOffered": true,
-    "pageActions": 7,
+    "inputTokens": 57007,
+    "outputTokens": 3283,
+    "actOffered": false,
+    "pageActions": 0,
     "controlPageCalls": 8,
     "actCalls": 0,
     "actSteps": 0,
@@ -5590,174 +4768,6 @@
     "vonMs": 0,
     "vonBootMs": [],
     "approvals": [
-     "Read the interactive elements on this page",
-     "Let the agent control 127.0.0.1:50473?",
-     "Click “Send message”",
-     "View the tab you are currently on"
-    ],
-    "toolCalls": [
-     "ReadPage",
-     "GetTool",
-     "ControlPage",
-     "GetTool",
-     "RequestPageControl",
-     "ControlPage",
-     "ControlPage",
-     "ControlPage",
-     "ControlPage",
-     "ControlPage",
-     "ControlPage",
-     "ReadPage",
-     "ControlPage"
-    ],
-    "pageState": {
-     "fullname": "Ada Lovelace",
-     "email": "ada@example.com",
-     "phone": "",
-     "topic": "Billing",
-     "message": "My last invoice was charged twice.",
-     "consent": "on"
-    },
-    "lastReply": null
-   },
-   {
-    "task": "form",
-    "arm": "forced",
-    "rep": 2,
-    "success": false,
-    "ended": "turn-ended",
-    "wallMs": 23607,
-    "llmSteps": 8,
-    "inputTokens": 25883,
-    "outputTokens": 1708,
-    "actOffered": false,
-    "pageActions": 0,
-    "controlPageCalls": 3,
-    "actCalls": 0,
-    "actSteps": 0,
-    "actStatuses": [],
-    "actMessages": [],
-    "vonDecides": 0,
-    "vonFailed": 0,
-    "vonMs": 0,
-    "vonBootMs": [],
-    "approvals": [
-     "Read the interactive elements on this page"
-    ],
-    "toolCalls": [
-     "ReadPage",
-     "GetTool",
-     "ControlPage",
-     "ControlPage",
-     "ToolSearch",
-     "ControlPage",
-     "ToolSearch"
-    ],
-    "pageState": null,
-    "lastReply": null
-   },
-   {
-    "task": "shop",
-    "arm": "off",
-    "rep": 2,
-    "success": true,
-    "ended": "turn-ended",
-    "wallMs": 23565,
-    "llmSteps": 7,
-    "inputTokens": 28243,
-    "outputTokens": 534,
-    "actOffered": false,
-    "pageActions": 1,
-    "controlPageCalls": 2,
-    "actCalls": 0,
-    "actSteps": 0,
-    "actStatuses": [],
-    "actMessages": [],
-    "vonDecides": 0,
-    "vonFailed": 0,
-    "vonMs": 0,
-    "vonBootMs": [],
-    "approvals": [
-     "Read the interactive elements on this page",
-     "Let the agent control 127.0.0.1:50473?",
-     "Click “Add Aurora mug (blue) to cart”"
-    ],
-    "toolCalls": [
-     "ReadPage",
-     "GetTool",
-     "ControlPage",
-     "GetTool",
-     "RequestPageControl",
-     "ControlPage"
-    ],
-    "pageState": [
-     "Aurora mug (blue)"
-    ],
-    "lastReply": null
-   },
-   {
-    "task": "shop",
-    "arm": "on",
-    "rep": 2,
-    "success": true,
-    "ended": "turn-ended",
-    "wallMs": 33252,
-    "llmSteps": 9,
-    "inputTokens": 37971,
-    "outputTokens": 951,
-    "actOffered": true,
-    "pageActions": 1,
-    "controlPageCalls": 3,
-    "actCalls": 0,
-    "actSteps": 0,
-    "actStatuses": [],
-    "actMessages": [],
-    "vonDecides": 0,
-    "vonFailed": 0,
-    "vonMs": 0,
-    "vonBootMs": [],
-    "approvals": [
-     "Read the interactive elements on this page",
-     "Let the agent control 127.0.0.1:50473?",
-     "Click “Add Aurora mug (blue) to cart”"
-    ],
-    "toolCalls": [
-     "ReadPage",
-     "GetTool",
-     "ControlPage",
-     "ControlPage",
-     "ToolSearch",
-     "GetTool",
-     "RequestPageControl",
-     "ControlPage"
-    ],
-    "pageState": [
-     "Aurora mug (blue)"
-    ],
-    "lastReply": null
-   },
-   {
-    "task": "shop",
-    "arm": "forced",
-    "rep": 2,
-    "success": false,
-    "ended": "turn-ended",
-    "wallMs": 57054,
-    "llmSteps": 18,
-    "inputTokens": 77759,
-    "outputTokens": 4013,
-    "actOffered": false,
-    "pageActions": 0,
-    "controlPageCalls": 9,
-    "actCalls": 0,
-    "actSteps": 0,
-    "actStatuses": [],
-    "actMessages": [],
-    "vonDecides": 0,
-    "vonFailed": 0,
-    "vonMs": 0,
-    "vonBootMs": [],
-    "approvals": [
      "Read the interactive elements on this page"
     ],
     "toolCalls": [
@@ -5770,14 +4780,10 @@
      "ControlPage",
      "ToolSearch",
      "ControlPage",
-     "ToolSearch",
-     "ControlPage",
-     "ControlPage",
      "ControlPage",
      "ToolSearch",
      "ControlPage",
-     "ToolSearch",
-     "ToolSearch"
+     "ControlPage"
     ],
     "pageState": [],
     "lastReply": null
@@ -5785,15 +4791,156 @@
    {
     "task": "dialog",
     "arm": "off",
+    "rep": 1,
+    "success": true,
+    "ended": "turn-ended",
+    "wallMs": 38374,
+    "llmSteps": 10,
+    "inputTokens": 34409,
+    "outputTokens": 1380,
+    "actOffered": false,
+    "pageActions": 2,
+    "controlPageCalls": 4,
+    "actCalls": 0,
+    "actSteps": 0,
+    "actStatuses": [],
+    "actMessages": [],
+    "vonDecides": 0,
+    "vonFailed": 0,
+    "vonMs": 0,
+    "vonBootMs": [],
+    "approvals": [
+     "Read the interactive elements on this page",
+     "Let the agent control 127.0.0.1:58845?",
+     "Click “Reject non-essential”",
+     "Click “Add Nimbus tote (green) to cart”"
+    ],
+    "toolCalls": [
+     "ReadPage",
+     "GetTool",
+     "ControlPage",
+     "ControlPage",
+     "ToolSearch",
+     "GetTool",
+     "RequestPageControl",
+     "ControlPage",
+     "ControlPage"
+    ],
+    "pageState": {
+     "consent": "essential",
+     "cart": [
+      "Nimbus tote (green)"
+     ]
+    },
+    "lastReply": null
+   },
+   {
+    "task": "dialog",
+    "arm": "on",
+    "rep": 1,
+    "success": true,
+    "ended": "turn-ended",
+    "wallMs": 29076,
+    "llmSteps": 6,
+    "inputTokens": 20904,
+    "outputTokens": 768,
+    "actOffered": true,
+    "pageActions": 2,
+    "controlPageCalls": 2,
+    "actCalls": 0,
+    "actSteps": 0,
+    "actStatuses": [],
+    "actMessages": [],
+    "vonDecides": 0,
+    "vonFailed": 0,
+    "vonMs": 0,
+    "vonBootMs": [
+     14616
+    ],
+    "approvals": [
+     "Read the interactive elements on this page",
+     "Let the agent control 127.0.0.1:58845?",
+     "Click “Reject non-essential”",
+     "Click “Add Nimbus tote (green) to cart”"
+    ],
+    "toolCalls": [
+     "ReadPage",
+     "GetTool",
+     "RequestPageControl",
+     "ControlPage",
+     "ControlPage"
+    ],
+    "pageState": {
+     "consent": "essential",
+     "cart": [
+      "Nimbus tote (green)"
+     ]
+    },
+    "lastReply": null
+   },
+   {
+    "task": "dialog",
+    "arm": "forced",
+    "rep": 1,
+    "success": true,
+    "ended": "turn-ended",
+    "wallMs": 29401,
+    "llmSteps": 10,
+    "inputTokens": 37171,
+    "outputTokens": 1309,
+    "actOffered": true,
+    "pageActions": 2,
+    "controlPageCalls": 2,
+    "actCalls": 2,
+    "actSteps": 1,
+    "actStatuses": [
+     "none",
+     "done"
+    ],
+    "actMessages": [],
+    "vonDecides": 2,
+    "vonFailed": 0,
+    "vonMs": 828,
+    "vonBootMs": [
+     10007
+    ],
+    "approvals": [
+     "Read the interactive elements on this page",
+     "Let the agent control 127.0.0.1:58845?",
+     "Click “Reject non-essential”",
+     "Click “Add Nimbus tote (green) to cart”"
+    ],
+    "toolCalls": [
+     "ReadPage",
+     "GetTool",
+     "ControlPage",
+     "ToolSearch",
+     "GetTool",
+     "RequestPageControl",
+     "ControlPage",
+     "Act",
+     "Act"
+    ],
+    "pageState": {
+     "consent": "essential",
+     "cart": [
+      "Nimbus tote (green)"
+     ]
+    },
+    "lastReply": null
+   },
+   {
+    "task": "form",
+    "arm": "off",
     "rep": 2,
     "success": true,
     "ended": "turn-ended",
-    "wallMs": 50286,
+    "wallMs": 54020,
     "llmSteps": 12,
-    "inputTokens": 41482,
-    "outputTokens": 2572,
+    "inputTokens": 65889,
+    "outputTokens": 1934,
     "actOffered": false,
-    "pageActions": 2,
+    "pageActions": 6,
     "controlPageCalls": 6,
     "actCalls": 0,
     "actSteps": 0,
@@ -5805,18 +4952,283 @@
     "vonBootMs": [],
     "approvals": [
      "Read the interactive elements on this page",
-     "Let the agent control 127.0.0.1:50473?",
-     "Click “Reject non-essential”",
-     "Click “Add Nimbus tote (green) to cart”"
+     "Let the agent control 127.0.0.1:58845?",
+     "Click “Send message”",
+     "View the tab you are currently on"
     ],
     "toolCalls": [
-     "GetTool",
      "ReadPage",
+     "ToolSearch",
+     "GetTool",
+     "RequestPageControl",
      "ControlPage",
+     "ControlPage",
+     "ControlPage",
+     "ControlPage",
+     "ControlPage",
+     "ControlPage",
+     "ReadPage"
+    ],
+    "pageState": {
+     "fullname": "Ada Lovelace",
+     "email": "ada@example.com",
+     "phone": "",
+     "topic": "Billing",
+     "message": "My last invoice was charged twice.",
+     "consent": "on"
+    },
+    "lastReply": null
+   },
+   {
+    "task": "form",
+    "arm": "on",
+    "rep": 2,
+    "success": false,
+    "ended": "turn-ended",
+    "wallMs": 55276,
+    "llmSteps": 12,
+    "inputTokens": 42994,
+    "outputTokens": 3689,
+    "actOffered": false,
+    "pageActions": 0,
+    "controlPageCalls": 6,
+    "actCalls": 0,
+    "actSteps": 0,
+    "actStatuses": [],
+    "actMessages": [],
+    "vonDecides": 0,
+    "vonFailed": 0,
+    "vonMs": 0,
+    "vonBootMs": [],
+    "approvals": [
+     "Read the interactive elements on this page"
+    ],
+    "toolCalls": [
+     "ReadPage",
+     "GetTool",
      "ControlPage",
      "ControlPage",
      "ToolSearch",
      "ControlPage",
+     "ToolSearch",
+     "ControlPage",
+     "ToolSearch",
+     "ControlPage",
+     "ControlPage"
+    ],
+    "pageState": null,
+    "lastReply": null
+   },
+   {
+    "task": "form",
+    "arm": "forced",
+    "rep": 2,
+    "success": false,
+    "ended": "turn-ended",
+    "wallMs": 116129,
+    "llmSteps": 12,
+    "inputTokens": 51236,
+    "outputTokens": 4894,
+    "actOffered": true,
+    "pageActions": 5,
+    "controlPageCalls": 3,
+    "actCalls": 3,
+    "actSteps": 3,
+    "actStatuses": [
+     "done",
+     "uncertain",
+     "done"
+    ],
+    "actMessages": [
+     "possibly done (p=0.50) — verify the page"
+    ],
+    "vonDecides": 6,
+    "vonFailed": 0,
+    "vonMs": 2351,
+    "vonBootMs": [
+     20980
+    ],
+    "approvals": [
+     "Read the interactive elements on this page",
+     "Let the agent control 127.0.0.1:58845?",
+     "Click “Send message”",
+     "Click “Send message”",
+     "View the tab you are currently on"
+    ],
+    "toolCalls": [
+     "ReadPage",
+     "GetTool",
+     "ControlPage",
+     "GetTool",
+     "RequestPageControl",
+     "Act",
+     "Act",
+     "ControlPage",
+     "ControlPage",
+     "Act",
+     "ReadPage"
+    ],
+    "pageState": {
+     "fullname": "Ada Lovelace",
+     "email": "ada@example.com",
+     "phone": "",
+     "topic": "",
+     "message": "",
+     "consent": "on"
+    },
+    "lastReply": null
+   },
+   {
+    "task": "shop",
+    "arm": "off",
+    "rep": 2,
+    "success": true,
+    "ended": "turn-ended",
+    "wallMs": 34509,
+    "llmSteps": 8,
+    "inputTokens": 33980,
+    "outputTokens": 920,
+    "actOffered": false,
+    "pageActions": 1,
+    "controlPageCalls": 2,
+    "actCalls": 0,
+    "actSteps": 0,
+    "actStatuses": [],
+    "actMessages": [],
+    "vonDecides": 0,
+    "vonFailed": 0,
+    "vonMs": 0,
+    "vonBootMs": [],
+    "approvals": [
+     "Read the interactive elements on this page",
+     "Let the agent control 127.0.0.1:58845?",
+     "Click “Add Aurora mug (blue) to cart”"
+    ],
+    "toolCalls": [
+     "ReadPage",
+     "GetTool",
+     "ControlPage",
+     "ToolSearch",
+     "GetTool",
+     "RequestPageControl",
+     "ControlPage"
+    ],
+    "pageState": [
+     "Aurora mug (blue)"
+    ],
+    "lastReply": null
+   },
+   {
+    "task": "shop",
+    "arm": "on",
+    "rep": 2,
+    "success": true,
+    "ended": "turn-ended",
+    "wallMs": 22339,
+    "llmSteps": 7,
+    "inputTokens": 28973,
+    "outputTokens": 513,
+    "actOffered": true,
+    "pageActions": 1,
+    "controlPageCalls": 2,
+    "actCalls": 0,
+    "actSteps": 0,
+    "actStatuses": [],
+    "actMessages": [],
+    "vonDecides": 0,
+    "vonFailed": 0,
+    "vonMs": 0,
+    "vonBootMs": [],
+    "approvals": [
+     "Read the interactive elements on this page",
+     "Let the agent control 127.0.0.1:58845?",
+     "Click “Add Aurora mug (blue) to cart”"
+    ],
+    "toolCalls": [
+     "ReadPage",
+     "GetTool",
+     "ControlPage",
+     "GetTool",
+     "RequestPageControl",
+     "ControlPage"
+    ],
+    "pageState": [
+     "Aurora mug (blue)"
+    ],
+    "lastReply": null
+   },
+   {
+    "task": "shop",
+    "arm": "forced",
+    "rep": 2,
+    "success": true,
+    "ended": "turn-ended",
+    "wallMs": 37109,
+    "llmSteps": 7,
+    "inputTokens": 29327,
+    "outputTokens": 729,
+    "actOffered": true,
+    "pageActions": 1,
+    "controlPageCalls": 1,
+    "actCalls": 1,
+    "actSteps": 1,
+    "actStatuses": [
+     "done"
+    ],
+    "actMessages": [],
+    "vonDecides": 2,
+    "vonFailed": 0,
+    "vonMs": 1807,
+    "vonBootMs": [
+     14003
+    ],
+    "approvals": [
+     "Read the interactive elements on this page",
+     "Let the agent control 127.0.0.1:58845?",
+     "Click “Add Aurora mug (blue) to cart”"
+    ],
+    "toolCalls": [
+     "ReadPage",
+     "GetTool",
+     "ControlPage",
+     "GetTool",
+     "RequestPageControl",
+     "Act"
+    ],
+    "pageState": [
+     "Aurora mug (blue)"
+    ],
+    "lastReply": null
+   },
+   {
+    "task": "dialog",
+    "arm": "off",
+    "rep": 2,
+    "success": true,
+    "ended": "turn-ended",
+    "wallMs": 32222,
+    "llmSteps": 6,
+    "inputTokens": 19488,
+    "outputTokens": 1007,
+    "actOffered": false,
+    "pageActions": 2,
+    "controlPageCalls": 2,
+    "actCalls": 0,
+    "actSteps": 0,
+    "actStatuses": [],
+    "actMessages": [],
+    "vonDecides": 0,
+    "vonFailed": 0,
+    "vonMs": 0,
+    "vonBootMs": [],
+    "approvals": [
+     "Read the interactive elements on this page",
+     "Let the agent control 127.0.0.1:58845?",
+     "Click “Reject non-essential”",
+     "Click “Add Nimbus tote (green) to cart”"
+    ],
+    "toolCalls": [
+     "ReadPage",
      "GetTool",
      "RequestPageControl",
      "ControlPage",
@@ -5836,10 +5248,10 @@
     "rep": 2,
     "success": true,
     "ended": "turn-ended",
-    "wallMs": 27480,
+    "wallMs": 24832,
     "llmSteps": 8,
-    "inputTokens": 27790,
-    "outputTokens": 983,
+    "inputTokens": 27562,
+    "outputTokens": 899,
     "actOffered": true,
     "pageActions": 2,
     "controlPageCalls": 3,
@@ -5850,10 +5262,12 @@
     "vonDecides": 0,
     "vonFailed": 0,
     "vonMs": 0,
-    "vonBootMs": [],
+    "vonBootMs": [
+     10320
+    ],
     "approvals": [
      "Read the interactive elements on this page",
-     "Let the agent control 127.0.0.1:50473?",
+     "Let the agent control 127.0.0.1:58845?",
      "Click “Reject non-essential”",
      "Click “Add Nimbus tote (green) to cart”"
     ],
@@ -5880,13 +5294,13 @@
     "rep": 2,
     "success": true,
     "ended": "turn-ended",
-    "wallMs": 46977,
-    "llmSteps": 8,
-    "inputTokens": 27871,
-    "outputTokens": 1015,
+    "wallMs": 72899,
+    "llmSteps": 7,
+    "inputTokens": 34334,
+    "outputTokens": 1514,
     "actOffered": true,
     "pageActions": 2,
-    "controlPageCalls": 1,
+    "controlPageCalls": 0,
     "actCalls": 2,
     "actSteps": 2,
     "actStatuses": [
@@ -5894,22 +5308,21 @@
      "done"
     ],
     "actMessages": [],
-    "vonDecides": 6,
+    "vonDecides": 4,
     "vonFailed": 0,
-    "vonMs": 1539,
+    "vonMs": 1360,
     "vonBootMs": [
-     9615
+     34760
     ],
     "approvals": [
      "Read the interactive elements on this page",
-     "Let the agent control 127.0.0.1:50473?",
+     "Let the agent control 127.0.0.1:58845?",
      "Click “Reject non-essential”",
      "Click “Add Nimbus tote (green) to cart”"
     ],
     "toolCalls": [
      "ReadPage",
-     "GetTool",
-     "ControlPage",
+     "ToolSearch",
      "GetTool",
      "RequestPageControl",
      "Act",
@@ -5928,15 +5341,36 @@
    "byArm": {
     "off": {
      "runs": 9,
-     "success": 8,
-     "wallMsMedian": 35259,
-     "wallMsMean": 36190,
-     "llmStepsMean": 9.7,
+     "success": 9,
+     "wallMsMedian": 38374,
+     "wallMsMean": 39052,
+     "llmStepsMean": 9.4,
      "llmStepsMedian": 9,
-     "tokensMedian": 34170,
-     "tokensMean": 37538,
-     "inputTokensMean": 36240,
-     "outputTokensMean": 1298,
+     "tokensMedian": 35789,
+     "tokensMean": 41758,
+     "inputTokensMean": 40459,
+     "outputTokensMean": 1299,
+     "pageActionsMean": 3,
+     "actCalls": 0,
+     "actSteps": 0,
+     "actNonDone": 0,
+     "actStatuses": {},
+     "vonDecides": 0,
+     "vonMs": 0,
+     "vonPerActStep": null,
+     "approvalsMean": 3.6
+    },
+    "on": {
+     "runs": 9,
+     "success": 8,
+     "wallMsMedian": 31476,
+     "wallMsMean": 40718,
+     "llmStepsMean": 10.3,
+     "llmStepsMedian": 8,
+     "tokensMedian": 29756,
+     "tokensMean": 42332,
+     "inputTokensMean": 40485,
+     "outputTokensMean": 1847,
      "pageActionsMean": 2.3,
      "actCalls": 0,
      "actSteps": 0,
@@ -5944,65 +5378,70 @@
      "actStatuses": {},
      "vonDecides": 0,
      "vonMs": 0,
+     "vonPerActStep": null,
      "approvalsMean": 3.1
-    },
-    "on": {
-     "runs": 9,
-     "success": 9,
-     "wallMsMedian": 34012,
-     "wallMsMean": 37867,
-     "llmStepsMean": 9.3,
-     "llmStepsMedian": 8,
-     "tokensMedian": 29528,
-     "tokensMean": 39108,
-     "inputTokensMean": 37821,
-     "outputTokensMean": 1287,
-     "pageActionsMean": 3.1,
-     "actCalls": 0,
-     "actSteps": 0,
-     "actNonDone": 0,
-     "actStatuses": {},
-     "vonDecides": 0,
-     "vonMs": 0,
-     "approvalsMean": 3.6
     },
     "forced": {
      "runs": 9,
-     "success": 5,
-     "wallMsMedian": 53941,
-     "wallMsMean": 56158,
-     "llmStepsMean": 11.2,
-     "llmStepsMedian": 8,
-     "tokensMedian": 37466,
-     "tokensMean": 47714,
-     "inputTokensMean": 45094,
-     "outputTokensMean": 2620,
-     "pageActionsMean": 1.7,
-     "actCalls": 9,
-     "actSteps": 8,
-     "actNonDone": 2,
+     "success": 6,
+     "wallMsMedian": 55866,
+     "wallMsMean": 84000,
+     "llmStepsMean": 12.3,
+     "llmStepsMedian": 10,
+     "tokensMedian": 38480,
+     "tokensMean": 54744,
+     "inputTokensMean": 51046,
+     "outputTokensMean": 3697,
+     "pageActionsMean": 2.2,
+     "actCalls": 18,
+     "actSteps": 11,
+     "actNonDone": 9,
      "actStatuses": {
-      "uncertain": 2,
-      "done": 7
+      "error": 6,
+      "done": 9,
+      "none": 2,
+      "uncertain": 1
      },
-     "vonDecides": 28,
-     "vonMs": 8025,
-     "approvalsMean": 2.8
+     "vonDecides": 35,
+     "vonMs": 18245,
+     "vonPerActStep": 3.18,
+     "approvalsMean": 3.1
     }
    },
    "byTaskArm": {
     "form": {
      "off": {
       "runs": 3,
-      "success": 2,
-      "wallMsMedian": 38758,
-      "wallMsMean": 39615,
-      "llmStepsMean": 11,
+      "success": 3,
+      "wallMsMedian": 53033,
+      "wallMsMean": 47863,
+      "llmStepsMean": 12.3,
       "llmStepsMedian": 12,
-      "tokensMedian": 48619,
-      "tokensMean": 43980,
-      "inputTokensMean": 42407,
-      "outputTokensMean": 1574,
+      "tokensMedian": 56058,
+      "tokensMean": 57807,
+      "inputTokensMean": 55841,
+      "outputTokensMean": 1967,
+      "pageActionsMean": 6,
+      "actCalls": 0,
+      "actSteps": 0,
+      "actNonDone": 0,
+      "actStatuses": {},
+      "vonDecides": 0,
+      "vonMs": 0,
+      "vonPerActStep": null,
+      "approvalsMean": 3.7
+     },
+     "on": {
+      "runs": 3,
+      "success": 2,
+      "wallMsMedian": 55276,
+      "wallMsMean": 65736,
+      "llmStepsMean": 16,
+      "llmStepsMedian": 13,
+      "tokensMedian": 58370,
+      "tokensMean": 68242,
+      "inputTokensMean": 64419,
+      "outputTokensMean": 3823,
       "pageActionsMean": 4,
       "actCalls": 0,
       "actSteps": 0,
@@ -6010,63 +5449,47 @@
       "actStatuses": {},
       "vonDecides": 0,
       "vonMs": 0,
+      "vonPerActStep": null,
       "approvalsMean": 2.3
-     },
-     "on": {
-      "runs": 3,
-      "success": 3,
-      "wallMsMedian": 54918,
-      "wallMsMean": 52778,
-      "llmStepsMean": 13,
-      "llmStepsMedian": 13,
-      "tokensMedian": 58191,
-      "tokensMean": 58654,
-      "inputTokensMean": 56440,
-      "outputTokensMean": 2214,
-      "pageActionsMean": 6.3,
-      "actCalls": 0,
-      "actSteps": 0,
-      "actNonDone": 0,
-      "actStatuses": {},
-      "vonDecides": 0,
-      "vonMs": 0,
-      "approvalsMean": 3.7
      },
      "forced": {
       "runs": 3,
       "success": 1,
-      "wallMsMedian": 85795,
-      "wallMsMean": 66036,
-      "llmStepsMean": 14,
-      "llmStepsMedian": 16,
-      "tokensMedian": 77469,
-      "tokensMean": 60872,
-      "inputTokensMean": 56619,
-      "outputTokensMean": 4254,
-      "pageActionsMean": 2.3,
-      "actCalls": 1,
-      "actSteps": 1,
-      "actNonDone": 1,
+      "wallMsMedian": 145216,
+      "wallMsMean": 156207,
+      "llmStepsMean": 18.3,
+      "llmStepsMedian": 18,
+      "tokensMedian": 95074,
+      "tokensMean": 84597,
+      "inputTokensMean": 76730,
+      "outputTokensMean": 7867,
+      "pageActionsMean": 4,
+      "actCalls": 10,
+      "actSteps": 5,
+      "actNonDone": 7,
       "actStatuses": {
+       "error": 6,
+       "done": 3,
        "uncertain": 1
       },
-      "vonDecides": 4,
-      "vonMs": 821,
-      "approvalsMean": 2
+      "vonDecides": 23,
+      "vonMs": 7128,
+      "vonPerActStep": 4.6,
+      "approvalsMean": 3
      }
     },
     "shop": {
      "off": {
       "runs": 3,
       "success": 3,
-      "wallMsMedian": 29680,
-      "wallMsMean": 29501,
+      "wallMsMedian": 34509,
+      "wallMsMean": 32217,
       "llmStepsMean": 7.7,
-      "llmStepsMedian": 7,
-      "tokensMedian": 28882,
-      "tokensMean": 31911,
-      "inputTokensMean": 31226,
-      "outputTokensMean": 686,
+      "llmStepsMedian": 8,
+      "tokensMedian": 34900,
+      "tokensMean": 37613,
+      "inputTokensMean": 36915,
+      "outputTokensMean": 699,
       "pageActionsMean": 1,
       "actCalls": 0,
       "actSteps": 0,
@@ -6074,19 +5497,20 @@
       "actStatuses": {},
       "vonDecides": 0,
       "vonMs": 0,
+      "vonPerActStep": null,
       "approvalsMean": 3
      },
      "on": {
       "runs": 3,
       "success": 3,
-      "wallMsMedian": 28766,
-      "wallMsMean": 28509,
+      "wallMsMedian": 23131,
+      "wallMsMean": 25649,
       "llmStepsMean": 7,
       "llmStepsMedian": 7,
-      "tokensMedian": 29528,
-      "tokensMean": 30107,
-      "inputTokensMean": 29418,
-      "outputTokensMean": 689,
+      "tokensMedian": 29683,
+      "tokensMean": 29642,
+      "inputTokensMean": 29072,
+      "outputTokensMean": 570,
       "pageActionsMean": 1,
       "actCalls": 0,
       "actSteps": 0,
@@ -6094,29 +5518,31 @@
       "actStatuses": {},
       "vonDecides": 0,
       "vonMs": 0,
+      "vonPerActStep": null,
       "approvalsMean": 3
      },
      "forced": {
       "runs": 3,
-      "success": 1,
-      "wallMsMedian": 57054,
-      "wallMsMean": 54881,
-      "llmStepsMean": 11,
+      "success": 2,
+      "wallMsMedian": 46654,
+      "wallMsMean": 46543,
+      "llmStepsMean": 9.7,
       "llmStepsMedian": 8,
-      "tokensMedian": 38388,
-      "tokensMean": 50624,
-      "inputTokensMean": 48307,
-      "outputTokensMean": 2318,
+      "tokensMedian": 36899,
+      "tokensMean": 42415,
+      "inputTokensMean": 40673,
+      "outputTokensMean": 1742,
       "pageActionsMean": 0.7,
-      "actCalls": 2,
-      "actSteps": 1,
+      "actCalls": 3,
+      "actSteps": 2,
       "actNonDone": 1,
       "actStatuses": {
-       "done": 1,
-       "uncertain": 1
+       "none": 1,
+       "done": 2
       },
-      "vonDecides": 6,
-      "vonMs": 2835,
+      "vonDecides": 4,
+      "vonMs": 8210,
+      "vonPerActStep": 2,
       "approvalsMean": 2.3
      }
     },
@@ -6124,14 +5550,14 @@
      "off": {
       "runs": 3,
       "success": 3,
-      "wallMsMedian": 38371,
-      "wallMsMean": 39452,
-      "llmStepsMean": 10.3,
-      "llmStepsMedian": 10,
-      "tokensMedian": 34170,
-      "tokensMean": 36724,
-      "inputTokensMean": 35088,
-      "outputTokensMean": 1636,
+      "wallMsMedian": 38374,
+      "wallMsMean": 37077,
+      "llmStepsMean": 8.3,
+      "llmStepsMedian": 9,
+      "tokensMedian": 33278,
+      "tokensMean": 29854,
+      "inputTokensMean": 28622,
+      "outputTokensMean": 1232,
       "pageActionsMean": 2,
       "actCalls": 0,
       "actSteps": 0,
@@ -6139,19 +5565,20 @@
       "actStatuses": {},
       "vonDecides": 0,
       "vonMs": 0,
+      "vonPerActStep": null,
       "approvalsMean": 4
      },
      "on": {
       "runs": 3,
       "success": 3,
-      "wallMsMedian": 34012,
-      "wallMsMean": 32315,
+      "wallMsMedian": 29076,
+      "wallMsMean": 30771,
       "llmStepsMean": 8,
       "llmStepsMedian": 8,
-      "tokensMedian": 28613,
-      "tokensMean": 28563,
-      "inputTokensMean": 27604,
-      "outputTokensMean": 958,
+      "tokensMedian": 28461,
+      "tokensMean": 29112,
+      "inputTokensMean": 27965,
+      "outputTokensMean": 1147,
       "pageActionsMean": 2,
       "actCalls": 0,
       "actSteps": 0,
@@ -6159,28 +5586,31 @@
       "actStatuses": {},
       "vonDecides": 0,
       "vonMs": 0,
+      "vonPerActStep": null,
       "approvalsMean": 4
      },
      "forced": {
       "runs": 3,
       "success": 3,
-      "wallMsMedian": 46977,
-      "wallMsMean": 47556,
-      "llmStepsMean": 8.7,
-      "llmStepsMedian": 8,
-      "tokensMedian": 28886,
-      "tokensMean": 31644,
-      "inputTokensMean": 30356,
-      "outputTokensMean": 1289,
+      "wallMsMedian": 45453,
+      "wallMsMean": 49251,
+      "llmStepsMean": 9,
+      "llmStepsMedian": 10,
+      "tokensMedian": 37327,
+      "tokensMean": 37218,
+      "inputTokensMean": 35736,
+      "outputTokensMean": 1483,
       "pageActionsMean": 2,
-      "actCalls": 6,
-      "actSteps": 6,
-      "actNonDone": 0,
+      "actCalls": 5,
+      "actSteps": 4,
+      "actNonDone": 1,
       "actStatuses": {
-       "done": 6
+       "done": 4,
+       "none": 1
       },
-      "vonDecides": 18,
-      "vonMs": 4369,
+      "vonDecides": 8,
+      "vonMs": 2907,
+      "vonPerActStep": 2,
       "approvalsMean": 4
      }
     }
@@ -6420,9 +5850,9 @@
   }
  },
  "verdict": [
-  "p50 decide 220 ms <= ~300 ms: latency OK (84/84 MatMulNBits nodes on WebGPU; 1369 nodes on WebGPU, 540 partitioned to CPU)",
-  "grounding Von 0.963 vs LLM 0.907 (delta 0.056): not clearly below the LLM",
-  "first-operation gate cleared in 51/54 grounding cases (correct operation AND above the gate in 45; expected control in the candidate set in 54/54); e2e: 2/9 Act calls ended non-done, 8 Act actions in total",
-  "WebGPU parity max|dp| 0.00733, argmax flips 0 (4 golden cases)"
+  "p50 decide 400 ms > ~300 ms: KILL condition met (84/84 MatMulNBits nodes on WebGPU; 1369 nodes on WebGPU, 540 partitioned to CPU)",
+  "grounding Von 0.926 vs LLM 0.944 (delta -0.018): not clearly below the LLM",
+  "first-operation gate cleared in 46/54 grounding cases (correct operation AND above the gate in 43; expected control in the candidate set in 54/54); e2e: 9/18 Act calls ended non-done, 11 Act actions in total",
+  "WebGPU parity max|dp| 0.0098, argmax flips 0 (4 golden cases)"
  ]
 }
