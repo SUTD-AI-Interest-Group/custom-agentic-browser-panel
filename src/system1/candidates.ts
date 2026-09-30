@@ -65,6 +65,20 @@ export function rankControls(goal: string, controls: readonly BrowserControl[], 
     .map((x) => x.c)
 }
 
+/**
+ * The same space with one (operation, control) pair removed — what the loop
+ * asks the policy again with after that pair would have been a repeat. An
+ * operation whose last target went is withdrawn too, so the policy cannot
+ * pick an operation with nothing to aim it at. Ranking, `shown` and `ranked`
+ * are untouched: the control is still on the page, just not that action.
+ */
+export function withoutTarget(space: CandidateActionSpace, op: ElementOperation, id: number): CandidateActionSpace {
+  const targets = { ...space.targets, [op]: space.targets[op].filter((t) => t !== id) }
+  const operations = space.operations.filter((o) => !isElementOperation(o) || targets[o].length > 0)
+  const eligible = new Set([...targets.CLICK, ...targets.TYPE_TEXT, ...targets.SELECT_OPTION]).size
+  return { ...space, targets, operations, stats: { ...space.stats, eligible } }
+}
+
 export function buildCandidateSpace(input: {
   goal: string
   observation: BrowserObservation

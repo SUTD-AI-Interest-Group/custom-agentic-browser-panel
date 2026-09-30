@@ -251,6 +251,36 @@ describe('runActLoop — history, loops and staleness', () => {
     expect(r.steps[0].result).toBe('success')
   })
 
+  it('asks once more with the repeated (operation, target) excluded, and executes the second choice', async () => {
+    // Run A, 2026-09-30: every form call typed one value, then chose the same
+    // field again. Now that first repeat narrows the space and asks again.
+    const message = el(1, { tag: 'input', type: 'text', name: 'Message' })
+    const name = el(2, { tag: 'input', type: 'text', name: 'Name' })
+    const p = policyOf([
+      { operation: 'TYPE_TEXT', targetId: 1, valueKey: 'message' },
+      { operation: 'TYPE_TEXT', targetId: 1, valueKey: 'message' }, // would repeat → excluded → asked again
+      { operation: 'TYPE_TEXT', targetId: 2, valueKey: 'name' },
+      { operation: 'DONE' },
+    ])
+    const d = deps({ policy: p, snapshots: [snap([el(0), message, name]), snap([el(0), { ...message, value: 'Hello' }, name]), snap([el(0), { ...message, value: 'Hello' }, { ...name, value: 'Ada' }])] })
+    const r = await runActLoop({ goal: 'fill the form', values: { message: 'Hello there', name: 'Ada Lovelace' } }, d)
+    expect(r.status).toBe('done')
+    expect(d.executed.map((a) => a.targetId)).toEqual([1, 2])
+    expect(p.contexts[2].space.targets.TYPE_TEXT).toEqual([2])
+    expect(p.contexts[2].space.operations).toContain('TYPE_TEXT')
+    expect(r.transitions.map((t) => t.result)).toEqual(['success', 'repeat', 'success', undefined])
+    expect(r.transitions[2].retry).toBe(true)
+    expect(r.transitions[2].seq).toBe(2)
+    // Excluding the last target of an operation withdraws the operation.
+    const only = deps({ policy: policyOf([{ operation: 'TYPE_TEXT', targetId: 1, valueKey: 'message' }, { operation: 'TYPE_TEXT', targetId: 1, valueKey: 'message' }, { operation: 'DONE' }]), snapshots: [snap([el(0), message]), snap([el(0), { ...message, value: 'Hello' }])] })
+    const r2 = await runActLoop({ goal: 'g', values: { message: 'Hello there' } }, only)
+    expect(r2.status).toBe('done')
+    expect(only.policy === undefined).toBe(false)
+    const ctx = (only.policy as ReturnType<typeof policyOf>).contexts[2]
+    expect(ctx.space.operations).not.toContain('TYPE_TEXT')
+    expect(ctx.space.targets.TYPE_TEXT).toEqual([])
+  })
+
   it('allows the same action again once the page changed (a second value into the same field)', async () => {
     const d = deps({
       policy: policyOf([{ operation: 'TYPE_TEXT', targetId: 1, valueKey: 'a' }, { operation: 'TYPE_TEXT', targetId: 1, valueKey: 'b' }, { operation: 'DONE' }]),

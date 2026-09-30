@@ -9,7 +9,7 @@
 // plus the fingerprint revalidation a ValidatedAction carries.
 import type { PageSnapshot } from '../platform/domIndex'
 import { buildObservation, clip } from './observation'
-import { buildCandidateSpace, isElementOperation, isFieldOperation, type BrowserOperation, type CandidateActionSpace, type ElementOperation } from './candidates'
+import { buildCandidateSpace, isElementOperation, isFieldOperation, withoutTarget, type BrowserOperation, type CandidateActionSpace, type ElementOperation } from './candidates'
 import { PolicyInputError, type BlockedReason, type BrowserDecision, type BrowserPolicy, type StepLike } from './policy'
 import { validateDecision, type ValidatedAction } from './validate'
 
@@ -58,6 +58,8 @@ export interface ActStep extends StepLike {
 /** One step's full record for the eval and a future dataset (doc §49). Carries page text — never persisted in-product. */
 export interface ActTransition {
   seq: number
+  /** The step's second decision, after its first would have repeated and that (operation, target) was excluded from the space. */
+  retry?: true
   observation: { url: string; title: string; hash: string; controls: number; canScrollDown: boolean; canScrollUp: boolean }
   space: { operations: BrowserOperation[]; targets: Record<ElementOperation, number[]>; shown: number[]; stats: CandidateActionSpace['stats'] }
   decision: BrowserDecision
@@ -140,28 +142,41 @@ export async function runActLoop(
     const recent = steps.slice(-NO_PROGRESS_STEPS)
     if (recent.length === NO_PROGRESS_STEPS && recent.every((s) => s.result === 'no_change' && s.operation !== 'WAIT'))
       return fin({ status: 'repeat', steps, elements: snap.text, message: `${NO_PROGRESS_STEPS} actions in a row changed nothing on the page` })
-    const space = buildCandidateSpace({ goal: input.goal, observation: obs, values, history: steps })
+    let space = buildCandidateSpace({ goal: input.goal, observation: obs, values, history: steps })
     const byId = new Map(obs.controls.map((c) => [c.id, c]))
     const nameOf = (id: number) => clip(byId.get(id)?.name || '(unnamed)', 60)
 
-    const t1 = now()
+    // One step may decide twice: when the first decision would be a repeat,
+    // that (operation, target) is excluded from the space and the policy is
+    // asked once more — the harness owns the action space, so "not that one
+    // again" is a change to the options, not a hope about the model. Measured
+    // 2026-09-30 (run A): every form call typed one value and then chose the
+    // same field again, and ending the call there cost a chat-model turn per
+    // field.
     let decision: BrowserDecision
+    let transition: ActTransition
+    let action: ValidatedAction
+    let p: number
+    let repeatMsg = ''
+    const candidates = () => (decision.ranked ?? []).map((r) => ({ index: r.id, label: byId.get(r.id)?.name ?? '', p: r.p }))
+    for (let attempt = 0; ; attempt++) {
+    const t1 = now()
     try {
       decision = await deps.policy.decide({ goal: input.goal, observation: obs, space, values, steps, threshold: ACT_TRY_CONFIDENCE })
     } catch (err) {
       if (err instanceof PolicyInputError) return fin({ status: 'uncertain', steps, message: err.message, elements: snap.text })
       return fin({ status: 'error', steps, message: `System-1 engine failed: ${err instanceof Error ? err.message : String(err)}` })
     }
-    const transition: ActTransition = {
+    transition = {
       seq: n + 1,
+      ...(attempt > 0 ? { retry: true as const } : {}),
       observation: { url: obs.page.url, title: obs.page.title, hash: obs.hash, controls: obs.controls.length, canScrollDown: obs.state.canScrollDown, canScrollUp: obs.state.canScrollUp },
       space: { operations: space.operations, targets: space.targets, shown: space.shown, stats: space.stats },
       decision,
-      ms: { observe: observeMs, policy: now() - t1, execute: 0 },
+      ms: { observe: attempt === 0 ? observeMs : 0, policy: now() - t1, execute: 0 },
     }
     transitions.push(transition)
 
-    const candidates = () => (decision.ranked ?? []).map((r) => ({ index: r.id, label: byId.get(r.id)?.name ?? '', p: r.p }))
     const pOp = decision.confidence.operation
     if (pOp < ACT_TRY_CONFIDENCE)
       return fin({ status: 'uncertain', steps, message: `unsure of the next operation (p=${pOp.toFixed(2)})`, elements: snap.text, candidates: candidates() })
@@ -179,7 +194,7 @@ export async function runActLoop(
       })
     }
 
-    let p = pOp
+    p = pOp
     if (isElementOperation(decision.operation)) {
       const tp = decision.confidence.target
       if (tp === undefined || tp < ACT_TRY_CONFIDENCE)
@@ -196,14 +211,15 @@ export async function runActLoop(
     const v = validateDecision(decision, space, obs, values)
     if (!v.ok) {
       transition.result = 'rejected'
+      // A retry that ignored the narrowed space is the original repeat, not a new error.
+      if (attempt > 0) return fin({ status: 'repeat', steps, elements: snap.text, message: repeatMsg })
       return fin({ status: 'error', steps, message: `System-1 returned an action outside the candidate space (${v.reason})` })
     }
-    const action: ValidatedAction = v.action
+    action = v.action
     // Below ACT_CONFIDENCE the executor may only run it if it is not a point
     // of no return; it reports `uncertain` otherwise and touches nothing.
     if (p < ACT_CONFIDENCE) action.tentative = true
-    const label = action.targetId !== undefined ? nameOf(action.targetId) : undefined
-    transition.action = { operation: action.operation, targetId: action.targetId, targetName: label, valueKey: action.valueKey }
+    transition.action = { operation: action.operation, targetId: action.targetId, targetName: action.targetId !== undefined ? nameOf(action.targetId) : undefined, valueKey: action.valueKey }
 
     // Two loop rules, both needed. (1) Same (page hash, operation, target) as
     // an earlier step: the page did not change and the policy wants the same
@@ -226,14 +242,19 @@ export async function runActLoop(
       action.operation === 'WAIT' && steps.length >= 2 && steps.slice(-2).every((s) => s.operation === 'WAIT' && s.result === 'no_change')
     if ((action.operation !== 'WAIT' && seen.has(key)) || consecutive || waitedOut) {
       transition.result = 'repeat'
-      return fin({
-        status: 'repeat', steps, elements: snap.text,
-        message: waitedOut
-          ? 'waited twice and the page did not change'
-          : `would repeat ${action.operation}${action.targetId !== undefined ? ` on [${action.targetId}]` : ''}${consecutive ? ' twice in a row' : ' on an unchanged page'}`,
-      })
+      repeatMsg = waitedOut
+        ? 'waited twice and the page did not change'
+        : `would repeat ${action.operation}${action.targetId !== undefined ? ` on [${action.targetId}]` : ''}${consecutive ? ' twice in a row' : ' on an unchanged page'}`
+      if (attempt === 0 && action.targetId !== undefined && isElementOperation(action.operation)) {
+        space = withoutTarget(space, action.operation, action.targetId)
+        continue
+      }
+      return fin({ status: 'repeat', steps, elements: snap.text, message: repeatMsg })
     }
     seen.add(key)
+    break
+    }
+    const label = action.targetId !== undefined ? nameOf(action.targetId) : undefined
 
     const t2 = now()
     const out = await deps.execute(action)

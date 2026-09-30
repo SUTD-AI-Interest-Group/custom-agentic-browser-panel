@@ -221,6 +221,22 @@ async function findExtensionId(ctx) {
   throw new Error('extension service worker not found — did --load-extension take?')
 }
 
+/**
+ * `page.reload()` waits for `load`, and once in 27 runs (2026-09-30, after a
+ * forced Act run) the panel never fired it and the 30 s timeout took the
+ * entire e2e report down. Fall back to a fresh navigation that only waits for
+ * the DOM, and raise if even that fails.
+ */
+async function reloadPanel(panel) {
+  const url = panel.url()
+  try {
+    await panel.reload({ timeout: 30_000 })
+  } catch (err) {
+    log(`panel reload hung (${String(err).split('\n')[0]}); navigating afresh`)
+    await panel.goto(url, { waitUntil: 'domcontentloaded', timeout: 30_000 })
+  }
+}
+
 async function seedSettings(panel, { system1 }) {
   // Omit every optional field not under test (CLAUDE.md: a malformed optional
   // field unmounts the whole panel). turnTrace records tool NAMES per step,
@@ -239,7 +255,7 @@ async function seedSettings(panel, { system1 }) {
     if (system1 !== null) base.experimental = { system1 }
     await chrome.storage.local.set({ settings: base })
   }, system1)
-  await panel.reload()
+  await reloadPanel(panel)
   await sleep(1500)
   const mounted = await panel.evaluate(() => document.getElementById('root')?.childElementCount ?? 0)
   if (!mounted) throw new Error('panel React tree did not mount after seeding settings')
@@ -508,7 +524,20 @@ async function phaseE2e(ctx, panel, panelUrl, fixtureUrl) {
   for (let rep = 0; rep < reps; rep++) {
     for (const task of TASKS) {
       // Interleave arms per task so drift in LM Studio (load, heat) hits every arm alike.
-      for (const mode of modes) rows.push(await runE2e(ctx, panel, fixtureUrl, task, mode, rep))
+      for (const mode of modes) {
+        try {
+          rows.push(await runE2e(ctx, panel, fixtureUrl, task, mode, rep))
+        } catch (err) {
+          // The harness, not the agent, failed this run: record it as a failed
+          // run with the error and keep going — the other 26 rows are the
+          // measurement, and losing them to one hung reload is how the
+          // 2026-09-30 run A lost its report.
+          const error = String(err).split('\n')[0]
+          log(`e2e ${task.id} [${mode}] rep ${rep} HARNESS ERROR ${error}`)
+          rows.push({ task: task.id, arm: mode, rep, success: false, ended: 'harness-error', error, wallMs: 0, llmSteps: 0, inputTokens: 0, outputTokens: 0, actOffered: false, pageActions: 0, controlPageCalls: 0, actCalls: 0, actSteps: 0, actStatuses: [], actMessages: [], vonDecides: 0, vonFailed: 0, vonMs: 0, vonBootMs: [], approvals: [], toolCalls: [], pageState: null, lastReply: null })
+          for (const pg of ctx.pages()) if (!pg.url().startsWith('chrome-extension://')) await pg.close().catch(() => {})
+        }
+      }
     }
   }
   return { rows, summary: summarizeE2e(rows) }
@@ -522,7 +551,7 @@ async function runE2e(ctx, panel, fixtureUrl, task, mode, rep) {
   // The fixture must be the ACTIVE tab (the panel binds its chat to the
   // active tab of its window); the panel keeps running as a background tab.
   await panel.evaluate((id) => chrome.tabs.update(id, { active: true }), tabId)
-  await panel.reload()
+  await reloadPanel(panel)
   await sleep(2500)
   const since = Date.now()
   const approvals = []
