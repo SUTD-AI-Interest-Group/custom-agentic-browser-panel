@@ -276,6 +276,12 @@ describe('convertTask', () => {
     dup.neg_candidates = [...dup.neg_candidates.filter((c) => JSON.parse(c.attributes).backend_node_id !== '40'), C(40, 'a', 50)]
     expect(convertTask([dup], { rng: rng('t') }).episodes.some((e) => e.label === 'scroll_down')).toBe(false)
   })
+  it('names a skipped unnamed prior step "(unnamed)" in later histories, as production renders one', () => {
+    const unnamedFirst = { ...row(3, 'CLICK', [40]), target_action_index: 0, action_uid: 'x0' }
+    const r = convertTask([unnamedFirst, row(2, 'CLICK', [30])], { rng: rng('t') })
+    const task = r.episodes.find((e) => e.goalKind === 'task' && e.kind === 'target')
+    expect(task.steps).toEqual([{ action: 'click', label: '(unnamed)' }])
+  })
   it('maps every Mind2Web split', () => {
     expect(SPLIT_OF).toEqual({ train: 'train', test_task: 'train', test_domain: 'train', test_website: 'val' })
   })

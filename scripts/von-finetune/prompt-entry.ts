@@ -12,6 +12,11 @@ export {
   actElementOptions, actMoveOptions, actQuestion, balancedChunks, ACT_CHUNK,
 } from '../../src/system1/vonPolicy'
 export { packPrompt } from '../../src/system1/von'
+// The typed-instruction heads (render.mjs): T5's label IS the shipped
+// point-of-no-return classifier, and T4/T5 option text is the act head's own
+// control+action line — bundled from source, never re-implemented.
+export { renderControlAction } from '../../src/system1/vonPolicy'
+export { isPointOfNoReturn } from '../../src/tools/pageControl'
 
 /** What the teachers see per element (label.mjs): the shipped control line. */
 export const describe = (el: IndexedElement): string => renderControlImpl(buildControl(el, undefined))

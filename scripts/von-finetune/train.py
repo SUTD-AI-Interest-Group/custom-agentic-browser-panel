@@ -94,6 +94,7 @@ def encode(model, rows, tag):
         out.append({"ids": ids, "marks": marks, "label": ids_opt.index(r["label"]), "soft": soft,
                     "stateTokens": len(tok.encode(r["state"], add_special_tokens=False)),
                     "kind": r.get("meta", {}).get("kind", "?"), "move": r.get("meta", {}).get("move"),
+                    "corpus": r.get("meta", {}).get("corpus", "teacher"),
                     "op": r.get("meta", {}).get("op"), "round": r.get("meta", {}).get("round")})
     print(f"[data] {tag}: {len(out)} rows kept, dropped {dict(dropped) or 0}", flush=True)
     return out
@@ -174,6 +175,7 @@ def report(logits, rows, calib):
         key = r["kind"] if r["kind"] not in ("target", "act") else f"{r['kind']}:{r['round']}"
         rec = (int(np.argmax(p)) == r["label"], float(p.max()))
         groups[key].append(rec); groups["all"].append(rec)
+        groups[f"corpus:{r['corpus']}"].append(rec)
         if r["kind"] == "move":
             groups[f"move:{r['move']}"].append(rec)
         if r["kind"] in ("act", "operation") and r.get("op"):

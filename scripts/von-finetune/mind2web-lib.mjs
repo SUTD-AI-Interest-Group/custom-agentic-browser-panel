@@ -365,7 +365,8 @@ export function convertTask(rows, { rng: r }) {
   for (const s of steps) {
     const op = s.operation.op
     const repr = reprOf(s) ?? { role: '', name: '', op, value: s.operation.value }
-    const hist = { action: ACTION_OF_OP[op] ?? 'click', label: repr.name.slice(0, 60), valueKey: keyOfStep.get(s.target_action_index) }
+    // History lines read as actLoop renders them: the target's name, "(unnamed)" when it has none.
+    const hist = { action: ACTION_OF_OP[op] ?? 'click', label: repr.name.slice(0, 60) || '(unnamed)', valueKey: keyOfStep.get(s.target_action_index) }
     const done = () => {
       history.push(Object.fromEntries(Object.entries(hist).filter(([, v]) => v !== undefined)))
     }

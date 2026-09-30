@@ -24,18 +24,29 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { parseArgs } from 'node:util'
-import { DATA, log, promptLib, readJsonl, rng, shuffle, writeJsonl } from './lib.mjs'
+import { DATA, log, promptLib, readJsonl, resolveSplits, rng, shuffle, writeJsonl } from './lib.mjs'
 
 const { values: args } = parseArgs({
   options: {
     'done-per-act': { type: 'string', default: '0.6' },
     head: { type: 'string', default: 'act' },
+    // Extra corpora under DATA/<name>/{pages,episodes}.jsonl (e.g. `--corpus mind2web`, from mind2web.mjs), merged with the teacher corpus.
+    corpus: { type: 'string', multiple: true, default: [] },
   },
 })
 if (!['act', 'lazy'].includes(args.head)) throw new Error(`--head must be act or lazy, got ${args.head}`)
 const lib = await promptLib()
-const pages = new Map(readJsonl(path.join(DATA, 'pages.jsonl')).map((p) => [p.pageId, p]))
-const episodes = readJsonl(path.join(DATA, 'episodes.jsonl'))
+const pages = new Map(readJsonl(path.join(DATA, 'pages.jsonl')).map((p) => [p.pageId, { corpus: 'teacher', ...p }]))
+const episodes = readJsonl(path.join(DATA, 'episodes.jsonl')).map((e) => ({ corpus: 'teacher', goalKind: 'step', ...e }))
+for (const name of args.corpus) {
+  for (const p of readJsonl(path.join(DATA, name, 'pages.jsonl'))) pages.set(p.pageId, p)
+  episodes.push(...readJsonl(path.join(DATA, name, 'episodes.jsonl')))
+  log(`corpus ${name}: ${pages.size} pages, ${episodes.length} episodes so far`)
+}
+// The split is site-level across corpora: a val page whose site is a train site anywhere moves to train (val loses, never the reverse).
+const moved = resolveSplits(pages)
+for (const ep of episodes) ep.split = pages.get(ep.pageId)?.split ?? ep.split
+if (moved) log(`site-level split: ${moved} val pages moved to train (their site is a train site in another corpus)`)
 
 const words = (s) => new Set(String(s).toLowerCase().match(/[a-z0-9]+/g) ?? [])
 const overlap = (goal, c) => { const g = words(goal); let n = 0; for (const w of words(`${c.name} ${c.group ?? ''}`)) if (g.has(w)) n++; return n }
@@ -53,7 +64,7 @@ function operationFor(control, valueKeys) {
 const targetsByKey = new Map()
 for (const ep of episodes) {
   if (ep.kind !== 'target') continue
-  targetsByKey.set(`${ep.pageId}|${ep.vp}|${ep.goal}|${ep.steps.length}`, ep)
+  targetsByKey.set(`${ep.pageId}|${ep.vp}|${ep.goalKind}|${ep.goal}|${ep.steps.length}`, ep)
 }
 
 function contextOf(ep) {
@@ -78,10 +89,13 @@ function contextOf(ep) {
   const values = ep.values ?? {}
   const valueKeys = Object.keys(values)
   const keyOf = (index) => valueKeys.find((k) => values[k] === edits.get(index))
+  // A step may carry its own label/valueKey (a Mind2Web trajectory: the prior
+  // step happened on ANOTHER page, so its index means nothing in this registry
+  // and may be absent); a teacher step is resolved against this page as before.
   const steps = ep.steps.map((s) => ({
     operation: OP_OF_ACTION[s.action] ?? 'CLICK', targetId: s.index,
-    label: lib.clip(byId.get(s.index)?.name || '(unnamed)', 60),
-    valueKey: s.action === 'type' || s.action === 'select' ? keyOf(s.index) : undefined,
+    label: s.label ?? lib.clip(byId.get(s.index)?.name || '(unnamed)', 60),
+    valueKey: s.valueKey ?? (s.action === 'type' || s.action === 'select' ? keyOf(s.index) : undefined),
     result: 'success',
   }))
   const space = lib.buildCandidateSpace({ goal: ep.goal, observation, values, history: steps })
@@ -106,7 +120,7 @@ function actRowsFor(ep, ctx, space, byId, valueKeys, meta, state) {
   } else {
     target = byId.get(ep.label)
     if (!target || !target.actions.length) return []
-    const op = operationFor(target, valueKeys)
+    const op = ep.op ?? operationFor(target, valueKeys) // a human-labelled op (Mind2Web) wins over the inferred one
     if (!space.targets[op].includes(target.id)) return []
     label = `${target.id}:${op}`
   }
@@ -130,7 +144,7 @@ function rowsFor(ep) {
   const c = contextOf(ep)
   if (!c) return []
   const { ctx, space, byId, valueKeys } = c
-  const meta = { kind: ep.kind, pageId: ep.pageId, site: ep.site, split: ep.split, category: ep.category, writer: ep.writer, composed: !!ep.composed }
+  const meta = { kind: ep.kind, pageId: ep.pageId, site: ep.site, split: ep.split, category: ep.category, writer: ep.writer, composed: !!ep.composed, corpus: ep.corpus, goalKind: ep.goalKind }
   const withControls = lib.renderState(ctx, space.shown)
   const withoutControls = lib.renderState(ctx, space.shown, { controls: false })
 
@@ -139,10 +153,10 @@ function rowsFor(ep) {
   if (ep.kind === 'move') {
     let label
     if (ep.label === 'act') {
-      const sibling = targetsByKey.get(`${ep.pageId}|${ep.vp}|${ep.goal}|${ep.steps.length}`)
+      const sibling = targetsByKey.get(`${ep.pageId}|${ep.vp}|${ep.goalKind}|${ep.goal}|${ep.steps.length}`)
       const target = sibling ? byId.get(sibling.label) : undefined
       if (!target || !target.actions.length) return []
-      label = operationFor(target, valueKeys)
+      label = sibling.op ?? operationFor(target, valueKeys)
       if (!space.targets[label].includes(target.id)) return []
     } else if (ep.label === 'scroll_down') label = 'SCROLL_DOWN'
     else label = ep.label // DONE | BLOCKED
@@ -159,7 +173,7 @@ function rowsFor(ep) {
   // target — mirror createVonPolicy: one question over the operation's pool, or the TARGET_CHUNK tournament.
   const target = byId.get(ep.label)
   if (!target || !target.actions.length) return []
-  const op = operationFor(target, valueKeys)
+  const op = ep.op ?? operationFor(target, valueKeys)
   const pool = space.targets[op].map((id) => byId.get(id))
   if (!pool.includes(target)) return []
   const chunks = lib.targetChunks(pool)
@@ -193,6 +207,10 @@ function stats(rows) {
   for (const x of rows) {
     const k = x.meta.kind === 'operation' ? `operation:${x.meta.op}` : x.meta.kind === 'target' ? `target:${x.meta.op}:${x.meta.round}` : x.meta.kind === 'act' ? `act:${x.meta.op}:${x.meta.round}` : x.meta.kind
     out[k] = (out[k] ?? 0) + 1
+  }
+  for (const x of rows) {
+    out[`corpus:${x.meta.corpus}`] = (out[`corpus:${x.meta.corpus}`] ?? 0) + 1
+    out[`goalKind:${x.meta.goalKind}`] = (out[`goalKind:${x.meta.goalKind}`] ?? 0) + 1
   }
   out.total = rows.length
   out.sites = new Set(rows.map((x) => x.meta.site)).size

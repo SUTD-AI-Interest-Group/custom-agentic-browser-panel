@@ -124,3 +124,20 @@ export const tmp = (name) => fs.mkdtempSync(path.join(os.tmpdir(), name))
 
 /** First DNS label of a site (`ikea.com`, `www.ikea.com`, `ikea` → `ikea`): the key every corpus shares for the site-level split. */
 export const siteKey = (site) => String(site).toLowerCase().replace(/^www\./, '').split('.')[0]
+
+/**
+ * The site-level split, enforced across corpora: a val page whose site is a
+ * train site anywhere moves to train (val loses, never the reverse, so a
+ * held-out site can never leak through the other corpus). Returns the count.
+ */
+export function resolveSplits(pages) {
+  const trainKeys = new Set([...pages.values()].filter((p) => p.split === 'train').map((p) => siteKey(p.site)))
+  let moved = 0
+  for (const p of pages.values()) {
+    if (p.split === 'val' && trainKeys.has(siteKey(p.site))) {
+      p.split = 'train'
+      moved++
+    }
+  }
+  return moved
+}
