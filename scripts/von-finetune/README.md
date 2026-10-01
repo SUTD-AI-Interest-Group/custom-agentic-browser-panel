@@ -148,7 +148,10 @@ it at render time. Two more stages, in front of stage 3:
 **What a Mind2Web page is.** `cleaned_html` (jsdom) plus the step's candidates
 become the registry `domIndex.ts` would record on that page: the same
 accessible-name order (aria-label → own text → placeholder → value → title →
-name; never alt), the DOM's own `type` defaults (a typeless `<button>` submits),
+name; never alt), own text approximating Chrome's `innerText` (a newline
+between block-level containers — a `<select>` is "Dine in\nPickup", and 4–5%
+of option lines in both corpora carry one), the DOM's own `type` defaults (a
+typeless `<button>` submits),
 the selected option as a `<select>`'s value, `input_checked` as `checked`, the
 three sensitivity regexes copied verbatim (a parity test reads them back out of
 `domIndex.ts`), `ancestorName` by the same climb. What cleaning strips — `href`,
@@ -163,24 +166,30 @@ other raw-text elements). No URL exists: the origin is `https://www.{website}.co
 (`originPlaceholder: true`; never a synthetic TLD, which the model could learn as
 a corpus marker since the origin heads every state prefix), the viewport
 1280×720 (Playwright's default; the `<html>` rect confirms 1280;
-`viewportInferred: true`). Window 0 is the page top; a below-fold target gets a
-second window a third of a screen above it; ≤ 200 elements per window in
-document order, like a real snapshot. One production quirk is mirrored on
-purpose: a `<select>`'s name is its options' text (innerText), not its label.
+`viewportInferred: true`). No dump has a `<head>`, and every `<title>` in them
+is an inline SVG icon's, so the `Page:` line is the first `<h1>` when there is
+one (67% of pages), else the site name (`titleSource: head|h1|site`). Window 0 is
+the page top and wins whenever the target is at least partly on it; only a
+target that starts below the fold gets a second window a third of a screen
+above it (the review of 2026-10-02 found 1,343 SCROLL_DOWN rows whose window
+listed the target before this rule); ≤ 200 elements per window in document
+order, like a real snapshot. One production quirk is mirrored on purpose: a
+`<select>`'s name is its options' text (innerText), not its label.
 
 **Episodes.** Every converted step yields both goal kinds: a templated per-step
 goal from Mind2Web's own element description ("Select Pickup from the
 Reservation type dropdown"; no history, unambiguous, like the teacher rows) and
 the task's `confirmed_task` with the trajectory so far as `Recent actions`, each
-prior step carrying its own page's index, name and value key — the multi-field
-form state the act head had never seen. Field goals hide their value half the
+prior step carrying its own page's index, its registry name (what `actLoop`
+prints, not Mind2Web's description) and value key — the multi-field form state
+the act head had never seen. Field goals hide their value half the
 time and then carry a BLOCKED twin without it; a below-fold target yields
 `scroll_down` from window 0 unless a same-name control sits on top. Labels are
 the human's: `op` on a target episode overrides `operationFor` in the renderer.
 
-Full run 2026-09-30: 14,193 steps → 11,598 pages / 56,998 episodes (23,196
-target · 2,596 value · 31,206 move; 910 SELECT_OPTION, 3,004 TYPE_TEXT, 7,002
-scroll_down, 1,008 BLOCKED), 136 sites. Skipped: 1,450 unnamed targets (icon
+Full run 2026-10-02: 14,193 steps → 11,590 pages / 55,295 episodes (23,180
+target · 2,596 value · 29,519 move; 910 SELECT_OPTION, 3,004 TYPE_TEXT, 5,332
+scroll_down, 1,007 BLOCKED), 136 sites. Skipped: 1,450 unnamed targets (icon
 clicks with no name in the repr or the registry), 775 with no visible positive
 candidate, 150 unregistered, 146 op/tag mismatches (TYPE on a label or div,
 SELECT on a custom list), 39 past the 200 cap, 35 ENTER; 64 SELECT values not
@@ -189,14 +198,15 @@ Mind2Web `train`/`test_task`/`test_domain` → train, `test_website` (10 sites
 unseen in every other split) → val; `resolveSplits` (`lib.mjs`) moves any val
 page whose site is a train site in the other corpus to train (127 pages).
 
-**Merged render** (`render.mjs --corpus mind2web`): 47,763 train rows / 240
-sites (mind2web 43,241 · teacher 4,522; act rows CLICK 20,074 · TYPE_TEXT 2,966
-· SELECT_OPTION 813 · SCROLL_DOWN 6,620 · DONE 1,272 · BLOCKED 970; value 2,537;
-t1 1,088 yes / 2,184 no; t2 1,249; t4 1,447; t5 2,853 committing / 3,690
-reversible), 3,520 val rows / 20 sites; mean 2,064 chars per row. Every val row
+**Merged render** (`render.mjs --corpus mind2web`): 45,624 train rows / 240
+sites (mind2web 39,841 · teacher 5,783; act rows CLICK 20,056 · TYPE_TEXT 2,968
+· SELECT_OPTION 813 · SCROLL_DOWN 5,044 · DONE 1,272 · BLOCKED 969; value 2,537;
+t1 1,185 yes / 1,328 teacher no / 599 Mind2Web no; t2 1,076; t4 1,553; t5 2,726
+committing / 3,498 reversible), 3,374 val rows / 20 sites; mean 2,077 chars per
+row. Every val row
 packs under Von's 4,096 tokens (`train.py --eval-only`: 0 dropped). Base Von 1.2
-on this val (MPS, 278 s): all 0.268; act single 0.12, final 0.33; value 0.65;
-t1 0.68, t2 0.28, t4 0.08, t5 0.57 — the heads are new to it, and these are the
+on this val (MPS, 228 s): all 0.268; act single 0.12, final 0.34; value 0.58;
+t1 0.63, t2 0.18, t4 0.11, t5 0.61 — the heads are new to it, and these are the
 numbers the next fine-tune is measured against. Teacher-only output (no `--corpus`, `--typed none`) is
 byte-identical to the previous act-head render.
 
@@ -207,10 +217,10 @@ each head as its own `kind` and each corpus as `corpus:<name>`.
 
 | head | question | options | label | train rows |
 |---|---|---|---|---|
-| `t5_commit` | Is taking this action reversible, or does it commit to something…? + `Action: <renderControlAction line>` | reversible / committing | `isPointOfNoReturn()` verbatim over the raw element; ≤ 2 committing + ≤ 2 reversible per page; anchors excluded (a link's reversibility is a cross-origin fact the state never shows) | 6,543 |
-| `t4_submit` | Which of these controls submits the form? | the form's button-role controls | the single `type ∈ {submit, image}` one (a typeless `<button>` is one) | 1,447 |
-| `t2_field` | Which of these fields still needs a value to complete the task? | the page's editable fields | the target of a Mind2Web task-goal field step, when ≥ 2 fields and one is already valued or history is non-empty | 1,249 |
-| `t1_done` | Is the task complete on this page, with no further action needed? | yes / no with explicit descriptions (Von's own noul packing) | yes = a teacher DONE episode; no = a target state, ≤ 2× yes | 3,272 |
+| `t5_commit` | Is taking this action reversible, or does it commit to something…? + `Action: <renderControlAction line>` | reversible / committing | `isPointOfNoReturn()` verbatim over the raw element; ≤ 2 committing + ≤ 2 reversible per page; anchors excluded (a link's reversibility is a cross-origin fact the state never shows) | 6,224 |
+| `t4_submit` | Which of these controls submits the form? | the form's button-role controls | the single `type ∈ {submit, image}` one (a typeless `<button>` is one) | 1,553 |
+| `t2_field` | Which of these fields still needs a value to complete the task? | the page's editable fields | the target of a Mind2Web task-goal field step, when ≥ 2 fields and one is already valued in that step's HTML | 1,076 |
+| `t1_done` | Is the task complete on this page, with no further action needed? | yes / no with explicit descriptions (Von's own noul packing) | yes = a teacher DONE episode; no = a target state, drawn per corpus (teacher ≤ 2× yes, Mind2Web ≤ 0.5× yes, so the head cannot answer from which corpus a page came) | 3,112 |
 
 No `uncertain` option on t5: an option with no labels is dead weight exactly
 like `WAIT`; the confidence gate expresses uncertainty. `--typed-cap` (default
