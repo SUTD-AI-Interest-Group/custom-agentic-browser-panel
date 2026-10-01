@@ -168,14 +168,28 @@ function ropeTable(positions: number[], theta: number, headDim: number): { cos: 
   return { cos, sin }
 }
 
-export function buildFastInputs(ids: number[], plan: SequencePlan, cfg: FastConfig): FastInputs {
+/**
+ * Optional per-bucket scratch for the two T×T biases (134 MB at T=4,096).
+ * The worker scores one question at a time and ort.Tensor does not take
+ * ownership of its data, so one pair per bucket can be reused across every
+ * request instead of allocating — and garbage-collecting — that much per call.
+ * Every element is rewritten each time.
+ */
+export type BiasPool = Map<number, { full: Float32Array; sliding: Float32Array }>
+
+export function buildFastInputs(ids: number[], plan: SequencePlan, cfg: FastConfig, pool?: BiasPool): FastInputs {
   const T = bucketFor(ids.length, FAST_BUCKETS[FAST_BUCKETS.length - 1])
   const pad = T - ids.length
   const padded = [...ids, ...Array<number>(pad).fill(cfg.padTokenId)]
   const oi = [...plan.optionIds, ...Array<number>(pad).fill(-2)]
   const pi = [...plan.positionIds, ...Array<number>(pad).fill(0)]
-  const biasFull = new Float32Array(T * T)
-  const biasSliding = new Float32Array(T * T)
+  let bufs = pool?.get(T)
+  if (!bufs) {
+    bufs = { full: new Float32Array(T * T), sliding: new Float32Array(T * T) }
+    pool?.set(T, bufs)
+  }
+  const biasFull = bufs.full
+  const biasSliding = bufs.sliding
   for (let i = 0; i < T; i++) {
     const qp = oi[i] === -1
     const row = i * T

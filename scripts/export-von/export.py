@@ -265,7 +265,7 @@ def store_fp16(m, dst, name):
 def main():
     import argparse
     ap = argparse.ArgumentParser()
-    ap.add_argument("--ship", choices=["q8", "fp16w"], help="ship this variant instead of the first to pass the gate")
+    ap.add_argument("--ship", choices=["f16", "q8", "fp16w"], help="ship this variant instead of the first to pass the gate")
     ap.add_argument("--accept-drift", action="store_true", help="with --ship: ship it even if it fails parity")
     ap.add_argument("--out", default=OUT, help=f"output directory (default {OUT})")
     ap.add_argument("--checkpoint", default=None,
@@ -273,6 +273,9 @@ def main():
     ap.add_argument("--fast", action="store_true",
                     help="also build the fast graph (fast.py: RoPE tables + option masks as inputs, fused attention, fp16 "
                          "activations with fp32 islands) as variant f16, gated after a temperature refit; it ships first when it passes")
+    ap.add_argument("--rope-fp32", action="store_true",
+                    help="with --fast: also keep RoPE application (q·cos + rot(q)·sin) fp32 — the A/B for whether RoPE is the "
+                         "WebGPU parity noise source (transformers' own apply_rotary_pos_emb upcasts to fp32)")
     args = ap.parse_args()
     if bool(args.ship) != args.accept_drift:
         ap.error("--ship and --accept-drift go together (without them the gate picks the variant)")
@@ -371,7 +374,8 @@ def main():
         # Islands: every LayerNormalization, the final norm and the scorer stay fp32. RoPE does NOT need to: the
         # angle computation (position·inv_freq, where an fp16 graph once flipped long prompts) is no longer in the
         # graph — cos/sin arrive as fp32 inputs — and q·cos + rot(q)·sin in fp16 is what every fp16 runtime does.
-        island = [n.name for n in g32.graph.node if "/scorer" in n.name or "/final_norm" in n.name]
+        island = [n.name for n in g32.graph.node if "/scorer" in n.name or "/final_norm" in n.name
+                  or (args.rope_fp32 and "/rope" in n.name)]
         g16 = convert_float_to_float16(g32, keep_io_types=True, op_block_list=["LayerNormalization"], node_block_list=island)
         dropped, reordered = sanitize_fp16(g16)
         onnx.checker.check_model(g16)

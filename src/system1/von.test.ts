@@ -54,6 +54,33 @@ describe('fast inputs', () => {
     expect(row(f.sinFull, 4)[0]).toBeCloseTo(Math.sin(4), 5)
     expect(row(f.cosFull, 9)[0]).toBe(1) // a pad sits at position 0
   })
+  it('pads 1,100 tokens to 1,536 without touching the markers, and masks pad keys in BOTH biases', () => {
+    const body = Array.from({ length: 1095 }, (_, i) => 1000 + (i % 500))
+    const ids3 = [50281, ...body.slice(0, 600), 50282, MASK, ...body.slice(600, 900), MASK, ...body.slice(900), 50282]
+    const p3 = planSequence(ids3, MASK, 4096)
+    const g = buildFastInputs(ids3, p3, cfg)
+    expect(ids3.length).toBe(1100)
+    expect(g.T).toBe(1536)
+    expect(p3.markers).toEqual([602, 903]) // planSequence's markers are what the worker feeds; padding never moves them
+    for (const row of [0, 602, 903, 1099]) {
+      expect(g.biasFull[row * g.T + 1100]).toBe(-30000)
+      expect(g.biasSliding[row * g.T + 1100]).toBe(-30000)
+      expect(g.biasSliding[row * g.T + 1535]).toBe(-30000)
+    }
+  })
+  it('reuses one pair of bias buffers per bucket when given a pool, and rewrites them fully', () => {
+    const pool = new Map<number, { full: Float32Array; sliding: Float32Array }>()
+    const a = buildFastInputs(ids, plan, cfg, pool)
+    const before = Array.from(a.biasFull.slice(0, 16))
+    const other = planSequence([50281, 11, 50282, MASK, 21, 22, MASK, 23, 50282], MASK, 4096)
+    const b = buildFastInputs([50281, 11, 50282, MASK, 21, 22, MASK, 23, 50282], other, cfg, pool)
+    expect(b.biasFull).toBe(a.biasFull) // same buffer, no new T×T allocation
+    expect(b.biasSliding).toBe(a.biasSliding)
+    expect(pool.size).toBe(1)
+    const fresh = buildFastInputs([50281, 11, 50282, MASK, 21, 22, MASK, 23, 50282], other, cfg)
+    expect(Array.from(b.biasFull)).toEqual(Array.from(fresh.biasFull)) // nothing of the previous request survives
+    expect(Array.from(b.biasFull.slice(0, 16))).not.toEqual(before)
+  })
   it('buckets exactly at a boundary and refuses past the last bucket', () => {
     expect(bucketFor(256, 4096)).toBe(256)
     expect(bucketFor(257, 4096)).toBe(512)

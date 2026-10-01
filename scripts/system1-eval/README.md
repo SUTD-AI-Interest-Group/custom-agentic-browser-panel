@@ -90,19 +90,38 @@ parity, grounding and placement — its `llm` and `e2e` sections are still run B
 | fused attention on WebGPU | 0 | 28 `MultiHeadAttention` |
 | parity: CPU gate · WebGPU golden | 0.0098 · 0.0098 | 0.0035 (T refit 1.389→1.389) · 0.0264, 0 flips |
 | decide ms, golden K = 2 / 3 / 5 / 5 (short) | 181–212 / 196–274 / 211–308 / 61–80 | **90 / 90 / 91 / 52** |
-| decide ms, synthetic K = 47 (T≈1,100) | 854–1,206 | **320** |
+| decide ms, synthetic K = 47 (T≈1,100 → bucket 1,536) | 854–1,206 | **317–320** |
+| decide ms, synthetic K = 100 (T≈2,250 → 3,072) | **fails**: WebGPU validation, buffer 323,424,256 B > the 268,435,456 B default `maxBufferSize` | **857** |
+| decide ms, synthetic K = 150 (T≈3,450 → 4,096) | fails (same) | **1,374** |
 | grounding (54 cases) | 50/54 = 0.926 | **50/54 = 0.926**, identical per case (50 right, the same 4 wrong) |
-| decide p50 / p95 over the grounding run | 400 / ~584 | **98 / 205** (value head p50 56) |
+| calibrated top, per case vs q8 | — | mean \|Δ\| 0.008, p90 0.019, max 0.086; **no case crosses 0.6 or 0.4** |
+| decide p50 / p95 over the grounding run | 400 / 871 | **98 / 205** (value head p50 56) |
 
-(q8 ranges are its two `kernels` runs; f16 is one.) Every acceptance line of the
-spec's runtime row holds: p50 ≤ 250 ms at K 15–20 (98), ≤ 450 ms at K = 47
-(320), parity ≤ 0.03 on both EPs, grounding unchanged.
+(q8 ranges are its two `kernels` runs plus a third, written beside this report;
+f16 is two.) Every acceptance line of the spec's runtime row holds: p50 ≤ 250 ms
+at K 15–20 (98), ≤ 450 ms at K = 47 (317–320), parity ≤ 0.03 on both EPs,
+grounding unchanged, and no gate decision moves.
 
+- **The q8 graph cannot run a large request, and that is the attention
+  evidence.** 323,424,256 bytes is exactly 16 heads × T² × 4 B at T = 2,248: the
+  q8 graph materialises the full fp32 attention-probability tensor and fails past
+  T ≈ 2,048 (≈ 90 options in one question; `ACT_CHUNK` allows 120), so **the
+  published pin fails today on such pages**. The fast graph runs at T = 4,096,
+  where even an fp16 probability tensor would be 537 MB — it does not
+  materialise one, i.e. the fused attention path runs. That is the measurement
+  the spec's "FlashAttention in the profile" line was standing in for.
 - **The profiler is silent on the native EP.** ORT Web 1.30's WebGPU EP (the
-  asyncify bundle the worker loads) delivers nothing through
-  `ort.env.webgpu.profiling.ondata`, session `enableProfiling` or the console, so
-  the `kernels` phase reports latency by K and `ep-placement.mjs` (now
-  shader-f16-aware) is the evidence for what runs where.
+  asyncify bundle the worker loads) delivers nothing through the channels its
+  public API exposes (`ort.env.webgpu.profiling.ondata`, the console);
+  `session.endProfiling()` writes a file into the wasm FS that the JS layer frees
+  unread. So the `kernels` phase reports latency by K, `ep-placement.mjs` (now
+  shader-f16-aware) shows what is assigned where, and the buffer-limit result
+  above shows which attention path ran.
+- **RoPE in fp32 does not help (A/B, `export.py --rope-fp32`).** WebGPU parity
+  is unchanged to five digits (0.0264, identical per case) while the graph gets
+  1,324 Casts instead of 408 and runs 28–47% slower (407 / 1,243 / 2,019 ms at
+  K = 47 / 100 / 150). The drift comes from WebGPU's fp16 matmul and attention
+  kernels, not RoPE; it is a known property of this variant, measured above.
 - **What is left on the CPU** is 15 int64 shape nodes per layer (Gather 5,
   Unsqueeze 4, Div 3, Concat/Add/Mul 1 each) building the reshape targets from
   `Shape` — no activation copies. A later cut could fold them into constant

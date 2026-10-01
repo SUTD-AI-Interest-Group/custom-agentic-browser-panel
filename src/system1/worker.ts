@@ -4,7 +4,7 @@
 // network here; weights.ts is the only downloader.
 import * as ort from 'onnxruntime-web/webgpu'
 import { Tokenizer } from '@huggingface/tokenizers'
-import { buildFastInputs, calibrate, marginConfidence, packPrompt, planSequence, VonInputError, type SequencePlan, type VonConfig } from './von'
+import { buildFastInputs, calibrate, marginConfidence, packPrompt, planSequence, VonInputError, type BiasPool, type SequencePlan, type VonConfig } from './von'
 import { CACHE_NAME } from './weights'
 import type { DecideAnswer, DecideRequest, DecideResult, System1WorkerReply, System1WorkerRequest } from './protocol'
 
@@ -12,6 +12,8 @@ const post = (m: System1WorkerReply) => self.postMessage(m)
 let session: ort.InferenceSession | null = null
 let tokenizer: Tokenizer | null = null
 let cfg: VonConfig | null = null
+/** The fast graph's T×T bias buffers, one pair per bucket, reused across requests (scoring is serial; see BiasPool). */
+const biasPool: BiasPool = new Map()
 /** Per-kernel GPU timings of the decision in flight, only while profiling (eval). */
 let kernels: { name: string; ms: number }[] | null = null
 
@@ -127,7 +129,7 @@ function fastFeeds(ids: number[], plan: SequencePlan): Record<string, ort.Tensor
     slidingWindow: c.slidingWindow,
     headDim: c.headDim ?? 64,
     rope: c.rope ?? { full: 160000, sliding: 10000 },
-  })
+  }, biasPool)
   const T = f.T
   const d = c.headDim ?? 64
   return {

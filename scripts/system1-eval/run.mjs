@@ -399,8 +399,11 @@ async function phaseKernels(prof, consoleLines = []) {
     questions: { act: { instructions: 'Choose the next browser action toward the goal: one listed control with its action, or a move.',
       options: Object.fromEntries(Array.from({ length: 47 }, (_, i) => [String(i), `[${i}] link "Item ${i} of the catalogue page, with a longer label" → click`])) } },
   }
+  // K=100 and K=150 reach the 3,072 and 4,096 buckets: the largest T the worker accepts, where a quadratic-memory
+  // attention path (a materialised 16×T×T probs tensor) would show up as a step in time that the fused path does not.
+  const denseK = (K) => ({ ...dense, questions: { act: { ...dense.questions.act, options: Object.fromEntries(Array.from({ length: K }, (_, i) => [String(i), `[${i}] link "Item ${i} of the catalogue page, with a longer label" → click`])) } } })
   const requests = [...golden.cases.map((c, i) => ({ name: `golden-${i}`, K: c.options.length, req: { state: c.state, questions: { q: { instructions: c.instructions, options: Object.fromEntries(c.options.map((o, k) => [String(k), o])) } } } })),
-    { name: 'dense-47', K: 47, req: dense }]
+    { name: 'dense-47', K: 47, req: dense }, { name: 'dense-100', K: 100, req: denseK(100) }, { name: 'dense-150', K: 150, req: denseK(150) }]
   const rows = []
   let sample = null
   for (const r of requests) {

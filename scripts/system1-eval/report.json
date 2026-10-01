@@ -184,6 +184,15 @@
    "startedAt": "2026-10-01T18:55:37.587Z",
    "finishedAt": "2026-10-01T18:56:00.213Z",
    "skipped": []
+  },
+  {
+   "phases": [
+    "parity",
+    "kernels"
+   ],
+   "startedAt": "2026-10-01T19:16:20.274Z",
+   "finishedAt": "2026-10-01T19:16:40.684Z",
+   "skipped": []
   }
  ],
  "env": {
@@ -223,7 +232,7 @@
      0.9408,
      0.0592
     ],
-    "ms": 91
+    "ms": 94
    },
    {
     "case": 1,
@@ -241,7 +250,7 @@
      0.4076,
      0.0237
     ],
-    "ms": 91
+    "ms": 92
    },
    {
     "case": 2,
@@ -285,11 +294,81 @@
      0.0641,
      0.8715
     ],
-    "ms": 52
+    "ms": 54
    }
   ]
  },
- "bootMs": 1340,
+ "kernels": {
+  "flashAttention": false,
+  "cpuFallback": false,
+  "rows": [
+   {
+    "name": "golden-0",
+    "K": 2,
+    "ms": 89,
+    "wallMs": 89,
+    "gpuMs": 0,
+    "dispatches": 0,
+    "top": []
+   },
+   {
+    "name": "golden-1",
+    "K": 3,
+    "ms": 88,
+    "wallMs": 88,
+    "gpuMs": 0,
+    "dispatches": 0,
+    "top": []
+   },
+   {
+    "name": "golden-2",
+    "K": 5,
+    "ms": 88,
+    "wallMs": 88,
+    "gpuMs": 0,
+    "dispatches": 0,
+    "top": []
+   },
+   {
+    "name": "golden-3",
+    "K": 5,
+    "ms": 52,
+    "wallMs": 53,
+    "gpuMs": 0,
+    "dispatches": 0,
+    "top": []
+   },
+   {
+    "name": "dense-47",
+    "K": 47,
+    "ms": 317,
+    "wallMs": 317,
+    "gpuMs": 0,
+    "dispatches": 0,
+    "top": []
+   },
+   {
+    "name": "dense-100",
+    "K": 100,
+    "ms": 857,
+    "wallMs": 858,
+    "gpuMs": 0,
+    "dispatches": 0,
+    "top": []
+   },
+   {
+    "name": "dense-150",
+    "K": 150,
+    "ms": 1374,
+    "wallMs": 1374,
+    "gpuMs": 0,
+    "dispatches": 0,
+    "top": []
+   }
+  ],
+  "consoleSample": null
+ },
+ "bootMs": 1728,
  "model": {
   "model": "von-1.2.0",
   "variant": "f16",

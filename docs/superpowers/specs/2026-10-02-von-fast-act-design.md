@@ -70,6 +70,12 @@ and `fp16w`:
   or two buckets cover the eval; eight captured sessions would be eight weight
   copies on the GPU.
 
+> **As built (2026-10-02, Plan A).** RoPE application runs in fp16 and softmax inside the fused
+> `MultiHeadAttention` kernel; the fp32 islands are every LayerNorm, the final norm and the scorer. The
+> A/B with RoPE in fp32 (`export.py --rope-fp32`) left WebGPU parity unchanged to five digits and ran
+> 28–47% slower, so fp16 RoPE ships; what moves probabilities is WebGPU's fp16 matmul/attention (per-case
+> |Δtop| mean 0.008, max 0.086, no gate crossing). Results: `scripts/system1-eval/README.md`.
+
 **Worker (`src/system1/worker.ts`, `von.ts`).** `planSequence` already yields
 option/position ids; a pure, tested `buildAttentionInputs(plan, T, window)`
 returns the two biases and the cos/sin tables, and the request is padded to the
@@ -157,7 +163,7 @@ budget 16k), 2–3 epochs over the re-rendered merged corpus.
 
 | stage | accept when | measured by |
 |---|---|---|
-| runtime (§3) | FlashAttention + fp16 kernels in the profile; parity ≤ 0.03 after refit; p50 ≤ 250 ms (K 15–20), ≤ 450 ms (K 47); grounding identical | `ort.env.webgpu.profiling`; `export.py` gate + WebGPU golden; `scripts/system1-eval/run.mjs` |
+| runtime (§3) | FlashAttention + fp16 kernels in the profile (**as built:** ORT Web 1.30's native EP exposes no kernel profile; replaced by node placement — 28 MHA on WebGPU — plus a T=4,096 request that the fused path runs and an attention-materialising graph cannot); parity ≤ 0.03 after refit; p50 ≤ 250 ms (K 15–20), ≤ 450 ms (K 47); grounding identical | `ort.env.webgpu.profiling`; `export.py` gate + WebGPU golden; `scripts/system1-eval/run.mjs` |
 | representation + training (§4–5) | per-head val top-1 ≥ run B's on comparable rows; grounding ≥ 0.926 by paired McNemar vs run B; form SELECT case completes; `near` ablation ≥ 0 on Mind2Web val | `train.py` report; eval grounding + e2e |
 | exit choice (§5) | ship L=16 only if val top-1 within 1 pt of L=28 **and** no grounding loss on the 54 cases; else L=22 on the same rule; else L=28 | eval per export |
 | gate (§6) | at the fitted thresholds, error among executed steps ≤ the bound on the eval, coverage ≥ run B's | eval + e2e |
