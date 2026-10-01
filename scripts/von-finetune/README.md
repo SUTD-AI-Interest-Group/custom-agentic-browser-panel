@@ -124,6 +124,42 @@ uv run scripts/von-finetune/train.py --epochs 2 --grad-checkpointing
 uv run scripts/export-von/export.py --checkpoint scripts/von-finetune/data/ckpt --out scripts/von-finetune/data/onnx
 ```
 
+### Tracking and checkpoints (2026-10-02)
+
+`train.py --wandb` tracks a run in Weights & Biases (project `von-finetune` by
+default; `--wandb-entity`, `--wandb-run-name`, `--wandb-tags`). It records:
+
+| when | what |
+|---|---|
+| start | config: every argument, the git commit, the base model pin, SHA-256 of `train.jsonl`/`val.jsonl`/`render-stats.json`, row counts |
+| every optimizer step | `train/loss`, `train/grad_norm`, `train/lr_body`, `train/lr_head`, `train/tokens_per_s`, `train/epoch`, `train/seen_tokens` |
+| every eval | every row of the validation report as `val/<group>/<metric>` — `all`, each head (`act:single`, `act:final`, `value`, `t1_done`…), each corpus — with `acc`, `coverage_at_0.6`, `acc_at_0.6`, `n`, plus `val/temperature` |
+| new best | summary `best_val_acc`, `best_step`, `best_temperature`, `best/<group>` |
+| end | the best checkpoint as a `model` artifact (`option_marker.pt` + calibration + `train_meta.json` + `history.json`; the backbone files are the pinned base's) and a `dataset` artifact (render stats + hashes, not the rows) |
+
+The API key comes from `wandb login` or `WANDB_API_KEY`; the script never
+writes it anywhere. `WANDB_MODE=offline` records locally for a later `wandb
+sync`. Without `--wandb`, nothing is imported or sent.
+
+Checkpoints: `OUT/` (default `data/ckpt/`) is the best checkpoint, export-ready
+as before, and `OUT/last/` a resumable one every `--save-every` steps (default
+100): model, optimizer, scheduler, step, position inside the epoch, RNG states,
+the eval history and the W&B run id, swapped in atomically. `--resume`
+continues from it on the same batch order and the same W&B run. `--max-steps N`
+stops early without changing the learning-rate schedule. Verified on MPS with
+offline tracking: a run stopped at step 3 and resumed for 2 more matches an
+uninterrupted 5-step run (step 5: T 1.331, acc 0.333 in both).
+
+On RunPod (community cloud pods can be preempted):
+
+```bash
+pip install uv && export WANDB_API_KEY=...            # or: uvx wandb login
+uv run scripts/von-finetune/train.py --epochs 3 --bf16 --tokens-per-batch 16384 \
+  --wandb --wandb-run-name m2w-round2 --save-every 100
+# after an interruption, on the same volume:
+uv run scripts/von-finetune/train.py --epochs 3 --bf16 --tokens-per-batch 16384 --wandb --resume
+```
+
 Each stage is resumable, so re-running `collect`/`label` after adding URLs only
 does the new pages. Add URLs to `pages.txt` to grow the dataset (target: ≥ 1,000
 pages ≈ 20k rows). Stop LM Studio's models before training: both teachers
