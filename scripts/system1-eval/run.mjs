@@ -140,8 +140,9 @@ async function main() {
     const harness = bundleHarness()
     const needLab = PHASES.has('parity') || PHASES.has('grounding') || PHASES.has('kernels')
     const wasm = fs.readdirSync(path.join(DIST, 'assets')).find((f) => /^ort-wasm-simd-threaded\.asyncify-.*\.wasm$/.test(f))
-    const manifest = JSON.parse(fs.readFileSync(path.join(MODEL_DIR, 'manifest.json'), 'utf8'))
-    const model = manifest.files.find((f) => f.path.endsWith('.onnx')).path
+    // Only the lab phases need the local export; a download-only run (e.g. against the published pin) has none.
+    const manifest = needLab ? JSON.parse(fs.readFileSync(path.join(MODEL_DIR, 'manifest.json'), 'utf8')) : { files: [] }
+    const model = needLab ? manifest.files.find((f) => f.path.endsWith('.onnx')).path : undefined
     // The f16 fast graph needs shader-f16: the harness must ask for it exactly as the extension does (from the manifest).
     const f16 = manifest.requiresShaderF16 === true
     const openLab = async (profile) => {

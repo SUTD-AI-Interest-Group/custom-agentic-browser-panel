@@ -63,6 +63,20 @@ describe('downloadWeights', () => {
     expect(state.bytes).toBe(5 + 7)
     expect(cache.store.size).toBe(3) // manifest + 2 files
   })
+  it('refuses a shader-f16 model on a GPU without the feature BEFORE downloading any file', async () => {
+    const files = { 'model_f16.onnx': enc('MODEL') }
+    const manifest: WeightsManifest = { format: 1, model: 'von', variant: 'f16', requiresShaderF16: true,
+      files: [{ path: 'model_f16.onnx', bytes: 5, sha256: await sha(files['model_f16.onnx']) }] }
+    const mBytes = enc(JSON.stringify(manifest))
+    const pin = { repo: 'me/von', revision: 'f16', manifestSha256: await sha(mBytes) }
+    const fetchFn = vi.fn(async (url: string) => (url === fileUrl(pin, 'manifest.json') ? new Response(mBytes) : new Response(files['model_f16.onnx'].slice())))
+    const cache = new FakeCache()
+    await expect(downloadWeights(pin, { fetch: fetchFn as any, cache, supportsShaderF16: async () => false })).rejects.toThrow(/shader-f16/)
+    expect(fetchFn).toHaveBeenCalledTimes(1) // the manifest only
+    expect(cache.store.size).toBe(0)
+    const ok = await downloadWeights(pin, { fetch: fetchFn as any, cache: new FakeCache(), supportsShaderF16: async () => true })
+    expect(ok.variant).toBe('f16')
+  })
   it('refuses a tampered manifest', async () => {
     const { pin, fetchFn } = await fixture()
     await expect(downloadWeights({ ...pin, manifestSha256: '0'.repeat(64) }, { fetch: fetchFn as any, cache: new FakeCache() }))

@@ -36,6 +36,13 @@ export interface WeightsDeps {
   cache: Pick<Cache, 'put' | 'match' | 'delete' | 'keys'>
   onProgress?: (p: DownloadProgress) => void
   signal?: AbortSignal
+  /**
+   * Whether this machine's WebGPU adapter has `shader-f16`. Asked only when the
+   * manifest requires it, and BEFORE any model file is fetched: the f16 export
+   * is ~800 MB, and downloading it onto a GPU that cannot run it would leave
+   * `Act` absent after the user waited for the whole thing.
+   */
+  supportsShaderF16?: () => Promise<boolean>
 }
 
 export const fileUrl = (pin: WeightsPin, path: string) =>
@@ -127,6 +134,8 @@ export async function downloadWeights(pin: WeightsPin, deps: WeightsDeps): Promi
   const mBytes = new Uint8Array(await mRes.arrayBuffer())
   if ((await sha256Hex(mBytes)) !== pin.manifestSha256) throw new Error('manifest hash does not match the pinned value')
   const manifest = parseManifest(JSON.parse(new TextDecoder().decode(mBytes)))
+  if (manifest.requiresShaderF16 && deps.supportsShaderF16 && !(await deps.supportsShaderF16()))
+    throw new Error('This model needs a GPU with WebGPU shader-f16 support, which this machine does not have; nothing was downloaded.')
   const overallTotal = manifest.files.reduce((a, x) => a + x.bytes, 0)
   let overallReceived = 0
   for (const file of manifest.files) {

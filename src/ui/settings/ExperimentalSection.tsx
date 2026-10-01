@@ -92,6 +92,7 @@ function startJob(): DownloadJob {
           fetch: (u, init) => fetch(u, init),
           cache: await caches.open(CACHE_NAME),
           signal: ac.signal,
+          supportsShaderF16: () => hasWebGpu(true),
           onProgress: (p) => {
             job.latestProgress = p
             for (const l of listeners) l(p)

@@ -23,13 +23,19 @@ export interface WeightsPin {
 }
 
 // The published act-head fine-tune (https://huggingface.co/ks-ang/von-browser-act):
-// Von 1.2 continue-trained on the single-pass act rows (2026-09-30), q8 export
-// gated on parity (max|Δp| 0.0098). Pinned by commit, never `main`; the
-// manifest hash is what the download verifies before trusting any file it lists.
+// Von 1.2 continue-trained on the single-pass act rows (2026-09-30), exported
+// as the FAST graph (2026-10-02, scripts/export-von/fast.py): fp16 activations,
+// RoPE tables and option masks as inputs, fused attention — decision p50 98 ms
+// (q8 was 400), and it runs requests past T≈2,048 the q8 graph could not; it
+// requires shader-f16 (the manifest says so; Settings refuses to download it
+// on an adapter without the feature). CPU gate max|Δp| 0.0035, WebGPU 0.0264.
+// The previous q8 pin was 7a0aeb2b… / fb63645a…. Pinned by commit, never
+// `main`; the manifest hash is what the download verifies before trusting any
+// file it lists.
 const PUBLISHED_PIN: WeightsPin = {
   repo: 'ks-ang/von-browser-act',
-  revision: '7a0aeb2b98b3904147c1febebbc85f6c882d3e84',
-  manifestSha256: 'fb63645a22d39308ad7ed9bcf3fce4c02057be158415a372348e8c3363b23e51',
+  revision: '6f1783b63a4ec4049206496998bfc2f88a5a062a',
+  manifestSha256: '7d5ff043d9674ce8cca4b8b96e507d09a324f381edacb51144e7374ccecefc1e',
 }
 
 function parsePinOverride(raw: string): WeightsPin {
