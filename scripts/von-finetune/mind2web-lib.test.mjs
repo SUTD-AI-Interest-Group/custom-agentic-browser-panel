@@ -100,11 +100,13 @@ describe('buildRegistry', () => {
     expect(reg.title).toBe('Acme & Co')
     expect(reg.scrollHeight).toBe(3000)
   })
-  it("takes the document's title from <head>, never an inline SVG's <title> (the first one in many dumps is an icon's)", () => {
+  it("takes the document's title from <head>, else the first <h1>, never an inline SVG's <title> (real dumps have no <head>; the first <title> is an icon's)", () => {
     const svgFirst = `<html backend_node_id="1"><body backend_node_id="2"><svg backend_node_id="3"><title backend_node_id="4">Chat Bubble Icon</title></svg><a backend_node_id="5"><text backend_node_id="6">Home</text></a></body></html>`
-    expect(buildRegistry(svgFirst, [parseCandidate(cand(5, 'a'))], '5').title).toBe('')
+    expect(buildRegistry(svgFirst, [parseCandidate(cand(5, 'a'))], '5')).toMatchObject({ title: '', titleSource: 'none' })
+    const h1First = `<html backend_node_id="1"><body backend_node_id="2"><svg backend_node_id="3"><title backend_node_id="4">Chat Bubble Icon</title></svg><h1 backend_node_id="7"><text backend_node_id="8">League  Roster</text></h1><h1 backend_node_id="9"><text backend_node_id="10">Second</text></h1></body></html>`
+    expect(buildRegistry(h1First, [], undefined)).toMatchObject({ title: 'League Roster', titleSource: 'h1' })
     const headed = `<html backend_node_id="1"><head backend_node_id="7"><title backend_node_id="8"><text backend_node_id="9">CarMax</text></title></head><body backend_node_id="2"><svg backend_node_id="3"><title backend_node_id="4">Chat Bubble Icon</title></svg></body></html>`
-    expect(buildRegistry(headed, [], undefined).title).toBe('CarMax')
+    expect(buildRegistry(headed, [], undefined)).toMatchObject({ title: 'CarMax', titleSource: 'head' })
   })
   it('keeps document order and only what domIndex would index, plus the target and its decoys', () => {
     // 51 is the target; 53 and 55 are same-tag siblings under its parent; 60 shares its class but not its tag, so it is not a decoy.
@@ -115,8 +117,13 @@ describe('buildRegistry', () => {
     expect(by[42].name).toBe('Home')
     expect(by[40].name).toBe('Help')
     expect(by[23].name).toBe('Search')
-    expect(by[18].name).toBe('Dine in Pickup')
+    expect(by[18].name).toBe('Dine in\nPickup') // innerText keeps the line break between options, as Chrome does
     expect(by[16].name).toBe('flex') // a toggle's "on" is not a name; the fallback reaches the name attribute, as in production
+  })
+  it('approximates innerText: a newline between block-level children, a space within a line', () => {
+    const html = `<html backend_node_id="1"><body backend_node_id="2"><div backend_node_id="80" role="button"><p backend_node_id="81"><text backend_node_id="82">Line one</text></p><p backend_node_id="83"><text backend_node_id="84">Line  two</text></p></div><a backend_node_id="85"><span backend_node_id="86"><text backend_node_id="87">Book</text></span> <span backend_node_id="88"><text backend_node_id="89">now</text></span></a></body></html>`
+    const r = buildRegistry(html, [parseCandidate(cand(80, 'div', { role: 'button' })), parseCandidate(cand(85, 'a'))], undefined)
+    expect(r.elements.map((e) => e.name)).toEqual(['Line one\nLine two', 'Book now'])
   })
   it('defaults type like the DOM: a typeless button submits, a typeless input is text', () => {
     expect(by[23].type).toBe('submit')
@@ -192,6 +199,17 @@ describe('bucketViewports', () => {
     expect(v.viewports[1].elements.map((e) => [e.index, e.nodeId, e.y])).toEqual([[0, '3', 620]])
     expect(v).toMatchObject({ targetVp: 1, targetIndex: 0 })
   })
+  it('keeps a target that is at least partly on the first screen in window 0 — no second window, no scroll (1,343 rows had the target listed under a SCROLL_DOWN label)', () => {
+    const v = bucketViewports({ elements: [el('1', 10), el('2', 700), el('3', 1500)] }, '2', 3000)
+    expect(v.viewports).toHaveLength(1)
+    expect(v).toMatchObject({ targetVp: 0, targetIndex: 1 })
+    const cut = bucketViewports({ elements: [el('1', 10), el('2', 715, { rect: { x: 0, y: 715, width: 100, height: 40 } })] }, '2', 3000)
+    expect(cut.viewports).toHaveLength(1)
+    expect(cut.targetVp).toBe(0)
+    const below = bucketViewports({ elements: [el('1', 10), el('2', 720)] }, '2', 3000)
+    expect(below.viewports).toHaveLength(2)
+    expect(below.targetVp).toBe(1)
+  })
   it('reports a same-name control on the top screen (scroll_down must then be withheld)', () => {
     const v = bucketViewports({ elements: [el('1', 10, { name: 'Search' }), el('2', 1500, { name: 'search' })] }, '2', 3000)
     expect(v.sameNameOnTop).toBe(true)
@@ -249,7 +267,8 @@ describe('convertTask', () => {
   const out = convertTask(rows, { rng: rng('t') })
   it('orders rows by target_action_index whatever order they arrive in, one page per converted step', () => {
     expect(out.pages.map((p) => p.stepIndex)).toEqual([0, 1, 2])
-    expect(out.pages[0]).toMatchObject({ pageId: 'm2w:A1:u0', site: 'exploretock', split: 'val', category: 'Travel', originPlaceholder: true, viewportInferred: true, innerHeight: 720 })
+    expect(out.pages[0]).toMatchObject({ pageId: 'm2w:A1:u0', site: 'exploretock', split: 'val', category: 'Travel', originPlaceholder: true, viewportInferred: true, innerHeight: 720, titleSource: 'site' })
+    expect(out.pages[0].viewports[0].title).toBe('exploretock')
     expect(out.pages[0].viewports[0]).toMatchObject({ scrollY: 0, origin: 'https://www.exploretock.com', url: 'https://www.exploretock.com/' })
   })
   it('skips the unnamed svg click and counts it', () => {
@@ -263,9 +282,10 @@ describe('convertTask', () => {
     const task = eps.find((e) => e.goalKind === 'task' && e.kind === 'target')
     expect(task.goal).toBe('Check for pickup in Boston')
     expect(Object.keys(task.values).sort()).toEqual(['dine_in', 'find_a_location'])
+    // History lines carry the REGISTRY name (what actLoop prints), not Mind2Web's description of the element.
     expect(task.steps).toEqual([
       { action: 'type', index: 0, label: 'Find a location', valueKey: 'find_a_location' },
-      { action: 'select', index: 1, label: 'Dine in', valueKey: 'dine_in' },
+      { action: 'select', index: 1, label: 'Dine in\nPickup', valueKey: 'dine_in' },
     ])
   })
   it('gives TYPE/SELECT steps a value row when two keys exist and a BLOCKED row when the goal hides the value', () => {

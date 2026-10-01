@@ -202,7 +202,8 @@ function typedRowsFor(ep, c) {
   if (ep.kind !== 'target') return rows
   if (TYPED.has('t2') && ep.goalKind === 'task' && lib.isFieldOperation(ep.op ?? '')) {
     const fields = ctx.observation.controls.filter((x) => x.actions.includes('type_text') || x.actions.includes('select_option'))
-    if (fields.length >= 2 && fields.some((x) => x.id === ep.label) && (fields.some((x) => x.value) || ep.steps.length))
+    // Spec §3: at least one field already filled in this step's HTML — history alone is not a filled field (review 2026-10-02).
+    if (fields.length >= 2 && fields.some((x) => x.id === ep.label) && fields.some((x) => x.value))
       rows.push({ state: withoutControls, question: T2_QUESTION, options: fields.map((x) => ({ id: String(x.id), description: lib.renderControl(x) })), label: String(ep.label), meta: { ...meta, kind: 't2_field' } })
   }
   const once = `${ep.pageId}|${ep.vp}`
@@ -300,10 +301,17 @@ function balance(rows, r) {
   const acts = rows.filter((x) => isMoveRow(x) && lib.isElementOperation(x.meta.op)).length
   const done = shuffle(rows.filter(isDone), r).slice(0, Math.round(acts * Number(args['done-per-act'])))
   let out = [...rows.filter((x) => !isDone(x)), ...done]
-  // T1: every yes, at most 2× as many no (nearly every state is a "no").
-  const t1yes = out.filter((x) => x.meta.kind === 't1_done' && x.label === 'yes').length
-  const t1no = shuffle(out.filter((x) => x.meta.kind === 't1_done' && x.label === 'no'), r).slice(0, 2 * t1yes)
-  out = [...out.filter((x) => !(x.meta.kind === 't1_done' && x.label === 'no')), ...t1no]
+  // T1: every yes; "no" rows per corpus — the teacher corpus (the only source of "yes") up to 2× yes, the others up to
+  // 0.5× yes. A random draw gave 2,047 of 2,184 "no" rows to Mind2Web (review 2026-10-02), so the head could answer
+  // from which corpus a page came instead of whether the goal is done.
+  const isT1 = (x, label) => x.meta.kind === 't1_done' && x.label === label
+  const t1yes = out.filter((x) => isT1(x, 'yes')).length
+  const t1no = []
+  for (const corpus of new Set(out.filter((x) => isT1(x, 'no')).map((x) => x.meta.corpus))) {
+    const share = corpus === 'teacher' ? 2 : 0.5
+    t1no.push(...shuffle(out.filter((x) => isT1(x, 'no') && x.meta.corpus === corpus), r).slice(0, Math.round(share * t1yes)))
+  }
+  out = [...out.filter((x) => !isT1(x, 'no')), ...t1no]
   // Per-head caps, so a head with tens of thousands of candidate rows cannot dominate an epoch. A fractional cap is
   // relative to this split's act-head rows, so val's composition mirrors train's whatever their sizes.
   const actRows = out.filter(isMoveRow).length
@@ -320,7 +328,7 @@ function stats(rows) {
   const out = {}
   for (const x of rows) {
     const k = x.meta.kind === 'operation' ? `operation:${x.meta.op}` : x.meta.kind === 'target' ? `target:${x.meta.op}:${x.meta.round}` : x.meta.kind === 'act' ? `act:${x.meta.op}:${x.meta.round}`
-      : x.meta.kind === 't1_done' || x.meta.kind === 't5_commit' ? `${x.meta.kind}:${x.label}` : x.meta.kind
+      : x.meta.kind === 't1_done' ? `${x.meta.kind}:${x.label}:${x.meta.corpus}` : x.meta.kind === 't5_commit' ? `${x.meta.kind}:${x.label}` : x.meta.kind
     out[k] = (out[k] ?? 0) + 1
   }
   for (const x of rows) {

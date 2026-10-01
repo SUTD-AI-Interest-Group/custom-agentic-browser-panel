@@ -79,10 +79,50 @@ function typeOf(tag, a) {
   return undefined
 }
 
+/** Production's clip (observation.ts): an ellipsis in the last slot. */
+export const clip = (s, n) => (s.length > n ? `${s.slice(0, n - 1)}…` : s)
+
+const BLOCK_TAGS = new Set(['address', 'article', 'aside', 'blockquote', 'br', 'dd', 'details', 'dialog', 'div', 'dl', 'dt', 'fieldset', 'figcaption', 'figure', 'footer', 'form', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'header', 'hr', 'li', 'main', 'nav', 'ol', 'option', 'p', 'pre', 'section', 'table', 'tbody', 'td', 'tfoot', 'th', 'thead', 'tr', 'ul'])
+/**
+ * jsdom has no innerText (it is layout-dependent), and textContent would
+ * glue "Dine in" and "Pickup" into one word. This approximates Chrome's
+ * innerText the way the registry sees it: text nodes in document order, a
+ * newline between two that sit in different block-level containers, a space
+ * otherwise, runs of whitespace collapsed. Measured 2026-10-02: a live
+ * `select.innerText` is "Dine in\nPickup", and 4% of the teacher corpus's
+ * option lines carry a newline — Mind2Web rows must look the same.
+ */
+export function innerTextOf(el) {
+  const blockOf = (node) => {
+    let n = node.parentElement
+    while (n && n !== el) {
+      if (BLOCK_TAGS.has(n.tagName.toLowerCase())) return n
+      n = n.parentElement
+    }
+    return el
+  }
+  let out = ''
+  let last = null
+  const walk = (node) => {
+    for (const child of node.childNodes) {
+      if (child.nodeType === 3) {
+        const s = child.data.replace(/\s+/g, ' ').trim()
+        if (!s) continue
+        const b = blockOf(child)
+        if (out) out += b === last ? ' ' : '\n'
+        out += s
+        last = b
+      } else if (child.nodeType === 1) walk(child)
+    }
+  }
+  walk(el)
+  return out
+}
+
 /** domIndex's accessibleName: aria-label, else innerText / placeholder / value / title / name. alt is deliberately not a name there either. */
 function accessibleName(el, tag, a) {
   if (a.aria_label) return String(a.aria_label).trim().slice(0, 120)
-  const text = tag === 'input' || tag === 'textarea' ? '' : collapse(el.textContent)
+  const text = tag === 'input' || tag === 'textarea' ? '' : innerTextOf(el)
   const toggle = tag === 'input' && /^(checkbox|radio)$/i.test(a.type ?? '')
   const raw = a.input_value ?? a.value ?? ''
   const value = toggle && raw === 'on' ? '' : raw
@@ -211,9 +251,12 @@ export function buildRegistry(html, candidates, targetNodeId) {
     const byNode = new Map(candidates.filter((c) => visible(c.rect)).map((c) => [c.nodeId, c]))
     const target = targetNodeId !== undefined ? byNode.get(targetNodeId) : undefined
     const targetEl = target ? doc.querySelector(`[backend_node_id="${target.nodeId}"]`) : null
-    // The document's own title only: the first <title> in many dumps is an inline SVG icon's ("Chat Bubble Icon").
+    // The document's own title, else the first <h1>. Measured 2026-10-02: no Mind2Web dump has a <head> at all, and every
+    // <title> in them is an inline SVG icon's ("Chat Bubble Icon") — so the heading is what a reader would call the page.
     const titleEl = doc.querySelector('head > title')
-    const title = titleEl ? collapse(titleEl.textContent.replace(/<[^>]+>/g, '')) : ''
+    const h1 = titleEl ? null : doc.querySelector('h1')
+    const title = titleEl ? collapse(titleEl.textContent.replace(/<[^>]+>/g, '')).slice(0, 150) : h1 ? collapse(innerTextOf(h1)).slice(0, 150) : ''
+    const titleSource = titleEl && title ? 'head' : h1 && title ? 'h1' : 'none'
     const root = candidates.find((c) => c.tag === 'html') ?? candidates.find((c) => c.tag === 'body')
     const scrollHeight = Math.max(root ? root.rect.height : 0, ...candidates.map((c) => (visible(c.rect) ? c.rect.y + c.rect.height : 0)), VIEWPORT.height)
     const sameClass = { n: 0 }
@@ -245,7 +288,7 @@ export function buildRegistry(html, candidates, targetNodeId) {
         rect: c.rect,
       })
     }
-    return { title, scrollHeight: Math.round(scrollHeight), elements }
+    return { title, titleSource, scrollHeight: Math.round(scrollHeight), elements }
   } finally {
     dom.window.close()
   }
@@ -268,16 +311,21 @@ const slim = (e, index, scrollY) => {
 
 /**
  * One or two windows over the page; the target must be visible in one — a
- * reconstruction, not a scroll trace. Window 0 is the top of the page; a
- * below-fold target gets a second window a third of a screen above it.
- * Each window is capped like a real snapshot (MAX_ELEMENTS, document order),
- * and a target past the cap is reported absent, never pulled forward.
+ * reconstruction, not a scroll trace. Window 0 is the top of the page and
+ * wins whenever the target is at least partly on it (a real snapshot indexes
+ * a control whose top is above the fold); only a target that starts below
+ * the fold gets a second window a third of a screen above it. The review of
+ * 2026-10-02 found 1,343 SCROLL_DOWN rows whose window listed the target —
+ * the second window had been opened for anything past 90% of the screen and
+ * searched first. Each window is capped like a real snapshot (MAX_ELEMENTS,
+ * document order), and a target past the cap is reported absent, never
+ * pulled forward.
  */
 export function bucketViewports(registry, targetNodeId, scrollHeight, vh = VIEWPORT.height) {
   const target = registry.elements.find((e) => e.nodeId === targetNodeId)
   const maxScroll = Math.max(0, scrollHeight - vh)
   const offsets = [0]
-  if (target && target.rect.y + target.rect.height > vh * 0.9) {
+  if (target && target.rect.y >= vh) {
     const y = Math.min(maxScroll, Math.max(0, Math.round(target.rect.y - vh / 3)))
     if (y > 0) offsets.push(y)
   }
@@ -288,7 +336,7 @@ export function bucketViewports(registry, targetNodeId, scrollHeight, vh = VIEWP
   })
   let targetVp
   let targetIndex
-  for (let i = viewports.length - 1; i >= 0; i--) {
+  for (let i = 0; i < viewports.length; i++) {
     const hit = viewports[i].elements.find((e) => e.nodeId === targetNodeId)
     if (hit) {
       targetVp = i
@@ -389,7 +437,8 @@ export function convertTask(rows, { rng: r }) {
     const op = s.operation.op
     const repr = reprOf(s) ?? { role: '', name: '', op, value: s.operation.value }
     // History lines read as actLoop renders them: the target's name, "(unnamed)" when it has none.
-    const hist = { action: ACTION_OF_OP[op] ?? 'click', label: repr.name.slice(0, 60) || '(unnamed)', valueKey: keyOfStep.get(s.target_action_index) }
+    // A skipped step has no registry, so its line falls back to Mind2Web's own description of the element.
+    const hist = { action: ACTION_OF_OP[op] ?? 'click', label: clip(repr.name || '(unnamed)', 60), valueKey: keyOfStep.get(s.target_action_index) }
     const done = () => {
       history.push(Object.fromEntries(Object.entries(hist).filter(([, v]) => v !== undefined)))
     }
@@ -408,12 +457,14 @@ export function convertTask(rows, { rng: r }) {
     if (targetVp === undefined) { count(skipped, 'target-truncated'); done(); continue }
     if (op === 'SELECT' && !tEl.options?.some((o) => o.text === s.operation.value || o.value === s.operation.value)) count(warnings, 'select-value-not-in-options')
     hist.index = targetIndex
+    hist.label = clip(tEl.name || '(unnamed)', 60) // the registry's name, exactly as actLoop prints a past step
     const pageId = `m2w:${s.annotation_id}:${s.action_uid}`
     const title = registry.title || website
     pages.push({
       pageId, corpus: 'mind2web', url: `${origin}/`, finalUrl: `${origin}/`, site: website, split, category: s.domain, subdomain: s.subdomain,
       task: s.confirmed_task, stepIndex: s.target_action_index, stepCount: s.action_reprs.length, depth: s.target_action_index,
       innerHeight: VIEWPORT.height, scrollHeight: registry.scrollHeight, viewportInferred: true, originPlaceholder: true,
+      titleSource: registry.title ? registry.titleSource : 'site',
       viewports: viewports.map((v) => ({ scrollY: v.scrollY, title, origin, url: `${origin}/`, truncated: v.truncated, elements: v.elements })),
     })
     const base = { pageId, corpus: 'mind2web', split, site: website, category: s.domain, subdomain: s.subdomain, writer: WRITER, verifier: WRITER }
