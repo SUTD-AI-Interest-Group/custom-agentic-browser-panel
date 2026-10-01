@@ -4,7 +4,7 @@
 // network here; weights.ts is the only downloader.
 import * as ort from 'onnxruntime-web/webgpu'
 import { Tokenizer } from '@huggingface/tokenizers'
-import { calibrate, marginConfidence, packPrompt, planSequence, VonInputError, type VonConfig } from './von'
+import { buildFastInputs, calibrate, marginConfidence, packPrompt, planSequence, VonInputError, type SequencePlan, type VonConfig } from './von'
 import { CACHE_NAME } from './weights'
 import type { DecideAnswer, DecideRequest, DecideResult, System1WorkerReply, System1WorkerRequest } from './protocol'
 
@@ -12,6 +12,8 @@ const post = (m: System1WorkerReply) => self.postMessage(m)
 let session: ort.InferenceSession | null = null
 let tokenizer: Tokenizer | null = null
 let cfg: VonConfig | null = null
+/** Per-kernel GPU timings of the decision in flight, only while profiling (eval). */
+let kernels: { name: string; ms: number }[] | null = null
 
 async function cached(url: string): Promise<Response> {
   const r = await (await caches.open(CACHE_NAME)).match(url)
@@ -64,6 +66,17 @@ async function boot(m: Extract<System1WorkerRequest, { type: 'init' }>) {
   ])
   tokenizer = new Tokenizer(tj, tc)
   cfg = c as VonConfig
+  if (m.profile) {
+    // ORT's WebGPU profiler reports one record per dispatched kernel with GPU timestamps (ns). Only the eval asks for it.
+    kernels = []
+    ort.env.webgpu.profiling = {
+      mode: 'default',
+      ondata: (d) => {
+        const r = d as unknown as { kernelName?: string; kernelType?: string; programName?: string; startTime: number; endTime: number }
+        kernels?.push({ name: r.kernelType ?? r.kernelName ?? r.programName ?? 'unknown', ms: (r.endTime - r.startTime) / 1e6 })
+      },
+    }
+  }
   session = await ort.InferenceSession.create(new Uint8Array(model), {
     // Pass the shader-f16 device we just requested directly to the EP rather
     // than through the global `ort.env.webgpu.device` setter — that setter is
@@ -84,6 +97,48 @@ async function boot(m: Extract<System1WorkerRequest, { type: 'init' }>) {
   await scoreQuestion('warm-up', { instructions: '', options: { a: 'a', b: 'b' } })
 }
 
+const i64 = (xs: number[]) => BigInt64Array.from(xs, (x) => BigInt(x))
+
+/** The plain export's four tensors: the graph builds its own masks and RoPE from option/position ids. */
+function legacyFeeds(ids: number[], plan: SequencePlan): Record<string, ort.Tensor> {
+  const T = ids.length
+  return {
+    input_ids: new ort.Tensor('int64', i64(ids), [1, T]),
+    option_ids: new ort.Tensor('int64', i64(plan.optionIds), [1, T]),
+    position_ids: new ort.Tensor('int64', i64(plan.positionIds), [1, T]),
+    marker_positions: new ort.Tensor('int64', i64(plan.markers), [plan.markers.length]),
+  }
+}
+
+/**
+ * The fast export's feeds (scripts/export-von/fast.py): ids padded to a
+ * bucket, four RoPE tables and two additive option biases built by
+ * buildFastInputs — the browser twin of the exporter's fast_inputs — plus the
+ * marker positions, which padding leaves untouched.
+ */
+function fastFeeds(ids: number[], plan: SequencePlan): Record<string, ort.Tensor> {
+  const c = cfg!
+  if (c.padTokenId === undefined) throw new Error('fast model config lacks padTokenId')
+  const f = buildFastInputs(ids, plan, {
+    padTokenId: c.padTokenId,
+    slidingWindow: c.slidingWindow,
+    headDim: c.headDim ?? 64,
+    rope: c.rope ?? { full: 160000, sliding: 10000 },
+  })
+  const T = f.T
+  const d = c.headDim ?? 64
+  return {
+    input_ids: new ort.Tensor('int64', i64(f.ids), [1, T]),
+    cos_full: new ort.Tensor('float32', f.cosFull, [T, d]),
+    sin_full: new ort.Tensor('float32', f.sinFull, [T, d]),
+    cos_sliding: new ort.Tensor('float32', f.cosSliding, [T, d]),
+    sin_sliding: new ort.Tensor('float32', f.sinSliding, [T, d]),
+    bias_full: new ort.Tensor('float32', f.biasFull, [1, 1, T, T]),
+    bias_sliding: new ort.Tensor('float32', f.biasSliding, [1, 1, T, T]),
+    marker_positions: new ort.Tensor('int64', i64(plan.markers), [plan.markers.length]),
+  }
+}
+
 async function scoreQuestion(state: string, q: DecideRequest['questions'][string]): Promise<DecideAnswer> {
   const keys = Object.keys(q.options)
   const packed = packPrompt(state, q.instructions, keys.map((k) => q.options[k]), cfg!.digitSplit)
@@ -91,14 +146,7 @@ async function scoreQuestion(state: string, q: DecideRequest['questions'][string
   const plan = planSequence(ids, cfg!.maskTokenId, cfg!.maxTokens)
   if (plan.markers.length !== keys.length)
     throw new VonInputError('no-options', `an option text contains a literal [MASK] (${plan.markers.length} ≠ ${keys.length})`)
-  const T = ids.length
-  const i64 = (xs: number[]) => BigInt64Array.from(xs, (x) => BigInt(x))
-  const out = await session!.run({
-    input_ids: new ort.Tensor('int64', i64(ids), [1, T]),
-    option_ids: new ort.Tensor('int64', i64(plan.optionIds), [1, T]),
-    position_ids: new ort.Tensor('int64', i64(plan.positionIds), [1, T]),
-    marker_positions: new ort.Tensor('int64', i64(plan.markers), [plan.markers.length]),
-  })
+  const out = await session!.run(cfg!.inputs === 'fast' ? fastFeeds(ids, plan) : legacyFeeds(ids, plan))
   const logits = Array.from(out.logits.data as Float32Array)
   const stateTokens = tokenizer!.encode(state, { add_special_tokens: false }).ids.length
   const probs = calibrate(logits, stateTokens, cfg!)
@@ -129,9 +177,11 @@ self.onmessage = async (e: MessageEvent<System1WorkerRequest>) => {
   if (m.type === 'decide') {
     const t0 = performance.now()
     try {
+      if (kernels) kernels.length = 0
       const answers: Record<string, DecideAnswer> = {}
       for (const [key, q] of Object.entries(m.req.questions)) answers[key] = await scoreQuestion(m.req.state, q)
       const result: DecideResult = { answers, ms: Math.round(performance.now() - t0) }
+      if (kernels) result.kernels = kernels.slice()
       post({ type: 'result', id: m.id, result })
     } catch (err) {
       post({

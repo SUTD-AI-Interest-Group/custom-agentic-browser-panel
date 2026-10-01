@@ -21,6 +21,8 @@ export interface DecideAnswer {
 export interface DecideResult {
   answers: Record<string, DecideAnswer>
   ms: number
+  /** Only when the worker was booted with `profile: true` (the eval): every WebGPU kernel the decision ran, in order, with its GPU time. */
+  kernels?: { name: string; ms: number }[]
 }
 
 export type System1WorkerRequest =
@@ -33,6 +35,8 @@ export type System1WorkerRequest =
       configUrl: string
       /** From the manifest's `requiresShaderF16` — whether to request the WebGPU device with that feature. */
       requiresShaderF16: boolean
+      /** Eval only: record per-kernel GPU timings (ORT's WebGPU profiler) and attach them to every result. Never set in production. */
+      profile?: boolean
     }
   | { type: 'decide'; id: string; req: DecideRequest }
 
