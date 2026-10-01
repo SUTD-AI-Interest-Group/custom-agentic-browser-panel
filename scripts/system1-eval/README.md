@@ -71,6 +71,51 @@ in `report.json`, with no browser and no model. `report.json` is written only by
 `report.mjs`. Every invocation appends to its `runs` list the phases it produced, so
 the file records which run each section came from.
 
+## Results — 2026-10-02: the fast runtime (Plan A, same weights)
+
+Spec `docs/superpowers/specs/2026-10-02-von-fast-act-design.md` §3, plan
+`docs/superpowers/plans/2026-10-02-fast-act-runtime.md`. The act-head weights of
+run B (`ks-ang/von-browser-act@7a0aeb2`'s `checkpoint/`), exported twice: the
+published q8 graph, and the **fast graph** (`export.py --fast`: RoPE tables and
+the two option masks as inputs built by `buildFastInputs`, one fused
+`MultiHeadAttention` per layer, fp16 activations with fp32 islands at every
+LayerNorm, the final norm and the scorer, T padded to a bucket). Apple GPU,
+shader-f16 available; Chromium 151; `report.json` holds this run's download,
+parity, grounding and placement — its `llm` and `e2e` sections are still run B's.
+
+| | q8 (run B's graph) | f16 fast graph |
+|---|---|---|
+| download · boot | 620 MB · 1.6–1.8 s | 795 MB · 1.3 s |
+| nodes on WebGPU · on CPU | 1,369 · 540 (RoPE/mask arithmetic, a sync per layer) | 1,207 · 420 (int64 shape math only, no Memcpy) |
+| fused attention on WebGPU | 0 | 28 `MultiHeadAttention` |
+| parity: CPU gate · WebGPU golden | 0.0098 · 0.0098 | 0.0035 (T refit 1.389→1.389) · 0.0264, 0 flips |
+| decide ms, golden K = 2 / 3 / 5 / 5 (short) | 181–212 / 196–274 / 211–308 / 61–80 | **90 / 90 / 91 / 52** |
+| decide ms, synthetic K = 47 (T≈1,100) | 854–1,206 | **320** |
+| grounding (54 cases) | 50/54 = 0.926 | **50/54 = 0.926**, identical per case (50 right, the same 4 wrong) |
+| decide p50 / p95 over the grounding run | 400 / ~584 | **98 / 205** (value head p50 56) |
+
+(q8 ranges are its two `kernels` runs; f16 is one.) Every acceptance line of the
+spec's runtime row holds: p50 ≤ 250 ms at K 15–20 (98), ≤ 450 ms at K = 47
+(320), parity ≤ 0.03 on both EPs, grounding unchanged.
+
+- **The profiler is silent on the native EP.** ORT Web 1.30's WebGPU EP (the
+  asyncify bundle the worker loads) delivers nothing through
+  `ort.env.webgpu.profiling.ondata`, session `enableProfiling` or the console, so
+  the `kernels` phase reports latency by K and `ep-placement.mjs` (now
+  shader-f16-aware) is the evidence for what runs where.
+- **What is left on the CPU** is 15 int64 shape nodes per layer (Gather 5,
+  Unsqueeze 4, Div 3, Concat/Add/Mul 1 each) building the reshape targets from
+  `Shape` — no activation copies. A later cut could fold them into constant
+  `[0, 0, 3, 16, 64]` reshape shapes.
+- **Bucketing stays; graph capture was not pursued**: without per-kernel times
+  there is no dispatch-overhead measurement to justify eight captured sessions,
+  and the targets are met without it.
+- **Not re-run:** `e2e` (needs LM Studio, ~35 min; the weights and every
+  decision are unchanged, so only wall time would move).
+- **Trade-off:** the download grows 616 → 792 MB (fp16 weights instead of 8-bit
+  on 84 matmuls). An 8-bit-weight fast graph is untested; it would need its own
+  parity gate, since 8-bit on every matmul failed it on the old graph.
+
 ## Results — 2026-09-30: the jev-ultrafast loop, and the single-pass act head
 
 A study of [browser-use/jev-ultrafast](https://github.com/browser-use/jev-ultrafast)
@@ -143,7 +188,7 @@ Per task, forced arm (success · wall · Act):
   Studio was generating; the other 65 forced-arm passes took 18.7 s. Not seen
   before; watch for it in run B.
 
-### Run B — the act-head fine-tune, single-pass head, new loop with the retry (`report.json` is this run)
+### Run B — the act-head fine-tune, single-pass head, new loop with the retry (its rows are `report.json`'s `llm` and `e2e`)
 
 `scripts/von-finetune/render.mjs --head act` on the same 4,921 episodes (2,743
 train / 363 val rows), 3 epochs on the M4 Max (72.7 min; best at step 250, val
@@ -427,7 +472,7 @@ click are in distribution (labels transfer by construction; ~1 h/epoch);
 (2) keep the engine warm across a chain rather than booting inside the first
 call; (3) consider a single target-or-move head to cut a step to one pass.
 
-### The second fine-tune — trained on the candidate-action rows (`report.json` is this run)
+### The second fine-tune — trained on the candidate-action rows (its rows are `report.json`'s `llm` and `e2e`)
 
 `scripts/von-finetune/` re-rendered the same 4,921 episodes through `vonPolicy.ts`'s
 renderers (labels transfer by construction) and continue-trained base Von 1.2 for
