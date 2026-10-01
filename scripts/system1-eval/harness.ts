@@ -20,7 +20,13 @@ import type { DecideRequest, DecideResult, System1WorkerReply } from '../../src/
 let worker: Worker | null = null
 const pending = new Map<string, { resolve: (r: DecideResult) => void; reject: (e: Error) => void }>()
 
-async function boot(wasmPath: string, modelPath: string): Promise<number> {
+/**
+ * `requiresShaderF16` is the manifest's value (run.mjs reads it): the f16 fast
+ * graph needs the feature, and the worker refuses to boot such a graph on a
+ * device without it. `profile` turns on ORT's per-kernel WebGPU profiler for
+ * the kernels phase; it is never set in production.
+ */
+async function boot(wasmPath: string, modelPath: string, requiresShaderF16 = false, profile = false): Promise<number> {
   const t0 = performance.now()
   worker = new Worker(chrome.runtime.getURL('system1Worker.js'), { type: 'module' })
   await new Promise<void>((resolve, reject) => {
@@ -44,7 +50,8 @@ async function boot(wasmPath: string, modelPath: string): Promise<number> {
       tokenizerUrl: fileUrl(WEIGHTS_PIN, 'tokenizer.json'),
       tokenizerConfigUrl: fileUrl(WEIGHTS_PIN, 'tokenizer_config.json'),
       configUrl: fileUrl(WEIGHTS_PIN, 'von.json'),
-      requiresShaderF16: false,
+      requiresShaderF16,
+      profile,
     })
   })
   return Math.round(performance.now() - t0)

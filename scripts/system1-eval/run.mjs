@@ -138,21 +138,35 @@ async function main() {
 
     let lab = null
     const harness = bundleHarness()
-    const needLab = PHASES.has('parity') || PHASES.has('grounding')
+    const needLab = PHASES.has('parity') || PHASES.has('grounding') || PHASES.has('kernels')
+    const wasm = fs.readdirSync(path.join(DIST, 'assets')).find((f) => /^ort-wasm-simd-threaded\.asyncify-.*\.wasm$/.test(f))
+    const manifest = JSON.parse(fs.readFileSync(path.join(MODEL_DIR, 'manifest.json'), 'utf8'))
+    const model = manifest.files.find((f) => f.path.endsWith('.onnx')).path
+    // The f16 fast graph needs shader-f16: the harness must ask for it exactly as the extension does (from the manifest).
+    const f16 = manifest.requiresShaderF16 === true
+    const openLab = async (profile) => {
+      const page = await ctx.newPage()
+      await page.goto(`chrome-extension://${extId}/research-tab.html`)
+      await page.evaluate(harness)
+      const bootMs = await page.evaluate(([w, m, r, p]) => globalThis.__s1eval.boot(`assets/${w}`, m, r, p), [wasm, model, f16, profile])
+      return { page, bootMs }
+    }
     if (needLab) {
       if (!gpu.available) throw new Error(`WebGPU unavailable: ${gpu.reason}`)
-      lab = await ctx.newPage()
-      await lab.goto(`chrome-extension://${extId}/research-tab.html`)
-      await lab.evaluate(harness)
-      const wasm = fs.readdirSync(path.join(DIST, 'assets')).find((f) => /^ort-wasm-simd-threaded\.asyncify-.*\.wasm$/.test(f))
-      const manifest = JSON.parse(fs.readFileSync(path.join(MODEL_DIR, 'manifest.json'), 'utf8'))
-      const model = manifest.files.find((f) => f.path.endsWith('.onnx')).path
-      report.model = { model: manifest.model, variant: manifest.variant, file: model, bytes: manifest.files.find((f) => f.path === model).bytes, cpuParity: manifest.parity }
-      const bootMs = await lab.evaluate(([w, m]) => globalThis.__s1eval.boot(`assets/${w}`, m), [wasm, model])
-      report.bootMs = bootMs
-      log('worker booted in', bootMs, 'ms')
+      if (f16 && !gpu.shaderF16) throw new Error('this export requires shader-f16 and the adapter lacks it')
+      report.model = { model: manifest.model, variant: manifest.variant, file: model, bytes: manifest.files.find((f) => f.path === model).bytes, cpuParity: manifest.parity, requiresShaderF16: f16 }
+      const opened = await openLab(false)
+      lab = opened.page
+      report.bootMs = opened.bootMs
+      log('worker booted in', opened.bootMs, 'ms', f16 ? '(shader-f16)' : '')
     }
     if (PHASES.has('parity')) report.parity = await phaseParity(lab)
+    if (PHASES.has('kernels')) {
+      // A second worker with ORT's profiler on: kernel timings must never colour the unprofiled numbers above.
+      const prof = await openLab(true)
+      report.kernels = await phaseKernels(prof.page)
+      await prof.page.close()
+    }
     let grounding = null
     if (PHASES.has('grounding')) {
       grounding = await phaseGrounding(ctx, lab, fixtureUrl)
@@ -175,7 +189,7 @@ async function main() {
       report.e2e = await phaseE2e(port, fixtureUrl)
     }
 
-    const measured = ['download', 'parity', 'grounding', 'llm', 'e2e'].filter((k) => PHASES.has(k))
+    const measured = ['download', 'parity', 'kernels', 'grounding', 'llm', 'e2e'].filter((k) => PHASES.has(k))
     const { skipped, ...sections } = report
     const written = writeReport({ phases: measured, startedAt, finishedAt: new Date().toISOString(), skipped }, sections)
     if (grounding) fs.writeFileSync(path.join(OUT_DIR, 'grounding-raw.json'), JSON.stringify(grounding, null, 1))
@@ -339,6 +353,51 @@ async function phaseParity(lab) {
 }
 
 // ---------------------------------------------------------------------------
+/**
+ * Where a decision's GPU time goes, by kernel. The golden cases (K 2–8) and one
+ * synthetic 47-option page (the eval's shop case shape, T≈1,100) are each run
+ * three times on a worker booted with ORT's WebGPU profiler; the last run's
+ * kernels are aggregated by name. Two facts decide the runtime work before any
+ * latency number is believed: a `FlashAttention` kernel present means the
+ * native EP ran fused attention; a `Memcpy` kernel present means some node
+ * fell back to the CPU. Latency per request is from the UNPROFILED lab (the
+ * profiler itself costs time), measured here by K only for the synthetic case.
+ */
+async function phaseKernels(prof) {
+  const golden = JSON.parse(fs.readFileSync(env.EVAL_GOLDEN ?? path.join(repo, 'src/system1/__fixtures__/von-golden.json'), 'utf8'))
+  const longest = golden.cases.reduce((a, c) => (c.ids.length > a.ids.length ? c : a), golden.cases[0])
+  const dense = {
+    state: longest.state,
+    questions: { act: { instructions: 'Choose the next browser action toward the goal: one listed control with its action, or a move.',
+      options: Object.fromEntries(Array.from({ length: 47 }, (_, i) => [String(i), `[${i}] link "Item ${i} of the catalogue page, with a longer label" → click`])) } },
+  }
+  const requests = [...golden.cases.map((c, i) => ({ name: `golden-${i}`, K: c.options.length, req: { state: c.state, questions: { q: { instructions: c.instructions, options: Object.fromEntries(c.options.map((o, k) => [String(k), o])) } } } })),
+    { name: 'dense-47', K: 47, req: dense }]
+  const rows = []
+  for (const r of requests) {
+    let last = null
+    for (let i = 0; i < 3; i++) last = await prof.evaluate((req) => globalThis.__s1eval.decide(req), r.req)
+    const byName = new Map()
+    for (const k of last.kernels ?? []) {
+      const e = byName.get(k.name) ?? { name: k.name, ms: 0, n: 0 }
+      e.ms += k.ms
+      e.n++
+      byName.set(k.name, e)
+    }
+    const kernels = [...byName.values()].sort((a, b) => b.ms - a.ms)
+    const gpuMs = kernels.reduce((a, k) => a + k.ms, 0)
+    rows.push({ name: r.name, K: r.K, ms: last.ms, wallMs: last.wallMs, gpuMs: round(gpuMs, 2), dispatches: (last.kernels ?? []).length,
+      top: kernels.slice(0, 12).map((k) => ({ ...k, ms: round(k.ms, 2), share: round(k.ms / Math.max(gpuMs, 1e-9), 3) })) })
+    log(`kernels ${r.name} K=${r.K}: decide ${last.ms} ms · gpu ${round(gpuMs, 1)} ms over ${(last.kernels ?? []).length} dispatches · top ${kernels.slice(0, 3).map((k) => `${k.name} ${round(k.ms, 1)}`).join(', ')}`)
+  }
+  const names = new Set(rows.flatMap((r) => r.top.map((k) => k.name)))
+  const all = new Set(rows.flatMap((r) => (r.top ?? []).map((k) => k.name)))
+  const flashAttention = [...names].some((n) => /flash/i.test(n))
+  const cpuFallback = [...all].some((n) => /memcpy/i.test(n))
+  log(`kernels: ${flashAttention ? 'FlashAttention present (native EP, fused attention)' : 'no FlashAttention kernel'}; ${cpuFallback ? 'Memcpy present (CPU fallback)' : 'no Memcpy'}`)
+  return { flashAttention, cpuFallback, rows }
+}
+
 async function phaseGrounding(ctx, lab, fixtureUrl) {
   const cases = JSON.parse(fs.readFileSync(path.join(here, 'cases.json'), 'utf8'))
   const tab = await ctx.newPage()

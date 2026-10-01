@@ -14,6 +14,11 @@ agent capabilities" (LM Studio `google/gemma-4-26b-a4b` is the only model endpoi
     `downloadWeights` (manifest hash, per-file hashes, `cache.put`) runs unchanged.
   - **parity** — the exporter's golden cases (`src/system1/__fixtures__/von-golden.json`,
     fp32 reference logits) through the real `system1Worker.js` on WebGPU.
+  - **kernels** — the same golden cases plus a synthetic 47-option page on a second
+    worker booted with ORT's WebGPU profiler (`profile: true`, eval only): GPU time
+    by kernel name, dispatch count, and two verdicts — a `FlashAttention` kernel
+    present means the native EP ran fused attention, a `Memcpy` kernel present
+    means a node fell back to the CPU. The unprofiled lab's `ms` is the latency.
   - **grounding** — `cases.json` on `fixtures/*.html`. `harness.ts` (bundled with
     esbuild and evaluated in an extension page) runs the real `runActLoop` for one
     step with the real `snapshotPage`, forcing only the *move* answer to `act`

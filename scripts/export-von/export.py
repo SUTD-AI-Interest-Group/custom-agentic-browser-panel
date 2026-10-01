@@ -183,6 +183,50 @@ def build_q8(src, dst, n_layers):
     store_fp16(qz.model.model, dst, "q8")
 
 
+def sanitize_fp16(m):
+    """Repair what onnxruntime's float16 converter leaves behind when one tensor feeds two protected nodes: a second
+    Cast with the SAME node name and output (an invalid model), and nodes no longer in topological order. Keeps the
+    first of each duplicate and re-sorts with Kahn's algorithm. Returns (duplicates dropped, nodes moved)."""
+    g = m.graph
+    seen = set()
+    kept = []
+    dropped = 0
+    for n in g.node:
+        key = (n.name, tuple(n.output))
+        if n.name and key in seen:
+            dropped += 1
+            continue
+        seen.add(key)
+        kept.append(n)
+    available = {i.name for i in g.input} | {i.name for i in g.initializer} | {""}
+    producer = {}
+    for n in kept:
+        for o in n.output:
+            producer[o] = n
+    remaining = list(kept)
+    ordered = []
+    moved = 0
+    while remaining:
+        progressed = False
+        rest = []
+        for n in remaining:
+            if all(i in available for i in n.input):
+                ordered.append(n)
+                available.update(n.output)
+                progressed = True
+            else:
+                rest.append(n)
+        if not progressed:
+            missing = [i for n in rest for i in n.input if i not in available][:3]
+            raise AssertionError(f"f16 graph has unresolvable inputs {missing}")
+        if rest and rest != remaining[len(remaining) - len(rest):]:
+            moved += 1
+        remaining = rest
+    del g.node[:]
+    g.node.extend(ordered)
+    return dropped, moved
+
+
 def fp16_activations(path):
     """Names of fp16 tensors the graph computes (not the fp16-stored weights feeding the *_upcast Casts)."""
     from onnx import TensorProto
@@ -324,11 +368,18 @@ def main():
         assert mha == len(fast_model.layers), f"expected {len(fast_model.layers)} MultiHeadAttention nodes, got {mha}"
         print(f"[export] fast: {len(g32.graph.node)} nodes, {mha} MultiHeadAttention")
         from onnxruntime.transformers.float16 import convert_float_to_float16
-        island = [n.name for n in g32.graph.node if "/rope" in n.name or "/scorer" in n.name or "/final_norm" in n.name]
+        # Islands: every LayerNormalization, the final norm and the scorer stay fp32. RoPE does NOT need to: the
+        # angle computation (position·inv_freq, where an fp16 graph once flipped long prompts) is no longer in the
+        # graph — cos/sin arrive as fp32 inputs — and q·cos + rot(q)·sin in fp16 is what every fp16 runtime does.
+        island = [n.name for n in g32.graph.node if "/scorer" in n.name or "/final_norm" in n.name]
         g16 = convert_float_to_float16(g32, keep_io_types=True, op_block_list=["LayerNormalization"], node_block_list=island)
+        dropped, reordered = sanitize_fp16(g16)
+        onnx.checker.check_model(g16)
         f16_path = os.path.join(out, "von_f16.onnx")
         onnx.save(g16, f16_path)
-        print(f"[export] f16: {len(island)} island nodes kept fp32 (RoPE, scorer, final norm) + every LayerNormalization")
+        casts = sum(n.op_type == "Cast" for n in g16.graph.node)
+        print(f"[export] f16: {len(island)} island nodes kept fp32 (scorer, final norm) + every LayerNormalization; "
+              f"{casts} Casts; sanitize dropped {dropped} duplicate Cast nodes, reordered {reordered} nodes; checker OK")
         fast_info = {"pad_id": pad_id, "buckets": BUCKETS, "fast_inputs": fast_inputs, "bucket_for": bucket_for, "fp32": fast_fp32}
         variants.insert(0, ("f16", f16_path, True))
 
