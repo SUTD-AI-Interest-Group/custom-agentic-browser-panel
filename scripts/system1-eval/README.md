@@ -417,7 +417,7 @@ It was never shown this rendering, so this measures transfer. Parity was skipped
   construction) — a targeted gain on field operations, not a prerequisite for
   `Act` to act at all.
 
-### Fine-tune + the shipped loop, end to end (commit 240ac57; `report.json` is this run)
+### Fine-tune + the shipped loop, end to end (commit 240ac57; `report.json` was this run)
 
 The first fine-tune e2e exposed a loop bug the base model could never reach: one
 "Add to cart" click changed the cart badge (a new observation hash), the policy
@@ -472,7 +472,7 @@ click are in distribution (labels transfer by construction; ~1 h/epoch);
 (2) keep the engine warm across a chain rather than booting inside the first
 call; (3) consider a single target-or-move head to cut a step to one pass.
 
-### The second fine-tune — trained on the candidate-action rows (its rows are `report.json`'s `llm` and `e2e`)
+### The second fine-tune — trained on the candidate-action rows (`report.json` was this run)
 
 `scripts/von-finetune/` re-rendered the same 4,921 episodes through `vonPolicy.ts`'s
 renderers (labels transfer by construction) and continue-trained base Von 1.2 for
