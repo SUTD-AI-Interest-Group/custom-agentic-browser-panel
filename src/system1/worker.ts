@@ -67,7 +67,10 @@ async function boot(m: Extract<System1WorkerRequest, { type: 'init' }>) {
   tokenizer = new Tokenizer(tj, tc)
   cfg = c as VonConfig
   if (m.profile) {
-    // ORT's WebGPU profiler reports one record per dispatched kernel with GPU timestamps (ns). Only the eval asks for it.
+    // ORT's WebGPU profiler (JSEP's channel) reports one record per dispatched kernel with GPU timestamps (ns).
+    // Measured 2026-10-02: the native WebGPU EP this worker runs (the asyncify bundle) delivers NOTHING here, so the
+    // eval's kernels phase reports latency by option count and takes node placement (ep-placement.mjs) as the EP
+    // evidence; the hook stays armed for a build that does report. Only the eval asks for it.
     kernels = []
     ort.env.webgpu.profiling = {
       mode: 'default',

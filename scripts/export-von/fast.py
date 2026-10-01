@@ -148,7 +148,13 @@ class VonFast(nn.Module):
             x = x + layer.attn.Wo(FusedAttention.apply(q, k, v, bias, self.heads))
             x = x + layer.mlp(layer.mlp_norm(x))
         x = self.final_norm(x)
-        return self.scorer(x[0].index_select(0, marker_positions)).float()
+        # Von's OptionMarkerScorer (input_norm → dense → GELU → norm → dropout → out_proj → squeeze), spelled out so the
+        # export ends in a Reshape: the module's squeeze(-1) traces to an `If` node, which ORT runs on the CPU and
+        # whose branches the fp16 converter typed differently from the protected scorer (an invalid graph).
+        s = self.scorer
+        h = s.input_norm(x[0].index_select(0, marker_positions))
+        h = s.norm(s.act(s.dense(h)))
+        return s.out_proj(h).reshape(-1).float()
 
 
 def tensors(inputs, markers):

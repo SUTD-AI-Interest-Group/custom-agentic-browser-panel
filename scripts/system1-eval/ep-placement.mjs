@@ -51,17 +51,30 @@ const logs = []
 page.on('console', (m) => logs.push(m.text()))
 await page.goto(`http://127.0.0.1:${server.address().port}/`)
 const startedAt = new Date().toISOString()
-const result = await page.evaluate(async ([ep, file, cases]) => {
+// The fast graph (export.py --fast) takes RoPE tables and option biases as inputs; this script only needs the
+// placement log, which ORT prints at session creation, so for it the golden runs are skipped. Its f16 variant
+// needs a device with shader-f16, requested exactly as the worker does.
+const vonCfg = JSON.parse(fs.readFileSync(path.join(MODEL_DIR, 'von.json'), 'utf8'))
+const FAST = vonCfg.inputs === 'fast'
+const F16 = manifest.requiresShaderF16 === true
+const result = await page.evaluate(async ([ep, file, cases, fast, f16]) => {
   const ort = await import('/ort/ort.webgpu.bundle.min.mjs')
   ort.env.wasm.wasmPaths = { wasm: '/ort/ort-wasm-simd-threaded.asyncify.wasm' }
   ort.env.wasm.numThreads = 1
   ort.env.logLevel = 'verbose'
   const buf = new Uint8Array(await (await fetch(`/model/${file}`)).arrayBuffer())
+  let provider = ep
+  if (ep === 'webgpu' && f16) {
+    const adapter = await navigator.gpu.requestAdapter()
+    if (!adapter?.features.has('shader-f16')) throw new Error('adapter lacks shader-f16')
+    provider = { name: 'webgpu', device: await adapter.requestDevice({ requiredFeatures: ['shader-f16'] }) }
+  }
   const t0 = performance.now()
-  const session = await ort.InferenceSession.create(buf, { executionProviders: [ep], graphOptimizationLevel: 'all', logSeverityLevel: 0, logVerbosityLevel: 0 })
+  const session = await ort.InferenceSession.create(buf, { executionProviders: [provider], graphOptimizationLevel: 'all', logSeverityLevel: 0, logVerbosityLevel: 0 })
   const createMs = Math.round(performance.now() - t0)
   const i64 = (xs) => BigInt64Array.from(xs, (x) => BigInt(x))
   const runs = []
+  if (fast) return { createMs, runs }
   for (let rep = 0; rep < 3; rep++) for (const c of cases) {
     const T = c.ids.length
     const t1 = performance.now()
@@ -75,7 +88,7 @@ const result = await page.evaluate(async ([ep, file, cases]) => {
     runs.push({ rep, T, ms: Math.round(performance.now() - t1), maxAbsLogitDelta: Math.max(...logits.map((l, k) => Math.abs(l - c.logits[k]))) })
   }
   return { createMs, runs }
-}, [EP, modelFile, golden.cases])
+}, [EP, modelFile, golden.cases, FAST, F16])
 await ctx.close()
 server.close()
 
@@ -108,7 +121,7 @@ const totalNBits = Object.values(byEp).reduce((a, x) => a + (x.ops.MatMulNBits ?
 // PARTITIONED onto CPU rather than failing session creation — so the counts
 // below are the whole story of what fell back.
 const summary = EP === 'webgpu'
-  ? `${gpu?.ops.MatMulNBits ?? 0}/${totalNBits} MatMulNBits nodes on WebGPU; ${gpu?.total ?? 0} nodes on WebGPU, ${cpu?.total ?? 0} partitioned to CPU`
+  ? `${gpu?.ops.MatMulNBits ?? 0}/${totalNBits} MatMulNBits nodes on WebGPU; ${gpu?.ops.MultiHeadAttention ?? 0} MultiHeadAttention nodes on WebGPU; ${gpu?.total ?? 0} nodes on WebGPU, ${cpu?.total ?? 0} partitioned to CPU`
   : `${EP} EP: ${Object.entries(byEp).map(([k, v]) => `${v.total} nodes on ${k}`).join(', ')}`
 const out = {
   ep: EP, model: modelFile, createMs: result.createMs, summary,

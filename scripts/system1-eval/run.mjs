@@ -146,10 +146,14 @@ async function main() {
     const f16 = manifest.requiresShaderF16 === true
     const openLab = async (profile) => {
       const page = await ctx.newPage()
+      // The native WebGPU EP's session profiler writes to the worker's console; keep every line for the kernels phase.
+      const consoleLines = []
+      page.on('worker', (w) => w.on('console', (msg) => consoleLines.push(msg.text())))
+      page.on('console', (msg) => consoleLines.push(msg.text()))
       await page.goto(`chrome-extension://${extId}/research-tab.html`)
       await page.evaluate(harness)
       const bootMs = await page.evaluate(([w, m, r, p]) => globalThis.__s1eval.boot(`assets/${w}`, m, r, p), [wasm, model, f16, profile])
-      return { page, bootMs }
+      return { page, bootMs, consoleLines }
     }
     if (needLab) {
       if (!gpu.available) throw new Error(`WebGPU unavailable: ${gpu.reason}`)
@@ -164,7 +168,7 @@ async function main() {
     if (PHASES.has('kernels')) {
       // A second worker with ORT's profiler on: kernel timings must never colour the unprofiled numbers above.
       const prof = await openLab(true)
-      report.kernels = await phaseKernels(prof.page)
+      report.kernels = await phaseKernels(prof.page, prof.consoleLines)
       await prof.page.close()
     }
     let grounding = null
@@ -363,7 +367,31 @@ async function phaseParity(lab) {
  * fell back to the CPU. Latency per request is from the UNPROFILED lab (the
  * profiler itself costs time), measured here by K only for the synthetic case.
  */
-async function phaseKernels(prof) {
+/**
+ * Kernel records from whichever channel ORT used: the worker's `kernels`
+ * (ort.env.webgpu.profiling.ondata — JSEP) or the session profiler's console
+ * dump (the native EP prints one JSON event per kernel on endProfiling, plus
+ * free-form lines). Returns {name, ms}[] for the lines added since `from`.
+ */
+function kernelsFromConsole(lines, from) {
+  const out = []
+  for (const line of lines.slice(from)) {
+    // ORT's profiler event: {"cat":"Node","name":"<node>_kernel_time","dur":<µs>,"args":{"op_name":"MatMul",...}}
+    for (const m of line.matchAll(/\{[^{}]*"cat"\s*:\s*"Node"[^{}]*\}/g)) {
+      try {
+        const ev = JSON.parse(m[0])
+        if (!/kernel_time$/.test(ev.name ?? '')) continue
+        out.push({ name: ev.args?.op_name ?? ev.args?.provider ?? ev.name, ms: (ev.dur ?? 0) / 1000 })
+      } catch { /* not an event */ }
+    }
+    // JSEP's free-form line: [profiling] kernel "<id>|<kernelType>|<kernelName>" <programName> execution time: <ns> ns
+    const j = line.match(/\[profiling\] kernel "[^"|]*\|([^"|]*)\|[^"]*"[^\d]*(\d+)\s*ns/)
+    if (j) out.push({ name: j[1], ms: Number(j[2]) / 1e6 })
+  }
+  return out
+}
+
+async function phaseKernels(prof, consoleLines = []) {
   const golden = JSON.parse(fs.readFileSync(env.EVAL_GOLDEN ?? path.join(repo, 'src/system1/__fixtures__/von-golden.json'), 'utf8'))
   const longest = golden.cases.reduce((a, c) => (c.ids.length > a.ids.length ? c : a), golden.cases[0])
   const dense = {
@@ -374,9 +402,18 @@ async function phaseKernels(prof) {
   const requests = [...golden.cases.map((c, i) => ({ name: `golden-${i}`, K: c.options.length, req: { state: c.state, questions: { q: { instructions: c.instructions, options: Object.fromEntries(c.options.map((o, k) => [String(k), o])) } } } })),
     { name: 'dense-47', K: 47, req: dense }]
   const rows = []
+  let sample = null
   for (const r of requests) {
     let last = null
-    for (let i = 0; i < 3; i++) last = await prof.evaluate((req) => globalThis.__s1eval.decide(req), r.req)
+    let from = 0
+    for (let i = 0; i < 3; i++) {
+      from = consoleLines.length
+      last = await prof.evaluate((req) => globalThis.__s1eval.decide(req), r.req)
+      await sleep(150) // the profiler's console dump lands after the reply
+    }
+    const fromConsole = kernelsFromConsole(consoleLines, from)
+    if (!(last.kernels ?? []).length && fromConsole.length) last.kernels = fromConsole
+    if (!sample && consoleLines.length > from) sample = consoleLines.slice(from, from + 3).map((l) => l.slice(0, 200))
     const byName = new Map()
     for (const k of last.kernels ?? []) {
       const e = byName.get(k.name) ?? { name: k.name, ms: 0, n: 0 }
@@ -395,7 +432,9 @@ async function phaseKernels(prof) {
   const flashAttention = [...names].some((n) => /flash/i.test(n))
   const cpuFallback = [...all].some((n) => /memcpy/i.test(n))
   log(`kernels: ${flashAttention ? 'FlashAttention present (native EP, fused attention)' : 'no FlashAttention kernel'}; ${cpuFallback ? 'Memcpy present (CPU fallback)' : 'no Memcpy'}`)
-  return { flashAttention, cpuFallback, rows }
+  if (sample) log('kernels: console sample', JSON.stringify(sample))
+  else log('kernels: the worker printed nothing to the console')
+  return { flashAttention, cpuFallback, rows, consoleSample: sample }
 }
 
 async function phaseGrounding(ctx, lab, fixtureUrl) {
