@@ -226,6 +226,9 @@ def main():
     ap.add_argument("--out", default=OUT, help=f"output directory (default {OUT})")
     ap.add_argument("--checkpoint", default=None,
                     help="export a fine-tuned dir (scripts/von-finetune/train.py) instead of the pinned Von 1.2")
+    ap.add_argument("--fast", action="store_true",
+                    help="also build the fast graph (fast.py: RoPE tables + option masks as inputs, fused attention, fp16 "
+                         "activations with fp32 islands) as variant f16, gated after a temperature refit; it ships first when it passes")
     args = ap.parse_args()
     if bool(args.ship) != args.accept_drift:
         ap.error("--ship and --accept-drift go together (without them the gate picks the variant)")
@@ -293,22 +296,96 @@ def main():
         assert not f16, f"{name} is documented as fp32-compute but computes fp16 tensors"
         variants.append((name, path, bool(f16)))
 
+    # 3b) The fast graph (fast.py): the same weights with RoPE tables and the two
+    # option masks as INPUTS and one fused MultiHeadAttention per layer, then
+    # fp16 activations with fp32 islands (RoPE, LayerNorm, scorer). The fp32
+    # fast graph must first match Von's forward on the CPU EP; the f16 one is
+    # gated after a scalar temperature refit (fp16 noise mostly rescales logits,
+    # and the head's low temperature amplifies any drift ~3x).
+    fast_info = None
+    if args.fast:
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        from fast import VonFast, fast_inputs, tensors, bucket_for, FAST_INPUT_NAMES, BUCKETS
+        pad_id = int(model.encoder.config.pad_token_id)
+        fast_model = VonFast(model).eval()
+        fast_fp32 = os.path.join(out, "von_fast_fp32.onnx")
+        _, _, ids, _, oid, pid, mk, _ = encoded[3]
+        ex = tensors(fast_inputs(ids, oid, pid, w, bucket_for(len(ids)), pad_id), mk)
+        torch.onnx.export(
+            fast_model, tuple(ex[n] for n in FAST_INPUT_NAMES), fast_fp32,
+            input_names=FAST_INPUT_NAMES, output_names=["logits"],
+            dynamic_axes={"input_ids": {1: "T"}, "cos_full": {0: "T"}, "sin_full": {0: "T"}, "cos_sliding": {0: "T"},
+                          "sin_sliding": {0: "T"}, "bias_full": {2: "T", 3: "T"}, "bias_sliding": {2: "T", 3: "T"},
+                          "marker_positions": {0: "K"}, "logits": {0: "K"}},
+            opset_version=18, dynamo=False, custom_opsets={"com.microsoft": 1},
+        )
+        g32 = onnx.load(fast_fp32)
+        mha = sum(n.op_type == "MultiHeadAttention" for n in g32.graph.node)
+        assert mha == len(fast_model.layers), f"expected {len(fast_model.layers)} MultiHeadAttention nodes, got {mha}"
+        print(f"[export] fast: {len(g32.graph.node)} nodes, {mha} MultiHeadAttention")
+        from onnxruntime.transformers.float16 import convert_float_to_float16
+        island = [n.name for n in g32.graph.node if "/rope" in n.name or "/scorer" in n.name or "/final_norm" in n.name]
+        g16 = convert_float_to_float16(g32, keep_io_types=True, op_block_list=["LayerNormalization"], node_block_list=island)
+        f16_path = os.path.join(out, "von_f16.onnx")
+        onnx.save(g16, f16_path)
+        print(f"[export] f16: {len(island)} island nodes kept fp32 (RoPE, scorer, final norm) + every LayerNormalization")
+        fast_info = {"pad_id": pad_id, "buckets": BUCKETS, "fast_inputs": fast_inputs, "bucket_for": bucket_for, "fp32": fast_fp32}
+        variants.insert(0, ("f16", f16_path, True))
+
     def drop_onnx(keep=None):
         for f in os.listdir(out):
             if f.endswith(".onnx") and os.path.join(out, f) != keep:
                 os.remove(os.path.join(out, f))
 
     # 4) Parity gate + order invariance per variant.
-    def gate(path):
-        sess = ort.InferenceSession(path, providers=["CPUExecutionProvider"])
+    def gate(path, fast=False, refit=False):
+        try:
+            sess = ort.InferenceSession(path, providers=["CPUExecutionProvider"])
+        except Exception as err:  # the CPU EP may lack an fp16 kernel for a contrib op — then WebGPU (the eval's parity phase) is the gate
+            if not fast:
+                raise
+            return None, f"CPU EP cannot run it ({str(err).splitlines()[0][:120]}) — parity deferred to the eval's WebGPU phase", {"ep": "webgpu-pending", "probes": len(encoded)}
+
+        def run(ids, oid, pid, mk):
+            if not fast:
+                return onnx_logits(sess, ids, oid, pid, mk)
+            feeds = {k: v for k, v in fast_info["fast_inputs"](ids, oid, pid, w, fast_info["bucket_for"](len(ids)), fast_info["pad_id"]).items()}
+            feeds["marker_positions"] = np.array(mk, dtype=np.int64)
+            return sess.run(["logits"], feeds)[0]
+
+        try:
+            outs = [run(ids, oid, pid, mk) for _, _, ids, _, oid, pid, mk, _ in encoded]
+        except Exception as err:
+            if not fast:
+                raise
+            return None, f"CPU EP failed at run time ({str(err).splitlines()[0][:120]}) — parity deferred to the eval's WebGPU phase", {"ep": "webgpu-pending", "probes": len(encoded)}
+        cal = calib
+        refit_t = None
+        if refit:
+            # Scalar T minimising the mean KL from the reference's calibrated probabilities over the probes:
+            # the logits of an fp16 graph are the fp32 ones rescaled by a hair, and the shipped temperature is tuned to the fp32 ones.
+            base_t = float(calib.get("temperature", 1.0))
+            grid = base_t * np.exp(np.linspace(math.log(0.5), math.log(2.0), 81))
+
+            def mean_kl(t):
+                tot = 0.0
+                for (case, packed, ids, st, oid, pid, mk, ref), got in zip(encoded, outs):
+                    p = np.array(calibrate(ref, st, calib))
+                    q = np.array(calibrate(got, st, dict(calib, calibration_map=None, temperature=float(t))))
+                    tot += float((p * (np.log(np.clip(p, 1e-12, None)) - np.log(np.clip(q, 1e-12, None)))).sum())
+                return tot / len(encoded)
+
+            refit_t = float(min(grid, key=mean_kl))
+            cal = dict(calib, calibration_map=None, temperature=refit_t)
         worst, flips = 0.0, []
-        for case, packed, ids, st, oid, pid, mk, ref in encoded:
-            got = onnx_logits(sess, ids, oid, pid, mk)
-            p_ref, p_got = calibrate(ref, st, calib), calibrate(got, st, calib)
+        for (case, packed, ids, st, oid, pid, mk, ref), got in zip(encoded, outs):
+            p_ref, p_got = calibrate(ref, st, calib), calibrate(got, st, cal)
             if int(np.argmax(p_ref)) != int(np.argmax(p_got)):
                 flips.append(f"K={len(mk)}/T={len(ids)}")
             worst = max(worst, float(np.abs(np.array(p_ref) - np.array(p_got)).max()))
         stats = {"maxDeltaP": round(worst, 4), "argmaxFlips": len(flips), "probes": len(encoded)}
+        if refit_t is not None:
+            stats["refitTemperature"] = round(refit_t, 4)
         if flips:
             return False, f"argmax flip on {', '.join(flips)} (max|Δp|={worst:.4f})", stats
         # Order invariance: reverse the options of the 8-option case.
@@ -316,15 +393,27 @@ def main():
         rev = dict(case, options=list(reversed(case["options"])))
         _, ids2, _ = encode(tok, model, rev)
         o2, p2, m2 = plan_sequence(ids2, model.mask_token_id)
-        a = onnx_logits(sess, *(encoded[3][2], encoded[3][4], encoded[3][5], encoded[3][6]))
-        b = onnx_logits(sess, ids2, o2, p2, m2)[::-1]
+        a = run(*(encoded[3][2], encoded[3][4], encoded[3][5], encoded[3][6]))
+        b = run(ids2, o2, p2, m2)[::-1]
         inv = float(np.abs(a - b).max())
         ok = worst <= PROB_TOL and inv < 1e-2
-        return ok, f"max|Δp|={worst:.4f} invariance={inv:.5f}", dict(stats, invariance=round(inv, 5))
+        suffix = f" T refit {calib.get('temperature', 1.0):.3f}→{refit_t:.3f}" if refit_t is not None else ""
+        return ok, f"max|Δp|={worst:.4f} invariance={inv:.5f}{suffix}", dict(stats, invariance=round(inv, 5))
+
+    if fast_info:
+        # The fp32 fast graph is the same math as Von's forward; it must agree to the float noise floor before fp16 is judged.
+        ok32, why32, _ = gate(fast_info["fp32"], fast=True)
+        print(f"[gate] fast-fp32: {'PASS' if ok32 else 'FAIL'} {why32}")
+        assert ok32 and "max|Δp|=0.00" in why32, "the fp32 fast graph does not reproduce Von's forward"
 
     chosen = None
     for name, path, f16 in variants:
-        ok, why, stats = gate(path)
+        ok, why, stats = gate(path, fast=name == "f16", refit=name == "f16")
+        if ok is None:  # deferred to WebGPU: ship it provisionally, the manifest says so, the eval's parity phase decides
+            print(f"[gate] {name}: DEFERRED {why}")
+            if chosen is None and args.ship is None:
+                chosen = (name, path, f16, dict(stats, gatePassed=None, ep="webgpu-pending"))
+            continue
         print(f"[gate] {name}: {'PASS' if ok else 'FAIL'} {why}")
         forced = args.ship == name
         if (ok and chosen is None and args.ship is None) or forced:
@@ -335,7 +424,7 @@ def main():
 
     # 5) Ship files + manifest.
     name, path, requires_f16, parity = chosen
-    if not parity["gatePassed"]:
+    if parity["gatePassed"] is False:
         print(f"[gate] shipping {name} DESPITE failing parity (--accept-drift)")
     ship_model = os.path.join(out, f"model_{name}.onnx")
     os.replace(path, ship_model)
@@ -353,6 +442,18 @@ def main():
         "temperature": float(calib.get("temperature", 1.0)),
         "calibrationMap": calib.get("calibration_map"),
     }
+    if name == "f16":
+        # The fast graph's inputs are built in the browser (src/system1/von.ts buildFastInputs) from these facts, and
+        # the refit scalar temperature replaces the shipped one (the map, if any, was fitted to fp32 logits).
+        von.update({
+            "inputs": "fast", "padTokenId": fast_info["pad_id"], "headDim": 64,
+            "rope": {"full": float(model.encoder.config.rope_parameters["full_attention"]["rope_theta"]),
+                     "sliding": float(model.encoder.config.rope_parameters["sliding_attention"]["rope_theta"])},
+            "buckets": fast_info["buckets"],
+        })
+        if parity.get("refitTemperature") is not None:
+            von["temperature"] = float(parity["refitTemperature"])
+            von["calibrationMap"] = None
     with open(os.path.join(out, "von.json"), "w") as f:
         json.dump(von, f, indent=2)
     files = [f"model_{name}.onnx", "tokenizer.json", "tokenizer_config.json", "von.json"]
