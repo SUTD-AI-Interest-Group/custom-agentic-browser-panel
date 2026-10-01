@@ -23,6 +23,12 @@ export interface VonConfig {
   digitSplit: boolean
   temperature: number
   calibrationMap: CalibrationMap | null
+  /** `fast`: the export of scripts/export-von/fast.py — RoPE tables and option masks are inputs (see buildFastInputs). Absent: the legacy graph. */
+  inputs?: 'fast'
+  padTokenId?: number
+  headDim?: number
+  rope?: { full: number; sliding: number }
+  buckets?: number[]
 }
 
 export interface SequencePlan {
@@ -104,6 +110,88 @@ export function calibrate(
   }
   const denom = Math.max(t, 1e-4)
   return softmax(logits.map((x) => x / denom))
+}
+
+/**
+ * The fast graph (scripts/export-von/fast.py): RoPE tables and the two option
+ * masks are INPUTS, built here exactly as fast_inputs() builds them in Python
+ * — the golden fixture and the eval's WebGPU parity phase are what keep the
+ * two from drifting. T is padded to a bucket so WebGPU shader pipelines are
+ * reused across requests; a pad token has option id −2 and position 0, is
+ * masked from every real row, and still sees itself so no softmax row is
+ * empty. Cost: the biases are T×T floats each (4.8 MB at T=1,100), built in
+ * ~5 ms; the tables are T×64.
+ */
+export const FAST_BUCKETS = [256, 512, 768, 1024, 1536, 2048, 3072, 4096]
+export const NEG_BIAS = -30000
+
+export interface FastConfig {
+  padTokenId: number
+  slidingWindow: number
+  headDim: number
+  rope: { full: number; sliding: number }
+}
+export interface FastInputs {
+  T: number
+  ids: number[]
+  cosFull: Float32Array
+  sinFull: Float32Array
+  cosSliding: Float32Array
+  sinSliding: Float32Array
+  biasFull: Float32Array
+  biasSliding: Float32Array
+}
+
+/** The smallest bucket that holds T tokens; past the last one the input is too long, exactly like planSequence's own limit. */
+export function bucketFor(T: number, maxTokens: number): number {
+  for (const b of FAST_BUCKETS) if (T <= b && b <= maxTokens) return b
+  throw new VonInputError('too-long', `packed input is ${T} tokens (max ${Math.min(maxTokens, FAST_BUCKETS[FAST_BUCKETS.length - 1])})`)
+}
+
+/** cos/sin per token ROW from its (reset) position id: ModernBertRotaryEmbedding in fp32, cat(freqs, freqs). */
+function ropeTable(positions: number[], theta: number, headDim: number): { cos: Float32Array; sin: Float32Array } {
+  const half = headDim / 2
+  const inv = Array.from({ length: half }, (_, i) => Math.fround(1 / Math.pow(theta, (2 * i) / headDim)))
+  const cos = new Float32Array(positions.length * headDim)
+  const sin = new Float32Array(positions.length * headDim)
+  positions.forEach((p, r) => {
+    for (let i = 0; i < half; i++) {
+      const a = Math.fround(p * inv[i])
+      const c = Math.cos(a)
+      const s = Math.sin(a)
+      cos[r * headDim + i] = c
+      cos[r * headDim + half + i] = c
+      sin[r * headDim + i] = s
+      sin[r * headDim + half + i] = s
+    }
+  })
+  return { cos, sin }
+}
+
+export function buildFastInputs(ids: number[], plan: SequencePlan, cfg: FastConfig): FastInputs {
+  const T = bucketFor(ids.length, FAST_BUCKETS[FAST_BUCKETS.length - 1])
+  const pad = T - ids.length
+  const padded = [...ids, ...Array<number>(pad).fill(cfg.padTokenId)]
+  const oi = [...plan.optionIds, ...Array<number>(pad).fill(-2)]
+  const pi = [...plan.positionIds, ...Array<number>(pad).fill(0)]
+  const biasFull = new Float32Array(T * T)
+  const biasSliding = new Float32Array(T * T)
+  for (let i = 0; i < T; i++) {
+    const qp = oi[i] === -1
+    const row = i * T
+    for (let j = 0; j < T; j++) {
+      const kp = oi[j] === -1
+      // VonExport.forward's rule: prefix↔prefix; an option sees the prefix and its own span; the diagonal always.
+      const allowed = qp ? kp : kp || oi[i] === oi[j]
+      const full = allowed || i === j
+      const sliding = (allowed && Math.abs(pi[i] - pi[j]) <= cfg.slidingWindow) || i === j
+      biasFull[row + j] = full ? 0 : NEG_BIAS
+      biasSliding[row + j] = sliding ? 0 : NEG_BIAS
+    }
+  }
+  const f = ropeTable(pi, cfg.rope.full, cfg.headDim)
+  const s = ropeTable(pi, cfg.rope.sliding, cfg.headDim)
+  return { T, ids: padded, cosFull: f.cos, sinFull: f.sin, cosSliding: s.cos, sinSliding: s.sin, biasFull, biasSliding }
 }
 
 /** TypeSafe's confidence: (n·pmax − 1)/(n − 1), anchored to the 1/n chance baseline. */
