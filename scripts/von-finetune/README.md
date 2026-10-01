@@ -129,6 +129,103 @@ does the new pages. Add URLs to `pages.txt` to grow the dataset (target: ≥ 1,0
 pages ≈ 20k rows). Stop LM Studio's models before training: both teachers
 together take ~35 GB of the same unified memory.
 
+## The Mind2Web corpus (2026-09-30)
+
+The act-head fine-tune's failures were data gaps (`SELECT_OPTION` had 9 rows,
+no multi-field form states, no real scroll decisions, 115 sites). Round 2
+(`docs/superpowers/specs/2026-09-30-von-data-round-2-design.md`, plan
+`docs/superpowers/plans/2026-09-30-mind2web-conversion.md`) converts
+osunlp/Multimodal-Mind2Web — 14,193 human-demonstrated CLICK/TYPE/SELECT steps
+on 137 real sites, CC-BY-4.0 / OpenRAIL — into this pipeline's shape and merges
+it at render time. Two more stages, in front of stage 3:
+
+| stage | script | what it does | cost |
+|---|---|---|---|
+| M1 fetch | `mind2web-fetch.py` | Streams the four splits' text columns over HTTP range requests (huggingface_hub `HfFileSystem` + pyarrow column projection): the 13 GB of parquet is mostly screenshots, and a 100-row row group's 13 text columns come down in ~4 s. Sorted by task into `data/mind2web/raw/<split>.jsonl.gz` (400 MB). | 8 min, no HF cache |
+| M2 convert | `mind2web.mjs` (rules in `mind2web-lib.mjs`, tested) | One page per step with one or two 1280×720 windows so the target is visible in one; episodes in two goal kinds; every skip counted. | 12 min |
+| 3 render | `render.mjs --corpus mind2web` | Merges with the teacher corpus, enforces the site-level split across both, renders the act head and the typed heads below. | 1 min |
+
+**What a Mind2Web page is.** `cleaned_html` (jsdom) plus the step's candidates
+become the registry `domIndex.ts` would record on that page: the same
+accessible-name order (aria-label → own text → placeholder → value → title →
+name; never alt), the DOM's own `type` defaults (a typeless `<button>` submits),
+the selected option as a `<select>`'s value, `input_checked` as `checked`, the
+three sensitivity regexes copied verbatim (a parity test reads them back out of
+`domIndex.ts`), `ancestorName` by the same climb. What cleaning strips — `href`,
+`disabled`, `readonly`, `formMethod` — stays absent rather than guessed.
+Negatives are what `isInteractive` would accept from the surviving attributes
+(tag, ARIA role, Mind2Web's `is_clickable`) plus the target's same-tag siblings
+and same-class peers, so a div/li/span target (21% of clicks) is never the only
+element of its kind. Frames are flattened into the dump, so `<iframe>` and
+`<template>` tags are renamed before parsing (the HTML parser reads their
+children as text: 537 targets vanished before the rename, 150 remain inside
+other raw-text elements). No URL exists: the origin is `https://www.{website}.com`
+(`originPlaceholder: true`; never a synthetic TLD, which the model could learn as
+a corpus marker since the origin heads every state prefix), the viewport
+1280×720 (Playwright's default; the `<html>` rect confirms 1280;
+`viewportInferred: true`). Window 0 is the page top; a below-fold target gets a
+second window a third of a screen above it; ≤ 200 elements per window in
+document order, like a real snapshot. One production quirk is mirrored on
+purpose: a `<select>`'s name is its options' text (innerText), not its label.
+
+**Episodes.** Every converted step yields both goal kinds: a templated per-step
+goal from Mind2Web's own element description ("Select Pickup from the
+Reservation type dropdown"; no history, unambiguous, like the teacher rows) and
+the task's `confirmed_task` with the trajectory so far as `Recent actions`, each
+prior step carrying its own page's index, name and value key — the multi-field
+form state the act head had never seen. Field goals hide their value half the
+time and then carry a BLOCKED twin without it; a below-fold target yields
+`scroll_down` from window 0 unless a same-name control sits on top. Labels are
+the human's: `op` on a target episode overrides `operationFor` in the renderer.
+
+Full run 2026-09-30: 14,193 steps → 11,598 pages / 56,998 episodes (23,196
+target · 2,596 value · 31,206 move; 910 SELECT_OPTION, 3,004 TYPE_TEXT, 7,002
+scroll_down, 1,008 BLOCKED), 136 sites. Skipped: 1,450 unnamed targets (icon
+clicks with no name in the repr or the registry), 775 with no visible positive
+candidate, 150 unregistered, 146 op/tag mismatches (TYPE on a label or div,
+SELECT on a custom list), 39 past the 200 cap, 35 ENTER; 64 SELECT values not
+among the options are kept and flagged (`mind2web-stats.json`). Splits:
+Mind2Web `train`/`test_task`/`test_domain` → train, `test_website` (10 sites
+unseen in every other split) → val; `resolveSplits` (`lib.mjs`) moves any val
+page whose site is a train site in the other corpus to train (127 pages).
+
+**Merged render** (`render.mjs --corpus mind2web`): 47,763 train rows / 240
+sites (mind2web 43,241 · teacher 4,522; act rows CLICK 20,074 · TYPE_TEXT 2,966
+· SELECT_OPTION 813 · SCROLL_DOWN 6,620 · DONE 1,272 · BLOCKED 970; value 2,537;
+t1 1,088 yes / 2,184 no; t2 1,249; t4 1,447; t5 2,853 committing / 3,690
+reversible), 3,520 val rows / 20 sites; mean 2,064 chars per row. Every val row
+packs under Von's 4,096 tokens (`train.py --eval-only`: 0 dropped). Base Von 1.2
+on this val (MPS, 278 s): all 0.268; act single 0.12, final 0.33; value 0.65;
+t1 0.68, t2 0.28, t4 0.08, t5 0.57 — the heads are new to it, and these are the
+numbers the next fine-tune is measured against. Teacher-only output (no `--corpus`, `--typed none`) is
+byte-identical to the previous act-head render.
+
+### Typed-instruction heads (spec §3, first batch)
+
+Rendered from the same states through the shipped builders; `train.py` reports
+each head as its own `kind` and each corpus as `corpus:<name>`.
+
+| head | question | options | label | train rows |
+|---|---|---|---|---|
+| `t5_commit` | Is taking this action reversible, or does it commit to something…? + `Action: <renderControlAction line>` | reversible / committing | `isPointOfNoReturn()` verbatim over the raw element; ≤ 2 committing + ≤ 2 reversible per page; anchors excluded (a link's reversibility is a cross-origin fact the state never shows) | 6,543 |
+| `t4_submit` | Which of these controls submits the form? | the form's button-role controls | the single `type ∈ {submit, image}` one (a typeless `<button>` is one) | 1,447 |
+| `t2_field` | Which of these fields still needs a value to complete the task? | the page's editable fields | the target of a Mind2Web task-goal field step, when ≥ 2 fields and one is already valued or history is non-empty | 1,249 |
+| `t1_done` | Is the task complete on this page, with no further action needed? | yes / no with explicit descriptions (Von's own noul packing) | yes = a teacher DONE episode; no = a target state, ≤ 2× yes | 3,272 |
+
+No `uncertain` option on t5: an option with no labels is dead weight exactly
+like `WAIT`; the confidence gate expresses uncertainty. `--typed-cap` (default
+`t1=0.1,t5=0.2`, fractions of the split's act-head rows) keeps any one head from
+dominating an epoch and gives val train's composition. T3 (login walls, needs a
+Claude labeller) and T6–T8 are deferred; AgentTrek — the only scroll and
+"declare done" source — waits on a written licence from xlang-ai.
+
+```bash
+uv run scripts/von-finetune/mind2web-fetch.py                                  # → data/mind2web/raw/*.jsonl.gz (resumable per split)
+node --max-old-space-size=8192 scripts/von-finetune/mind2web.mjs               # → data/mind2web/{pages,episodes}.jsonl + mind2web-stats.json
+node --max-old-space-size=8192 scripts/von-finetune/render.mjs --corpus mind2web [--typed t1,t2,t4,t5] [--typed-cap t1=0.1,t5=0.2]
+npx vitest run scripts/von-finetune                                              # the conversion rules and the split rule
+```
+
 ## Feasibility: the M4 Max is enough
 
 Measured with `feasibility.py` (real AdamW steps on the full 395M model, Von

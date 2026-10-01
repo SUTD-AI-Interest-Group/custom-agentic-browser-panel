@@ -122,9 +122,25 @@ splits; disagreements dropped, never adjudicated.
 ## 6. Open items before conversion
 
 1. Licence: ask xlang-ai (AgentTrek) in writing; ask McGill-NLP (WebLINX) for an
-   Apache-compatible exception; request access to OS-Genesis-web-data.
-2. Decide the placeholder-origin convention for Mind2Web pages (no real URLs).
-3. Extend `render.mjs` with the typed-instruction heads (T1–T5) and the
-   trainer's per-head report; the act head's rows stay as they are.
+   Apache-compatible exception; request access to OS-Genesis-web-data. **Still
+   open** — AgentTrek is not converted; T1's YES side comes from the teacher
+   corpus's DONE episodes until it is.
+2. ~~Decide the placeholder-origin convention for Mind2Web pages.~~ **Decided
+   2026-09-30:** `https://www.{website}.com` (or `https://www.{website}` when the
+   name already carries a dot), with `originPlaceholder: true` on the page. Never
+   a synthetic TLD such as `.example`: the origin is printed in every state
+   prefix, and a corpus-wide marker there would let the model tell the corpora
+   apart. Anchors carry no `href` in `cleaned_html`, so no origin is recoverable
+   and no cross-origin fact is ever asserted from it. The viewport is 1280×720
+   (Playwright's default; the `<html>` rect confirms 1280), flagged
+   `viewportInferred: true`. Implementation: `scripts/von-finetune/mind2web*.{py,mjs}`,
+   plan `docs/superpowers/plans/2026-09-30-mind2web-conversion.md`.
+3. ~~Extend `render.mjs` with the typed-instruction heads.~~ **Done 2026-09-30**
+   for the first batch (T1, T2, T4, T5; `render.mjs --typed`, `--typed-cap`);
+   `train.py` reports per head and per corpus. Two deliberate deviations: T5 has
+   no `uncertain` option (an option with no labels is dead weight exactly like
+   `WAIT`; the confidence gate expresses uncertainty), and T5 excludes anchors
+   (a link's reversibility is a cross-origin fact the state text never shows,
+   so the label would be noise). T3, T6–T8 remain deferred.
 4. Re-run the general benchmarks (jabr, JevBench, DecisionBench) after training
    to confirm no forgetting, as on 2026-09-30.
