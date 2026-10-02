@@ -39,6 +39,7 @@ import { renderPage } from './platform/researchRender'
 import { closeSessionsForTask, handleBrowseOp, reapExpiredSessions } from './platform/researchBrowse'
 import { searchInTab } from './platform/researchSearch'
 import { JANITOR_ALARM, runJanitorTick, sweepOrphanWindows, teardownNow } from './platform/researchTab'
+import { removeLegacySystem1 } from './data/legacyCleanup'
 
 chrome.sidePanel
   .setPanelBehavior({ openPanelOnActionClick: true })
@@ -83,6 +84,8 @@ async function scheduleDreamAlarm(): Promise<void> {
 }
 
 chrome.runtime.onInstalled.addListener(() => {
+  // Reclaims the removed System-1 model's cached weights on the update that drops it.
+  void removeLegacySystem1()
   void scheduleDreamAlarm()
   scheduleWatchdog()
   void resumeStrandedResearch()

@@ -254,16 +254,6 @@ function redactKnownRiskyToolInput(toolName: string | undefined, redacted: unkno
     }
     return redacted
   }
-  if (toolName === 'Act') {
-    // Every entry in `values` is a literal the local model may type into the
-    // page — the same content ControlPage's `text` carries, just keyed. The
-    // keys (e.g. "email") are model-authored names and stay for debugging.
-    if (!obj.values || typeof obj.values !== 'object' || Array.isArray(obj.values)) return redacted
-    return {
-      ...obj,
-      values: Object.fromEntries(Object.keys(obj.values as Record<string, unknown>).map((k) => [k, REDACTED])),
-    }
-  }
   return redacted
 }
 
@@ -274,7 +264,7 @@ function redactKnownRiskyToolInput(toolName: string | undefined, redacted: unkno
  * risking the raw value passing through.
  *
  * `toolName`, when supplied, additionally opts a small, fixed set of
- * known-risky tool shapes (AutofillForm, ControlPage, Act — see
+ * known-risky tool shapes (AutofillForm, ControlPage — see
  * redactKnownRiskyToolInput above) into unconditional redaction of their
  * user-text field(s). Omit it — as observer.ts's generic `content()` does,
  * since it redacts trace/generation/event content that was never a tool

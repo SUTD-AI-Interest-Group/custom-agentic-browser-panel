@@ -41,10 +41,6 @@ import { getExecHost } from '../exec/host'
 import { budgetOutcome, escapeHtml, RUN_MEMORY_BYTES, RUN_TIMEOUT_MS } from '../exec/protocol'
 import { saveArtifact, updateArtifactContent } from '../data/artifacts'
 import { createProposeResearchTool } from './research'
-import type { System1Runtime } from '../system1/runtime'
-import { runActLoop, ACT_DEFAULT_STEPS, ACT_MAX_STEPS, type ActResult, type ExecOutcome } from '../system1/actLoop'
-import { createVonActPolicy, createVonPolicy } from '../system1/vonPolicy'
-import { ACT_HEAD } from '../system1/head'
 import { buildCatalog, searchCatalog, partitionToolNames, type CatalogEntry } from './toolDiscovery'
 import {
   hasElementChanged,
@@ -52,7 +48,6 @@ import {
   runControlStep,
   type ControlSession,
   type ControlSpec,
-  type ElementIdentity,
 } from './pageControl'
 
 // ---------------------------------------------------------------------------
@@ -159,13 +154,6 @@ export interface ApprovalRequest {
    * the Chrome dialog denies the whole call.
    */
   needsPermissions?: string[]
-  /**
-   * Set when the step was chosen by the local System-1 model inside an `Act`
-   * call rather than by the chat model. Purely a label for the card (an
-   * "Act" badge and ring), so the user can tell which committing steps the
-   * local model proposed; it changes nothing about the gate itself.
-   */
-  via?: 'Act'
 }
 
 export type ApprovalGate = (request: ApprovalRequest) => Promise<boolean>
@@ -256,35 +244,6 @@ const MAX_PDF_TEXT_CHARS = 25_000
 const MAX_TILES_PER_CALL = 6
 const MAX_SHOT_IMAGES_PER_TURN = 12
 
-// Below this length a value is left in place: a global replace of "2" or "on"
-// would rewrite unrelated text — worst of all the `[12]` indices the model acts
-// on — and a value that short carries almost nothing worth hiding.
-const MIN_SCRUB_LEN = 4
-// Element-index tokens (`[12]`, `[r3]`) are never scrubbed inside.
-const INDEX_TOKEN = /(\[r?\d+\])/
-
-/**
- * Replaces every literal occurrence of each supplied value (≥ MIN_SCRUB_LEN
- * characters) with «key» throughout an Act result, never inside an index token.
- */
-export function scrubActValues(result: ActResult, values: Record<string, string>): ActResult {
-  const pairs = Object.entries(values)
-    .filter(([, v]) => v.length >= MIN_SCRUB_LEN)
-    .sort((a, b) => b[1].length - a[1].length)
-  if (pairs.length === 0) return result
-  const scrubPlain = (s: string) => pairs.reduce((acc, [k, v]) => acc.split(v).join(`«${k}»`), s)
-  // split() with a capturing group keeps the tokens at odd positions.
-  const scrub = (s: string) => s.split(INDEX_TOKEN).map((part, i) => (i % 2 === 1 ? part : scrubPlain(part))).join('')
-  const out: ActResult = {
-    ...result,
-    steps: result.steps.map((st) => (st.label === undefined ? st : { ...st, label: scrub(st.label) })),
-  }
-  if (result.message !== undefined) out.message = scrub(result.message)
-  if (result.elements !== undefined) out.elements = scrub(result.elements)
-  if (result.candidates) out.candidates = result.candidates.map((c) => ({ ...c, label: scrub(c.label) }))
-  return out
-}
-
 export function createAgentTools(
   requestApproval: ApprovalGate,
   tabAccess: TabAccess,
@@ -321,12 +280,6 @@ export function createAgentTools(
   extraTools?: ToolSet,
   /** Which tab this turn acts on, and what to do when it isn't in front. */
   pageTarget?: PageTarget,
-  /**
-   * The experimental System-1 decision runtime (src/system1/runtime.ts), or
-   * undefined when the toggle is off, the model isn't ready, or there is no
-   * WebGPU. Undefined means `Act` is never built — absent, not disabled.
-   */
-  system1?: System1Runtime,
 ): ToolSet {
   const resolveTab: (pane?: PaneTarget) => Promise<chrome.tabs.Tab | undefined> =
     pageTarget?.resolveTab ??
@@ -542,190 +495,6 @@ export function createAgentTools(
         error: `Could not take the screenshot (${err instanceof Error ? err.message : String(err)}).`,
       }
     }
-  }
-
-  // Extracted from ControlPage's execute so a later Act loop can drive the same
-  // step logic (session/tab checks, foreground park, presence re-mount, origin-drift
-  // handling, the point-of-no-return card with its post-approval re-check, and
-  // runControlStep) without duplicating it. Verbatim move — see ControlPage below.
-  //
-  // `expect` is the Act loop's revalidation (candidate-action doc §30): what
-  // the policy saw at spec.index. Checked against THIS body's own fresh
-  // snapshot, so it costs no extra injection, and refused as `stale` before
-  // the point-of-no-return card — a card must describe what will actually
-  // happen. ControlPage passes none: the chat model's indices come from its
-  // own last read and it re-reads on failure.
-  //
-  // `settle: 'quick'` and `tentative` are the Act loop's too (jev-ultrafast's
-  // rules, 2026-09-30): a non-committing Act step waits ~50 ms for the page
-  // rather than 400 ms, and a below-ACT_CONFIDENCE ("tentative") step is
-  // refused as `uncertain` the moment it turns out to be a point of no
-  // return — both decided HERE, after the same fresh snapshot the card is
-  // built from, so a submit can never be quick-settled or run on a hunch.
-  // `snapshot: true` returns the post-action PageSnapshot for the loop's next
-  // observation; ControlPage never asks for it (an object in a tool result
-  // would land in model history).
-  const controlStep = async (
-    spec: ControlSpec,
-    opts: { expect?: ElementIdentity; settle?: 'quick' | 'full'; tentative?: boolean; snapshot?: boolean; via?: 'Act' } = {},
-  ) => {
-    const session = pageControl.session()
-    if (!session || !session.active)
-      return { error: 'No page-control session is open. Call RequestPageControl first.' }
-    const tab = await resolveTab()
-    if (tab?.id === undefined || tab.id !== session.tabId)
-      return { error: 'The controlled tab is no longer active.' }
-    // Park rather than click blind. The session itself survives — the user
-    // granted it and hasn't revoked it — so returning to the tab resumes the
-    // flow mid-plan instead of asking for control a second time.
-    if (!(await isForeground(tab))) return parkFor(tab, 'act on this page')
-    // The presence overlay lives in the page's DOM, which any navigation
-    // wipes. For the life of a session the overlay must persist, so
-    // re-establish it at the top of every step: idempotent when it's still
-    // there, and it restores the tint/frame after a prior step's navigation
-    // (an explicit navigate, a click that loaded a new page, a cross-origin
-    // drift) destroyed them. Covers the drift branch's early returns too.
-    await mountPresence(tab.id)
-    await setTint(tab.id, true)
-    const liveOrigin = (() => {
-      try {
-        return new URL(tab.url ?? '').origin
-      } catch {
-        return ''
-      }
-    })()
-    // Origin drifted since the last step — a full-page nav that committed
-    // after that step's post-action snapshot. If the previous step's approved
-    // point-of-no-return authorized the crossing, re-fence silently (no
-    // second grant); otherwise ask once to continue. Either way, hand back
-    // the fresh page instead of running this call's action against a
-    // now-stale element index.
-    if (liveOrigin !== session.origin) {
-      if (!session.crossingAuthorized) {
-        const cont = await requestApproval({
-          toolName: 'ControlPage',
-          summary: `Keep controlling the page now that it moved to ${hostLabel(liveOrigin)}?`,
-          reason: 'The page navigated to a different site on its own.',
-          once: true,
-          via: opts.via,
-        })
-        if (!cont) {
-          pageControl.endSession()
-          return {
-            error: `The page moved to ${hostLabel(liveOrigin)}; page control ended for safety. Call RequestPageControl again to continue.`,
-          }
-        }
-      }
-      session.origin = liveOrigin
-      session.crossingAuthorized = false
-      try {
-        const fresh = await snapshotPage(tab.id)
-        return {
-          ok: true,
-          message: `The page is now on ${hostLabel(liveOrigin)}; re-read the elements and continue.`,
-          urlChanged: true,
-          elements: fresh.text,
-          drifted: true as const,
-        }
-      } catch (err) {
-        return { error: `Cannot read this page (${err instanceof Error ? err.message : String(err)}).` }
-      }
-    }
-    let snap
-    try {
-      snap = await snapshotPage(tab.id)
-    } catch (err) {
-      return { error: `Cannot read this page (${err instanceof Error ? err.message : String(err)}).` }
-    }
-    const el = spec.index !== undefined ? snap.elements[spec.index] : undefined
-    if (opts.expect && hasElementChanged(opts.expect, el)) return { stale: true as const }
-    const por = isPointOfNoReturn(spec, el, session.origin)
-    if (por && opts.tentative)
-      return { uncertain: true as const, message: `not confident enough for a committing step (${pointOfNoReturnSummary(spec, el)})` }
-    if (por) {
-      const approved = await requestApproval({
-        toolName: 'ControlPage',
-        summary: pointOfNoReturnSummary(spec, el),
-        reason: 'This step changes state or leaves the page.',
-        once: true,
-        via: opts.via,
-      })
-      if (!approved) return DENIED
-      // The card sat on screen for however long the human took to react —
-      // entirely under their control. If they switched tabs while it was
-      // up, this committing action must not fire against a tab they've
-      // stopped watching: same rule as the entry-point check above, and
-      // the session survives so the plan resumes when they come back.
-      if (!(await isForeground(tab))) return parkFor(tab, 'act on this page')
-      // The card's summary was built from `el` as it stood BEFORE the
-      // human reaction-time wait inside requestApproval. Re-read the page
-      // now and re-check that the same element is still at this index —
-      // an ordinary async re-render (a price/coupon recalculation
-      // relabeling this exact button) can swap what the stamp points to
-      // while the card was on screen, and the user approved what the card
-      // said, not necessarily what is about to actually happen.
-      try {
-        const freshSnap = await snapshotPage(tab.id)
-        const freshEl = spec.index !== undefined ? freshSnap.elements[spec.index] : undefined
-        if (hasElementChanged(el, freshEl)) {
-          return {
-            error:
-              'The page changed while you were waiting for approval — re-read the elements (ReadPage or ControlPage) and try again.',
-          }
-        }
-        snap = freshSnap
-      } catch {
-        // Best-effort: if the re-read itself fails, proceed on the
-        // original (already-approved) snapshot rather than dead-end here.
-      }
-    }
-    const { registry, ok, message, urlChanged, origin, snapshot } = await runControlStep({
-      tabId: tab.id,
-      spec,
-      snapshot: snap,
-      session: pageControl.session() ?? undefined,
-      // A point of no return always gets the full settle, whatever was asked.
-      settle: opts.settle === 'quick' && !por ? 'quick' : 'full',
-      beforeAct: (index) => (index === undefined ? Promise.resolve() : focusOn(tab.id!, index, spec.label)),
-      afterAct: () => pulse(tab.id!),
-      afterNav: async () => {
-        await mountPresence(tab.id!)
-        await setTint(tab.id!, true)
-      },
-    })
-    // Handle an origin change this action caused. When the post-action
-    // snapshot already shows the new origin (explicit navigate — which
-    // settles 600ms — or a same-document/SPA nav), re-fence here so the next
-    // call proceeds directly: an approved point-of-no-return re-fences
-    // silently; an unexpected crossing (a plain click that JS-navigated, a
-    // role=link with no href) asks once, and deny ends the session. When the
-    // snapshot did NOT show a change (a full-page load may still be
-    // committing), remember whether this step was an approved crossing so the
-    // next call's drift check re-fences without a second grant.
-    if (origin && origin !== session.origin) {
-      if (!por) {
-        const cont = await requestApproval({
-          toolName: 'ControlPage',
-          summary: `Keep controlling the page now that it moved to ${hostLabel(origin)}?`,
-          reason: 'The page navigated to a different site on its own.',
-          once: true,
-          via: opts.via,
-        })
-        if (!cont) {
-          pageControl.endSession()
-          return {
-            error: `The page moved to ${hostLabel(origin)}; page control ended for safety. Call RequestPageControl again to continue.`,
-          }
-        }
-      }
-      session.origin = origin
-      session.crossingAuthorized = false
-    } else {
-      session.crossingAuthorized = por
-    }
-    // Coerce to a real boolean: `urlChanged` is undefined for non-navigation
-    // actions, and a tool result must not carry undefined into the history.
-    return { ok, message, urlChanged: urlChanged === true, elements: registry, ...(opts.snapshot ? { snapshot } : {}) }
   }
 
   const tools: ToolSet = {
@@ -1661,12 +1430,6 @@ export function createAgentTools(
         activeNames.add('ControlPage')
         activeNames.add('AutofillForm')
         activeNames.add('GetScreenshot')
-        if (system1) {
-          activeNames.add('Act')
-          // Boot the local model while the grant is fresh, so the first Act
-          // call does not pay the cold boot (1.2–6 s measured) itself.
-          system1.warm()
-        }
         await mountPresence(tab.id)
         // Entering active control: turn the soft dark tint on (ambient shows the
         // frame only). The spotlight/cursor come alive on the first ControlPage.
@@ -1697,60 +1460,155 @@ export function createAgentTools(
         sensitive: z.boolean().optional().describe('Set true if this step is risky; forces a confirm.'),
         timeoutMs: z.number().optional().describe('Max ms to wait for the page to settle (action=wait).'),
       }),
-      execute: (spec: ControlSpec) => controlStep(spec),
-    }),
-
-    Act: tool({
-      description:
-        `Experimental fast page control. Within an open page-control session, hand a short routine sub-goal ("add the blue variant to the cart", "fill the shipping form") to a local decision model that takes up to ${ACT_MAX_STEPS} steps (CLICK, TYPE_TEXT, SELECT_OPTION, SCROLL_DOWN/UP, WAIT) chosen only from the controls actually on screen, without waiting on you. It can only type/select values you pass in \`values\` (by name, verbatim), never navigates, and never touches password/payment fields. Submits and leaving the site still ask the user. ALWAYS read the returned status: done/blocked/uncertain/denied/drifted/repeat/capped/error/parked/aborted — after done, re-read the page to verify; on blocked with a missingField, call Act again with that value added; on anything else, continue with ControlPage (uncertain returns the top candidates; blocked carries a reason; each step reports success/no_change/stale). Use ControlPage for single precise actions, sensitive fields and navigation. Call Act one at a time; don't combine with ControlPage in the same step.`,
-      inputSchema: z.object({
-        // Bounded: the goal is embedded in every prompt the local model packs,
-        // and an unbounded one would overflow its small token budget.
-        goal: z.string().min(1).max(300).describe('One short sub-goal on the current page (max 300 chars).'),
-        values: z.record(z.string()).optional().describe('Named literal values it may type/select, e.g. {"email":"a@b.co"}.'),
-        maxSteps: z.number().int().min(1).max(ACT_MAX_STEPS).optional().describe(`Step cap (default ${ACT_DEFAULT_STEPS}, max ${ACT_MAX_STEPS}).`),
-      }),
-      execute: async ({ goal, values, maxSteps }, { abortSignal }) => {
+      execute: async (spec: ControlSpec) => {
         const session = pageControl.session()
         if (!session || !session.active)
           return { error: 'No page-control session is open. Call RequestPageControl first.' }
         const tab = await resolveTab()
-        if (tab?.id === undefined || tab.id !== session.tabId) return { error: 'The controlled tab is no longer active.' }
-        // Park before the first snapshot, not only inside controlStep: the
-        // loop reads the page and asks the local model before its first step.
+        if (tab?.id === undefined || tab.id !== session.tabId)
+          return { error: 'The controlled tab is no longer active.' }
+        // Park rather than click blind. The session itself survives — the user
+        // granted it and hasn't revoked it — so returning to the tab resumes the
+        // flow mid-plan instead of asking for control a second time.
         if (!(await isForeground(tab))) return parkFor(tab, 'act on this page')
-        const tabId = tab.id
-        const { transitions: _transitions, ...result } = await runActLoop({ goal, values, maxSteps }, {
-          snapshot: () => snapshotPage(tabId),
-          policy: (ACT_HEAD === 'single' ? createVonActPolicy : createVonPolicy)((req) => system1!.decide(req)),
-          aborted: () => abortSignal?.aborted === true,
-          execute: async (action): Promise<ExecOutcome> => {
-            const r = (await controlStep(action.spec, {
-              expect: action.expect?.fingerprint, settle: 'quick', tentative: action.tentative, snapshot: true, via: 'Act',
-            })) as Record<string, unknown>
-            if (r.stale) return { kind: 'stale' }
-            if (r.uncertain) return { kind: 'uncertain', message: String(r.message ?? '') }
-            if (r.denied) return { kind: 'denied' }
-            if (r.parked) return { kind: 'parked', note: String(r.note ?? '') }
-            if (r.drifted) return { kind: 'drifted', message: String(r.message ?? ''), elements: r.elements as string | undefined }
-            if (typeof r.error === 'string') return { kind: 'error', message: r.error }
-            // The action itself was refused by the page (no matching option, a
-            // field that would not take the keystroke): not an engine or
-            // session error — the loop excludes that pair and goes on.
-            if (r.ok === false) return { kind: 'failed', message: String(r.message ?? 'the action failed') }
-            return { kind: 'ok', elements: String(r.elements ?? ''), snapshot: r.snapshot as PageSnapshot | undefined }
+        // The presence overlay lives in the page's DOM, which any navigation
+        // wipes. For the life of a session the overlay must persist, so
+        // re-establish it at the top of every step: idempotent when it's still
+        // there, and it restores the tint/frame after a prior step's navigation
+        // (an explicit navigate, a click that loaded a new page, a cross-origin
+        // drift) destroyed them. Covers the drift branch's early returns too.
+        await mountPresence(tab.id)
+        await setTint(tab.id, true)
+        const liveOrigin = (() => {
+          try {
+            return new URL(tab.url ?? '').origin
+          } catch {
+            return ''
+          }
+        })()
+        // Origin drifted since the last step — a full-page nav that committed
+        // after that step's post-action snapshot. If the previous step's approved
+        // point-of-no-return authorized the crossing, re-fence silently (no
+        // second grant); otherwise ask once to continue. Either way, hand back
+        // the fresh page instead of running this call's action against a
+        // now-stale element index.
+        if (liveOrigin !== session.origin) {
+          if (!session.crossingAuthorized) {
+            const cont = await requestApproval({
+              toolName: 'ControlPage',
+              summary: `Keep controlling the page now that it moved to ${hostLabel(liveOrigin)}?`,
+              reason: 'The page navigated to a different site on its own.',
+              once: true,
+            })
+            if (!cont) {
+              pageControl.endSession()
+              return {
+                error: `The page moved to ${hostLabel(liveOrigin)}; page control ended for safety. Call RequestPageControl again to continue.`,
+              }
+            }
+          }
+          session.origin = liveOrigin
+          session.crossingAuthorized = false
+          try {
+            const fresh = await snapshotPage(tab.id)
+            return {
+              ok: true,
+              message: `The page is now on ${hostLabel(liveOrigin)}; re-read the elements and continue.`,
+              urlChanged: true,
+              elements: fresh.text,
+            }
+          } catch (err) {
+            return { error: `Cannot read this page (${err instanceof Error ? err.message : String(err)}).` }
+          }
+        }
+        let snap
+        try {
+          snap = await snapshotPage(tab.id)
+        } catch (err) {
+          return { error: `Cannot read this page (${err instanceof Error ? err.message : String(err)}).` }
+        }
+        const el = spec.index !== undefined ? snap.elements[spec.index] : undefined
+        const por = isPointOfNoReturn(spec, el, session.origin)
+        if (por) {
+          const approved = await requestApproval({
+            toolName: 'ControlPage',
+            summary: pointOfNoReturnSummary(spec, el),
+            reason: 'This step changes state or leaves the page.',
+            once: true,
+          })
+          if (!approved) return DENIED
+          // The card sat on screen for however long the human took to react —
+          // entirely under their control. If they switched tabs while it was
+          // up, this committing action must not fire against a tab they've
+          // stopped watching: same rule as the entry-point check above, and
+          // the session survives so the plan resumes when they come back.
+          if (!(await isForeground(tab))) return parkFor(tab, 'act on this page')
+          // The card's summary was built from `el` as it stood BEFORE the
+          // human reaction-time wait inside requestApproval. Re-read the page
+          // now and re-check that the same element is still at this index —
+          // an ordinary async re-render (a price/coupon recalculation
+          // relabeling this exact button) can swap what the stamp points to
+          // while the card was on screen, and the user approved what the card
+          // said, not necessarily what is about to actually happen.
+          try {
+            const freshSnap = await snapshotPage(tab.id)
+            const freshEl = spec.index !== undefined ? freshSnap.elements[spec.index] : undefined
+            if (hasElementChanged(el, freshEl)) {
+              return {
+                error:
+                  'The page changed while you were waiting for approval — re-read the elements (ReadPage or ControlPage) and try again.',
+              }
+            }
+            snap = freshSnap
+          } catch {
+            // Best-effort: if the re-read itself fails, proceed on the
+            // original (already-approved) snapshot rather than dead-end here.
+          }
+        }
+        const { registry, ok, message, urlChanged, origin } = await runControlStep({
+          tabId: tab.id,
+          spec,
+          snapshot: snap,
+          session: pageControl.session() ?? undefined,
+          beforeAct: (index) => (index === undefined ? Promise.resolve() : focusOn(tab.id!, index, spec.label)),
+          afterAct: () => pulse(tab.id!),
+          afterNav: async () => {
+            await mountPresence(tab.id!)
+            await setTint(tab.id!, true)
           },
         })
-        // Transitions carry page text for the eval (which calls runActLoop
-        // directly); they never reach the model or storage.
-        void _transitions
-        // `values` are never echoed. Steps carry labels and indices, but the page
-        // itself reflects what was typed — the next snapshot's registry renders a
-        // field's current value, and an unlabeled field's name falls back to it —
-        // so every string in the result is scrubbed, each value replaced by
-        // «key» (longest first, so a value containing another is masked whole;
-        // values under 4 chars and `[N]` index tokens are left alone).
-        return scrubActValues(result, values ?? {})
+        // Handle an origin change this action caused. When the post-action
+        // snapshot already shows the new origin (explicit navigate — which
+        // settles 600ms — or a same-document/SPA nav), re-fence here so the next
+        // call proceeds directly: an approved point-of-no-return re-fences
+        // silently; an unexpected crossing (a plain click that JS-navigated, a
+        // role=link with no href) asks once, and deny ends the session. When the
+        // snapshot did NOT show a change (a full-page load may still be
+        // committing), remember whether this step was an approved crossing so the
+        // next call's drift check re-fences without a second grant.
+        if (origin && origin !== session.origin) {
+          if (!por) {
+            const cont = await requestApproval({
+              toolName: 'ControlPage',
+              summary: `Keep controlling the page now that it moved to ${hostLabel(origin)}?`,
+              reason: 'The page navigated to a different site on its own.',
+              once: true,
+            })
+            if (!cont) {
+              pageControl.endSession()
+              return {
+                error: `The page moved to ${hostLabel(origin)}; page control ended for safety. Call RequestPageControl again to continue.`,
+              }
+            }
+          }
+          session.origin = origin
+          session.crossingAuthorized = false
+        } else {
+          session.crossingAuthorized = por
+        }
+        // Coerce to a real boolean: `urlChanged` is undefined for non-navigation
+        // actions, and a tool result must not carry undefined into the history.
+        return { ok, message, urlChanged: urlChanged === true, elements: registry }
       },
     }),
 
@@ -2212,11 +2070,6 @@ export function createAgentTools(
   // question off to the offscreen research host that runs the real (ungated)
   // research tools headlessly — see src/tools/research.ts and src/agent/research.ts.
   Object.assign(tools, createProposeResearchTool())
-
-  // Act drives ControlPage's own step (controlStep), so a user who set
-  // ControlPage to "Never" has refused what Act does too — it must not survive
-  // as a side door. (Act's own "Never" is handled by the generic loop below.)
-  if (!system1 || policyFor('ControlPage') === 'never') delete tools.Act
 
   // MCP server tools, pre-gated and policy-filtered by buildMcpTools. Built-in
   // names win a collision (the mcp_ prefix makes one implausible anyway).

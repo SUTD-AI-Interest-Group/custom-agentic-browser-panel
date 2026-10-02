@@ -13,7 +13,6 @@ import { repairMessageText, type Complete } from '../agent/mathRepair'
 import { cancelRegionCapture, captureRegion, type CapturedImage } from '../platform/capture'
 import { PageAccessError } from '../platform/pageAccess'
 import { ensureVisionCapability } from '../agent/vision'
-import { resolveSystem1 } from '../system1/runtime'
 import { copyElementAsPng } from '../platform/domImage'
 import { getConversation, renameConversation, saveConversation, type RegenTarget } from '../data/conversations'
 import {
@@ -3144,18 +3143,12 @@ export default function Chat({
     // pre-authorized tool (e.g. @memory → SearchMemory, via turnAllowed) and, if
     // a page-control session is already open, the control cluster.
     const activeNames = new Set<string>(turnAllowed.current)
-    // The experimental System-1 runtime, resolved once per chain: undefined
-    // (toggle off, weights missing, no WebGPU, unhealthy engine) means `Act`
-    // is never built. Resolved here, ahead of the seeding below, so an open
-    // session can seed `Act` alongside the rest of the control cluster.
-    const system1 = await resolveSystem1(settingsRef.current)
     const openSession = pageControl.session()
     if (openSession && openSession.active) {
       activeNames.add('RequestPageControl')
       activeNames.add('ControlPage')
       activeNames.add('AutofillForm')
       activeNames.add('GetScreenshot')
-      if (system1) activeNames.add('Act')
     }
 
     // Does this model actually read images? This no longer removes any tool — the
@@ -3391,7 +3384,6 @@ export default function Chat({
                   },
               park: (reason) => { parked = reason },
             },
-            system1,
           ),
           abortSignal: controller.signal,
           onUpdate: patch(assistantId, base),
@@ -5718,13 +5710,6 @@ function ToolPill({
   else if (part.toolName === 'RequestPageControl')
     label = output?.started ? 'Started controlling the page' : 'Asked to control the page'
   else if (part.toolName === 'ControlPage') label = controlActionLabel(part.input, output)
-  else if (part.toolName === 'Act') {
-    // The badge on the pill says "Act"; the label carries the goal and how the call ended.
-    const goal = String((part.input as { goal?: string })?.goal ?? '')
-    const steps = Array.isArray(output?.steps) ? output.steps.length : 0
-    const stopped = output?.status && output.status !== 'done' ? ` · stopped: ${String(output.status).replace('_', ' ')}` : ''
-    label = `${goal}${steps ? ` · ${steps} step${steps === 1 ? '' : 's'}` : ''}${stopped}`
-  }
   else if (part.toolName === 'ExtractData')
     label = output?.error ? 'Could not extract data' : 'Extracted structured data'
   else if (part.toolName === 'ProposeResearch') label = 'Proposed background research'
@@ -5763,45 +5748,21 @@ function ToolPill({
   // ShotCard/ShotCarousel of their own. What lands here is every other tool, plus
   // errored/denied screenshots, which show their label above the collapsed raw
   // JSON like any other tool call.
-  // An Act call is the local System-1 model acting, not the chat model: its
-  // pill wears the Act badge and ring (styles.css "Act"), and expanding it
-  // lists each step the local model took before the raw JSON — a user can see
-  // exactly which page actions came from Von.
-  const isAct = part.toolName === 'Act'
-  const actSteps: { operation: string; targetId?: number; label?: string; valueKey?: string; result: string; p?: number }[] =
-    isAct && Array.isArray(output?.steps) ? output.steps : []
   return (
     <>
-      <details className={`tool-pill ${part.state} ${denied ? 'denied' : ''} ${isAct ? 'act' : ''}`}>
+      <details className={`tool-pill ${part.state} ${denied ? 'denied' : ''}`}>
         <summary>
-          {isAct ? (
-            <span className="act-badge" title="Chosen by the local System-1 model (Act), not the chat model">Act</span>
-          ) : (
-            <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
-              <path
-                d="M1.5 6s1.7-3.2 4.5-3.2S10.5 6 10.5 6 8.8 9.2 6 9.2 1.5 6 1.5 6Z"
-                stroke="currentColor"
-                strokeWidth="1.2"
-              />
-              <circle cx="6" cy="6" r="1.4" stroke="currentColor" strokeWidth="1.2" />
-            </svg>
-          )}
+          <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+            <path
+              d="M1.5 6s1.7-3.2 4.5-3.2S10.5 6 10.5 6 8.8 9.2 6 9.2 1.5 6 1.5 6Z"
+              stroke="currentColor"
+              strokeWidth="1.2"
+            />
+            <circle cx="6" cy="6" r="1.4" stroke="currentColor" strokeWidth="1.2" />
+          </svg>
           <span>{label}</span>
         </summary>
         {errorText && <div className="tool-error-text">{errorText}</div>}
-        {actSteps.length > 0 && (
-          <ol className="act-steps">
-            {actSteps.map((s, i) => (
-              <li key={i}>
-                <span className="op">{s.operation.replace('_', ' ').toLowerCase()}</span>
-                {s.targetId !== undefined && <span className="target">[{s.targetId}] {s.label}</span>}
-                {s.valueKey && <span className="value">← {s.valueKey}</span>}
-                <span className={`result ${s.result}`}>{String(s.result).replace('_', ' ')}</span>
-                {typeof s.p === 'number' && <span className="p">p {s.p.toFixed(2)}</span>}
-              </li>
-            ))}
-          </ol>
-        )}
         <pre>{JSON.stringify({ input: part.input, output: part.output }, null, 2)}</pre>
       </details>
       {/* The model proposed research but did not start it (createProposeResearchTool
@@ -6458,21 +6419,14 @@ function ApprovalCard({
 }) {
   const isSession = !!sessionPlan
   const items = approval.items ?? []
-  // A card the local System-1 model raised from inside an Act call carries
-  // the same Act badge and ring as the Act pill, so the user knows which
-  // model proposed the committing step they are being asked about.
-  const viaAct = approval.via === 'Act'
   return (
-    <div className={`approval-card ${isSession ? 'session' : ''} ${approval.danger ? 'danger' : ''} ${viaAct ? 'act' : ''}`}>
+    <div className={`approval-card ${isSession ? 'session' : ''} ${approval.danger ? 'danger' : ''}`}>
       <div className="approval-header">
         <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
           <rect x="2.5" y="6" width="9" height="6" rx="1.2" stroke="currentColor" strokeWidth="1.3" />
           <path d="M4.5 6V4.5a2.5 2.5 0 0 1 5 0V6" stroke="currentColor" strokeWidth="1.3" />
         </svg>
         <span>{isSession ? `Let the agent control ${sessionPlan!.host}?` : approval.summary}</span>
-        {viaAct && (
-          <span className="act-badge" title="Proposed by the local System-1 model (Act), not the chat model">Act</span>
-        )}
       </div>
       {(isSession ? sessionPlan!.plan : approval.reason) && (
         <div className="approval-reason">{isSession ? sessionPlan!.plan : approval.reason}</div>

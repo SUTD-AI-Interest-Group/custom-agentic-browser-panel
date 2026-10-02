@@ -12,12 +12,6 @@ export interface IndexedElement {
   name: string
   type?: string
   value?: string
-  /**
-   * Checked state of an `<input type=checkbox|radio>`; absent for everything
-   * else. Such an input's `value` is its submit token (usually "on") whatever
-   * its state, so `value` alone would describe an unticked box as "on".
-   */
-  checked?: boolean
   /** Viewport rect in CSS pixels. */
   rect: { x: number; y: number; width: number; height: number }
   /** Password/payment-like field — forces an approval card even in a session. */
@@ -49,15 +43,6 @@ export interface IndexedElement {
    * committing, exactly as they already do for the element's own `name`.
    */
   ancestorName?: string
-  /**
-   * The element is disabled: `:disabled` (which covers a disabled <fieldset>
-   * ancestor) or aria-disabled="true". Raw DOM fact, same convention as
-   * formMethod: the candidate builder (src/system1/candidates.ts) reads it to
-   * withhold every action, and the registry text renders it for the chat model.
-   */
-  disabled?: true
-  /** A read-only field (`readOnly` or aria-readonly="true"). Raw DOM fact. */
-  readonly?: true
 }
 
 /** A full read of the current page: the registry plus a compact text form. */
@@ -69,13 +54,6 @@ export interface PageSnapshot {
   elements: IndexedElement[]
   text: string
   truncated: boolean
-  /**
-   * Vertical scroll position and maximum (scrollHeight − innerHeight, ≥ 0) in
-   * CSS px, so a consumer can tell whether scrolling either way is possible.
-   */
-  scroll?: { y: number; max: number }
-  /** Index of the indexed element that is document.activeElement, if any. */
-  focusedIndex?: number
 }
 
 const MAX_ELEMENTS = 200
@@ -203,10 +181,7 @@ function buildInteractiveIndex(attr: string, maxElements: number) {
     const ph = el.getAttribute('placeholder')
     const input = el as HTMLInputElement
     const text = (el as HTMLElement).innerText?.trim() || ''
-    // A checkbox/radio's default value "on" is a submit token, not a name.
-    const toggle = el.tagName === 'INPUT' && /^(checkbox|radio)$/i.test(input.type)
-    const value = toggle && input.value === 'on' ? '' : input.value
-    return (text || ph || value || el.getAttribute('title') || el.getAttribute('name') || '')
+    return (text || ph || input.value || el.getAttribute('title') || el.getAttribute('name') || '')
       .toString()
       .slice(0, 120)
   }
@@ -419,22 +394,14 @@ function buildInteractiveIndex(attr: string, maxElements: number) {
     name: string
     type?: string
     value?: string
-    checked?: boolean
     rect: { x: number; y: number; width: number; height: number }
     sensitive: boolean
     href?: string
     formMethod?: string
     ancestorName?: string
-    disabled?: true
-    readonly?: true
   }> = []
   let index = 0
   let truncated = false
-  let focusedIndex: number | undefined
-  // The deep active element: descend through open shadow roots the same way
-  // the walk below does, so a focused control inside a web component is found.
-  let activeEl: Element | null = document.activeElement
-  while (activeEl && activeEl.shadowRoot && activeEl.shadowRoot.activeElement) activeEl = activeEl.shadowRoot.activeElement
 
   // Classify one element: isInteractive/isVisible both call
   // getComputedStyle, and isVisible also calls getBoundingClientRect +
@@ -502,12 +469,6 @@ function buildInteractiveIndex(attr: string, maxElements: number) {
     // overload the way a direct el.closest('form') call would — same object
     // shape at runtime either way, just needs the cast spelled out.
     const form = closestAcrossShadow(el, 'form') as HTMLFormElement | null
-    // `:disabled` is the browser's own judgement (it includes a disabled
-    // <fieldset> ancestor and form-associated custom elements); aria-disabled
-    // is the ARIA-only equivalent a div-button carries.
-    const disabled = el.matches(':disabled') || el.getAttribute('aria-disabled') === 'true'
-    const readonly = input.readOnly === true || el.getAttribute('aria-readonly') === 'true'
-    if (el === activeEl) focusedIndex = index
     el.setAttribute(attr, String(index))
     out.push({
       index,
@@ -516,15 +477,12 @@ function buildInteractiveIndex(attr: string, maxElements: number) {
       name: accessible,
       type,
       value: input.value ? String(input.value).slice(0, 80) : undefined,
-      checked: el.tagName === 'INPUT' && /^(checkbox|radio)$/i.test(input.type) ? input.checked : undefined,
       rect: { x: r.left, y: r.top, width: r.width, height: r.height },
       sensitive,
       href: el.tagName === 'A' ? (el as HTMLAnchorElement).href : undefined,
       // `.method` normalizes to 'get' when the attribute is absent or invalid.
       formMethod: form ? form.method.toLowerCase() : undefined,
       ancestorName: ancestorNameOf(el) || undefined,
-      disabled: disabled ? true : undefined,
-      readonly: readonly ? true : undefined,
     })
     index++
   }
@@ -558,7 +516,6 @@ function buildInteractiveIndex(attr: string, maxElements: number) {
   }
   walkElements(document)
 
-  const scroller = document.scrollingElement ?? document.documentElement
   return {
     url: location.href,
     title: document.title,
@@ -566,11 +523,6 @@ function buildInteractiveIndex(attr: string, maxElements: number) {
     dpr: window.devicePixelRatio || 1,
     elements: out,
     truncated,
-    scroll: {
-      y: Math.max(0, Math.round(window.scrollY || 0)),
-      max: Math.max(0, Math.round(scroller.scrollHeight - window.innerHeight)),
-    },
-    focusedIndex,
   }
 }
 
@@ -584,17 +536,11 @@ export function serializeRegistry(elements: IndexedElement[]): string {
   if (elements.length === 0) return '(no interactive elements found)'
   return elements
     .map((e) => {
-      // A checkbox/radio reports its state, not its "on" submit token (a
-      // non-default value such as a radio's "express" is still informative).
-      const toggle = e.checked !== undefined
       const attrs = [
         e.type && e.type !== 'text' ? e.type : '',
         e.name ? `"${e.name}"` : '',
-        e.value && !(toggle && e.value === 'on') ? `= "${e.value}"` : '',
-        toggle ? (e.checked ? '(checked)' : '(unchecked)') : '',
+        e.value ? `= "${e.value}"` : '',
         e.sensitive ? '(sensitive)' : '',
-        e.disabled ? '(disabled)' : '',
-        e.readonly ? '(read-only)' : '',
       ]
         .filter(Boolean)
         .join(' ')
@@ -622,8 +568,6 @@ export async function snapshotPage(tabId: number): Promise<PageSnapshot> {
     elements,
     text: serializeRegistry(elements) + (truncated ? '\n[element list truncated]' : ''),
     truncated,
-    scroll: raw.scroll,
-    focusedIndex: raw.focusedIndex,
   }
 }
 

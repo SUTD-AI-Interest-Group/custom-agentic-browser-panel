@@ -371,16 +371,6 @@ describe('hasElementChanged (F4 — approval card re-validation)', () => {
     expect(hasElementChanged(undefined, base)).toBe(true)
   })
 
-  it('is true when a toggle flipped or a control went disabled since it was observed, and ignores those when never recorded', () => {
-    const box = el({ tag: 'input', type: 'checkbox', name: 'Agree', checked: false })
-    expect(hasElementChanged(box, { ...box, checked: true })).toBe(true)
-    expect(hasElementChanged(box, { ...box })).toBe(false)
-    expect(hasElementChanged(base, { ...base, disabled: true })).toBe(true)
-    // An identity recorded without these fields (older callers) compares exactly as before.
-    const { checked: _c, ...unrecorded } = box
-    expect(hasElementChanged(unrecorded, { ...box, checked: undefined })).toBe(false)
-  })
-
   it('is false when there was never a target element on either side (e.g. a navigate spec)', () => {
     expect(hasElementChanged(undefined, undefined)).toBe(false)
   })

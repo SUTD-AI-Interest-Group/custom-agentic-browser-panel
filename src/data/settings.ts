@@ -134,7 +134,6 @@ export const TOOL_CATALOG: ToolCatalogEntry[] = [
   { name: 'RequestPageControl', group: 'control', label: 'Start a page-control session' },
   { name: 'ControlPage', group: 'control', label: 'Perform a page-control action' },
   { name: 'AutofillForm', group: 'control', label: 'Fill a form from your profile' },
-  { name: 'Act', group: 'control', label: 'Take several routine page-control steps (experimental)' },
   { name: 'NavigateTab', group: 'navigation', label: 'Switch / open / navigate tabs' },
   { name: 'SaveMemory', group: 'memory', label: 'Save a long-term memory' },
   { name: 'SearchMemory', group: 'memory', label: 'Search long-term memory' },
@@ -253,12 +252,6 @@ export interface Settings {
    * absent on installs that configured nothing. See `src/mcp/config.ts`.
    */
   mcp?: McpSettings
-  /**
-   * Opt-in experiments. Sparse and absent on every existing install. Read only
-   * through the accessors below — never trust the stored shape (a malformed
-   * optional field has unmounted the whole panel before; see CLAUDE.md).
-   */
-  experimental?: { system1?: boolean }
 }
 
 /** Default (disabled) observability config; also the shape onboarding starts from. */
@@ -279,11 +272,6 @@ export function observabilityConfig(settings: Settings): ObservabilityConfig {
 /** Resolve a tool's effective policy: user override → catalog default → `ask`. */
 export function toolPolicy(settings: Settings, name: string): ToolPolicy {
   return settings.toolPolicies?.[name] ?? DEFAULT_TOOL_POLICIES[name] ?? 'ask'
-}
-
-/** System-1 fast page control is on only when explicitly set to `true`. */
-export function system1Enabled(s: Settings): boolean {
-  return s.experimental?.system1 === true
 }
 
 /**
