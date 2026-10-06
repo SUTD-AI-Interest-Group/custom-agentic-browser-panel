@@ -6491,3 +6491,13 @@ body {
   line-height: 1.45;
   color: var(--text-muted);
 }
+
+/* Native WebMCP is a compact, inspectable part of the current-page context. */
+.site-tools { border: 1px solid var(--border); border-radius: 8px; margin-bottom: 8px; font-size: 12px; }
+.site-tools summary { cursor: pointer; padding: 8px 10px; display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.site-tools-status, .site-tools-note { color: var(--text-muted); font-size: 11px; }
+.site-tools-body { padding: 0 10px 10px; max-height: 260px; overflow-y: auto; overflow-wrap: anywhere; }
+.site-tools-origin { font-weight: 600; }
+.site-tools-body p { margin: 6px 0; }
+.site-tools-body ul { padding-left: 18px; }
+.site-tools-body li { margin-bottom: 10px; }
