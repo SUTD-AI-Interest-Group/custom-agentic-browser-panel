@@ -10,6 +10,7 @@
 // ask, src/mcp/config.ts); `never` at either level means the tool is simply
 // not built, so it can never be disclosed or repaired back in.
 
+import { buildMcpExtensionTools } from './extensionTools'
 import { dynamicTool, jsonSchema, type ToolSet } from 'ai'
 import type { JSONSchema7 } from '@ai-sdk/provider'
 import type { Settings } from '../data/settings'
@@ -72,7 +73,7 @@ export function buildMcpTools(opts: {
       tools[key] = makeTool(key, server.name, t)
     }
   }
-  return tools
+  return { ...tools, ...buildMcpExtensionTools(manager, settings, requestApproval) }
 
   function makeTool(key: string, serverName: string, info: McpToolInfo) {
     const appTemplate = uiTemplateOf(info.meta)
@@ -96,6 +97,7 @@ export function buildMcpTools(opts: {
           result = await manager.callTool(serverName, info.name, args, {
             signal: abortSignal,
             timeoutMs: CALL_TIMEOUT_MS,
+            conversationId,
           })
           // No blanket retry here on a dropped connection: the call may have
           // mutated remote state before dying, and a silent second attempt is a

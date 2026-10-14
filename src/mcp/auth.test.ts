@@ -510,3 +510,18 @@ it('uses CIMD through the real SDK OAuth flow without dynamic registration', asy
     expect(seen.some(url => url.includes('register'))).toBe(false)
   } finally { vi.stubGlobal('fetch', original) }
 })
+
+it('keeps the durable-task session identity across refresh and revokes it on sign-out or fresh consent', async () => {
+  stubChromeStorage()
+  const provider = new ChromeOAuthProvider('task-session', URL_A)
+  await provider.saveTokens(TOKENS)
+  const first = await provider.sessionIdentity()
+  expect(first).toBeTruthy()
+  await provider.saveTokens({ ...TOKENS, access_token: 'refreshed', refresh_token: 'rotated' })
+  expect(await new ChromeOAuthProvider('task-session', URL_A).sessionIdentity()).toBe(first)
+  await provider.invalidateCredentials('tokens')
+  await provider.saveTokens(TOKENS)
+  expect(await provider.sessionIdentity()).not.toBe(first)
+  await clearAuth('task-session')
+  expect(await provider.sessionIdentity()).toBeUndefined()
+})

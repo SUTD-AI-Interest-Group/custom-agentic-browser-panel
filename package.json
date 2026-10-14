@@ -33,6 +33,7 @@
     "quickjs-emscripten-core": "^0.32.0",
     "react": "^18.3.0",
     "react-dom": "^18.3.0",
+    "yaml": "^2.9.1",
     "zod": "^3.25.0"
   },
   "devDependencies": {

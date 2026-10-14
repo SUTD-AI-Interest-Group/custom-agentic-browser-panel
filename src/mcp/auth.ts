@@ -69,6 +69,7 @@ interface StoredAuth {
   boundUrl?: string
   issuer?: string
   issuerResponseRequired?: boolean
+  sessionId?: string
 }
 
 /** At-rest shape since the vault: the whole StoredAuth JSON sealed as one unit. */
@@ -329,7 +330,17 @@ export class ChromeOAuthProvider implements OAuthClientProvider {
   }
 
   async saveTokens(tokens: OAuthTokens): Promise<void> {
-    await this.saveCredential({ tokens })
+    const { auth } = await loadBound(this.server, this.resourceUrl)
+    await this.saveCredential({ tokens, sessionId: auth.tokens && auth.sessionId ? auth.sessionId : crypto.randomUUID() })
+  }
+
+  /** Stable across token refresh, revoked by sign-out, new consent, or issuer change. */
+  async sessionIdentity(): Promise<string | undefined> {
+    const { auth, locked } = await loadBound(this.server, this.resourceUrl)
+    if (locked) throw Error('MCP auth vault is temporarily unavailable.')
+    if (!auth.tokens) return undefined
+    if (!auth.sessionId) { auth.sessionId = crypto.randomUUID(); await this.saveCredential({ sessionId: auth.sessionId }) }
+    return auth.sessionId
   }
 
   async saveCodeVerifier(codeVerifier: string): Promise<void> {
@@ -379,7 +390,7 @@ export class ChromeOAuthProvider implements OAuthClientProvider {
     // of THIS provider's to invalidate.
     if (!current.boundUrl) return
     if (scope === 'client') delete current.clientInformation
-    if (scope === 'tokens') delete current.tokens
+    if (scope === 'tokens') { delete current.tokens; delete current.sessionId }
     if (scope === 'verifier') delete current.codeVerifier
     await persist(this.server, current)
   }

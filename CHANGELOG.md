@@ -17,6 +17,14 @@ for that history.
 
 ---
 
+## [Unreleased]
+
+- Add interactive MCP form/URL clarification, with explicit user responses and bounded multi-round continuations.
+- Persist modern MCP task handles locally, resume status checks after reopening the panel, and expose progress, results, input and cancellation controls.
+- Discover and load skills over MCP with explicit approval, same-server file access and size/SHA-256/frontmatter verification.
+- Keep the new flows browser-native; preserve the submitted 0.5.0 archive and exclude ChatGPT-provider work.
+- See [implementation boundaries and verification](docs/mcp-interactive-tasks-skills.md).
+
 ## [0.5.0] — 2026-10-14 — *Submitted for Chrome Web Store review*
 
 ### Added
