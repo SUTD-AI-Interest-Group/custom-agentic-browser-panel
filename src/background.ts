@@ -39,6 +39,7 @@ import { renderPage } from './platform/researchRender'
 import { closeSessionsForTask, handleBrowseOp, reapExpiredSessions } from './platform/researchBrowse'
 import { searchInTab } from './platform/researchSearch'
 import { JANITOR_ALARM, runJanitorTick, sweepOrphanWindows, teardownNow } from './platform/researchTab'
+import { installWebMcpBadge } from './platform/webmcpBadge'
 import { removeLegacySystem1 } from './data/legacyCleanup'
 
 chrome.sidePanel
@@ -176,6 +177,7 @@ async function dispatchDream(job: DreamJob, token: string): Promise<void> {
 // ---------------------------------------------------------------------------
 
 const openPanels = new Map<number, chrome.runtime.Port>()
+const refreshWebMcpBadges = installWebMcpBadge(id => openPanels.has(id))
 
 chrome.runtime.onConnect.addListener((port) => {
   if (port.name !== 'sidepanel') return
@@ -184,11 +186,13 @@ chrome.runtime.onConnect.addListener((port) => {
     if (msg?.type === 'hello' && typeof msg.windowId === 'number') {
       windowId = msg.windowId
       openPanels.set(msg.windowId, port)
+      void refreshWebMcpBadges(msg.windowId)
     }
   })
   port.onDisconnect.addListener(() => {
     if (windowId === undefined) return
     if (openPanels.get(windowId) === port) openPanels.delete(windowId)
+    void refreshWebMcpBadges(windowId)
     // The panel is gone, so the chat that explained the marks is gone: sweep the
     // passage highlights it left on this window's pages. Only the worker can —
     // the panel context that tracked them is already being destroyed.

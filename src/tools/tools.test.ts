@@ -333,3 +333,32 @@ describe('AutofillForm — re-checks isForeground per field, not only at tool en
     expect(runControlStep).not.toHaveBeenCalled()
   })
 })
+
+vi.mock('../platform/webmcp', () => ({ discoverWebMcp: vi.fn(), executeWebMcp: vi.fn() }))
+import { discoverWebMcp, executeWebMcp } from '../platform/webmcp'
+
+describe('WebMCP tool approval', () => {
+  const action = { name: 'search', description: 'Search', inputSchema: { type: 'object', properties: { query: { type: 'string' } }, required: ['query'] } }
+  function setup(allow: boolean) {
+    const approval = vi.fn(async () => allow)
+    vi.mocked(discoverWebMcp).mockResolvedValue({ url: 'https://example.com/', documentId: 'doc-1', tools: [action] })
+    vi.mocked(executeWebMcp).mockReset()
+    const tools = createAgentTools(approval, 'all-tabs', new Set(), noopPageControl, null, false, [], () => 'always', 'chat', new Set(), undefined, undefined, { resolveTab: async () => ({ id: 7, url: 'https://example.com/' } as chrome.tabs.Tab) })
+    return { approval, run: tools.RunWebMcp.execute as any }
+  }
+  it('requires one-time approval even for an Always policy, then executes against the bound document', async () => {
+    const { approval, run } = setup(true)
+    await run({ name: 'search', args: { query: 'tea' }, reason: 'Find tea' })
+    expect(approval).toHaveBeenCalledWith(expect.objectContaining({ once: true, toolName: 'RunWebMcp' }))
+    expect(executeWebMcp).toHaveBeenCalledWith(7, expect.objectContaining({ documentId: 'doc-1' }), action, { query: 'tea' })
+  })
+  it('does not execute denied actions or arguments that fail the page schema', async () => {
+    const { approval, run } = setup(false)
+    await run({ name: 'search', args: { query: 'tea' }, reason: 'Find tea' })
+    expect(executeWebMcp).not.toHaveBeenCalled()
+    approval.mockClear()
+    await run({ name: 'search', args: { query: 42 }, reason: 'Find tea' })
+    expect(approval).not.toHaveBeenCalled()
+    expect(executeWebMcp).not.toHaveBeenCalled()
+  })
+})

@@ -1,0 +1,17 @@
+.webmcp-welcome { width: 100%; max-width: 580px; margin: auto; padding: 28px 20px; box-sizing: border-box; }
+.webmcp-label { display: inline-block; padding: 5px 9px; border-radius: 20px; color: var(--accent, #ad3658); background: var(--pill-bg, #fbeaf0); font-size: 11px; font-weight: 650; }
+.webmcp-welcome h2 { font-size: 23px; margin: 14px 0 8px; letter-spacing: -.5px; }
+.webmcp-intro, .webmcp-examples p { font-size: 13px; color: var(--text-muted, #777); line-height: 1.5; }
+.webmcp-actions { border: 1px solid var(--border, #ddd); border-radius: 14px; margin-top: 22px; overflow: hidden; }
+.webmcp-actions summary { padding: 14px; font-size: 13px; font-weight: 600; cursor: pointer; }
+.webmcp-actions summary span { float: right; color: var(--text-muted, #777); }
+.webmcp-actions ul { list-style: none; padding: 0; margin: 0; max-height: 270px; overflow: auto; }
+.webmcp-actions li { border-top: 1px solid var(--border, #ddd); }
+.webmcp-actions button { display: grid; gap: 5px; width: 100%; background: transparent; border: 0; padding: 12px 14px; text-align: left; color: inherit; cursor: pointer; font: inherit; }
+.webmcp-actions strong { font-size: 13px; overflow-wrap: anywhere; }
+.webmcp-actions button span { font-size: 12px; color: var(--text-muted, #777); line-height: 1.5; overflow-wrap: anywhere; }
+.webmcp-actions button:hover, .webmcp-examples button:hover { background: #b838600c; }
+.webmcp-examples h3 { font-size: 13px; margin: 22px 0 10px; }
+.webmcp-examples > button { display: flex; justify-content: space-between; gap: 12px; width: 100%; padding: 12px 14px; margin-top: 8px; background: transparent; border: 1px solid var(--border, #ddd); border-radius: 12px; color: inherit; font: inherit; font-size: 13px; line-height: 1.5; text-align: left; cursor: pointer; }
+.webmcp-examples button span { color: var(--accent, #b83860); }
+.webmcp-disclosure { font-size: 11px; color: var(--text-muted, #777); line-height: 1.6; margin-top: 18px; }

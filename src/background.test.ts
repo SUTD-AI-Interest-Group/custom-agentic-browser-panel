@@ -20,6 +20,7 @@ vi.mock('./platform/contextMenus', () => ({
   registerContextMenus: vi.fn(async () => {}),
   CONTEXT_MENU_IDS: { selection: 'lychee-ask-selection', link: 'lychee-ask-link', image: 'lychee-ask-image', page: 'lychee-ask-page' },
 }))
+vi.mock('./platform/webmcpBadge', () => ({ installWebMcpBadge: vi.fn(() => vi.fn(async () => {})) }))
 vi.mock('./platform/highlight', () => ({
   sweepHighlightsForWindow: vi.fn(async () => {}),
 }))

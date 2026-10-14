@@ -1,3 +1,4 @@
+import { WebMcpWelcome } from './WebMcpWelcome'
 import { Fragment, memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { ModelMessage } from 'ai'
 import { generateText } from 'ai'
@@ -221,6 +222,8 @@ const MATH_FORMATTING_NOTE =
 const TOOL_DISCLOSURE_NOTE = `
 
 You are an agent that can act in the user's browser — not just a chat box. You can read and control web pages, open and switch tabs, fill forms, run JavaScript in a sandbox, build interactive web artifacts the user views right in the chat, save and search long-term memory, query browsing history, run background web research, and use skills. Most of these tools load on demand, so your visible tool list starts small — that is not a limit on what you can do.
+
+DiscoverWebMcp is always loaded when permitted. When the user asks to connect to, discover, or use WebMCP on a page, call DiscoverWebMcp FIRST. Reading page text or elements does not connect WebMCP. Report its diagnostic accurately: unavailable browser API and zero registered tools are different states. Never claim WebMCP is connected based on the page title or DOM. If actions exist, list them and load RunWebMcp with GetTool to perform the requested action. If discovery fails, explain the blocker instead of offering unrelated page exploration.
 
 ReadPage is always loaded: read the current tab with mode "text" (visible text), "dom" (HTML structure), or "elements" (numbered interactive elements, used before controlling a page). For anything beyond the current tab, call ToolSearch to find the capability (optionally with a query), then GetTool to load the tools you need — once loaded they stay available for the rest of this turn. Loading a tool does not run it, and it still asks the user for permission when it runs.
 
@@ -4029,17 +4032,25 @@ export default function Chat({
         </div>
       )}
       <div className="messages" ref={scrollRef}>
-        {messages.length === 0 && (
-          <div className="empty-state">
-            <div className="empty-title">How can I help?</div>
-            <div className="empty-hint">
-              {companionTabs.length > 0
-                ? 'Both tabs in your split are attached to your first message.'
-                : "The tab you're on is attached to your first message."}{' '}
-              @mention another tab to share it, type @memory to have me draw on what I remember,
-              type / to run one of your skills, or snip a screenshot with the camera.
+        {messages.length === 0 && !hidden && (
+          <WebMcpWelcome
+            key={`${boundTabId ?? currentTab?.tabId}:${currentTab?.url}`}
+            tabId={toolPolicy(settings, 'DiscoverWebMcp') === 'never' ? undefined : boundTabId ?? currentTab?.tabId}
+            url={currentTab?.url}
+            selected={selected}
+            onChoose={setInput}
+          >
+            <div className="empty-state">
+              <div className="empty-title">How can I help?</div>
+              <div className="empty-hint">
+                {companionTabs.length > 0
+                  ? 'Both tabs in your split are attached to your first message.'
+                  : "The tab you're on is attached to your first message."}{' '}
+                @mention another tab to share it, type @memory to have me draw on what I remember,
+                type / to run one of your skills, or snip a screenshot with the camera.
+              </div>
             </div>
-          </div>
+          </WebMcpWelcome>
         )}
         {messages.map((msg, i) => (
           <Fragment key={msg.id}>

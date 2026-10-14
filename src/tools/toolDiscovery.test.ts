@@ -97,3 +97,8 @@ describe('constants', () => {
     expect(ALWAYS_ON).toContain('ReadPage')
   })
 })
+
+it('offers WebMCP discovery without ToolSearch while honoring policy removal', () => {
+  expect(resolveActiveTools(new Set(), ['ReadPage', 'DiscoverWebMcp'])).toContain('DiscoverWebMcp')
+  expect(resolveActiveTools(new Set(), ['ReadPage'])).not.toContain('DiscoverWebMcp')
+})
