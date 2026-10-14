@@ -1,4 +1,5 @@
 // Real browser fetch/CSP smoke test; Chrome identity/storage are local fixtures.
+import { mountInteractions } from './interactions'
 import { McpManager } from '../../src/mcp/manager'
 import { ChromeOAuthProvider } from '../../src/mcp/auth'
 import { auth } from '@modelcontextprotocol/sdk/client/auth.js'
@@ -70,4 +71,4 @@ async function run() {
     document.title = 'PASS — MCP browser smoke'
   } finally { manager.disconnectAll() }
 }
-run().catch(error => { document.title = 'FAIL — MCP browser smoke'; report(`FAIL: ${error.stack ?? error}`) })
+run().then(mountInteractions).catch(error => { document.title = 'FAIL — MCP browser smoke'; report(`FAIL: ${error.stack ?? error}`) })

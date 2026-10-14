@@ -1,0 +1,9 @@
+.mcp-interactions { font-size: 13px; }
+.mcp-clarification, .mcp-task-panel { border: 1px solid var(--border, #888); border-radius: 8px; padding: 12px; margin: 8px 0; overflow-wrap: anywhere; }
+.mcp-clarification h3 { margin-top: 0; }
+.mcp-input-field { display: flex; flex-direction: column; gap: 4px; margin: 10px 0; }
+.mcp-input-field input, .mcp-input-field select { width: 100%; box-sizing: border-box; padding: 7px; color: inherit; background: var(--bg, transparent); border: 1px solid var(--border, #888); border-radius: 4px; }
+.mcp-interactions button { margin: 5px 6px 0 0; }
+.mcp-interactions pre { white-space: pre-wrap; max-height: 300px; overflow: auto; }
+.mcp-task-panel section + section { border-top: 1px solid var(--border, #888); margin-top: 8px; padding-top: 8px; }
+.mcp-interactions [role=alert] { color: var(--danger, #bc3333); }

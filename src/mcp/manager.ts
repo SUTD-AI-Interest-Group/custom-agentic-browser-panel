@@ -22,6 +22,8 @@ import {
 import type { Settings } from '../data/settings'
 import { classifyEntry, mcpSettings, serverEnabled, type McpServerEntry, type McpUpdateSettings } from './config'
 import { ChromeOAuthProvider, clearAuth } from './auth'
+import { elicitationQueue, collectInputs } from './elicitation'
+import { TASKS_EXTENSION, parseTask, saveTask, listSavedTasks, expiredTask, taskPollDelay, terminalTask, type SavedTask } from './tasks'
 import { ModernMcpClient, LegacyServerError, type SubscriptionState } from './modern'
 
 /** Connection state of one configured server, driving the settings status dot. */
@@ -62,6 +64,7 @@ export interface McpServerRuntime {
   name: string
   status: McpStatus
   protocol?: '2026-07-28' | 'legacy'
+  taskScope?: string
   updateScope?: string
   subscriptionState?: SubscriptionState
   updates?: McpUpdateNotice[]
@@ -76,6 +79,7 @@ interface ServerSlot {
   status: McpStatus
   error?: string
   client?: Client | ModernMcpClient
+  taskScope?: string
   updateScope?: string
   authChallenge?: { scope?: string; resourceMetadataUrl?: URL }
   pendingModern?: ModernMcpClient
@@ -144,6 +148,7 @@ function newClient(): Client {
 }
 
 export class McpManager {
+  private taskOperations = new Set<string>()
   private slots = new Map<string, ServerSlot>()
   private listeners = new Set<() => void>()
   private cacheLoaded = false
@@ -156,6 +161,7 @@ export class McpManager {
       name,
       status: s.status,
       protocol: s.client instanceof ModernMcpClient ? '2026-07-28' : s.client ? 'legacy' : undefined,
+      taskScope: s.taskScope,
       updateScope: s.updateScope,
       subscriptionState: s.subscriptionState,
       updates: s.updates,
@@ -249,6 +255,7 @@ export class McpManager {
   private teardown(name: string, slot: ServerSlot) {
     // Invalidate any connect() still in flight (see ServerSlot.gen).
     slot.gen += 1
+    slot.taskScope = undefined
     slot.updateScope = undefined
     slot.authChallenge = undefined
     void slot.pendingModern?.close()
@@ -319,6 +326,17 @@ export class McpManager {
       let refreshing: Promise<void> | undefined
       const modern = new ModernMcpClient(url, {
         headers, token: async () => token,
+        elicit: (params, signal) => elicitationQueue.ask(name, params, signal),
+        onTask: async (raw, params, options) => {
+          if (stale() || !slot.taskScope) throw Error('MCP connection changed before task persistence.')
+          const task = parseTask(raw)
+          const record: SavedTask = { ...task, id: JSON.stringify([name, slot.taskScope, task.taskId]), server: name,
+            scope: slot.taskScope, tool: String(params.name), conversationId: options.conversationId, nextPollAt: Date.now() + taskPollDelay(task) }
+          try { await saveTask(record) } catch {
+            throw Error(`The server started task ${task.taskId}, but local persistence failed. Do not repeat the original tool call; recover the task on the server.`)
+          }
+          return { resultType: 'complete', content: [{ type: 'text', text: `Task started on ${name}: ${task.taskId}. It continues on the server. Tell the user it is running and wait for them to request results. The MCP tasks panel tracks progress. Do not busy-poll or repeat the original tool call.` }], structuredContent: { taskId: task.taskId, taskRecordId: record.id, status: task.status } }
+        },
         refreshToken: async (signal) => {
           if (!refreshing) refreshing = (async () => {
             if (stale() || headers && Object.keys(headers).some(key => key.toLowerCase() === 'authorization')) throw new UnauthorizedError()
@@ -349,6 +367,9 @@ export class McpManager {
         const identity = JSON.stringify([url.toString(), Object.entries(headers ?? {}).sort(([a], [b]) => a.localeCompare(b)), token ?? null])
         const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(identity))
         if (!stale()) slot.updateScope = Array.from(new Uint8Array(digest), x => x.toString(16).padStart(2, '0')).join('')
+        const taskIdentity = JSON.stringify([url.toString(), Object.entries(headers ?? {}).sort(([a], [b]) => a.localeCompare(b)), await authProvider.sessionIdentity() ?? null])
+        const taskDigest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(taskIdentity))
+        if (!stale()) slot.taskScope = Array.from(new Uint8Array(taskDigest), x => x.toString(16).padStart(2, '0')).join('')
         connected = { client: modern }
       } catch (err) {
         await modern.close()
@@ -595,15 +616,64 @@ export class McpManager {
     server: string,
     tool: string,
     args: Record<string, unknown>,
-    opts?: { signal?: AbortSignal; timeoutMs?: number },
+    opts?: { signal?: AbortSignal; timeoutMs?: number; conversationId?: string },
   ) {
     await this.ensureConnected(server)
     const client = this.slots.get(server)?.client
     if (!client) throw new Error(`Not connected to "${server}".`)
     return client.callTool({ name: tool, arguments: args }, undefined, {
       signal: opts?.signal,
+      conversationId: opts?.conversationId,
       timeout: opts?.timeoutMs ?? REQUEST_TIMEOUT_MS,
     })
+  }
+
+  async modernClient(server: string, extension?: string): Promise<{ client: ModernMcpClient; scope: string }> {
+    await this.ensureConnected(server)
+    const slot = this.slots.get(server)
+    if (!(slot?.client instanceof ModernMcpClient) || !slot.taskScope || slot.status !== 'connected') throw Error('This operation requires a connected modern MCP server.')
+    if (extension && !slot.client.supportsExtension(extension)) throw Error('The MCP server does not advertise this extension.')
+    return { client: slot.client, scope: slot.taskScope }
+  }
+
+  isTaskBusy(id: string): boolean { return this.taskOperations.has(id) }
+
+  async taskOperation(id: string, action: 'get' | 'cancel' | 'respond', signal?: AbortSignal) {
+    if (this.taskOperations.has(id)) throw Error('A task operation is already in progress.')
+    this.taskOperations.add(id)
+    try {
+      const record = (await listSavedTasks()).find(t => t.id === id)
+      if (!record) throw Error('Unknown task.')
+      if (expiredTask(record)) throw Error('This task has expired on the server.')
+      const { client, scope } = await this.modernClient(record.server, TASKS_EXTENSION)
+      const check = () => {
+        if (this.slots.get(record.server)?.status !== 'connected' || scope !== record.scope || this.slots.get(record.server)?.client !== client || this.slots.get(record.server)?.taskScope !== scope) throw Error('Task belongs to a different server or credential session. It cannot be resumed with this connection.')
+      }
+      check()
+      if (action === 'cancel') {
+        await client.request('tasks/cancel', { taskId: record.taskId }, { signal }); check()
+        // Acknowledgement is not a terminal state; fetch the server's actual status.
+      }
+      let result = await client.request('tasks/get', { taskId: record.taskId }, { signal }); check()
+      let task = parseTask(result, record.taskId, true)
+      if (action === 'respond') {
+        if (task.status !== 'input_required') throw Error('This task is no longer waiting for input.')
+        const controller = new AbortController()
+        const abort = () => controller.abort(signal?.reason)
+        signal?.addEventListener('abort', abort, { once: true }); if (signal?.aborted) abort()
+        const unsubscribe = this.subscribe(() => { try { check() } catch { controller.abort() } })
+        try {
+          const inputResponses = await collectInputs(result.inputRequests, (params, inputSignal) => elicitationQueue.ask(record.server, params, inputSignal), controller.signal)
+          check()
+          await client.request('tasks/update', { taskId: record.taskId, inputResponses }, { signal: controller.signal }); check()
+        } finally { unsubscribe(); signal?.removeEventListener('abort', abort) }
+        result = await client.request('tasks/get', { taskId: record.taskId }, { signal }); check()
+        task = parseTask(result, record.taskId, true)
+      }
+      if (terminalTask(record) && task.status !== record.status) throw Error('Server changed a terminal task state.')
+      await saveTask({ ...record, ...task, nextPollAt: Date.now() + taskPollDelay(task) })
+      return result
+    } finally { this.taskOperations.delete(id) }
   }
 
   async readResource(server: string, uri: string, opts?: { signal?: AbortSignal }) {

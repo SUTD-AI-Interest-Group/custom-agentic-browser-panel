@@ -2,7 +2,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { McpManager } from './manager'
 import type { Settings } from '../data/settings'
-vi.mock('./auth', () => ({ ChromeOAuthProvider: class { async tokens() { return undefined } }, clearAuth: vi.fn(async () => {}) }))
+vi.mock('./auth', () => ({ ChromeOAuthProvider: class { async tokens() { return undefined } async sessionIdentity() { return undefined } }, clearAuth: vi.fn(async () => {}) }))
 const prefix = 'io.modelcontextprotocol/'
 let manager: McpManager
 let stream: ReadableStreamDefaultController<Uint8Array> | undefined

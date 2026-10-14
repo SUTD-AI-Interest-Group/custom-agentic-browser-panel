@@ -1,5 +1,6 @@
 // MCP revision 2026-07-28. Kept separate from the 1.x SDK, which remains the
 // legacy transport/auth adapter. No initialize, session, GET stream or resume.
+import { collectInputs, type ElicitReply } from './elicitation'
 import { UnauthorizedError, extractWWWAuthenticateParams } from '@modelcontextprotocol/sdk/client/auth.js'
 import type { CallToolResult, GetPromptResult, Prompt, ReadResourceResult, Resource, Tool } from '@modelcontextprotocol/sdk/types.js'
 
@@ -24,13 +25,15 @@ export type SubscriptionState = 'off' | 'connecting' | 'listening' | 'retrying' 
 export interface RequestOptions {
   signal?: AbortSignal
   timeout?: number
+  conversationId?: string
+  maxResponseBytes?: number
 }
 export class ModernRpcError extends Error {
   constructor(public code: number, public data?: unknown) { super(`MCP request failed (${code}).`) }
 }
 export class LegacyServerError extends Error {}
 export class InputRequiredError extends Error {
-  constructor() { super('This MCP server requested additional client input. Lychee does not enable automatic sampling, roots or elicitation; complete this action in a supporting client.') }
+  constructor() { super('This MCP server requested additional client input. This request has no supported interactive handler; sampling and roots remain disabled.') }
 }
 
 export function encodeHeader(value: string): string {
@@ -63,7 +66,7 @@ export function headerFields(schema: unknown): HeaderField[] {
 
 // Bounded streaming parser: handles split UTF-8, CRLF, multiline data, comments
 // and blank keepalives. id/retry fields are deliberately ignored (no resume).
-export async function* sseMessages(response: Response, signal: AbortSignal): AsyncGenerator<unknown> {
+export async function* sseMessages(response: Response, signal: AbortSignal, maxBytes = MAX_BYTES): AsyncGenerator<unknown> {
   if (!response.body) throw new Error('MCP stream has no body.')
   const reader = response.body.getReader(), decoder = new TextDecoder()
   let buffer = '', data: string[] = [], eventSize = 0
@@ -75,7 +78,7 @@ export async function* sseMessages(response: Response, signal: AbortSignal): Asy
       const { done, value } = await reader.read()
       signal.throwIfAborted()
       buffer += decoder.decode(value, { stream: !done })
-      if (new TextEncoder().encode(buffer).byteLength > MAX_BYTES) throw new Error('MCP stream frame exceeds limits.')
+      if (new TextEncoder().encode(buffer).byteLength > maxBytes) throw new Error('MCP stream frame exceeds limits.')
       let pos: number
       while ((pos = buffer.search(/[\r\n]/)) >= 0) {
         // Hold a final CR until the next chunk distinguishes CRLF from CR.
@@ -88,7 +91,7 @@ export async function* sseMessages(response: Response, signal: AbortSignal): Asy
         } else if (line.startsWith('data:')) {
           const text = line.slice(5).replace(/^ /, '')
           eventSize += new TextEncoder().encode(text).byteLength + 1
-          if (eventSize > MAX_BYTES) throw new Error('MCP event exceeds limits.')
+          if (eventSize > maxBytes) throw new Error('MCP event exceeds limits.')
           data.push(text)
         }
       }
@@ -121,6 +124,8 @@ export class ModernMcpClient {
     token?: () => Promise<string | undefined>
     fetch?: typeof fetch
     refreshToken?: (signal: AbortSignal) => Promise<void>
+    elicit?: (params: unknown, signal: AbortSignal) => Promise<ElicitReply>
+    onTask?: (task: JsonObject, params: JsonObject, opts: RequestOptions) => Promise<JsonObject>
     onAuthRequired?: (challenge: { scope?: string; resourceMetadataUrl?: URL }) => void
   } = {}) {}
 
@@ -161,7 +166,10 @@ export class ModernMcpClient {
       body: JSON.stringify({ jsonrpc: '2.0', id, method, params: { ...params, _meta: {
         ...(isObject(params._meta) ? params._meta : {}),
         [`${PREFIX}protocolVersion`]: MODERN_PROTOCOL,
-        [`${PREFIX}clientCapabilities`]: {},
+        [`${PREFIX}clientCapabilities`]: {
+          ...(this.options.elicit ? { elicitation: { form: {}, url: {} } } : {}),
+          ...(this.options.onTask && (method === 'tools/call' || method.startsWith('tasks/')) ? { extensions: { 'io.modelcontextprotocol/tasks': {} } } : {}),
+        },
         [`${PREFIX}clientInfo`]: { name: 'lychee-ai', version: '0.5.0' },
       } } }),
     })
@@ -200,9 +208,37 @@ export class ModernMcpClient {
   }
 
   async request(method: string, params: JsonObject = {}, opts: RequestOptions = {}, probe = false): Promise<JsonObject> {
+    const lifetime = new AbortController()
+    const abort = () => lifetime.abort(opts.signal?.reason)
+    opts.signal?.addEventListener('abort', abort, { once: true })
+    if (opts.signal?.aborted) abort()
+    this.controllers.add(lifetime)
+    try {
+      let next = params
+      for (let round = 0; round < 8; round++) {
+        lifetime.signal.throwIfAborted()
+        const result = await this.requestOnce(method, next, { ...opts, signal: lifetime.signal }, probe)
+        if (result.resultType === 'task') {
+          if (method !== 'tools/call' || !this.options.onTask || !this.supportsExtension('io.modelcontextprotocol/tasks')) throw Error('Unnegotiated MCP task.')
+          return await this.options.onTask(result, params, opts)
+        }
+        if (result.resultType !== 'input_required') return result
+        if (!this.options.elicit || !['tools/call', 'resources/read', 'prompts/get'].includes(method)) throw new InputRequiredError()
+        if (result.requestState !== undefined && typeof result.requestState !== 'string') throw Error('Invalid MCP request state.')
+        const inputResponses = await collectInputs(result.inputRequests, this.options.elicit, lifetime.signal)
+        const { requestState: _state, inputResponses: _responses, ...original } = params
+        next = { ...original, inputResponses, ...(result.requestState === undefined ? {} : { requestState: result.requestState }) }
+      }
+      throw Error('MCP clarification round limit reached; operation was not repeated further.')
+    } finally { opts.signal?.removeEventListener('abort', abort); this.controllers.delete(lifetime) }
+  }
+  supportsExtension(name: string): boolean {
+    return isObject(this.capabilities.extensions) && isObject(this.capabilities.extensions[name])
+  }
+  private async requestOnce(method: string, params: JsonObject, opts: RequestOptions, probe: boolean): Promise<JsonObject> {
     if (this.closed) throw new Error('MCP client is closed.')
     opts.signal?.throwIfAborted()
-    const cacheable = ['tools/list', 'resources/list', 'prompts/list', 'resources/read', 'resources/templates/list'].includes(method)
+    const cacheable = opts.maxResponseBytes === undefined && !('inputResponses' in params) && !('requestState' in params) && ['tools/list', 'resources/list', 'prompts/list', 'resources/read', 'resources/templates/list'].includes(method)
     const cacheEpoch = this.cacheEpoch
     const cacheKey = JSON.stringify([method, params])
     const cached = this.cache.get(cacheKey)
@@ -217,17 +253,15 @@ export class ModernMcpClient {
       const { response, id } = await this.post(method, params, controller.signal, probe)
       let result: JsonObject | undefined
       if (contentType(response) === 'text/event-stream') {
-        for await (const message of sseMessages(response, controller.signal)) {
+        for await (const message of sseMessages(response, controller.signal, opts.maxResponseBytes)) {
           if (isObject(message) && message.jsonrpc === '2.0' && !('id' in message) && typeof message.method === 'string') continue // request notifications are data, never commands
           result = parseResult(message, id); break
         }
         if (!result) throw new Error('MCP response stream disconnected; outcome is unknown. Do not automatically repeat a mutating call.')
-      } else if (contentType(response) === 'application/json') result = parseResult(JSON.parse(await readBounded(response, controller.signal)), id)
+      } else if (contentType(response) === 'application/json') result = parseResult(JSON.parse(await readBounded(response, controller.signal, opts.maxResponseBytes)), id)
       else { await response.body?.cancel(); throw new Error('Unsupported MCP response content type.') }
-      // We advertise no sampling/roots/elicitation capability. Do not fabricate
-      // user consent, disclose local data or replay calls in response to MRTR.
       controller.signal.throwIfAborted()
-      if (result.resultType === 'input_required') throw new InputRequiredError()
+      if (result.resultType === 'input_required' || result.resultType === 'task') return result
       if (result.resultType !== 'complete') throw new Error('Invalid modern MCP resultType.')
       if (cacheable && cacheEpoch === this.cacheEpoch && Number.isSafeInteger(result.ttlMs) && (result.ttlMs as number) > 0 && ['public', 'private'].includes(result.cacheScope as string)) {
         // Per-client memory only, never shared between endpoints/accounts.
@@ -359,7 +393,7 @@ function parseResult(message: unknown, id: string): JsonObject {
   if (!isObject(message.result) || 'error' in message) throw new Error('Invalid MCP response.')
   return message.result
 }
-async function readBounded(response: Response, signal: AbortSignal): Promise<string> {
+async function readBounded(response: Response, signal: AbortSignal, maxBytes = MAX_BYTES): Promise<string> {
   if (!response.body) return ''
   const reader = response.body.getReader(), decoder = new TextDecoder()
   let text = '', size = 0
@@ -372,7 +406,7 @@ async function readBounded(response: Response, signal: AbortSignal): Promise<str
       signal.throwIfAborted()
       if (done) return text + decoder.decode()
       size += value.byteLength
-      if (size > MAX_BYTES) throw new Error('MCP response exceeds limits.')
+      if (size > maxBytes) throw new Error('MCP response exceeds limits.')
       text += decoder.decode(value, { stream: true })
     }
   } finally { signal.removeEventListener('abort', cancel); await reader.cancel().catch(() => {}); reader.releaseLock() }
