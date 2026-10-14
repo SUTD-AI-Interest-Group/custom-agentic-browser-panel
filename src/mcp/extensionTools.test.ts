@@ -87,3 +87,11 @@ it('verifies skill bytes and blocks a supporting-file read when connection chang
   expect(await invoke(h.tools.ReadMcpSkillFile,{handle:loaded.handle,path:'notes.txt'})).toMatchObject({error:expect.stringContaining('changed')})
   expect(h.request).not.toHaveBeenCalled()
 })
+
+it('honors the user-visible skills/list policy before approval or network access',async()=>{
+  const h=setup(true)
+  h.settings.mcp!.policies={srv:{tools:{'skills/list':'never'}}}
+  const tools=buildMcpExtensionTools(h.manager,h.settings,h.approve)
+  expect(await invoke(tools.ListMcpSkills,{server:'srv'})).toMatchObject({error:expect.stringContaining('disabled')})
+  expect(h.approve).not.toHaveBeenCalled();expect(h.request).not.toHaveBeenCalled()
+})

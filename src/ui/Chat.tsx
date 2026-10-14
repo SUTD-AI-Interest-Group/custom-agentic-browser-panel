@@ -1,4 +1,5 @@
 import { WebMcpWelcome } from './WebMcpWelcome'
+import { prepareRequest, canAttachPage } from './requestPreparation'
 import McpInteractions from './McpInteractions'
 import McpUpdateInbox from './McpUpdateInbox'
 import { Fragment, memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
@@ -698,6 +699,9 @@ export default function Chat({
   conversationId,
   settings,
   onUpdateSettings,
+  pendingDraft,
+  onDraftHandled,
+  onOpenConversation,
   onOpenSettings,
   onOpenSkills,
   onConversationsChanged,
@@ -710,6 +714,9 @@ export default function Chat({
   conversationId: string
   settings: Settings
   onUpdateSettings: (next: Settings) => void
+  pendingDraft?: string | null
+  onDraftHandled?: () => void
+  onOpenConversation?: (id:string)=>void
   onOpenSettings: () => void
   onOpenSkills: () => void
   onConversationsChanged: () => void
@@ -744,6 +751,7 @@ export default function Chat({
 }) {
   const [messages, setMessages] = useState<UIMessage[]>([])
   const [input, setInput] = useState('')
+  useEffect(() => {if(pendingDraft){setInput(current=>[current,pendingDraft].filter(Boolean).join('\n\n'));onDraftHandled?.()}}, [pendingDraft,onDraftHandled])
   const [streaming, setStreaming] = useState(false)
   // A message the user submitted while the agent was working: parked here (shown in
   // the steer strip) instead of sent. It auto-sends as a follow-up when the turn
@@ -957,6 +965,15 @@ export default function Chat({
   // the same historyRef and clobbering each other's abort controller. The guard
   // lives in runTurnChain itself so it covers every caller, present and future.
   const streamingRef = useRef(false)
+  const preparationRef = useRef<AbortController | null>(null)
+  const [preparing, setPreparing] = useState('')
+  const [retryChain, setRetryChain] = useState<Parameters<typeof runTurnChain>[0] | null>(null)
+  useEffect(() => () => {preparationRef.current?.abort();abortRef.current?.abort()}, [])
+  const [retryPreparation, setRetryPreparation] = useState<MessageSpec | null>(null)
+  async function prepare<T>(stage: string, work: Promise<T>, signal: AbortSignal): Promise<T> {
+    setPreparing(stage)
+    return prepareRequest(work, signal, stage)
+  }
   // Steers queued during the running chain, drained at each cycle boundary in
   // runTurnChain (see QueuedSteer). Promises, so a steer still resolving its tab
   // context is never lost to a cycle that finishes first.
@@ -1940,6 +1957,7 @@ export default function Chat({
   }
 
   function stop() {
+    preparationRef.current?.abort()
     // Deny everything pending immediately — front and anything queued behind
     // it — rather than routing through settleApproval, so Stop doesn't wait on
     // a Chrome permission prompt and can't be blocked by settlingApprovalRef.
@@ -2354,7 +2372,7 @@ export default function Chat({
     activeSelection: string | null
     /** Other panes on screen (split view), auto-attached alongside the current tab. */
     companions?: CurrentTabInfo[]
-  }): Promise<{
+  }, signal?: AbortSignal): Promise<{
     message: ModelMessage
     attachedSources: MessageSource[]
     notes: string[]
@@ -2396,6 +2414,7 @@ export default function Chat({
       // Remember which tabs are now in context (successful reads only), keyed by
       // id+url, so a later "this page" re-injects the current tab only once the
       // user has moved to a different page.
+      signal?.throwIfAborted()
       syncedTabs.forEach((c, i) => {
         if (!c.error) sharedTabsRef.current.add(tabKey(tabIds[i], c.url))
       })
@@ -2533,13 +2552,13 @@ export default function Chat({
     // Auto-attach the current tab on the first message of a fresh chat only (a
     // queued follow-up is never the first message, so this resolves to false there).
     const includeCurrentTab =
-      messages.length === 0 && currentTab !== null && !dismissedTabs.has(currentTab.tabId)
+      messages.length === 0 && currentTab !== null && canAttachPage(currentTab.url) && !dismissedTabs.has(currentTab.tabId)
     // A deictic reference ("what about this?", "summarize this page") pulls in the
     // tab being viewed, unless it's already in context (see sharedTabsRef).
     const currentTabKey = currentTab ? tabKey(currentTab.tabId, currentTab.url) : null
     const includeDeicticTab =
       !includeCurrentTab &&
-      currentTab !== null &&
+      currentTab !== null && canAttachPage(currentTab.url) &&
       currentTabKey !== null &&
       DEICTIC_RE.test(text) &&
       !sharedTabsRef.current.has(currentTabKey)
@@ -2554,7 +2573,7 @@ export default function Chat({
     // exactly the round trip this whole change exists to remove.
     const companions =
       includeCurrentTab || includeDeicticTab
-        ? companionTabs.filter((t) => !dismissedTabs.has(t.tabId))
+        ? companionTabs.filter((t) => canAttachPage(t.url) && !dismissedTabs.has(t.tabId))
         : []
     return { text, attachments, activeMentions, useMemory, useAll, includeCurrentTab, includeDeicticTab, activeSelection, companions }
   }
@@ -2585,10 +2604,15 @@ export default function Chat({
     // Checked BEFORE the bubble and history push below, not just inside
     // runTurnChain: bailing after those would strand a user message in the
     // transcript and in model history with no reply and nothing running.
-    if (streamingRef.current) return
+    if (streamingRef.current || preparationRef.current) return
+    const preparation = new AbortController()
+    preparationRef.current = preparation
+    setRetryPreparation(null)
+    setRetryChain(null)
+    try {
     const { text } = spec
     const slashMatch = text.match(/^\/([a-z0-9-]+)(?:\s|$)/)
-    const invokedSkill = slashMatch ? await getSkill(slashMatch[1]) : null
+    const invokedSkill = slashMatch ? await prepare('skill lookup', getSkill(slashMatch[1]), preparation.signal) : null
     const activeSkill =
       invokedSkill && invokedSkill.userInvocable && invokedSkill.enabled !== false ? invokedSkill : null
 
@@ -2613,7 +2637,7 @@ export default function Chat({
     void clearAllHighlights()
     let built: Awaited<ReturnType<typeof buildUserTurn>>
     try {
-      built = await buildUserTurn(spec)
+      built = await prepare('page context and attachments', buildUserTurn(spec, preparation.signal), preparation.signal)
     } catch (err) {
       // The user's own bubble is already showing (pushed above, before this
       // await) — without this catch, a rejection here strands it with no
@@ -2623,6 +2647,7 @@ export default function Chat({
         ...m,
         { id: uid(), role: 'assistant', parts: [{ type: 'text', text: freshTurnGatherErrorText(err) }] },
       ])
+      setRetryPreparation(spec)
       return
     }
     const { message, attachedSources, notes } = built
@@ -2639,6 +2664,8 @@ export default function Chat({
     setContinuation(null)
     // A new question supersedes whatever the old turn was waiting to look at.
     setParkedReason(null)
+    preparationRef.current = null
+    setPreparing('')
     await runTurnChain({
       startedAt: Date.now(),
       attachedSources,
@@ -2647,6 +2674,10 @@ export default function Chat({
       droppableTail: true,
       regen: { historyLen, opener: message },
     })
+    } catch (error) {
+      setMessages(m => [...m, {id: uid(), role: 'assistant', parts: [{type:'text', text:freshTurnGatherErrorText(error)}]}])
+      setRetryPreparation(spec)
+    } finally { preparation.abort(); preparationRef.current = null; setPreparing('') }
   }
 
   /**
@@ -3047,10 +3078,12 @@ export default function Chat({
     // for every caller rather than depending on each remembering it.
     if (streamingRef.current || !selected) return
     streamingRef.current = true
+    setRetryChain(null)
     const model = selected
     const controller = new AbortController()
     abortRef.current = controller
     setStreaming(true)
+    try {
     // A fresh chain always starts unparked, even if the LAST chain (regenerated
     // over, or simply superseded by continueTask/resumeFromPark) ended parked.
     // Centralized here — rather than left to each of the four chain-starting
@@ -3080,10 +3113,10 @@ export default function Chat({
     // with no vision probe and no PDF work unless a downgrade is genuinely
     // needed. Message count is unchanged — a downgrade splices parts within a
     // message — so regen.historyLen offsets stay valid.
-    historyRef.current = await hydrateHistory(
+    historyRef.current = await prepare('conversation attachments', hydrateHistory(
       dehydrateHistory(historyRef.current),
       makeHistoricalAttachmentResolver(model.provider, model.modelId),
-    )
+    ), controller.signal)
 
     // Observability: one Langfuse trace per continuation chain, grouped into the
     // conversation's session. Each cycle's model steps become generations and its
@@ -3105,13 +3138,13 @@ export default function Chat({
 
     // System prompt, built once for the chain. Recalled memories are fresh as of
     // the chain start so a mid-conversation SaveMemory shows on the next turn.
-    const memoryContext = await getMemoryContext().catch(() => '')
-    const granted = await grantedCapabilities().catch(() => new Set<BrowsingCapability>())
+    const memoryContext = await prepare('memory', getMemoryContext(), controller.signal)
+    const granted = await prepare('browser permissions', grantedCapabilities(), controller.signal)
     const accessNote =
       settings.tabAccess === 'active-tab'
         ? '\n\nThe user has restricted your tab visibility to the tab they are currently on; ReadTabs is unavailable.'
         : ''
-    const skillMetas = await listSkillMetas({ modelInvocableOnly: true }).catch(() => [])
+    const skillMetas = await prepare('skills catalog', listSkillMetas({ modelInvocableOnly: true }), controller.signal)
     const skillsCatalog =
       skillMetas.length > 0
         ? `\n\n## Skills\nThese skills are available. When a request matches one, call ReadSkill with its name to load its full instructions before proceeding.\n${skillMetas
@@ -3161,7 +3194,8 @@ export default function Chat({
     // decides whether the image ALSO reaches the model (see planShotDelivery).
     // Probed once per provider+model and cached in chrome.storage.local, so this is
     // free after the first turn; a failed probe means "assume blind".
-    const visionCapable = await ensureVisionCapability(model.provider, model.modelId).catch(() => false)
+    const visionCapable = await prepare('model capabilities', ensureVisionCapability(model.provider, model.modelId).catch(() => false), controller.signal)
+    setPreparing('')
 
     // Patch one assistant bubble: its parts are `base` (prior cycles, in merge
     // mode) followed by this cycle's streamed parts.
@@ -3647,6 +3681,13 @@ export default function Chat({
       // Observability: deliver this turn's buffered events. Best-effort.
       void observer.flush()
     }
+    } catch (error) {
+      setMessages(m => [...m, {id: uid(), role:'assistant', parts:[{type:'text',text:freshTurnGatherErrorText(error)}]}])
+      setRetryChain(ctx)
+    } finally {
+      controller.abort(); abortRef.current = null; streamingRef.current = false
+      setStreaming(false); setPreparing(''); setTurnStartedAt(null)
+    }
   }
 
   // For each assistant bubble this turn produced, validate its text and, if any
@@ -3982,7 +4023,7 @@ export default function Chat({
     const onScreen = currentTab ? [currentTab, ...companionTabs] : []
     for (const t of onScreen) {
       if (mentionedIds.has(t.tabId)) continue
-      const attachedFirst = messages.length === 0 && !dismissedTabs.has(t.tabId)
+      const attachedFirst = messages.length === 0 && canAttachPage(t.url) && !dismissedTabs.has(t.tabId)
       const companion = t !== currentTab
       contextTabs.push({
         key: `current:${t.tabId}`,
@@ -3993,7 +4034,7 @@ export default function Chat({
           ? companion
             ? `The other pane in your split — attached to your first message — ${t.title}`
             : `This page is attached to your first message — ${t.title}`
-          : `The agent can ask to view this tab — ${t.title}`,
+          : canAttachPage(t.url) ? `Visible tab; content is shared only when attached or approved — ${t.title}` : 'Browser-restricted page: cannot attach or read.',
         onRemove: attachedFirst ? () => dismissTab(t.tabId) : undefined,
       })
     }
@@ -4047,7 +4088,7 @@ export default function Chat({
               <div className="empty-hint">
                 {companionTabs.length > 0
                   ? 'Both tabs in your split are attached to your first message.'
-                  : "The tab you're on is attached to your first message."}{' '}
+                  : currentTab && !canAttachPage(currentTab.url) ? "This browser page cannot be attached or read." : "The tab you're on is attached to your first message."}{' '}
                 @mention another tab to share it, type @memory to have me draw on what I remember,
                 type / to run one of your skills, or snip a screenshot with the camera.
               </div>
@@ -4179,7 +4220,10 @@ export default function Chat({
       </div>
 
       <div className="composer-area">
-        {!hidden && <><McpInteractions /><McpUpdateInbox /></>}
+        {!hidden && <><McpInteractions onUse={text=>setInput(current=>[current,text].filter(Boolean).join('\n\n'))} onOpenConversation={onOpenConversation} />
+          {preparing && <p role="status">Preparing request: {preparing}…</p>}
+          {retryChain && !preparing && !streaming && <button onClick={() => {void runTurnChain(retryChain)}}>Retry request preparation</button>}
+          {retryPreparation && !preparing && !streaming && <button onClick={() => {void startFreshTurn(retryPreparation)}}>Retry request</button>}<McpUpdateInbox /></>}
         <ContextPills tabs={contextTabs} />
         {selection && selection.text !== dismissedSelection && (
           <div className="selection-chip" title="Highlighted text shared as context">
@@ -4724,7 +4768,7 @@ export default function Chat({
               {/* While the agent works, Stop sits beside the send button and the
                   send arrow queues a follow-up (parked in the steer strip); idle,
                   it's just the send button. */}
-              {streaming && (
+              {(streaming || preparing) && (
                 <button className="send-btn stop" title="Stop" onClick={stop}>
                   <svg width="12" height="12" viewBox="0 0 12 12">
                     <rect x="2" y="2" width="8" height="8" rx="1.5" fill="currentColor" />
@@ -4734,7 +4778,7 @@ export default function Chat({
               <button
                 className="send-btn"
                 title={streaming ? 'Queue as a follow-up' : 'Send'}
-                disabled={(!input.trim() && attachments.length === 0) || !selected}
+                disabled={!!preparing || (!input.trim() && attachments.length === 0) || !selected}
                 onClick={() => void submit()}
               >
                 <svg width="14" height="14" viewBox="0 0 14 14" fill="none">

@@ -102,6 +102,9 @@ export default function McpSection({
           onAuthorize={() => { patch({ ...mcp, updates: { ...mcp.updates, [name]: { enabled: false } } }); authorize(name) }}
           onSignOut={() => { patch({ ...mcp, updates: { ...mcp.updates, [name]: { enabled: false } } }); void getMcpManager().signOut(name).catch(err => setAuthError(`${name}: ${err instanceof Error ? err.message : String(err)}`)) }}
         />
+        <p className="hint">{(() => {const s=getMcpManager().runtime().find(s=>s.name===name);return `Protocol: ${s?.protocol ?? 'not connected'} · Tools: ${s?.tools.length ?? 0} · Tasks: ${s?.extensions?.tasks?'supported':'unavailable'} · Skills: ${s?.extensions?.skills?'supported':'unavailable'} · Elicitation: ${s?.extensions?.elicitation?'supported':'unavailable'}`})()}</p>
+<button className="btn small" onClick={()=>{const s=getMcpManager().runtime().find(s=>s.name===name);setAuthError(s?.status==='connected'?`${name}: connected using ${s.protocol}; ${s.tools.length} tools discovered. No tool was executed.`:`${name}: ${s?.error ?? s?.status ?? 'not connected'}`)}}>Check connection</button>
+        <p className="hint">Legacy connections cannot offer modern tasks or verified skills. Status and catalogs above diagnose the connection without executing a tool.</p>
         <McpUpdates name={name} value={mcp.updates?.[name]} onChange={(value) => patch({ ...mcp, updates: { ...mcp.updates, [name]: value } })} />
         </div>
       ))}

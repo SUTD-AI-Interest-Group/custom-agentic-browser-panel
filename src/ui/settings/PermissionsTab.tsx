@@ -277,9 +277,9 @@ function McpPermissions({
 
   return (
     <>
-      <p className="hint">MCP servers — a server's setting is the default for all its tools.</p>
+      <p className="hint">MCP servers — a server's setting is the default for all its tools. Sensitive task responses and remote skill loads still require one-time approval under Always. Tab visibility does not grant page-reading permission; a first-message page attachment shares its content directly.</p>
       {names.map((name) => {
-        const tools = catalog.get(name) ?? []
+        const tools = [...(catalog.get(name) ?? []), ...['tasks/get','tasks/update','tasks/cancel','skills/list','skills/read'].map(name => ({name, description: 'MCP extension operation'}))]
         const serverDefault = mcp.policies?.[name]?.default ?? 'ask'
         const overrides = mcp.policies?.[name]?.tools ?? {}
         const mixed = tools.some((t) => mcpToolPolicy(mcp, name, t.name) !== serverDefault) ||

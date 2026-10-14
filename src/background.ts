@@ -515,6 +515,7 @@ async function doResumeStrandedResearch(): Promise<void> {
 // message channel closed before a response was received" as an uncaught rejection.
 chrome.runtime.onMessage.addListener((msg: ResearchMsg | DreamMsg, _sender, sendResponse) => {
   ;(async () => {
+    let failed = false
     try {
       if (msg?.type === 'dream.result') {
         // The other half of the alarm's cycle, arriving in its own event —
@@ -659,12 +660,13 @@ chrome.runtime.onMessage.addListener((msg: ResearchMsg | DreamMsg, _sender, send
     } catch (err) {
       // A storage/quota failure (or anything else unguarded above) would otherwise
       // become a silent unhandled rejection inside this fire-and-forget IIFE.
+      failed = true
       console.error('[bg] message handler failed', msg?.type, err)
     } finally {
       // Close the channel. Throws if the sender is already gone (a panel that
       // navigated away mid-dispatch) — that is nothing to report.
       try {
-        sendResponse()
+        sendResponse(msg?.type === 'research.clearTasks' && failed ? { error: 'Research data could not be cleared.' } : undefined)
       } catch {}
     }
   })()

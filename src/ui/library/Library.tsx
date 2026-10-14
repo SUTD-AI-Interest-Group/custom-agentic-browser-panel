@@ -2,6 +2,7 @@ import { useState } from 'react'
 import type { ResearchTask } from '../../data/researchTasks'
 import ConversationsList from './ConversationsList'
 import ResearchList from './ResearchList'
+import RemoteSkills from './RemoteSkills'
 import SkillsList from './SkillsList'
 
 // The Library: a tabbed archive overlay (Chats / Skills / Research) opened from
@@ -18,6 +19,7 @@ const TABS: { key: LibraryTab; label: string }[] = [
 ]
 
 export default function Library({
+  onLoadRemoteSkill,
   initialTab,
   currentConversationId,
   onOpenConversation,
@@ -25,6 +27,7 @@ export default function Library({
   onConversationsChanged,
   onClose,
 }: {
+  onLoadRemoteSkill?: (text:string)=>void
   initialTab: LibraryTab
   /** Highlighted in the Chats list so the open conversation is obvious. */
   currentConversationId: string
@@ -44,6 +47,14 @@ export default function Library({
             <button
               key={t.key}
               role="tab"
+              id={`library-tab-${t.key}`}
+              aria-controls={`library-panel-${t.key}`}
+              tabIndex={tab === t.key ? 0 : -1}
+              onKeyDown={e => {
+                const index = TABS.findIndex(item => item.key === tab)
+                const next = e.key === 'Home' ? 0 : e.key === 'End' ? TABS.length - 1 : e.key === 'ArrowRight' ? (index + 1) % TABS.length : e.key === 'ArrowLeft' ? (index + TABS.length - 1) % TABS.length : -1
+                if (next >= 0) {e.preventDefault();setTab(TABS[next].key);document.getElementById(`library-tab-${TABS[next].key}`)?.focus()}
+              }}
               aria-selected={tab === t.key}
               className={`library-tab ${tab === t.key ? 'active' : ''}`}
               onClick={() => setTab(t.key)}
@@ -59,6 +70,7 @@ export default function Library({
         </button>
       </div>
 
+      <div role="tabpanel" id={`library-panel-${tab}`} aria-labelledby={`library-tab-${tab}`}>
       {tab === 'conversations' && (
         <ConversationsList
           currentConversationId={currentConversationId}
@@ -66,8 +78,9 @@ export default function Library({
           onConversationsChanged={onConversationsChanged}
         />
       )}
-      {tab === 'skills' && <SkillsList />}
+      {tab === 'skills' && <><SkillsList /><RemoteSkills onLoad={onLoadRemoteSkill}/></>}
       {tab === 'researches' && <ResearchList onOpen={onOpenResearch} />}
+      </div>
     </div>
   )
 }

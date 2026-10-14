@@ -19,7 +19,7 @@ const server = createServer(async (req, res) => {
     const url = new URL(req.url, origin)
     const json = (data, status = 200) => { res.writeHead(status, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(data)) }
     if (url.pathname === '/') {
-      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Content-Security-Policy': "default-src 'self'; script-src 'self'; connect-src 'self'; object-src 'none'" })
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Content-Security-Policy': "default-src 'self'; script-src 'self'; connect-src 'self' http://127.0.0.1:1234; object-src 'none'" })
       res.end('<!doctype html><title>MCP browser smoke</title><h1>MCP native browser verification</h1><pre>Running…</pre><script src="/smoke.js"></script>'); return
     }
     if (url.pathname === '/smoke.js') { res.setHeader('Content-Type', 'text/javascript'); res.end(await readFile(join(outDir, 'smoke.js'))); return }

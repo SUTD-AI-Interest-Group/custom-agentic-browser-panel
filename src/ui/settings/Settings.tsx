@@ -1,5 +1,6 @@
 import { useRef, useState } from 'react'
 import type { Settings } from '../../data/settings'
+import McpSection from './McpSection'
 import GeneralTab from './GeneralTab'
 import ProvidersTab from './ProvidersTab'
 import PermissionsTab from './PermissionsTab'
@@ -8,10 +9,11 @@ import SkillsTab from './SkillsTab'
 import DataTab from './DataTab'
 import { normalizeSettings } from './normalizeSettings'
 
-type TabKey = 'general' | 'providers' | 'permissions' | 'memory' | 'skills' | 'data'
+type TabKey = 'connections' | 'general' | 'providers' | 'permissions' | 'memory' | 'skills' | 'data'
 
 const TABS: Array<{ key: TabKey; label: string }> = [
   { key: 'general', label: 'General' },
+  { key: 'connections', label: 'Connections' },
   { key: 'providers', label: 'Providers' },
   { key: 'permissions', label: 'Permissions' },
   { key: 'memory', label: 'Memory' },
@@ -34,7 +36,7 @@ export default function SettingsView({
   onErased,
 }: {
   settings: Settings
-  onChange: (next: Settings) => void
+  onChange: (next: Settings) => void | Promise<void>
   onOpenSkills: () => void
   onClose: () => void
   /** Called after a full erase — App reloads settings, which re-enters onboarding. */
@@ -45,6 +47,8 @@ export default function SettingsView({
   // draftRef holds the latest draft synchronously so onBlur can commit without
   // waiting for a re-render.
   const draftRef = useRef(draft)
+  const [error, setError] = useState('')
+  const saveSequence = useRef(0)
   const [saved, setSaved] = useState(false)
   const savedTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
@@ -63,14 +67,20 @@ export default function SettingsView({
   /** Buffer + persist (normalized) + flash. For immediate controls. */
   function commit(next: Settings) {
     buffer(next)
-    onChange(normalizeSettings(next))
-    flashSaved()
+    persist(next)
   }
 
   /** Persist the currently-buffered draft. For text fields committing on blur. */
   function commitDraft() {
-    onChange(normalizeSettings(draftRef.current))
-    flashSaved()
+    persist(draftRef.current)
+  }
+
+  function persist(next: Settings) {
+    const sequence = ++saveSequence.current
+    setSaved(false); setError('')
+    void Promise.resolve().then(() => onChange(normalizeSettings(next))).then(() => {
+      if(sequence === saveSequence.current) flashSaved()
+    }).catch(() => { if(sequence === saveSequence.current) {setSaved(false);setError('Settings could not be saved. Retry your changes.')} })
   }
 
   return (
@@ -81,6 +91,14 @@ export default function SettingsView({
             <button
               key={t.key}
               role="tab"
+              id={`settings-tab-${t.key}`}
+              aria-controls={`settings-panel-${t.key}`}
+              tabIndex={tab === t.key ? 0 : -1}
+              onKeyDown={e => {
+                const index = TABS.findIndex(item => item.key === tab)
+                const next = e.key === 'Home' ? 0 : e.key === 'End' ? TABS.length - 1 : e.key === 'ArrowRight' ? (index + 1) % TABS.length : e.key === 'ArrowLeft' ? (index + TABS.length - 1) % TABS.length : -1
+                if (next >= 0) {e.preventDefault();setTab(TABS[next].key);document.getElementById(`settings-tab-${TABS[next].key}`)?.focus()}
+              }}
               aria-selected={tab === t.key}
               className={`settings-tab ${tab === t.key ? 'active' : ''}`}
               onClick={() => setTab(t.key)}
@@ -101,7 +119,10 @@ export default function SettingsView({
         </div>
       </div>
 
-      <div className="settings-body">
+      <div className="settings-body" role="tabpanel" id={`settings-panel-${tab}`} aria-labelledby={`settings-tab-${tab}`}>
+        {error && <p role="alert">{error} <button onClick={commitDraft}>Retry save</button></p>}
+        <p className="hint">Lychee {chrome.runtime.getManifest().version} · {import.meta.env.VITE_BUILD_COMMIT ?? 'development'}</p>
+        {tab === 'connections' && <McpSection draft={draft} commit={commit} />}
         {tab === 'general' && (
           <GeneralTab draft={draft} buffer={buffer} commit={commit} commitDraft={commitDraft} />
         )}

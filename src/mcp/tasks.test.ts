@@ -2,7 +2,7 @@
 import 'fake-indexeddb/auto'
 import { afterEach,beforeEach,describe,it,expect,vi } from 'vitest'
 import { McpManager } from './manager'
-import { listSavedTasks,forgetTask,parseTask,saveTask,expiredTask,taskPollDelay } from './tasks'
+import { clearMcpTasks,taskStorageEpoch,mcpTasksUsage,listSavedTasks,forgetTask,parseTask,saveTask,expiredTask,taskPollDelay } from './tasks'
 import { elicitationQueue } from './elicitation'
 import type { Settings } from '../data/settings'
 vi.mock('./auth',()=>({ChromeOAuthProvider:class{async tokens(){return undefined}async sessionIdentity(){return undefined}},clearAuth:vi.fn(async()=>{})}))
@@ -101,4 +101,33 @@ it('does not send a clarification answer after task TTL expires',async()=>{
     await rejected
     expect(calls.some(c=>c.method==='tasks/update')).toBe(false)
   } finally {now.mockRestore()}
+})
+
+it('erasure rejects delayed task creation and status writes across database epochs',async()=>{
+  const manager=await connect();await manager.callTool('srv','job',{})
+  const saved=(await listSavedTasks())[0], epoch=await taskStorageEpoch()
+  expect((await mcpTasksUsage()).count).toBe(1)
+  await clearMcpTasks()
+  await expect(saveTask(saved,epoch)).rejects.toThrow()
+  await expect(saveTask(saved,epoch,true)).rejects.toThrow()
+  expect(await listSavedTasks()).toEqual([])
+  await expect(saveTask(saved,await taskStorageEpoch(),true)).rejects.toThrow()
+  expect(await listSavedTasks()).toEqual([])
+})
+
+it.each(['get','create'])('does not resurrect erased task records after a delayed %s response',async(action)=>{
+  const manager=await connect();await manager.callTool('srv','job',{})
+  const saved=(await listSavedTasks())[0]
+  const original=globalThis.fetch
+  let release!:()=>void,started!:()=>void
+  const waiting=new Promise<void>(r=>{started=r}),gate=new Promise<void>(r=>{release=r})
+  vi.stubGlobal('fetch',vi.fn(async(...args:Parameters<typeof fetch>)=>{
+    const method=JSON.parse(String(args[1]?.body)).method
+    if(method===(action==='get'?'tasks/get':'tools/call')){started();await gate}
+    return original(...args)
+  }))
+  const pending=(action==='get'?manager.taskOperation(saved.id,'get'):manager.callTool('srv','job',{})).catch(e=>e)
+  await waiting;await clearMcpTasks();release()
+  expect(await pending).toBeInstanceOf(Error)
+  expect(await listSavedTasks()).toEqual([])
 })

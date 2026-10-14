@@ -1,5 +1,7 @@
 # User journey review after PR #3 merge
 
+**Follow-up:** the findings below are the original baseline. See [implemented P1–P3 fixes and rerun evidence](2026-10-14-journey-fixes.md) for the updated outcome.
+
 ## Build and outcome
 
 PR #3 was merged into `codex/mcp2-browser-subscriptions-webmcp` at `6749ecc227c16cd94f313ed9944922742ac3eadb` on 2026-10-14. It was not merged into main. This review ran against that merge commit. The production build was copied into the existing unpacked Chrome extension's generated `dist/` directory, and Chrome was reloaded and visibly confirmed version 0.5.0. The original installed build was backed up before replacement. No ChatGPT provider source changes were included.

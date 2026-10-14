@@ -19,6 +19,13 @@ for that history.
 
 ## [Unreleased]
 
+- Bound chat preparation with stage labels, Stop, visible errors and Retry; skip automatic attachment of restricted browser pages.
+- Include durable MCP tasks in storage accounting and erasure, with atomic generation checks rejecting delayed writes after deletion.
+- Report settings, skill preference, data, research-worker and vault persistence failures truthfully.
+- Improve task attention, source-chat navigation, rich results and explicit transfer to chat; surface remote skills with per-turn approvals.
+- Add Connections, capability diagnostics, extension-operation permissions, accessible clarification errors, LM Studio onboarding discovery, keyboard tab navigation and build identity.
+- See [post-merge journey fixes and verification](docs/verification/2026-10-14-journey-fixes.md).
+
 - Add interactive MCP form/URL clarification, with explicit user responses and bounded multi-round continuations.
 - Persist modern MCP task handles locally, resume status checks after reopening the panel, and expose progress, results, input and cancellation controls.
 - Discover and load skills over MCP with explicit approval, same-server file access and size/SHA-256/frontmatter verification.
