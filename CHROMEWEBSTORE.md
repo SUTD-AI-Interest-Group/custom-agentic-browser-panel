@@ -1,6 +1,6 @@
 # Chrome Web Store Listing — Lychee AI
 
-> Last Updated: 2026-10-14 · Manifest version 0.5.0 · **Status: prepared for upload; not submitted or published.**
+> Last Updated: 2026-10-14 · Manifest version 0.5.0 · **Status: 0.5.0 submitted 2026-10-14; pending review. Manual publishing after approval.**
 >
 > **Item ID:** `jijmdjncddemapjkbidjdbfbjmonagpn` ·
 > [listing](https://chromewebstore.google.com/detail/jijmdjncddemapjkbidjdbfbjmonagpn)
@@ -477,7 +477,7 @@ no response, that is the point to contact developer support.
 
 | Version | Date | Changes | Status |
 |---------|------|---------|--------|
-| 0.5.0 | 2026-10-14 | WebMCP actions, modern MCP transport, opt-in subscriptions, OAuth hardening and security dependency updates. No permission changes. | Prepared; not submitted |
+| 0.5.0 | 2026-10-14 | WebMCP actions, modern MCP transport, opt-in subscriptions, OAuth hardening and security dependency updates. No permission changes. | Submitted 2026-10-14; pending review; manual publishing |
 | 0.4.0 | 2026-08-21 | Update. Attach Word, PowerPoint, Excel, OpenDocument, RTF and EPUB documents alongside images, PDFs and text. Read local files opened from disk, PDFs served from a URL that never says `.pdf`, and PDFs embedded inside an ordinary page. Token counts and running cost on every reply. Long conversations fold older turns into a summary instead of dying once the model's context fills. A turn interrupted by closing the panel can be resumed. Page control now keeps a list of what it changed, with undo. Opt-in local turn traces for debugging. Memory consolidation moved off the background worker so a long pass can finish. A second whole-codebase adversarial audit closing four criticals — MCP OAuth token replay, two SSRF holes in unattended research, half-blind sensitive-field detection, and a spreadsheet memory-exhaustion path — plus `RunCode`, which had never once worked in a real browser. **No permission changes.** | Live; store updated 2026-08-22 |
 | 0.3.0 | 2026-08-03 | Update. Prompt attachments — drag, paste, or pick images, PDFs, and text files into the composer. A separate chat per tab, with background chats that keep working and announce themselves when they finish or need permission. Every stored secret encrypted at rest, with a live status indicator in Settings. A whole-codebase adversarial security review closing defects across tool authorisation, browse policy, service-worker lifetime, dream re-entrancy, and page-control classification. **No permission changes.** | ✅ Published 2026-08-04 |
 | 0.2.0 | 2026-07-28 | First store submission. Side-panel assistant with bring-your-own-model support, page reading, approved page control, tab organising (grouping and closing, with undo), background research with citations, long-term memory, skills, MCP tool servers, and sandboxed code execution. | ✅ Published 2026-08-01 — passed review first time |
