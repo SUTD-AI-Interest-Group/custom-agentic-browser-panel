@@ -19,13 +19,26 @@ for that history.
 
 ## [0.5.0] — 2026-10-14 — *Submitted for Chrome Web Store review*
 
-- Discover and run page-native WebMCP actions with approval controls and welcome suggestions.
-- Connect directly to modern MCP servers, with legacy compatibility and opt-in update subscriptions.
-- Harden OAuth issuer validation, PKCE callbacks, credential scoping and explicit scope escalation; support optional client metadata documents.
-- Update vulnerable dependencies, including MCP OAuth, document parsing and math rendering.
-- Keep execution in the browser; no middleware server or ChatGPT provider is included.
+### Added
 
-No new extension permissions. Automated verification: 2,014 tests pass, production build/package pass, zero npm audit advisories. Browser testing confirmed by the maintainer on 2026-10-14. Submitted 2026-10-14; pending review with manual publishing after approval.
+- Page-native WebMCP action discovery and execution, with approval controls and welcome suggestions (`bfabd84`).
+- Direct browser connections to MCP revision 2026-07-28 servers, with legacy transport compatibility, paginated catalogs, bounded responses and cache handling (`751c574`).
+- Opt-in MCP update subscriptions and a URI-only notification inbox. Notifications do not automatically read resources or execute tools.
+- Optional OAuth client metadata documents, alongside legacy dynamic registration support.
+
+### Security
+
+- Validate OAuth issuers and callback state, bind credentials to the resource and issuer, and require explicit authorization for additional scopes.
+- Update the MCP SDK, document parsers, math renderer and transitive dependencies. The dependency audit went from 21 affected entries to zero reported advisories (`6fad530`).
+- Preserve browser-native execution without a middleware service. ChatGPT-provider and native-companion work is excluded from this release.
+
+### Release verification and submission
+
+- Synchronized the manifest, package and MCP client/host versions to 0.5.0 (`3104c6c`). No required, optional or host permission changes from 0.4.0.
+- All 2,014 tests across 150 files pass; TypeScript, production builds and ZIP integrity checks pass. The local browser MCP/OAuth fixture passes under strict CSP; its identity popup is simulated. The maintainer separately confirmed browser testing on 2026-10-14.
+- Uploaded `lychee-ai-v0.5.0.zip` to the existing Chrome Web Store item and updated the listing's MCP features and data-flow description.
+- Chrome confirmed submission on 2026-10-14: **pending review, with manual publishing after approval**. Version 0.4.0 remains published; the existing unlisted distribution is unchanged. This is a submission record, not a publication announcement.
+- [Security verification](docs/verification/2026-10-14-deployment.md) · [Package checksum and publishing handoff](docs/verification/0.5.0-publishing.md) · [Release PR #2](https://github.com/SUTD-AI-Interest-Group/custom-agentic-browser-panel/pull/2).
 
 ## [0.4.0] — 2026-08-21 — *Chrome Web Store update*
 
