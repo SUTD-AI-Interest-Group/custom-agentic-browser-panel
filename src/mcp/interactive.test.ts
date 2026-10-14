@@ -66,3 +66,20 @@ describe('interactive MCP',()=>{
     const bad=harness([raw],{onTask:task});await expect(bad.client.callTool({name:'job'})).rejects.toThrow('Unnegotiated');await bad.client.close()
   })
 })
+
+it('keeps simultaneous clarification answers isolated by request identity',async()=>{
+  const a=new AbortController(),b=new AbortController()
+  const one=elicitationQueue.ask('one',form,a.signal),two=elicitationQueue.ask('two',form,b.signal)
+  const first=elicitationQueue.snapshot().find(x=>x.server==='one')!, second=elicitationQueue.snapshot().find(x=>x.server==='two')!
+  elicitationQueue.respond(first.id,{action:'decline'})
+  expect(await one).toEqual({action:'decline'})
+  elicitationQueue.respond(first.id,{action:'accept',content:{city:'Paris'}})
+  expect(elicitationQueue.snapshot().map(x=>x.id)).toEqual([second.id])
+  elicitationQueue.respond(second.id,{action:'cancel'})
+  expect(await two).toEqual({action:'cancel'})
+})
+it('URL mode accepts only a decision and never form credentials',()=>{
+  const request=parseElicitation({mode:'url',message:'Authorize',url:'https://service.test/consent'})
+  expect(()=>validateReply(request,{action:'accept'})).not.toThrow()
+  expect(()=>validateReply(request,{action:'accept',content:{token:'secret'}})).toThrow()
+})

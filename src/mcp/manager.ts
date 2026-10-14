@@ -20,7 +20,7 @@ import {
   ToolListChangedNotificationSchema,
 } from '@modelcontextprotocol/sdk/types.js'
 import type { Settings } from '../data/settings'
-import { classifyEntry, mcpSettings, serverEnabled, type McpServerEntry, type McpUpdateSettings } from './config'
+import { classifyEntry, mcpSettings, mcpToolPolicy, serverEnabled, type McpServerEntry, type McpUpdateSettings, type McpSettings } from './config'
 import { ChromeOAuthProvider, clearAuth } from './auth'
 import { elicitationQueue, collectInputs } from './elicitation'
 import { TASKS_EXTENSION, parseTask, saveTask, listSavedTasks, expiredTask, taskPollDelay, terminalTask, type SavedTask } from './tasks'
@@ -148,6 +148,12 @@ function newClient(): Client {
 }
 
 export class McpManager {
+  private accessSettings: McpSettings = { servers: {} }
+  assertExtensionAccess(server: string, method: string): void {
+    const config = this.accessSettings
+    if (!Object.hasOwn(config.servers, server) || !serverEnabled(config, server) || mcpToolPolicy(config, server, method) === 'never') throw Error('MCP server access is disabled by policy.')
+  }
+
   private taskOperations = new Set<string>()
   private slots = new Map<string, ServerSlot>()
   private listeners = new Set<() => void>()
@@ -187,6 +193,7 @@ export class McpManager {
    * call on every settings save.
    */
   async refresh(settings: Settings): Promise<void> {
+    this.accessSettings = structuredClone(mcpSettings(settings))
     if (!this.cacheLoaded) await this.loadCatalogCache().catch(() => {})
     const mcp = mcpSettings(settings)
     const wanted = new Map<string, McpServerEntry>()
@@ -645,8 +652,14 @@ export class McpManager {
       const record = (await listSavedTasks()).find(t => t.id === id)
       if (!record) throw Error('Unknown task.')
       if (expiredTask(record)) throw Error('This task has expired on the server.')
+      const method = action === 'respond' ? 'tasks/update' : action === 'cancel' ? 'tasks/cancel' : 'tasks/get'
+      this.assertExtensionAccess(record.server, method)
+      this.assertExtensionAccess(record.server, 'tasks/get')
       const { client, scope } = await this.modernClient(record.server, TASKS_EXTENSION)
       const check = () => {
+        if (expiredTask(record)) throw Error('This task has expired on the server.')
+        this.assertExtensionAccess(record.server, method)
+        this.assertExtensionAccess(record.server, 'tasks/get')
         if (this.slots.get(record.server)?.status !== 'connected' || scope !== record.scope || this.slots.get(record.server)?.client !== client || this.slots.get(record.server)?.taskScope !== scope) throw Error('Task belongs to a different server or credential session. It cannot be resumed with this connection.')
       }
       check()

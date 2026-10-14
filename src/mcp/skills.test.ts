@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { describe,it,expect,vi } from 'vitest'
-import { getRemoteSkill, listRemoteSkills, parseSkill, readVerifiedSkillFile, SKILLS_EXTENSION } from './skills'
+import { getRemoteSkill, listRemoteSkills, parseSkill, stableValue, readVerifiedSkillFile, SKILLS_EXTENSION } from './skills'
 import { ModernMcpClient } from './modern'
 const uri='skill://review/SKILL.md'
 const text='---\nname: review\ndescription: Review code\n---\nCheck it.\n'
@@ -39,4 +39,14 @@ describe('MCP skill integrity',()=>{
     expect(await listRemoteSkills(c)).toEqual([skill])
     expect(c.request).toHaveBeenCalledTimes(1);expect(c.request).toHaveBeenCalledWith('skills/list',{},expect.anything())
   })
+})
+
+it('bounds nested metadata before approval',()=>{
+  let nested:unknown='value';for(let i=0;i<40;i++)nested={nested}
+  expect(()=>stableValue(nested)).toThrow('nesting')
+})
+it('accepts a large base64 file without recursive regex stack exhaustion',async()=>{
+  const body='a'.repeat(1024*1024), skill=await entry(body)
+  skill.resources[0].uri='skill://review/large.txt'
+  expect(await readVerifiedSkillFile(client({contents:[{uri:skill.resources[0].uri,blob:Buffer.from(body).toString('base64')}]}),skill,skill.resources[0].uri)).toBe(body)
 })

@@ -68,3 +68,37 @@ describe('durable task manager',()=>{
     expect(taskPollDelay({...parseTask(base),pollIntervalMs:50000})).toBe(50000)
   })
 })
+
+it('revoking task response policy while clarification is open prevents sending answers',async()=>{
+  const manager=await connect();await manager.callTool('srv','job',{})
+  const saved=(await listSavedTasks())[0]
+  state={...base,status:'input_required',inputRequests:{q:{method:'elicitation/create',params:{message:'Confirm',requestedSchema:{type:'object',properties:{yes:{type:'boolean'}}}}}}}
+  const response=manager.taskOperation(saved.id,'respond')
+  const rejected=expect(response).rejects.toThrow()
+  await vi.waitFor(()=>expect(elicitationQueue.snapshot()).toHaveLength(1))
+  await manager.refresh({...config,mcp:{...config.mcp!,policies:{srv:{tools:{'tasks/update':'never'}}}}})
+  await rejected
+  expect(elicitationQueue.snapshot()).toHaveLength(0)
+  expect(calls.some(c=>c.method==='tasks/update')).toBe(false)
+})
+it('expiry prevents task network operations',async()=>{
+  const manager=await connect();await manager.callTool('srv','job',{})
+  const saved=(await listSavedTasks())[0];await saveTask({...saved,ttlMs:0})
+  await expect(manager.taskOperation(saved.id,'cancel')).rejects.toThrow('expired')
+  expect(calls.some(c=>c.method.startsWith('tasks/'))).toBe(false)
+})
+
+it('does not send a clarification answer after task TTL expires',async()=>{
+  const manager=await connect();await manager.callTool('srv','job',{})
+  const saved=(await listSavedTasks())[0]
+  state={...base,status:'input_required',inputRequests:{q:{method:'elicitation/create',params:{message:'Confirm',requestedSchema:{type:'object',properties:{yes:{type:'boolean'}}}}}}}
+  const response=manager.taskOperation(saved.id,'respond')
+  const rejected=expect(response).rejects.toThrow('expired')
+  await vi.waitFor(()=>expect(elicitationQueue.snapshot()).toHaveLength(1))
+  const now=vi.spyOn(Date,'now').mockReturnValue(Date.parse(saved.createdAt)+60001)
+  try {
+    elicitationQueue.respond(elicitationQueue.snapshot()[0].id,{action:'accept',content:{yes:true}})
+    await rejected
+    expect(calls.some(c=>c.method==='tasks/update')).toBe(false)
+  } finally {now.mockRestore()}
+})

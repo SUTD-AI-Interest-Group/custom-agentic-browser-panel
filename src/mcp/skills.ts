@@ -23,11 +23,13 @@ export function parseSkill(value: unknown): RemoteSkill {
     }
     if (!seen.has(value.uri) || total > MAX_SKILL_BYTES) throw Error('Incomplete or oversized skill manifest.')
   }
+  stableValue(value.frontmatter)
   return structuredClone(value) as unknown as RemoteSkill
 }
-export function stableValue(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map(stableValue).join(',')}]`
-  if (isObject(value)) return `{${Object.keys(value).sort().map(k=>`${JSON.stringify(k)}:${stableValue(value[k])}`).join(',')}}`
+export function stableValue(value: unknown, depth = 0): string {
+  if (depth > 32) throw Error('Skill metadata nesting exceeds limits.')
+  if (Array.isArray(value)) return `[${value.map(v=>stableValue(v,depth+1)).join(',')}]`
+  if (isObject(value)) return `{${Object.keys(value).sort().map(k=>`${JSON.stringify(k)}:${stableValue(value[k],depth+1)}`).join(',')}}`
   return JSON.stringify(value)
 }
 export async function listRemoteSkills(client: ModernMcpClient, signal?: AbortSignal): Promise<RemoteSkill[]> {
@@ -62,12 +64,12 @@ export async function readVerifiedSkillFile(client: ModernMcpClient, skill: Remo
   const file=skill.resources.find(x=>x.uri===uri)
   if(!file)throw Error('Resource is outside the approved skill manifest. Refresh and approve the skill to add files.')
   // Always use originating MCP transport, never fetch a URI directly. No prefetch.
-  const result=await client.request('resources/read',{uri},{signal,maxResponseBytes:128*1024*1024})
+  const result=await client.request('resources/read',{uri},{signal,maxResponseBytes:Math.min(128*1024*1024,file.size*6+64*1024)})
   if(!Array.isArray(result.contents)||result.contents.length!==1||!isObject(result.contents[0])||result.contents[0].uri!==uri)throw Error('Unexpected skill resource content.')
   const content=result.contents[0]
   let bytes: Uint8Array
   if(typeof content.text==='string' && content.blob===undefined) bytes=new TextEncoder().encode(content.text)
-  else if(typeof content.blob==='string' && content.text===undefined && /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(content.blob)) bytes=Uint8Array.from(atob(content.blob),x=>x.charCodeAt(0))
+  else if(typeof content.blob==='string' && content.text===undefined && content.blob.length % 4 === 0 && /^[A-Za-z0-9+/]*={0,2}$/.test(content.blob)) bytes=Uint8Array.from(atob(content.blob),x=>x.charCodeAt(0))
   else throw Error('Invalid skill file encoding.')
   if(bytes.byteLength!==file.size||bytes.byteLength>MAX_SKILL_BYTES)throw Error('Skill file size changed. Refresh the skill and obtain new approval.')
   const digest=Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',bytes as BufferSource)),x=>x.toString(16).padStart(2,'0')).join('')
