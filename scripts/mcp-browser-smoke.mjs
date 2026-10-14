@@ -51,6 +51,7 @@ const server = createServer(async (req, res) => {
     if (rpc.method === 'server/discover') return result({ supportedVersions: ['2026-07-28'], capabilities })
     if (rpc.method === 'initialize') return result({ protocolVersion: '2025-11-25', capabilities, serverInfo: { name: 'fixture', version: '1' } })
     if (!rpc.id) { res.writeHead(202); res.end(); return }
+    if (rpc.method === 'tools/list' && url.pathname === '/interactive') return result({ tools: [{ name: 'clarify', description: 'Run a harmless local clarification UI test. Asks the user to choose a city.', inputSchema: { type: 'object', properties: {} } }, { name: 'job', description: 'Start a harmless durable local test task. Completes only after the user confirms in the tasks panel.', inputSchema: { type: 'object', properties: {} } }] })
     if (rpc.method === 'tools/list') return result({ tools: [{ name: 'echo', inputSchema: { type: 'object', properties: { message: { type: 'string' } } }, outputSchema: { type: 'object', properties: { message: { type: 'string' } } } }], ttlMs: 1000, cacheScope: 'private' })
     if (rpc.method === 'resources/list') return result({ resources: [{ uri: 'fixture://one', name: 'Fixture' }], ttlMs: 1000, cacheScope: 'private' })
     if (rpc.method === 'tools/call' && rpc.params.name === 'clarify') {
