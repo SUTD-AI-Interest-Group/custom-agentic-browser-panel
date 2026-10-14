@@ -94,7 +94,7 @@ describe('modern HTTP request contract', () => {
     expect(rpc.params._meta).toEqual({
       [`${P}protocolVersion`]: MODERN_PROTOCOL,
       [`${P}clientCapabilities`]: {},
-      [`${P}clientInfo`]: { name: 'lychee-ai', version: '0.4.0' },
+      [`${P}clientInfo`]: { name: 'lychee-ai', version: '0.5.0' },
     })
     expect(headers.get('MCP-Protocol-Version')).toBe(MODERN_PROTOCOL)
     expect(headers.get('Mcp-Method')).toBe(rpc.method)

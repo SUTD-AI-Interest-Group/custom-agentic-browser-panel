@@ -138,7 +138,7 @@ interface PersistedCatalog {
  */
 function newClient(): Client {
   return new Client(
-    { name: 'lychee-ai', version: '0.1.0' },
+    { name: 'lychee-ai', version: '0.5.0' },
     { capabilities: {}, jsonSchemaValidator: new CfWorkerJsonSchemaValidator() },
   )
 }

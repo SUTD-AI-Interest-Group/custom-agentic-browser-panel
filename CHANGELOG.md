@@ -17,6 +17,16 @@ for that history.
 
 ---
 
+## [0.5.0] — 2026-10-14 — *Prepared for Chrome Web Store review*
+
+- Discover and run page-native WebMCP actions with approval controls and welcome suggestions.
+- Connect directly to modern MCP servers, with legacy compatibility and opt-in update subscriptions.
+- Harden OAuth issuer validation, PKCE callbacks, credential scoping and explicit scope escalation; support optional client metadata documents.
+- Update vulnerable dependencies, including MCP OAuth, document parsing and math rendering.
+- Keep execution in the browser; no middleware server or ChatGPT provider is included.
+
+No new extension permissions. Automated verification: 2,014 tests pass, production build/package pass, zero npm audit advisories. Browser testing confirmed by the maintainer on 2026-10-14. Not yet submitted or published.
+
 ## [0.4.0] — 2026-08-21 — *Chrome Web Store update*
 
 The third store release, and the first whose headline is durability rather than reach. A turn

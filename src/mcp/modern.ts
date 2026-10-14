@@ -162,7 +162,7 @@ export class ModernMcpClient {
         ...(isObject(params._meta) ? params._meta : {}),
         [`${PREFIX}protocolVersion`]: MODERN_PROTOCOL,
         [`${PREFIX}clientCapabilities`]: {},
-        [`${PREFIX}clientInfo`]: { name: 'lychee-ai', version: '0.4.0' },
+        [`${PREFIX}clientInfo`]: { name: 'lychee-ai', version: '0.5.0' },
       } } }),
     })
     if (signal.aborted) { await response.body?.cancel(); signal.throwIfAborted() }
