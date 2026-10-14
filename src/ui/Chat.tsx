@@ -2946,6 +2946,9 @@ export default function Chat({
    * already queued merges into it (see mergeQueuedSpec) rather than replacing it.
    */
   function submit() {
+    // Enter must obey the same preparation lock as the disabled Send button.
+    // Leave a newly typed draft intact instead of clearing it before re-entry bails.
+    if (preparationRef.current || preparing) return
     if (researchArmed) {
       const text = input.trim()
       // Attachments alone are enough to research from — a dropped-in spec sheet
@@ -3076,7 +3079,7 @@ export default function Chat({
     // Re-entry guard, on a ref set synchronously below rather than the
     // render-old `streaming` state (see streamingRef's declaration), so it holds
     // for every caller rather than depending on each remembering it.
-    if (streamingRef.current || !selected) return
+    if (streamingRef.current || preparationRef.current || !selected) return
     streamingRef.current = true
     setRetryChain(null)
     const model = selected
