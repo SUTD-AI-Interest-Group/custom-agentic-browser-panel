@@ -1,4 +1,5 @@
 import { WebMcpWelcome } from './WebMcpWelcome'
+import McpUpdateInbox from './McpUpdateInbox'
 import { Fragment, memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { ModelMessage } from 'ai'
 import { generateText } from 'ai'
@@ -4177,6 +4178,7 @@ export default function Chat({
       </div>
 
       <div className="composer-area">
+        {!hidden && <McpUpdateInbox />}
         <ContextPills tabs={contextTabs} />
         {selection && selection.text !== dismissedSelection && (
           <div className="selection-chip" title="Highlighted text shared as context">

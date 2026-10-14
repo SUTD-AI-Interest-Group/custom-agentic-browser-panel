@@ -17,6 +17,15 @@ const state = vi.hoisted(() => ({
   }),
 }))
 
+vi.mock('./modern', () => {
+  class LegacyServerError extends Error {}
+  class ModernMcpClient {
+    async discover() { throw new LegacyServerError() }
+    async close() {}
+  }
+  return { ModernMcpClient, LegacyServerError }
+})
+
 vi.mock('@modelcontextprotocol/sdk/client/index.js', () => {
   class FakeClient {
     onclose?: () => void

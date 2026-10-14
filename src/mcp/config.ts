@@ -24,6 +24,8 @@ export interface McpServerEntry {
   /** Transport hint some clients write: "http", "sse", "stdio". Informational. */
   type?: string
   headers?: Record<string, string>
+  /** Optional public HTTPS Client ID Metadata Document, served as a static file. */
+  oauthClientMetadataUrl?: string
   command?: string
   args?: string[]
   env?: Record<string, string>
@@ -37,10 +39,20 @@ export interface McpServerPolicy {
 }
 
 /** The `mcp` field of Settings. `servers` is exactly the standard JSON object. */
+export interface McpUpdateSettings {
+  /** Explicit opt-in. Streams only run while the side panel is alive. */
+  enabled?: boolean
+  resourceUris?: string[]
+  /** Opaque endpoint/auth binding supplied by the live manager at opt-in. */
+  scope?: string
+}
+
 export interface McpSettings {
   servers: Record<string, McpServerEntry>
   /** Sidecar: absent → enabled. Never exported. */
   serverState?: Record<string, { enabled?: boolean }>
+  /** Sidecar: opted-in update streams, never exported to other clients. */
+  updates?: Record<string, McpUpdateSettings>
   /** Sidecar: per-server tool policies. Never exported. */
   policies?: Record<string, McpServerPolicy>
 }

@@ -58,10 +58,19 @@ function stubChromeIdentity(
       },
     },
     runtime: {},
-    identity: { launchWebAuthFlow: launch },
+    identity: { launchWebAuthFlow: launch, getRedirectURL: () => 'https://abc123.chromiumapp.org/mcp' },
   })
   return { launch, store }
 }
+
+
+const discovery = (issuer = 'https://example.com', required = false) => ({
+  authorizationServerUrl: issuer,
+  authorizationServerMetadata: {
+    issuer, authorization_endpoint: `${issuer}/authorize`, token_endpoint: `${issuer}/token`,
+    response_types_supported: ['code'], authorization_response_iss_parameter_supported: required,
+  },
+})
 
 const TOKENS = { access_token: 'at-1', token_type: 'Bearer', refresh_token: 'rt-1' }
 const CLIENT_INFO = { client_id: 'test-client-id', client_secret: 'test-client-secret' }
@@ -197,6 +206,7 @@ describe('redirectToAuthorization', () => {
       throw new Error('must not be called')
     })
     const provider = new ChromeOAuthProvider('srv', URL_A) // opts.interactive left unset
+    await provider.saveDiscoveryState(discovery())
     await expect(provider.redirectToAuthorization(new URL('https://example.com/authorize'))).rejects.toThrow(
       UnauthorizedError,
     )
@@ -211,6 +221,7 @@ describe('redirectToAuthorization', () => {
       expect(details.interactive).toBe(true)
       callback(`https://abc123.chromiumapp.org/mcp?code=test-code-1&state=${expectedState}`)
     })
+    await provider.saveDiscoveryState(discovery())
     await provider.redirectToAuthorization(new URL('https://example.com/authorize'))
     expect(provider.takeAuthorizationCode()).toBe('test-code-1')
     expect(provider.takeAuthorizationCode()).toBeUndefined() // consumed once
@@ -222,6 +233,7 @@ describe('redirectToAuthorization', () => {
     stubChromeIdentity((_details, callback) => {
       callback('https://abc123.chromiumapp.org/mcp?code=test-code-1&state=not-the-expected-state')
     })
+    await provider.saveDiscoveryState(discovery())
     await expect(provider.redirectToAuthorization(new URL('https://example.com/authorize'))).rejects.toThrow(
       'state mismatch',
     )
@@ -229,9 +241,11 @@ describe('redirectToAuthorization', () => {
 
   it('a redirect with no code is rejected', async () => {
     const provider = new ChromeOAuthProvider('srv', URL_A, { interactive: true })
+    const expectedState = provider.state()
     stubChromeIdentity((_details, callback) => {
-      callback('https://abc123.chromiumapp.org/mcp?state=xyz')
+      callback(`https://abc123.chromiumapp.org/mcp?state=${expectedState}`)
     })
+    await provider.saveDiscoveryState(discovery())
     await expect(provider.redirectToAuthorization(new URL('https://example.com/authorize'))).rejects.toThrow(
       'carried no code',
     )
@@ -239,11 +253,13 @@ describe('redirectToAuthorization', () => {
 
   it("a redirect carrying the server's error param is rejected", async () => {
     const provider = new ChromeOAuthProvider('srv', URL_A, { interactive: true })
+    const expectedState = provider.state()
     stubChromeIdentity((_details, callback) => {
-      callback('https://abc123.chromiumapp.org/mcp?error=access_denied&error_description=User%20said%20no')
+      callback(`https://abc123.chromiumapp.org/mcp?error=access_denied&state=${expectedState}`)
     })
+    await provider.saveDiscoveryState(discovery())
     await expect(provider.redirectToAuthorization(new URL('https://example.com/authorize'))).rejects.toThrow(
-      'User said no',
+      'access_denied',
     )
   })
 })
@@ -374,4 +390,123 @@ describe('exported config never carries auth state', () => {
     expect(json).not.toContain('boundUrl')
     expect(JSON.parse(json)).toEqual({ mcpServers: servers })
   })
+})
+
+
+describe('modern OAuth issuer and metadata boundaries', () => {
+  it('purges old registration, tokens and verifier when the issuer changes', async () => {
+    stubChromeStorage()
+    const first = new ChromeOAuthProvider('srv', URL_A)
+    await first.saveDiscoveryState(discovery())
+    await first.saveClientInformation(CLIENT_INFO)
+    await first.saveTokens(TOKENS)
+    await first.saveCodeVerifier('old-verifier')
+    const second = new ChromeOAuthProvider('srv', URL_A)
+    await second.saveDiscoveryState(discovery('https://other.example'))
+    expect(await second.tokens()).toBeUndefined()
+    expect(await second.clientInformation()).toBeUndefined()
+    await expect(second.codeVerifier()).rejects.toThrow('No PKCE')
+    expect(await first.clientInformation()).toBeUndefined()
+    await expect(first.saveTokens(TOKENS)).rejects.toThrow('issuer changed')
+  })
+
+  it('keeps same-issuer credentials and rejects a mismatched discovery document', async () => {
+    stubChromeStorage()
+    const provider = new ChromeOAuthProvider('srv', URL_A)
+    await provider.saveDiscoveryState(discovery())
+    await provider.saveTokens(TOKENS)
+    await provider.saveDiscoveryState(discovery())
+    expect(await provider.tokens()).toEqual(TOKENS)
+    await expect(provider.saveDiscoveryState({ ...discovery(), authorizationServerUrl: 'https://attacker.example' })).rejects.toThrow('metadata issuer')
+    expect(await provider.tokens()).toEqual(TOKENS)
+  })
+
+  it.each([
+    ['iss=https%3A%2F%2Fattacker.example&code=x', false, 'issuer mismatch'],
+    ['code=x', true, 'issuer mismatch'],
+    ['iss=https%3A%2F%2Fexample.com%2F&code=x', false, 'issuer mismatch'],
+    ['iss=https%3A%2F%2Fattacker.example&error=secret-error', false, 'issuer mismatch'],
+    ['code=x&iss=https%3A%2F%2Fexample.com&iss=https%3A%2F%2Fexample.com', false, 'Ambiguous'],
+  ])('rejects an unsafe callback: %s', async (query, required, error) => {
+    const provider = new ChromeOAuthProvider('srv', URL_A, { interactive: true })
+    const state = provider.state()
+    stubChromeIdentity((_details, callback) => callback(`https://abc123.chromiumapp.org/mcp?state=${state}&${query}`))
+    await provider.saveDiscoveryState(discovery('https://example.com', required))
+    await expect(provider.redirectToAuthorization(new URL('https://example.com/authorize'))).rejects.toThrow(error)
+    expect(provider.takeAuthorizationCode()).toBeUndefined()
+  })
+
+  it('accepts a matching issuer and refuses a callback for another extension', async () => {
+    const provider = new ChromeOAuthProvider('srv', URL_A, { interactive: true })
+    const state = provider.state()
+    stubChromeIdentity((_details, callback) => callback(`https://abc123.chromiumapp.org/mcp?state=${state}&iss=https%3A%2F%2Fexample.com&code=ok`))
+    await provider.saveDiscoveryState(discovery('https://example.com', true))
+    await provider.redirectToAuthorization(new URL('https://example.com/authorize'))
+    expect(provider.takeAuthorizationCode()).toBe('ok')
+    provider.state()
+    ;(chrome.identity.launchWebAuthFlow as unknown as ReturnType<typeof vi.fn>).mockImplementation((_details: unknown, callback: (value: string) => void) => callback('https://other.chromiumapp.org/mcp?code=wrong'))
+    await expect(provider.redirectToAuthorization(new URL('https://example.com/authorize'))).rejects.toThrow('callback URL')
+  })
+
+  it('provides public-client DCR metadata and validates configured CIMD URLs', () => {
+    stubChromeIdentity(() => {})
+    const provider = new ChromeOAuthProvider('srv', URL_A, { clientMetadataUrl: 'https://lychee-ai.netlify.app/oauth-client.json' })
+    expect(provider.clientMetadataUrl).toBe('https://lychee-ai.netlify.app/oauth-client.json')
+    expect(provider.clientMetadata).toMatchObject({ application_type: 'web', token_endpoint_auth_method: 'none' })
+    expect(() => new ChromeOAuthProvider('srv', URL_A, { clientMetadataUrl: 'http://bad.example/client.json' }).clientMetadataUrl).toThrow('HTTPS')
+  })
+})
+
+
+it('preserves issuer-required metadata through the legacy SDK parser seam', async () => {
+  stubChromeIdentity(() => {})
+  const provider = new ChromeOAuthProvider('srv', URL_A, { interactive: true })
+  const original = globalThis.fetch
+  vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({
+    issuer: 'https://example.com', authorization_response_iss_parameter_supported: true,
+  }), { headers: { 'content-type': 'application/json' } })))
+  try {
+    await provider.fetch('https://example.com/.well-known/oauth-authorization-server')
+    // SDK v1 strips the new flag. The provider retained it from the actual response.
+    await provider.saveDiscoveryState(discovery())
+    const state = provider.state()
+    ;(chrome.identity.launchWebAuthFlow as unknown as ReturnType<typeof vi.fn>).mockImplementation((_details: unknown, callback: (value: string) => void) => callback(`https://abc123.chromiumapp.org/mcp?state=${state}&code=x`))
+    await expect(provider.redirectToAuthorization(new URL('https://example.com/authorize'))).rejects.toThrow('issuer mismatch')
+  } finally { vi.stubGlobal('fetch', original) }
+})
+
+it('uses CIMD through the real SDK OAuth flow without dynamic registration', async () => {
+  const { auth } = await import('@modelcontextprotocol/sdk/client/auth.js')
+  const metadataUrl = 'https://client.example/oauth-client.json'
+  const provider = new ChromeOAuthProvider('srv', URL_A, { interactive: true, clientMetadataUrl: metadataUrl })
+  stubChromeIdentity(({ url }, callback) => {
+    const request = new URL(url)
+    expect(request.searchParams.get('client_id')).toBe(metadataUrl)
+    expect(request.searchParams.get('code_challenge_method')).toBe('S256')
+    callback(`https://abc123.chromiumapp.org/mcp?state=${request.searchParams.get('state')}&iss=https%3A%2F%2Fexample.com&code=fixture-code`)
+  })
+  const original = globalThis.fetch
+  const seen: string[] = []
+  vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input); seen.push(url)
+    let result: unknown
+    if (url.includes('oauth-protected-resource')) result = { resource: URL_A, authorization_servers: ['https://example.com'] }
+    else if (url.includes('oauth-authorization-server')) result = { ...discovery().authorizationServerMetadata, client_id_metadata_document_supported: true, authorization_response_iss_parameter_supported: true, code_challenge_methods_supported: ['S256'] }
+    else if (url === 'https://example.com/token') {
+      const body = new URLSearchParams(String(init?.body))
+      expect(body.get('client_id')).toBe(metadataUrl)
+      expect(body.get('client_secret')).toBeNull()
+      expect(body.get('code_verifier')).toBeTruthy()
+      result = TOKENS
+    } else throw new Error(`Unexpected OAuth network request: ${url}`)
+    return new Response(JSON.stringify(result), { headers: { 'Content-Type': 'application/json' } })
+  }))
+  try {
+    expect(await auth(provider, { serverUrl: URL_A, fetchFn: provider.fetch })).toBe('REDIRECT')
+    const code = provider.takeAuthorizationCode()
+    expect(code).toBe('fixture-code')
+    expect(await auth(provider, { serverUrl: URL_A, authorizationCode: code, fetchFn: provider.fetch })).toBe('AUTHORIZED')
+    expect(await provider.tokens()).toEqual(TOKENS)
+    expect(seen.some(url => url.includes('register'))).toBe(false)
+  } finally { vi.stubGlobal('fetch', original) }
 })
