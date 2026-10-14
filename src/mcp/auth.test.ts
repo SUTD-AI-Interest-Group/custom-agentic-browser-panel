@@ -506,7 +506,7 @@ it('uses CIMD through the real SDK OAuth flow without dynamic registration', asy
     const code = provider.takeAuthorizationCode()
     expect(code).toBe('fixture-code')
     expect(await auth(provider, { serverUrl: URL_A, authorizationCode: code, fetchFn: provider.fetch })).toBe('AUTHORIZED')
-    expect(await provider.tokens()).toEqual(TOKENS)
+    expect(await provider.tokens()).toEqual({ ...TOKENS, issuer: 'https://example.com' })
     expect(seen.some(url => url.includes('register'))).toBe(false)
   } finally { vi.stubGlobal('fetch', original) }
 })
