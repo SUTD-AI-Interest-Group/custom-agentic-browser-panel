@@ -19,6 +19,8 @@ for that history.
 
 ## [Unreleased]
 
+- Consolidate implementation, PR status and verification records in the [development handoff](docs/development-handoff.md); refresh MCP setup and feature boundaries.
+
 - Bound chat preparation with stage labels, Stop, visible errors and Retry; skip automatic attachment of restricted browser pages.
 - Include durable MCP tasks in storage accounting and erasure, with atomic generation checks rejecting delayed writes after deletion.
 - Report settings, skill preference, data, research-worker and vault persistence failures truthfully.

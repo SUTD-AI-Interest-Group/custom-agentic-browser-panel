@@ -4,7 +4,7 @@ Lychee supports **MCP protocol revision 2026-07-28** for remote HTTP servers, wh
 
 ## Enable it
 
-1. Open the side panel, then Settings → General → MCP servers.
+1. Open the side panel, then Settings → Connections → MCP servers.
 2. Add/connect the server as usual. It must support 2026-07-28 for modern subscriptions.
 3. Expand **Update subscriptions** and enable **Listen for server updates**.
 4. Select the listed resource URIs whose changes you want to see. Catalog changes are requested automatically, subject to the server's advertised capabilities and acknowledgement.
@@ -27,7 +27,7 @@ No backend, companion process, public callback receiver, new extension permissio
 
 These are **core update subscriptions**, not the experimental OpenAI MCP Events webhook extension. No `events/subscribe` endpoint, webhook secret, or public HTTP listener is implemented. A room/chat can be monitored only if its MCP server exposes an appropriate subscribable resource; Lychee does not invent a message event API for servers lacking one.
 
-The client advertises no sampling, roots or elicitation capability. An `input_required` MRTR result fails with a clear unsupported-interaction error; Lychee does not fabricate user approval, invoke models, disclose local files, or blindly retry. Full interactive MRTR handling is deliberately outside this migration.
+Sampling and roots remain unsupported. Post-0.5.0 development adds bounded interactive elicitation/MRTR, negotiated durable tasks and remote skills; see [their implementation guide](mcp-interactive-tasks-skills.md). These features never fabricate user approval or blindly replay an uncertain tool execution.
 
 Modern response parsing is bounded and rejects malformed/cross-request results. HTTP header mirroring supports primitive `x-mcp-header` schema annotations and Base64 sentinel encoding. Invalid annotations exclude the tool. Pagination is bounded; legacy missing `resultType` remains handled by the legacy SDK. Subscription payloads and server-provided metadata remain untrusted.
 
@@ -35,9 +35,9 @@ Modern response parsing is bounded and rejects malformed/cross-request results. 
 
 Run `npm ci --ignore-scripts`, `npm run typecheck`, `npm test`, and `npm run build`. The lockfile repair adds missing platform-specific optional packages and corrects the root package version without upgrading existing locked dependency versions.
 
-Focused tests cover modern/legacy selection, headers, JSON/SSE, cancellation races, reconnect/backoff, auth refresh, malformed/unsolicited notifications, explicit opt-in, endpoint changes, metadata-only resource notices, catalog refresh, stale-result protection, and unsupported MRTR. See `src/mcp/modern.test.ts`, `src/mcp/manager.modern.test.ts`, and the existing MCP suites.
+Focused tests cover modern/legacy selection, headers, JSON/SSE, cancellation races, reconnect/backoff, auth refresh, malformed/unsolicited notifications, explicit opt-in, endpoint changes, metadata-only resource notices, catalog refresh, stale-result protection, and bounded interactive MRTR. See `src/mcp/modern.test.ts`, `src/mcp/manager.modern.test.ts`, and the existing MCP suites.
 
-Mock transport tests do not prove interoperability with a particular production MCP server. Load the built unpacked extension in a compatible Chrome and verify a real 2026-07-28 server before release. A cloud Chromium process-singleton socket restriction prevented real extension browser QA in the implementation environment.
+Mock transport tests do not prove interoperability with a particular production MCP server. Load the built unpacked extension in a compatible Chrome and verify a real 2026-07-28 server before release. The original cloud browser restriction was later superseded by installed Chrome/local-model testing; see the [journey verification](verification/2026-10-14-journey-fixes.md) for observed scenarios and remaining external-account limits.
 
 ## Primary references
 
@@ -56,10 +56,11 @@ and `site_` tools are deliberately excluded. The existing `DiscoverWebMcp`,
 adapter. No ChatGPT provider, companion, nativeMessaging permission or backend
 is included in this change.
 
-The bounded modern transport is retained from the draft; SDK 1.29 remains for
-legacy HTTP/SSE and OAuth. This is protocol 2026-07-28 support, not an SDK-v2
-migration or support for every optional extension. Elicitation/MRTR handling,
-Tasks and Skills remain deferred and are not advertised.
+The bounded modern transport is retained from the draft; SDK 1.32.1 is locked for
+legacy HTTP/SSE and OAuth after the security dependency updates. This is protocol
+2026-07-28 support, not an SDK-v2 migration or support for every optional extension.
+PR #3 subsequently added elicitation, Tasks and Skills; the submitted 0.5.0 archive
+predates those additions. See the [development handoff](development-handoff.md).
 
 Both modern and legacy catalogs follow pagination with page/item/cursor limits.
 Modern read/list responses with valid `ttlMs` and `cacheScope` hints can be reused
