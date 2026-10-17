@@ -1,0 +1,10 @@
+{
+  "client_id": "https://lychee-ai.netlify.app/oauth-client.json",
+  "client_name": "Lychee AI",
+  "client_uri": "https://lychee-ai.netlify.app",
+  "application_type": "web",
+  "redirect_uris": ["https://jijmdjncddemapjkbidjdbfbjmonagpn.chromiumapp.org/mcp"],
+  "grant_types": ["authorization_code", "refresh_token"],
+  "response_types": ["code"],
+  "token_endpoint_auth_method": "none"
+}

@@ -47,7 +47,7 @@
 // destroying whatever was already sealed. See CLAUDE.md "Secrets are sealed
 // at rest."
 
-import { UnauthorizedError, type OAuthClientProvider } from '@modelcontextprotocol/sdk/client/auth.js'
+import { UnauthorizedError, type OAuthClientProvider, type OAuthDiscoveryState } from '@modelcontextprotocol/sdk/client/auth.js'
 import type {
   OAuthClientInformationMixed,
   OAuthClientMetadata,
@@ -67,6 +67,9 @@ interface StoredAuth {
    * existed; that is deliberately never treated as a match (see loadBound).
    */
   boundUrl?: string
+  issuer?: string
+  issuerResponseRequired?: boolean
+  sessionId?: string
 }
 
 /** At-rest shape since the vault: the whole StoredAuth JSON sealed as one unit. */
@@ -209,6 +212,10 @@ function launchWebAuthFlow(url: string): Promise<string> {
 export class ChromeOAuthProvider implements OAuthClientProvider {
   private expectedState?: string
   private authorizationCode?: string
+  private discovery?: OAuthDiscoveryState
+  private issuer?: string
+  private issuerResponseRequired = false
+  private issuerFlags = new Map<string, boolean>()
 
   /**
    * `resourceUrl` is the exact URL this provider instance is currently
@@ -220,7 +227,7 @@ export class ChromeOAuthProvider implements OAuthClientProvider {
   constructor(
     private server: string,
     private resourceUrl: string,
-    private opts: { interactive?: boolean } = {},
+    private opts: { interactive?: boolean; clientMetadataUrl?: string } = {},
   ) {}
 
   get redirectUrl(): string {
@@ -229,10 +236,72 @@ export class ChromeOAuthProvider implements OAuthClientProvider {
     return chrome.identity.getRedirectURL('mcp')
   }
 
-  get clientMetadata(): OAuthClientMetadata {
+  /** Preserve RFC 9207 metadata the legacy SDK schema otherwise strips. This
+   * fetch is also used by its transports, so discovery, refresh and explicit
+   * authorization all share the same validation path. */
+  fetch: typeof fetch = async (input, init) => {
+    const response = await fetch(input, { ...init, credentials: 'omit', redirect: 'error' })
+    const url = new URL(input instanceof Request ? input.url : String(input))
+    if (response.ok && (!init?.method || init.method === 'GET') &&
+        (url.pathname.includes('/.well-known/oauth-authorization-server') || url.pathname.includes('/.well-known/openid-configuration'))) {
+      const raw: unknown = await response.clone().json()
+      if (raw && typeof raw === 'object' && 'issuer' in raw && typeof raw.issuer === 'string')
+        this.issuerFlags.set(raw.issuer, 'authorization_response_iss_parameter_supported' in raw && raw.authorization_response_iss_parameter_supported === true)
+    }
+    return response
+  }
+
+  get clientMetadataUrl(): string | undefined {
+    const value = this.opts.clientMetadataUrl
+    if (!value) return undefined
+    const url = new URL(value)
+    if (url.protocol !== 'https:' || url.username || url.password || url.hash || url.pathname === '/')
+      throw new Error('MCP client metadata must be a public HTTPS document URL.')
+    return value
+  }
+
+  /** Discovery runs before registration/refresh. Never reuse a registration with
+   * another issuer, even when the MCP resource URL has stayed the same. Keep
+   * discovery in memory only: a new authorization attempt rediscovers metadata. */
+  async saveDiscoveryState(state: OAuthDiscoveryState): Promise<void> {
+    const metadata = state.authorizationServerMetadata
+    const issuer = metadata?.issuer
+    if (!issuer || issuer !== state.authorizationServerUrl)
+      throw new Error('OAuth metadata issuer does not match the discovered authorization server.')
+    const url = new URL(issuer)
+    if (url.protocol !== 'https:' && !(url.protocol === 'http:' && ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname)))
+      throw new Error('OAuth issuer must use HTTPS (or local loopback HTTP).')
+    if (url.username || url.password || url.search || url.hash) throw new Error('Invalid OAuth issuer URL.')
+    for (const value of [metadata.authorization_endpoint, metadata.token_endpoint, metadata.registration_endpoint]) {
+      if (!value) continue
+      const endpoint = new URL(value)
+      if (endpoint.username || endpoint.password || endpoint.hash ||
+          (endpoint.protocol !== 'https:' && !(endpoint.protocol === 'http:' && ['localhost', '127.0.0.1', '[::1]'].includes(endpoint.hostname))))
+        throw new Error('OAuth endpoints must use HTTPS (or local loopback HTTP).')
+    }
+    if (this.authorizationCode && this.issuer !== issuer)
+      throw new Error('OAuth issuer changed during authorization; restart sign-in.')
+    const current = await loadBound(this.server, this.resourceUrl)
+    if (current.locked) throw new Error('MCP auth vault is temporarily unavailable — try again shortly.')
+    const required = this.issuerFlags.get(issuer) ?? (metadata as typeof metadata & { authorization_response_iss_parameter_supported?: boolean }).authorization_response_iss_parameter_supported === true
+    if (current.auth.issuer !== issuer) {
+      // Replaces only this resource's record; no old tokens, verifier or client ID.
+      await persist(this.server, { boundUrl: this.resourceUrl, issuer, issuerResponseRequired: required })
+    } else {
+      await save(this.server, this.resourceUrl, { issuer, issuerResponseRequired: required })
+    }
+    this.issuer = issuer
+    this.issuerResponseRequired = required
+    this.discovery = state
+  }
+
+  discoveryState(): OAuthDiscoveryState | undefined { return this.discovery }
+
+  get clientMetadata(): OAuthClientMetadata & { application_type: 'web' } {
     return {
       client_name: 'Lychee AI',
-      client_uri: 'https://github.com/lychee-ai',
+      client_uri: 'https://lychee-ai.netlify.app',
+      application_type: 'web',
       redirect_uris: [this.redirectUrl],
       grant_types: ['authorization_code', 'refresh_token'],
       response_types: ['code'],
@@ -247,27 +316,47 @@ export class ChromeOAuthProvider implements OAuthClientProvider {
   }
 
   async clientInformation(): Promise<OAuthClientInformationMixed | undefined> {
-    return (await loadBound(this.server, this.resourceUrl)).auth.clientInformation
+    const { auth } = await loadBound(this.server, this.resourceUrl)
+    return !this.issuer || auth.issuer === this.issuer ? auth.clientInformation : undefined
   }
 
   async saveClientInformation(clientInformation: OAuthClientInformationMixed): Promise<void> {
-    await save(this.server, this.resourceUrl, { clientInformation })
+    await this.saveCredential({ clientInformation })
   }
 
   async tokens(): Promise<OAuthTokens | undefined> {
-    return (await loadBound(this.server, this.resourceUrl)).auth.tokens
+    const { auth } = await loadBound(this.server, this.resourceUrl)
+    return !this.issuer || auth.issuer === this.issuer ? auth.tokens : undefined
   }
 
   async saveTokens(tokens: OAuthTokens): Promise<void> {
-    await save(this.server, this.resourceUrl, { tokens })
+    const { auth } = await loadBound(this.server, this.resourceUrl)
+    await this.saveCredential({ tokens, sessionId: auth.tokens && auth.sessionId ? auth.sessionId : crypto.randomUUID() })
+  }
+
+  /** Stable across token refresh, revoked by sign-out, new consent, or issuer change. */
+  async sessionIdentity(): Promise<string | undefined> {
+    const { auth, locked } = await loadBound(this.server, this.resourceUrl)
+    if (locked) throw Error('MCP auth vault is temporarily unavailable.')
+    if (!auth.tokens) return undefined
+    if (!auth.sessionId) { auth.sessionId = crypto.randomUUID(); await this.saveCredential({ sessionId: auth.sessionId }) }
+    return auth.sessionId
   }
 
   async saveCodeVerifier(codeVerifier: string): Promise<void> {
-    await save(this.server, this.resourceUrl, { codeVerifier })
+    await this.saveCredential({ codeVerifier })
+  }
+
+  private async saveCredential(patch: Partial<StoredAuth>): Promise<void> {
+    const { auth } = await loadBound(this.server, this.resourceUrl)
+    if (this.issuer && auth.issuer !== this.issuer) throw new Error('OAuth issuer changed; restart authorization.')
+    await save(this.server, this.resourceUrl, patch)
   }
 
   async codeVerifier(): Promise<string> {
-    const v = (await loadBound(this.server, this.resourceUrl)).auth.codeVerifier
+    const { auth } = await loadBound(this.server, this.resourceUrl)
+    if (this.issuer && auth.issuer !== this.issuer) throw new Error('OAuth issuer changed; restart authorization.')
+    const v = auth.codeVerifier
     if (!v) throw new Error('No PKCE verifier saved — restart the authorization flow.')
     return v
   }
@@ -276,7 +365,8 @@ export class ChromeOAuthProvider implements OAuthClientProvider {
     // 'all' is an explicit full wipe: the caller's whole intent is "delete
     // everything," so there is nothing to protect and no need to see (let
     // alone decrypt) the existing record — this proceeds even while locked.
-    if (scope === 'all') return clearAuth(this.server)
+    if (scope === 'all') { this.discovery = undefined; this.issuer = undefined; return clearAuth(this.server) }
+    if (scope === 'discovery') { this.discovery = undefined; return }
     // Routed through loadBound, not load(): a single-scope delete reads,
     // mutates and re-persists "the rest of the record" — if that record
     // belongs to a DIFFERENT resourceUrl, this would edit and hand back a
@@ -300,7 +390,7 @@ export class ChromeOAuthProvider implements OAuthClientProvider {
     // of THIS provider's to invalidate.
     if (!current.boundUrl) return
     if (scope === 'client') delete current.clientInformation
-    if (scope === 'tokens') delete current.tokens
+    if (scope === 'tokens') { delete current.tokens; delete current.sessionId }
     if (scope === 'verifier') delete current.codeVerifier
     await persist(this.server, current)
   }
@@ -311,15 +401,30 @@ export class ChromeOAuthProvider implements OAuthClientProvider {
       // `needs-auth` status and the user clicks Authorize when they choose.
       throw new UnauthorizedError('Interactive authorization required.')
     }
-    const redirect = await launchWebAuthFlow(authorizationUrl.toString())
-    const params = new URL(redirect).searchParams
+    if (!this.expectedState || !this.issuer || !this.discovery?.authorizationServerMetadata)
+      throw new Error('OAuth discovery and state are required before authorization.')
+    const endpoint = new URL(this.discovery.authorizationServerMetadata.authorization_endpoint)
+    if (authorizationUrl.origin !== endpoint.origin || authorizationUrl.pathname !== endpoint.pathname)
+      throw new Error('OAuth authorization endpoint changed after discovery.')
+    this.authorizationCode = undefined
+    const redirect = new URL(await launchWebAuthFlow(authorizationUrl.toString()))
+    const expectedRedirect = new URL(this.redirectUrl)
+    if (redirect.origin !== expectedRedirect.origin || redirect.pathname !== expectedRedirect.pathname || redirect.hash)
+      throw new Error('Unexpected OAuth callback URL.')
+    const params = redirect.searchParams
+    for (const name of ['state', 'iss', 'code', 'error'])
+      if (params.getAll(name).length > 1) throw new Error('Ambiguous OAuth callback parameters.')
+    // Validate issuer and state before even displaying a server error.
+    const issuer = params.get('iss')
+    if ((issuer !== null && issuer !== this.issuer) || (this.issuerResponseRequired && issuer === null))
+      throw new Error('OAuth authorization issuer mismatch — restart sign-in.')
+    if (params.get('state') !== this.expectedState)
+      throw new Error('Authorization state mismatch — the response was not for this request.')
+    this.expectedState = undefined
     const err = params.get('error')
-    if (err) throw new Error(`Authorization failed: ${params.get('error_description') ?? err}`)
+    if (err) throw new Error(`Authorization failed: ${err}`)
     const code = params.get('code')
     if (!code) throw new Error('The authorization response carried no code.')
-    const state = params.get('state')
-    if (this.expectedState && state !== this.expectedState)
-      throw new Error('Authorization state mismatch — the response was not for this request.')
     this.authorizationCode = code
   }
 

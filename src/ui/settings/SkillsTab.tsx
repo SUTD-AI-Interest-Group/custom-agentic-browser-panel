@@ -13,6 +13,7 @@ export default function SkillsTab({
   onOpenSkills: () => void
   onSaved: () => void
 }) {
+  const [error, setError] = useState('')
   const [skills, setSkills] = useState<Skill[]>([])
 
   function refresh() {
@@ -23,13 +24,15 @@ export default function SkillsTab({
   async function toggle(name: string, enabled: boolean) {
     // Optimistic flip so the switch feels instant, then persist + refresh.
     setSkills((list) => list.map((s) => (s.name === name ? { ...s, enabled } : s)))
-    await setSkillEnabled(name, enabled).catch(() => {})
-    onSaved()
+    setError('')
+    try { await setSkillEnabled(name, enabled); onSaved() }
+    catch {setError('Skill preference could not be saved. Please retry.')}
     refresh()
   }
 
   return (
     <div className="settings-tabpane">
+      {error && <p role="alert">{error}</p>}
       <div className="skills-tab-head">
         <h2>Skills</h2>
         <button className="link-btn" onClick={onOpenSkills}>

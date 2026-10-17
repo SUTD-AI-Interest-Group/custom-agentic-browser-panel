@@ -1,11 +1,15 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
+import { execFileSync } from 'node:child_process'
+const buildCommit = execFileSync('git', ['rev-parse', '--short', 'HEAD'], {encoding:'utf8'}).trim() +
+  (execFileSync('git', ['status', '--porcelain'], {encoding:'utf8'}).trim() ? '-dirty' : '')
 
 // Entry points: the side panel page (React app), the MV3 service worker, the
 // offscreen research host, and the PDF extraction worker.
 // public/manifest.json is copied into dist/ as-is.
 export default defineConfig({
   plugins: [react()],
+  define: { 'import.meta.env.VITE_BUILD_COMMIT': JSON.stringify(buildCommit) },
   build: {
     target: 'es2022',
     // No <link rel="modulepreload">. Vite emits them with `crossorigin`, which

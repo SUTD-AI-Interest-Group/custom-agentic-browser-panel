@@ -10,10 +10,10 @@ export interface CatalogEntry {
 
 /**
  * Tools exposed to the model on every step without a discovery round-trip:
- * the two disclosure meta-tools plus ReadPage (the current-tab reader, by far
- * the most common action).
+ * the two disclosure meta-tools, ReadPage, and WebMCP discovery. Discovery must
+ * be directly callable so models do not substitute DOM reading for WebMCP.
  */
-export const ALWAYS_ON: readonly string[] = ['ToolSearch', 'GetTool', 'ReadPage']
+export const ALWAYS_ON: readonly string[] = ['ToolSearch', 'GetTool', 'ReadPage', 'DiscoverWebMcp']
 
 /** The disclosure meta-tools themselves — excluded from the searchable catalog. */
 export const META_NAMES: Set<string> = new Set(['ToolSearch', 'GetTool'])

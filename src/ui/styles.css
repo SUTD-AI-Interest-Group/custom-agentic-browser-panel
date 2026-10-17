@@ -6491,3 +6491,7 @@ body {
   line-height: 1.45;
   color: var(--text-muted);
 }
+
+/* Keep both local and remote skill lists reachable in narrow panels. */
+.library > [role=tabpanel] { flex: 1; min-height: 0; overflow: auto; }
+.library > [role=tabpanel] > .settings-section-block { padding: 12px 16px; overflow-wrap: anywhere; }

@@ -23,9 +23,11 @@ export function pruneOrphanedSidecars(
   if (removedNames.length === 0) return { ...mcp, servers: nextServers }
   const serverState = { ...mcp.serverState }
   const policies = { ...mcp.policies }
+  const updates = { ...mcp.updates }
   for (const name of removedNames) {
     delete serverState[name]
     delete policies[name]
+    delete updates[name]
   }
-  return { ...mcp, servers: nextServers, serverState, policies }
+  return { ...mcp, servers: nextServers, serverState, policies, updates }
 }

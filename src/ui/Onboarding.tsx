@@ -1,4 +1,5 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
+import { fetchModelList } from '../platform/modelList'
 import { testModel, type TestResult } from '../agent/provider'
 import {
   type ProviderConfig,
@@ -17,6 +18,7 @@ const PRESETS: Array<{ name: string; baseURL: string; placeholderModel: string; 
   { name: 'OpenRouter', baseURL: 'https://openrouter.ai/api/v1', placeholderModel: 'anthropic/claude-sonnet-5', keyHint: 'sk-or-…' },
   { name: 'Groq', baseURL: 'https://api.groq.com/openai/v1', placeholderModel: 'llama-3.3-70b-versatile', keyHint: 'gsk_…' },
   { name: 'Ollama (local)', baseURL: 'http://localhost:11434/v1', placeholderModel: 'llama3.1', keyHint: 'not needed' },
+  { name: 'LM Studio (local)', baseURL: 'http://127.0.0.1:1234/v1', placeholderModel: 'google/gemma-4-26b-a4b', keyHint: 'not needed' },
   { name: 'Custom', baseURL: '', placeholderModel: 'model-id', keyHint: 'optional' },
 ]
 
@@ -83,6 +85,10 @@ export default function Onboarding({
   settings: Settings
   onComplete: (next: Settings) => void
 }) {
+  const [models,setModels] = useState<string[]>([])
+  const [discoveryError,setDiscoveryError] = useState('')
+  const [discovering,setDiscovering] = useState(false)
+  const discoverySequence = useRef(0)
   const [step, setStep] = useState<Step>('endpoint')
   const [presetName, setPresetName] = useState<string | null>(null)
   const [name, setName] = useState('')
@@ -98,6 +104,7 @@ export default function Onboarding({
     baseURL.trim().length > 0 && modelId.trim().length > 0 && hasValidEndpointScheme(baseURL)
 
   function pickPreset(p: (typeof PRESETS)[number]) {
+    discoverySequence.current++; setModels([]);setDiscovering(false);setDiscoveryError('')
     const next = applyPreset({ presetName, name, baseURL, apiKey, modelId }, p)
     setPresetName(next.presetName)
     setName(next.name)
@@ -141,7 +148,7 @@ export default function Onboarding({
     <div className="onboarding">
       <div className="onboard-progress">
         {steps.map((s, i) => (
-          <span key={s} className={`onboard-dot ${steps.indexOf(step) >= i ? 'on' : ''}`} />
+          <span key={s} aria-label={`${i+1}: ${s === 'endpoint' ? 'Choose provider' : s === 'test' ? 'Test connection' : 'Choose tab access'}`} aria-current={step===s?'step':undefined} className={`onboard-dot ${steps.indexOf(step) >= i ? 'on' : ''}`} />
         ))}
       </div>
 
@@ -149,7 +156,7 @@ export default function Onboarding({
         <>
           <h1>Welcome 👋</h1>
           <p className="hint">
-            This agent runs entirely in your browser against any OpenAI-compatible endpoint.
+            This agent runs in your browser with OpenAI-compatible or Anthropic endpoints, including local model servers.
             Pick where your model lives:
           </p>
           <div className="preset-row">
@@ -177,7 +184,7 @@ export default function Onboarding({
                 <input
                   value={baseURL}
                   placeholder="https://api.example.com/v1"
-                  onChange={(e) => setBaseURL(e.target.value)}
+                  onChange={(e) => {discoverySequence.current++;setModels([]);setDiscovering(false);setBaseURL(e.target.value)}}
                 />
               </label>
               <label>
@@ -193,6 +200,7 @@ export default function Onboarding({
                 Model id
                 <input
                   value={modelId}
+                  list="onboarding-models"
                   placeholder={preset.placeholderModel}
                   onChange={(e) => setModelId(e.target.value)}
                 />
@@ -200,6 +208,13 @@ export default function Onboarding({
             </div>
           )}
 
+          <datalist id="onboarding-models">{models.map(id=><option key={id} value={id}/>)}</datalist>
+          <button disabled={!hasValidEndpointScheme(baseURL)||discovering} onClick={()=>{
+            const sequence=++discoverySequence.current;setDiscovering(true);setDiscoveryError('')
+            void fetchModelList(draftProvider()).then(rows=>{if(sequence===discoverySequence.current)setModels(rows.map(r=>r.id))}).catch(()=>{if(sequence===discoverySequence.current)setDiscoveryError('Could not discover models. Check the endpoint or enter a model ID.')}).finally(()=>{if(sequence===discoverySequence.current)setDiscovering(false)})
+          }}>{discovering?'Discovering…':'Discover models'}</button>
+          {discoveryError&&<p role="alert">{discoveryError}</p>}
+          <p className="hint">Model discovery contacts the configured endpoint using its key. Chats send your messages and attached page or file content to that endpoint. The connection test sends only a synthetic message, without your tabs or files.</p>
           <div className="onboard-footer">
             <span />
             <button
@@ -261,9 +276,9 @@ export default function Onboarding({
         <>
           <h1>Tab visibility</h1>
           <p className="hint">
-            Choose what the agent is allowed to see. Every individual read still asks for your
-            permission in the chat, and you can @mention tabs to share them explicitly. Changeable
-            any time in Settings.
+            Visibility controls which tabs the agent can list. A readable current page attaches to your
+            first message unless you remove it. @mentions explicitly share pages. Other reads follow
+            your tool approval settings. You can change these choices in Settings.
           </p>
 
           <label className={`access-option ${tabAccess === 'active-tab' ? 'chosen' : ''}`}>

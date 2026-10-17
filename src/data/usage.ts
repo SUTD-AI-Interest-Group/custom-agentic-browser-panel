@@ -10,6 +10,7 @@ export type StoreKey =
   | 'screenshots'
   | 'attachments'
   | 'mcp'
+  | 'mcpTasks'
   | 'artifacts'
   | 'memory'
   | 'skills'

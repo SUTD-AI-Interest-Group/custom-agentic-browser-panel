@@ -258,3 +258,9 @@ test('clearTasksNow() shares the SAME writeChain as applyUpdate() — the update
   expect(callOrder).toEqual(['set', 'remove'])
   expect(store.researchTasks).toBeUndefined()
 })
+
+
+test('clearTasks surfaces worker-side storage failure to the Data screen', async () => {
+  vi.stubGlobal('chrome', {runtime:{sendMessage:vi.fn(async()=>({error:'storage failed'}))}})
+  await expect(clearTasks()).rejects.toThrow('could not be cleared')
+})

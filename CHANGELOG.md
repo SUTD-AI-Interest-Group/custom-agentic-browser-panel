@@ -17,6 +17,46 @@ for that history.
 
 ---
 
+## [Unreleased]
+
+- Consolidate implementation, PR status and verification records in the [development handoff](docs/development-handoff.md); refresh MCP setup and feature boundaries.
+
+- Bound chat preparation with stage labels, Stop, visible errors and Retry; skip automatic attachment of restricted browser pages.
+- Include durable MCP tasks in storage accounting and erasure, with atomic generation checks rejecting delayed writes after deletion.
+- Report settings, skill preference, data, research-worker and vault persistence failures truthfully.
+- Improve task attention, source-chat navigation, rich results and explicit transfer to chat; surface remote skills with per-turn approvals.
+- Add Connections, capability diagnostics, extension-operation permissions, accessible clarification errors, LM Studio onboarding discovery, keyboard tab navigation and build identity.
+- See [post-merge journey fixes and verification](docs/verification/2026-10-14-journey-fixes.md).
+
+- Add interactive MCP form/URL clarification, with explicit user responses and bounded multi-round continuations.
+- Persist modern MCP task handles locally, resume status checks after reopening the panel, and expose progress, results, input and cancellation controls.
+- Discover and load skills over MCP with explicit approval, same-server file access and size/SHA-256/frontmatter verification.
+- Keep the new flows browser-native; preserve the submitted 0.5.0 archive and exclude ChatGPT-provider work.
+- See [implementation boundaries and verification](docs/mcp-interactive-tasks-skills.md).
+
+## [0.5.0] — 2026-10-14 — *Submitted for Chrome Web Store review*
+
+### Added
+
+- Page-native WebMCP action discovery and execution, with approval controls and welcome suggestions (`bfabd84`).
+- Direct browser connections to MCP revision 2026-07-28 servers, with legacy transport compatibility, paginated catalogs, bounded responses and cache handling (`751c574`).
+- Opt-in MCP update subscriptions and a URI-only notification inbox. Notifications do not automatically read resources or execute tools.
+- Optional OAuth client metadata documents, alongside legacy dynamic registration support.
+
+### Security
+
+- Validate OAuth issuers and callback state, bind credentials to the resource and issuer, and require explicit authorization for additional scopes.
+- Update the MCP SDK, document parsers, math renderer and transitive dependencies. The dependency audit went from 21 affected entries to zero reported advisories (`6fad530`).
+- Preserve browser-native execution without a middleware service. ChatGPT-provider and native-companion work is excluded from this release.
+
+### Release verification and submission
+
+- Synchronized the manifest, package and MCP client/host versions to 0.5.0 (`3104c6c`). No required, optional or host permission changes from 0.4.0.
+- All 2,014 tests across 150 files pass; TypeScript, production builds and ZIP integrity checks pass. The local browser MCP/OAuth fixture passes under strict CSP; its identity popup is simulated. The maintainer separately confirmed browser testing on 2026-10-14.
+- Uploaded `lychee-ai-v0.5.0.zip` to the existing Chrome Web Store item and updated the listing's MCP features and data-flow description.
+- Chrome confirmed submission on 2026-10-14: **pending review, with manual publishing after approval**. Version 0.4.0 remains published; the existing unlisted distribution is unchanged. This is a submission record, not a publication announcement.
+- [Security verification](docs/verification/2026-10-14-deployment.md) · [Package checksum and publishing handoff](docs/verification/0.5.0-publishing.md) · [Release PR #2](https://github.com/SUTD-AI-Interest-Group/custom-agentic-browser-panel/pull/2).
+
 ## [0.4.0] — 2026-08-21 — *Chrome Web Store update*
 
 The third store release, and the first whose headline is durability rather than reach. A turn

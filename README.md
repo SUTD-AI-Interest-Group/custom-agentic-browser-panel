@@ -17,7 +17,7 @@
 ---
 
 Lychee AI is a Manifest V3 Chrome extension (React 18 + Vite 6 + TypeScript,
-built on the [Vercel AI SDK](https://ai-sdk.dev) v5). **There is no backend.**
+built on the [Vercel AI SDK](https://ai-sdk.dev) v7). **There is no backend.**
 The panel talks directly to the model endpoint you configure — any
 OpenAI-compatible one, plus native OpenAI (Responses API) and Anthropic
 (Messages API) — and your API key never leaves `chrome.storage.local`.
@@ -141,7 +141,7 @@ Lychee speaks the [Model Context Protocol](https://modelcontextprotocol.io):
 connect remote MCP servers and the agent gets their **tools**, **resources**
 and **prompts**, behind the same approval gate as everything else.
 
-- **Configure in Settings → General → MCP servers.** The config *is* the
+- **Configure in Settings → Connections → MCP servers.** The config *is* the
   standard `mcpServers` JSON — upload your existing file, edit it in place, or
   copy it out with one click. `stdio` entries round-trip untouched but are
   greyed out (a browser can't spawn processes — point a local HTTP bridge like
@@ -157,6 +157,12 @@ and **prompts**, behind the same approval gate as everything else.
 - **MCP Apps** (interactive `ui://` tool UIs) render live in a sandboxed iframe
   in the chat; anything an app wants to do — call a tool, open a link — routes
   back through the approval gate, scoped to the app's own server.
+
+The development branch also supports interactive clarification, durable server-task
+handles and approval-gated remote skills. Connections shows negotiated capabilities;
+the task panel tracks server work and the Library exposes remote skills. These additions are **not in the
+submitted 0.5.0 ZIP**. See the [development handoff](docs/development-handoff.md)
+for implementation guides, verification evidence and PR status.
 
 ## Page control
 

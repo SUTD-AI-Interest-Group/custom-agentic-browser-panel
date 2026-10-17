@@ -7,7 +7,6 @@ import {
 } from '../../data/settings'
 import { testLangfuseConnection } from '../../agent/observability'
 import { Disclosure, Section } from './primitives'
-import McpSection from './McpSection'
 import { SealedChip } from './SealedChip'
 
 /**
@@ -81,7 +80,7 @@ export default function GeneralTab({
         </p>
       </Section>
 
-      <McpSection draft={draft} commit={commit} />
+
 
       <ObservabilitySection draft={draft} buffer={buffer} commit={commit} commitDraft={commitDraft} />
     </div>

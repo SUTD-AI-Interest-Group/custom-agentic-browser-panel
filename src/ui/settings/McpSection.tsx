@@ -12,6 +12,7 @@ import {
 } from '../../mcp/config'
 import { hasStoredAuth } from '../../mcp/auth'
 import { getMcpManager } from '../../mcp/manager'
+import McpUpdates from './McpUpdates'
 import { pruneOrphanedSidecars } from './mcpSidecar'
 
 /**
@@ -68,7 +69,9 @@ export default function McpSection({
     delete serverState[name]
     const policies = { ...mcp.policies }
     delete policies[name]
-    patch({ servers, serverState, policies })
+    const updates = { ...mcp.updates }
+    delete updates[name]
+    patch({ servers, serverState, policies, updates })
   }
 
   function setEnabled(name: string, enabled: boolean) {
@@ -88,16 +91,22 @@ export default function McpSection({
       {names.length === 0 && <p className="hint">No servers configured — add one below or import your JSON.</p>}
 
       {names.map((name) => (
+        <div key={name}>
         <ServerRow
-          key={name}
           name={name}
           entry={mcp.servers[name]}
           enabled={serverEnabled(mcp, name)}
           live={status[name]}
           onToggle={(on) => setEnabled(name, on)}
           onRemove={() => removeServer(name)}
-          onAuthorize={() => authorize(name)}
+          onAuthorize={() => { patch({ ...mcp, updates: { ...mcp.updates, [name]: { enabled: false } } }); authorize(name) }}
+          onSignOut={() => { patch({ ...mcp, updates: { ...mcp.updates, [name]: { enabled: false } } }); void getMcpManager().signOut(name).catch(err => setAuthError(`${name}: ${err instanceof Error ? err.message : String(err)}`)) }}
         />
+        <p className="hint">{(() => {const s=getMcpManager().runtime().find(s=>s.name===name);return `Protocol: ${s?.protocol ?? 'not connected'} · Tools: ${s?.tools.length ?? 0} · Tasks: ${s?.extensions?.tasks?'supported':'unavailable'} · Skills: ${s?.extensions?.skills?'supported':'unavailable'} · Elicitation: ${s?.extensions?.elicitation?'supported':'unavailable'}`})()}</p>
+<button className="btn small" onClick={()=>{const s=getMcpManager().runtime().find(s=>s.name===name);setAuthError(s?.status==='connected'?`${name}: connected using ${s.protocol}; ${s.tools.length} tools discovered. No tool was executed.`:`${name}: ${s?.error ?? s?.status ?? 'not connected'}`)}}>Check connection</button>
+        <p className="hint">Legacy connections cannot offer modern tasks or verified skills. Status and catalogs above diagnose the connection without executing a tool.</p>
+        <McpUpdates name={name} value={mcp.updates?.[name]} onChange={(value) => patch({ ...mcp, updates: { ...mcp.updates, [name]: value } })} />
+        </div>
       ))}
       {authError && <p className="mcp-error">{authError}</p>}
 
@@ -146,6 +155,7 @@ function ServerRow({
   onToggle,
   onRemove,
   onAuthorize,
+  onSignOut,
 }: {
   name: string
   entry: McpServerEntry
@@ -154,6 +164,7 @@ function ServerRow({
   onToggle: (on: boolean) => void
   onRemove: () => void
   onAuthorize?: () => void
+  onSignOut: () => void
 }) {
   const kind = classifyEntry(entry)
   const s = statusInfo(entry, enabled, live)
@@ -189,7 +200,7 @@ function ServerRow({
           title="Forget this server's OAuth tokens"
           onClick={() => {
             setHasAuth(false)
-            void getMcpManager().signOut(name)
+            onSignOut()
           }}
         >
           Sign out

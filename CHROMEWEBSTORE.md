@@ -1,17 +1,13 @@
 # Chrome Web Store Listing — Lychee AI
 
-> Last Updated: 2026-08-21 · Manifest version 0.4.0 · **Status: 0.4.0 is packaged,
-> not yet submitted**
+> Last Updated: 2026-10-14 · Manifest version 0.5.0 · **Status: 0.5.0 submitted 2026-10-14; pending review. Manual publishing after approval.**
 >
 > **Item ID:** `jijmdjncddemapjkbidjdbfbjmonagpn` ·
 > [listing](https://chromewebstore.google.com/detail/jijmdjncddemapjkbidjdbfbjmonagpn)
-> · published as `angkahshin`. **Live on the store: 0.3.0, published 2026-08-04.**
+> · published as `angkahshin`. **Last verified live: 0.4.0, updated 2026-08-22.**
 >
-> ⚠️ **This status line is written before a submission and is therefore wrong the
-> moment one succeeds.** It sat at "0.3.0 is an update to a published listing" for
-> sixteen days after 0.3.0 went live, so the repo disagreed with the store about
-> which version users were running. Update this line and the Version History table
-> *when the dashboard says Published*, not when the ZIP is built.
+> Release handoff: [0.5.0 publishing notes](docs/verification/0.5.0-publishing.md).
+> Update this status only after the dashboard confirms submission or publication.
 >
 > This ID is load-bearing beyond the listing: MCP OAuth redirects resolve to
 > `https://jijmdjncddemapjkbidjdbfbjmonagpn.chromiumapp.org/`, so an unpacked build
@@ -44,7 +40,7 @@ Bring your own AI model into Chrome. Lychee reads, acts on, and researches the p
 Lychee AI puts an AI assistant in Chrome's side panel that can actually see and use the page you're on — and it runs on the AI model you choose.
 
 BRING YOUR OWN MODEL
-Connect OpenAI, Anthropic, OpenRouter, Groq, or any OpenAI-compatible endpoint using your own API key. Prefer to keep everything on your machine? Point Lychee at a local model through Ollama or LM Studio and nothing leaves your computer at all. There is no subscription and no account to create — Lychee talks to your provider directly.
+Connect OpenAI, Anthropic, OpenRouter, Groq, or any OpenAI-compatible endpoint using your own API key. Prefer to keep everything on your machine? Point Lychee at a local model through Ollama or LM Studio to keep model inference on your computer. Web browsing and connected tools still contact the services you use. There is no subscription and no account to create — Lychee talks to your provider directly.
 
 WORKS WITH THE PAGE IN FRONT OF YOU
 Ask about the article you're reading, and Lychee reads it. Ask it to pull the pricing table out of a page, and you get clean structured data. Open a PDF and ask questions about page 40 — including a PDF embedded in a course page or served from a link that never says ".pdf". Point at a chart and Lychee looks at it. It can read other open tabs when you ask, so you can compare two products side by side without copying anything. Turn on "Allow access to file URLs" in Chrome and it can read a file you opened straight from your own disk too.
@@ -68,13 +64,13 @@ REMEMBERS WHAT MATTERS
 Lychee keeps notes about your preferences and ongoing work, then quietly tidies them into cleaner memories over time. You can read, edit, or wipe that memory whenever you like.
 
 MAKE IT YOURS
-Write reusable "skills" — saved instructions you invoke by name for tasks you repeat. Connect Model Context Protocol servers to give Lychee access to your own tools. Set every capability to always allow, ask each time, or never.
+Write reusable "skills" — saved instructions you invoke by name for tasks you repeat. Connect modern or legacy Model Context Protocol servers directly to give Lychee access to your own tools. Discover page-native WebMCP actions on supporting websites. Opt into MCP update notifications; reading resources and running tools still follow your approval settings. Set every capability to always allow, ask each time, or never.
 
 YOU'RE IN CONTROL
 Every action that touches a page, your data, or the network asks first, and you decide per-tool whether it should keep asking. Access to your history, bookmarks, and downloads is entirely optional — Chrome only asks for it if you switch those features on.
 
 PRIVACY
-There is no Lychee server. Your conversations, keys, and memories are stored on your own computer — your API keys and tool-server tokens encrypted at rest — and your page content goes only to the AI provider you configured, under your own account. We collect nothing, receive nothing, and sell nothing. Full policy: https://lychee-ai.netlify.app/privacy
+There is no Lychee server. Your conversations, keys, and memories are stored on your own computer — your API keys and tool-server tokens encrypted at rest — and content is sent directly to the AI provider and connected tools you choose, according to your permission settings. We collect nothing, receive nothing, and sell nothing. Full policy: https://lychee-ai.netlify.app/privacy
 
 REQUIREMENTS
 Chrome 116 or later, and an API key from a supported provider (or a local model server). Open the panel with the toolbar icon or Ctrl+E / Cmd+E.
@@ -336,7 +332,7 @@ https://lychee-ai.netlify.app/privacy
 generated from `PRIVACY.md` by `site/scripts/sync-content.mjs`, so the policy the
 store links to and the policy in the repo cannot drift apart.
 
-⚠️ **0.4.0 changes the policy, so this page must be redeployed before you submit.**
+**Historical 0.4.0 policy rollout note:** verify the public policy before each submission.
 Editing `PRIVACY.md` is not sufficient on its own: run `npm run sync:content` in
 `site/` (done — `site/src/content/privacy.md` is regenerated and committed), then
 deploy the site. A listing whose linked policy still describes the previous
@@ -422,31 +418,15 @@ points somewhere else looks like a mismatch to a reviewer.
 
 ## Submission Process
 
-### Publishing an update — this is what 0.4.0 is
+### Publishing the 0.5.0 update
 
-The account steps below are already done. For an update the flow is much shorter:
+1. Upload `lychee-ai-v0.5.0.zip` to the existing item's **Package → Upload new package**. Its version is higher than the last verified live 0.4.0.
+2. Update the listing with the current copy above and release notes in the [publishing handoff](docs/verification/0.5.0-publishing.md).
+3. Review the existing Privacy practices answers: user-approved model/provider and MCP data transfers still apply. No new required or optional permissions were added.
+4. Confirm the preview's version, permissions and validation results. Submit for review; choose deferred publishing if you want a separate manual publication step.
+5. Update this document's status and version-history row only after the dashboard confirms the corresponding action.
 
-1. **The version must increase.** The dashboard refuses a package whose manifest
-   version is not higher than the published one. 0.4.0 > 0.3.0 ✅
-2. **Upload the new ZIP** under Package → Upload new package. Listing copy,
-   screenshots, and privacy answers all carry over — edit only what changed.
-3. **Re-check the Privacy tab even though it is prefilled.** The data-use answers
-   persist from 0.3.0, and 0.4.0 *widens* an existing data type: "files the user
-   attaches" now includes Word, PowerPoint, Excel, OpenDocument, RTF and EPUB
-   documents, which shipped on 2026-08-08 and went undisclosed until this release.
-   An update whose disclosures no longer match the code is a rejection, and nothing
-   in the dashboard prompts you to revisit them. This is the single easiest way to
-   fail an update that would otherwise sail through.
-4. **No new permissions in 0.4.0**, so this update avoids both the extra
-   permission-change scrutiny and the disable-until-re-accepted behaviour that a
-   newly *required* permission inflicts on every existing install.
-5. **Submit for review.** The published 0.3.0 keeps serving users throughout; a
-   rejected update does not take the live version down.
-6. **When the dashboard says Published**, update the status line at the top of this
-   file and flip the 0.4.0 Version History row from *Preparing* to the publish date.
-
-Update reviews are usually faster than the first, but the same slow-down triggers
-apply — `<all_urls>`, sensitive permissions, code volume — so budget days, not hours.
+Official workflow: https://developer.chrome.com/docs/webstore/update
 
 ### First-time account setup — already completed, kept for reference
 
@@ -497,7 +477,8 @@ no response, that is the point to contact developer support.
 
 | Version | Date | Changes | Status |
 |---------|------|---------|--------|
-| 0.4.0 | 2026-08-21 | Update. Attach Word, PowerPoint, Excel, OpenDocument, RTF and EPUB documents alongside images, PDFs and text. Read local files opened from disk, PDFs served from a URL that never says `.pdf`, and PDFs embedded inside an ordinary page. Token counts and running cost on every reply. Long conversations fold older turns into a summary instead of dying once the model's context fills. A turn interrupted by closing the panel can be resumed. Page control now keeps a list of what it changed, with undo. Opt-in local turn traces for debugging. Memory consolidation moved off the background worker so a long pass can finish. A second whole-codebase adversarial audit closing four criticals — MCP OAuth token replay, two SSRF holes in unattended research, half-blind sensitive-field detection, and a spreadsheet memory-exhaustion path — plus `RunCode`, which had never once worked in a real browser. **No permission changes.** | Preparing |
+| 0.5.0 | 2026-10-14 | WebMCP actions, modern MCP transport, opt-in subscriptions, OAuth hardening and security dependency updates. No permission changes. | Submitted 2026-10-14; pending review; manual publishing |
+| 0.4.0 | 2026-08-21 | Update. Attach Word, PowerPoint, Excel, OpenDocument, RTF and EPUB documents alongside images, PDFs and text. Read local files opened from disk, PDFs served from a URL that never says `.pdf`, and PDFs embedded inside an ordinary page. Token counts and running cost on every reply. Long conversations fold older turns into a summary instead of dying once the model's context fills. A turn interrupted by closing the panel can be resumed. Page control now keeps a list of what it changed, with undo. Opt-in local turn traces for debugging. Memory consolidation moved off the background worker so a long pass can finish. A second whole-codebase adversarial audit closing four criticals — MCP OAuth token replay, two SSRF holes in unattended research, half-blind sensitive-field detection, and a spreadsheet memory-exhaustion path — plus `RunCode`, which had never once worked in a real browser. **No permission changes.** | Live; store updated 2026-08-22 |
 | 0.3.0 | 2026-08-03 | Update. Prompt attachments — drag, paste, or pick images, PDFs, and text files into the composer. A separate chat per tab, with background chats that keep working and announce themselves when they finish or need permission. Every stored secret encrypted at rest, with a live status indicator in Settings. A whole-codebase adversarial security review closing defects across tool authorisation, browse policy, service-worker lifetime, dream re-entrancy, and page-control classification. **No permission changes.** | ✅ Published 2026-08-04 |
 | 0.2.0 | 2026-07-28 | First store submission. Side-panel assistant with bring-your-own-model support, page reading, approved page control, tab organising (grouping and closing, with undo), background research with citations, long-term memory, skills, MCP tool servers, and sandboxed code execution. | ✅ Published 2026-08-01 — passed review first time |
 

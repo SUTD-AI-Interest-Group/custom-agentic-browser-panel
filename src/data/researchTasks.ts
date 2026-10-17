@@ -512,7 +512,8 @@ export async function clearTasks(): Promise<void> {
   // until background.ts's handler calls sendResponse(), so this is not weaker
   // than a direct write for reliability — only for the one property that
   // actually matters here, that it can no longer race the SW's own writeChain.
-  await chrome.runtime.sendMessage({ type: 'research.clearTasks' } satisfies ResearchMsg)
+  const reply = await chrome.runtime.sendMessage({ type: 'research.clearTasks' } satisfies ResearchMsg)
+  if (reply?.error) throw new Error('Research data could not be cleared. Please retry.')
 }
 
 /**

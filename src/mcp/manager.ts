@@ -10,7 +10,7 @@
 // on demand. The pure config/policy logic lives in src/mcp/config.ts.
 
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
-import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
+import { StreamableHTTPClientTransport, StreamableHTTPError } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
 import { SSEClientTransport } from '@modelcontextprotocol/sdk/client/sse.js'
 import { auth, UnauthorizedError } from '@modelcontextprotocol/sdk/client/auth.js'
 import { CfWorkerJsonSchemaValidator } from '@modelcontextprotocol/sdk/validation/cfworker'
@@ -20,8 +20,11 @@ import {
   ToolListChangedNotificationSchema,
 } from '@modelcontextprotocol/sdk/types.js'
 import type { Settings } from '../data/settings'
-import { classifyEntry, mcpSettings, serverEnabled, type McpServerEntry } from './config'
+import { classifyEntry, mcpSettings, mcpToolPolicy, serverEnabled, type McpServerEntry, type McpUpdateSettings, type McpSettings } from './config'
 import { ChromeOAuthProvider, clearAuth } from './auth'
+import { elicitationQueue, collectInputs } from './elicitation'
+import { taskStorageEpoch, TASKS_EXTENSION, parseTask, saveTask, listSavedTasks, expiredTask, taskPollDelay, terminalTask, type SavedTask } from './tasks'
+import { ModernMcpClient, LegacyServerError, type SubscriptionState } from './modern'
 
 /** Connection state of one configured server, driving the settings status dot. */
 export type McpStatus = 'connected' | 'connecting' | 'needs-auth' | 'error' | 'disabled' | 'unsupported'
@@ -55,9 +58,17 @@ export interface McpPromptInfo {
 }
 
 /** Everything the UI / tool layer needs to know about one server. */
+export interface McpUpdateNotice { uri: string; receivedAt: number }
+
 export interface McpServerRuntime {
   name: string
   status: McpStatus
+  protocol?: '2026-07-28' | 'legacy'
+  extensions?: {tasks:boolean; skills:boolean; elicitation:boolean}
+  taskScope?: string
+  updateScope?: string
+  subscriptionState?: SubscriptionState
+  updates?: McpUpdateNotice[]
   error?: string
   tools: McpToolInfo[]
   resources: McpResourceInfo[]
@@ -68,7 +79,16 @@ interface ServerSlot {
   entry: McpServerEntry
   status: McpStatus
   error?: string
-  client?: Client
+  client?: Client | ModernMcpClient
+  taskScope?: string
+  updateScope?: string
+  authChallenge?: { scope?: string; resourceMetadataUrl?: URL }
+  pendingModern?: ModernMcpClient
+  updatesConfig?: McpUpdateSettings
+  subscriptionState?: SubscriptionState
+  updates: McpUpdateNotice[]
+  catalogTimer?: ReturnType<typeof setTimeout>
+  catalogEpoch?: number
   transport?: StreamableHTTPClientTransport | SSEClientTransport
   connectPromise?: Promise<void>
   /** Reconnect backoff bookkeeping (reset on success). */
@@ -123,12 +143,19 @@ interface PersistedCatalog {
  */
 function newClient(): Client {
   return new Client(
-    { name: 'lychee-ai', version: '0.1.0' },
+    { name: 'lychee-ai', version: '0.5.0' },
     { capabilities: {}, jsonSchemaValidator: new CfWorkerJsonSchemaValidator() },
   )
 }
 
 export class McpManager {
+  private accessSettings: McpSettings = { servers: {} }
+  assertExtensionAccess(server: string, method: string): void {
+    const config = this.accessSettings
+    if (!Object.hasOwn(config.servers, server) || !serverEnabled(config, server) || mcpToolPolicy(config, server, method) === 'never') throw Error('MCP server access is disabled by policy.')
+  }
+
+  private taskOperations = new Set<string>()
   private slots = new Map<string, ServerSlot>()
   private listeners = new Set<() => void>()
   private cacheLoaded = false
@@ -140,6 +167,12 @@ export class McpManager {
     return [...this.slots.entries()].map(([name, s]) => ({
       name,
       status: s.status,
+      protocol: s.client instanceof ModernMcpClient ? '2026-07-28' : s.client ? 'legacy' : undefined,
+      extensions: s.client instanceof ModernMcpClient ? {tasks:s.client.supportsExtension(TASKS_EXTENSION), skills:s.client.supportsExtension('io.modelcontextprotocol/skills'), elicitation:true} : undefined,
+      taskScope: s.taskScope,
+      updateScope: s.updateScope,
+      subscriptionState: s.subscriptionState,
+      updates: s.updates,
       error: s.error,
       tools: s.tools,
       resources: s.resources,
@@ -162,6 +195,7 @@ export class McpManager {
    * call on every settings save.
    */
   async refresh(settings: Settings): Promise<void> {
+    this.accessSettings = structuredClone(mcpSettings(settings))
     if (!this.cacheLoaded) await this.loadCatalogCache().catch(() => {})
     const mcp = mcpSettings(settings)
     const wanted = new Map<string, McpServerEntry>()
@@ -169,6 +203,10 @@ export class McpManager {
       const kind = classifyEntry(entry)
       const slot = this.slots.get(name) ?? this.emptySlot(entry)
       this.slots.set(name, slot)
+      const updateConfig = mcp.updates?.[name]
+      const updatesChanged = JSON.stringify(slot.updatesConfig) !== JSON.stringify(updateConfig)
+      slot.updatesConfig = updateConfig ? { ...updateConfig, resourceUris: updateConfig.resourceUris?.slice() } : undefined
+      if (updatesChanged && slot.client instanceof ModernMcpClient && serverEnabled(mcp, name) && JSON.stringify(slot.entry) === JSON.stringify(entry)) this.startSubscriptions(slot)
       if (kind !== 'http') {
         this.teardown(name, slot)
         slot.status = 'unsupported'
@@ -209,6 +247,7 @@ export class McpManager {
       // first connection each session, forcing re-auth on every panel open.
       const urlChanged = changed && typeof slot.entry.url === 'string' && slot.entry.url !== entry.url
       slot.entry = entry
+      if (slot.status === 'disabled' || slot.status === 'unsupported') slot.status = 'connecting'
       if (changed) this.teardown(name, slot)
       if (urlChanged) await clearAuth(name).catch(() => {})
       if (!slot.client && !slot.connectPromise) {
@@ -219,12 +258,22 @@ export class McpManager {
   }
 
   private emptySlot(entry: McpServerEntry): ServerSlot {
-    return { entry, status: 'connecting', attempts: 0, gen: 0, tools: [], resources: [], prompts: [] }
+    return { entry, status: 'connecting', attempts: 0, gen: 0, tools: [], resources: [], prompts: [], updates: [] }
   }
 
   private teardown(name: string, slot: ServerSlot) {
     // Invalidate any connect() still in flight (see ServerSlot.gen).
     slot.gen += 1
+    slot.taskScope = undefined
+    slot.updateScope = undefined
+    slot.authChallenge = undefined
+    void slot.pendingModern?.close()
+    slot.pendingModern = undefined
+    if (slot.catalogTimer) clearTimeout(slot.catalogTimer)
+    slot.catalogTimer = undefined
+    slot.updates = []
+    slot.tools = []; slot.resources = []; slot.prompts = []
+    slot.subscriptionState = 'off'
     if (slot.retryTimer) clearTimeout(slot.retryTimer)
     slot.retryTimer = undefined
     slot.connectPromise = undefined
@@ -243,9 +292,10 @@ export class McpManager {
       return Promise.reject(new Error(`The MCP server "${name}" is ${slot.status}.`))
     if (slot.client) return Promise.resolve()
     if (!slot.connectPromise) {
-      slot.connectPromise = this.connect(name, slot).finally(() => {
-        slot.connectPromise = undefined
+      const pending = this.connect(name, slot).finally(() => {
+        if (slot.connectPromise === pending) slot.connectPromise = undefined
       })
+      slot.connectPromise = pending
     }
     return slot.connectPromise
   }
@@ -262,29 +312,89 @@ export class McpManager {
     const url = new URL(slot.entry.url as string)
     const headers = slot.entry.headers
     const requestInit: RequestInit | undefined = headers ? { headers } : undefined
-    const authProvider = new ChromeOAuthProvider(name, url.toString())
+    const authProvider = new ChromeOAuthProvider(name, url.toString(), { clientMetadataUrl: slot.entry.oauthClientMetadataUrl })
 
     const attempt = async (kind: 'http' | 'sse') => {
       const client = newClient()
       const transport =
         kind === 'http'
-          ? new StreamableHTTPClientTransport(url, { requestInit, authProvider })
-          : new SSEClientTransport(url, { requestInit, authProvider })
-      await client.connect(transport)
-      return { client, transport }
+          ? new StreamableHTTPClientTransport(url, { requestInit, authProvider, fetch: authProvider.fetch })
+          : new SSEClientTransport(url, { requestInit, authProvider, fetch: authProvider.fetch })
+      try {
+        await client.connect(transport)
+        return { client, transport }
+      } catch (err) { await client.close().catch(() => {}); throw err }
     }
 
     try {
-      let connected
+      let connected: { client: Client | ModernMcpClient; transport?: StreamableHTTPClientTransport | SSEClientTransport }
+      // Pin credentials for this client. A token changing under an open listen
+      // must not silently transfer the user's subscription consent to an account.
+      let token = (await authProvider.tokens())?.access_token
+      if (stale()) return
+      let refreshing: Promise<void> | undefined
+      const modern = new ModernMcpClient(url, {
+        headers, token: async () => token,
+        elicit: (params, signal) => elicitationQueue.ask(name, params, signal),
+        onTask: async (raw, params, options) => {
+          if (stale() || !slot.taskScope) throw Error('MCP connection changed before task persistence.')
+          const task = parseTask(raw)
+          const record: SavedTask = { ...task, id: JSON.stringify([name, slot.taskScope, task.taskId]), server: name,
+            scope: slot.taskScope, tool: String(params.name), conversationId: options.conversationId, nextPollAt: Date.now() + taskPollDelay(task) }
+          try { await saveTask(record, options.taskStorageEpoch) } catch {
+            throw Error(`The server started task ${task.taskId}, but local persistence failed. Do not repeat the original tool call; recover the task on the server.`)
+          }
+          return { resultType: 'complete', content: [{ type: 'text', text: `Task started on ${name}: ${task.taskId}. It continues on the server. Tell the user it is running and wait for them to request results. The MCP tasks panel tracks progress. Do not busy-poll or repeat the original tool call.` }], structuredContent: { taskId: task.taskId, taskRecordId: record.id, status: task.status } }
+        },
+        refreshToken: async (signal) => {
+          if (!refreshing) refreshing = (async () => {
+            if (stale() || headers && Object.keys(headers).some(key => key.toLowerCase() === 'authorization')) throw new UnauthorizedError()
+            const stored = await authProvider.tokens()
+            // Refresh only our own session. A different stored token may be a
+            // different account; it must reconnect with fresh subscription consent.
+            if (!stored?.refresh_token || stored.access_token !== token) throw new UnauthorizedError()
+            if (await auth(authProvider, { serverUrl: url, fetchFn: (input, init) => authProvider.fetch(input, { ...init, signal }) }) !== 'AUTHORIZED') throw new UnauthorizedError()
+            if (stale()) throw new UnauthorizedError()
+            token = (await authProvider.tokens())?.access_token
+          })().finally(() => { refreshing = undefined })
+          await refreshing
+        },
+        onAuthRequired: (challenge) => {
+          if (stale()) return
+          slot.authChallenge = challenge
+          modern.stopSubscriptions()
+          slot.updates = []; slot.tools = []; slot.resources = []; slot.prompts = []
+          this.schedulePersistCatalogCache()
+          slot.subscriptionState = 'error'
+          slot.status = 'needs-auth'; slot.error = 'This server requires authorization.'
+          this.notify()
+        },
+      })
+      slot.pendingModern = modern
       try {
-        connected = await attempt('http')
+        await modern.discover()
+        const identity = JSON.stringify([url.toString(), Object.entries(headers ?? {}).sort(([a], [b]) => a.localeCompare(b)), token ?? null])
+        const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(identity))
+        if (!stale()) slot.updateScope = Array.from(new Uint8Array(digest), x => x.toString(16).padStart(2, '0')).join('')
+        const taskIdentity = JSON.stringify([url.toString(), Object.entries(headers ?? {}).sort(([a], [b]) => a.localeCompare(b)), await authProvider.sessionIdentity() ?? null])
+        const taskDigest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(taskIdentity))
+        if (!stale()) slot.taskScope = Array.from(new Uint8Array(taskDigest), x => x.toString(16).padStart(2, '0')).join('')
+        connected = { client: modern }
       } catch (err) {
-        // Auth demands are not a transport mismatch — surface them, don't fall back.
-        if (err instanceof UnauthorizedError) throw err
-        // The standard compatibility dance: a server predating streamable HTTP
-        // rejects the POST (404/405/…) — retry over the legacy SSE transport.
-        connected = await attempt('sse')
+        await modern.close()
+        // A network/auth failure or a recognized modern error is NOT permission
+        // to downgrade. Only the protocol's legacy HTTP probe statuses qualify.
+        if (!(err instanceof LegacyServerError)) throw err
+        if (stale()) return
+        try {
+          connected = await attempt('http')
+        } catch (legacyError) {
+          if (!(legacyError instanceof StreamableHTTPError) || ![400, 404, 405].includes(legacyError.code ?? 0)) throw legacyError
+          if (stale()) return
+          connected = await attempt('sse')
+        }
       }
+      if (slot.pendingModern === modern) slot.pendingModern = undefined
       if (stale()) {
         // The user turned this server off (or changed it) mid-handshake: the
         // connection must not be installed, or a "Disabled" server would keep
@@ -310,13 +420,16 @@ export class McpManager {
         this.notify()
       }
 
-      // Live catalog refresh on listChanged notifications.
-      const refetch = () => void this.listCatalog(name, slot).catch(() => {})
-      connected.client.setNotificationHandler(ToolListChangedNotificationSchema, refetch)
-      connected.client.setNotificationHandler(ResourceListChangedNotificationSchema, refetch)
-      connected.client.setNotificationHandler(PromptListChangedNotificationSchema, refetch)
-
+      // Legacy SDK notifications retain their existing semantics. Modern
+      // servers send nothing until the user opts in to subscriptions/listen.
+      if (!(connected.client instanceof ModernMcpClient)) {
+        const refetch = () => this.scheduleCatalogRefresh(slot)
+        connected.client.setNotificationHandler(ToolListChangedNotificationSchema, refetch)
+        connected.client.setNotificationHandler(ResourceListChangedNotificationSchema, refetch)
+        connected.client.setNotificationHandler(PromptListChangedNotificationSchema, refetch)
+      }
       await this.listCatalog(name, slot)
+      if (!stale()) this.startSubscriptions(slot)
       this.notify()
     } catch (err) {
       // A slot torn down mid-connect owns its status ('disabled', a fresh
@@ -350,6 +463,48 @@ export class McpManager {
     }
   }
 
+  private scheduleCatalogRefresh(slot: ServerSlot): void {
+    if (slot.catalogTimer) return
+    slot.catalogTimer = setTimeout(() => {
+      slot.catalogTimer = undefined
+      const name = [...this.slots].find(([, value]) => value === slot)?.[0]
+      if (name) void this.listCatalog(name, slot).catch(() => {})
+    }, 250)
+  }
+
+  private startSubscriptions(slot: ServerSlot): void {
+    if (!(slot.client instanceof ModernMcpClient)) return
+    slot.client.stopSubscriptions()
+    slot.subscriptionState = 'off'
+    slot.updates = []
+    if (!slot.updatesConfig?.enabled || !slot.updateScope || slot.updatesConfig.scope !== slot.updateScope) return
+    const client = slot.client
+    client.listen({
+      toolsListChanged: true, promptsListChanged: true, resourcesListChanged: true,
+      resourceSubscriptions: slot.updatesConfig.resourceUris,
+    }, (method, params) => {
+      if (slot.client !== client) return
+      client.invalidateCache()
+      if (method === 'notifications/resources/updated' && typeof params.uri === 'string') {
+        // Store metadata only. The notification does not authorize reading the
+        // resource or starting a model turn, and repeated URI updates coalesce.
+        slot.updates = [...slot.updates.filter(x => x.uri !== params.uri), { uri: params.uri, receivedAt: Date.now() }].slice(-100)
+        this.notify()
+      } else this.scheduleCatalogRefresh(slot)
+    }, state => {
+      if (slot.client !== client) return
+      slot.subscriptionState = state
+      // No replay in 2026-07-28: repair missed catalog changes after every ack.
+      if (state === 'listening') { client.invalidateCache(); this.scheduleCatalogRefresh(slot) }
+      this.notify()
+    })
+  }
+
+  dismissUpdates(name: string): void {
+    const slot = this.slots.get(name)
+    if (slot) { slot.updates = []; this.notify() }
+  }
+
   private scheduleReconnect(name: string, slot: ServerSlot) {
     if (slot.retryTimer) return
     const delay = Math.min(BACKOFF_CAP_MS, BACKOFF_BASE_MS * 2 ** slot.attempts)
@@ -361,14 +516,32 @@ export class McpManager {
     }, delay)
   }
 
+  private async catalogPages<T>(fetchPage: (cursor?: string) => Promise<{ items: T[]; nextCursor?: string }>): Promise<T[]> {
+    const items: T[] = [], cursors = new Set<string>()
+    let cursor: string | undefined
+    for (let page = 0; page < 100; page++) {
+      const result = await fetchPage(cursor)
+      items.push(...result.items)
+      if (items.length > 10_000) throw new Error('MCP catalog exceeds limits.')
+      if (result.nextCursor === undefined) return items
+      if (!result.nextCursor || cursors.has(result.nextCursor)) throw new Error('Invalid MCP pagination cursor.')
+      cursor = result.nextCursor; cursors.add(cursor)
+    }
+    throw new Error('MCP catalog pagination limit exceeded.')
+  }
+
   private async listCatalog(name: string, slot: ServerSlot): Promise<void> {
     const client = slot.client
     if (!client) return
+    const epoch = slot.catalogEpoch = (slot.catalogEpoch ?? 0) + 1
     const caps = client.getServerCapabilities() ?? {}
     const [tools, resources, prompts] = await Promise.all([
       caps.tools
-        ? client.listTools().then((r) =>
-            r.tools.map(
+        ? this.catalogPages(async cursor => {
+            const r = client instanceof ModernMcpClient ? await client.listTools() : await client.listTools({ cursor })
+            return { items: r.tools, nextCursor: 'nextCursor' in r ? r.nextCursor as string | undefined : undefined }
+          }).then((items) =>
+            items.map(
               (t): McpToolInfo => ({
                 name: t.name,
                 description: t.description ?? '',
@@ -379,8 +552,11 @@ export class McpManager {
           )
         : Promise.resolve([]),
       caps.resources
-        ? client.listResources().then((r) =>
-            r.resources.map(
+        ? this.catalogPages(async cursor => {
+            const r = client instanceof ModernMcpClient ? await client.listResources() : await client.listResources({ cursor })
+            return { items: r.resources, nextCursor: 'nextCursor' in r ? r.nextCursor as string | undefined : undefined }
+          }).then((items) =>
+            items.map(
               (x): McpResourceInfo => ({
                 uri: x.uri,
                 name: x.name,
@@ -391,8 +567,11 @@ export class McpManager {
           )
         : Promise.resolve([]),
       caps.prompts
-        ? client.listPrompts().then((r) =>
-            r.prompts.map(
+        ? this.catalogPages(async cursor => {
+            const r = client instanceof ModernMcpClient ? await client.listPrompts() : await client.listPrompts({ cursor })
+            return { items: r.prompts, nextCursor: 'nextCursor' in r ? r.nextCursor as string | undefined : undefined }
+          }).then((items) =>
+            items.map(
               (p): McpPromptInfo => ({
                 name: p.name,
                 description: p.description,
@@ -408,7 +587,7 @@ export class McpManager {
     ])
     // Torn down (or reconnected) while listing — this catalog belongs to a
     // connection that no longer exists; keep the slot's own state.
-    if (slot.client !== client) return
+    if (slot.client !== client || slot.catalogEpoch !== epoch) return
     slot.tools = tools
     slot.resources = resources
     slot.prompts = prompts
@@ -446,15 +625,73 @@ export class McpManager {
     server: string,
     tool: string,
     args: Record<string, unknown>,
-    opts?: { signal?: AbortSignal; timeoutMs?: number },
+    opts?: { signal?: AbortSignal; timeoutMs?: number; conversationId?: string },
   ) {
+    const epoch = await taskStorageEpoch()
     await this.ensureConnected(server)
     const client = this.slots.get(server)?.client
     if (!client) throw new Error(`Not connected to "${server}".`)
     return client.callTool({ name: tool, arguments: args }, undefined, {
       signal: opts?.signal,
+      conversationId: opts?.conversationId,
+      taskStorageEpoch: epoch,
       timeout: opts?.timeoutMs ?? REQUEST_TIMEOUT_MS,
     })
+  }
+
+  async modernClient(server: string, extension?: string): Promise<{ client: ModernMcpClient; scope: string }> {
+    await this.ensureConnected(server)
+    const slot = this.slots.get(server)
+    if (!(slot?.client instanceof ModernMcpClient) || !slot.taskScope || slot.status !== 'connected') throw Error('This operation requires a connected modern MCP server.')
+    if (extension && !slot.client.supportsExtension(extension)) throw Error('The MCP server does not advertise this extension.')
+    return { client: slot.client, scope: slot.taskScope }
+  }
+
+  isTaskBusy(id: string): boolean { return this.taskOperations.has(id) }
+
+  async taskOperation(id: string, action: 'get' | 'cancel' | 'respond', signal?: AbortSignal) {
+    if (this.taskOperations.has(id)) throw Error('A task operation is already in progress.')
+    this.taskOperations.add(id)
+    try {
+      const epoch = await taskStorageEpoch()
+      const record = (await listSavedTasks()).find(t => t.id === id)
+      if (!record) throw Error('Unknown task.')
+      if (expiredTask(record)) throw Error('This task has expired on the server.')
+      const method = action === 'respond' ? 'tasks/update' : action === 'cancel' ? 'tasks/cancel' : 'tasks/get'
+      this.assertExtensionAccess(record.server, method)
+      this.assertExtensionAccess(record.server, 'tasks/get')
+      const { client, scope } = await this.modernClient(record.server, TASKS_EXTENSION)
+      const check = () => {
+        if (expiredTask(record)) throw Error('This task has expired on the server.')
+        this.assertExtensionAccess(record.server, method)
+        this.assertExtensionAccess(record.server, 'tasks/get')
+        if (this.slots.get(record.server)?.status !== 'connected' || scope !== record.scope || this.slots.get(record.server)?.client !== client || this.slots.get(record.server)?.taskScope !== scope) throw Error('Task belongs to a different server or credential session. It cannot be resumed with this connection.')
+      }
+      check()
+      if (action === 'cancel') {
+        await client.request('tasks/cancel', { taskId: record.taskId }, { signal }); check()
+        // Acknowledgement is not a terminal state; fetch the server's actual status.
+      }
+      let result = await client.request('tasks/get', { taskId: record.taskId }, { signal }); check()
+      let task = parseTask(result, record.taskId, true)
+      if (action === 'respond') {
+        if (task.status !== 'input_required') throw Error('This task is no longer waiting for input.')
+        const controller = new AbortController()
+        const abort = () => controller.abort(signal?.reason)
+        signal?.addEventListener('abort', abort, { once: true }); if (signal?.aborted) abort()
+        const unsubscribe = this.subscribe(() => { try { check() } catch { controller.abort() } })
+        try {
+          const inputResponses = await collectInputs(result.inputRequests, (params, inputSignal) => elicitationQueue.ask(record.server, params, inputSignal), controller.signal)
+          check()
+          await client.request('tasks/update', { taskId: record.taskId, inputResponses }, { signal: controller.signal }); check()
+        } finally { unsubscribe(); signal?.removeEventListener('abort', abort) }
+        result = await client.request('tasks/get', { taskId: record.taskId }, { signal }); check()
+        task = parseTask(result, record.taskId, true)
+      }
+      if (terminalTask(record) && task.status !== record.status) throw Error('Server changed a terminal task state.')
+      await saveTask({ ...record, ...task, nextPollAt: Date.now() + taskPollDelay(task) }, epoch, true)
+      return result
+    } finally { this.taskOperations.delete(id) }
   }
 
   async readResource(server: string, uri: string, opts?: { signal?: AbortSignal }) {
@@ -486,19 +723,29 @@ export class McpManager {
   async authorize(name: string): Promise<void> {
     const slot = this.slots.get(name)
     if (!slot) throw new Error(`No MCP server named "${name}" is configured.`)
+    const challenge = slot.authChallenge
     this.teardown(name, slot)
+    slot.authChallenge = challenge
     const serverUrl = new URL(slot.entry.url as string)
-    const provider = new ChromeOAuthProvider(name, serverUrl.toString(), { interactive: true })
+    const provider = new ChromeOAuthProvider(name, serverUrl.toString(), { interactive: true, clientMetadataUrl: slot.entry.oauthClientMetadataUrl })
     try {
+      if (slot.authChallenge?.scope) {
+        const previous = await provider.tokens()
+        const scope = [...new Set(`${previous?.scope ?? ''} ${slot.authChallenge.scope}`.split(/\s+/).filter(Boolean))].join(' ')
+        slot.authChallenge = { ...slot.authChallenge, scope }
+        // A refresh cannot grant additional scopes. Force an explicit consent
+        // flow, retaining the issuer-bound client registration but not tokens.
+        await provider.invalidateCredentials('tokens')
+      }
       // 'AUTHORIZED': existing/refreshed tokens suffice — no popup was needed.
       // 'REDIRECT': our provider ran launchWebAuthFlow (awaited, so it has
       // completed by now) and captured the code; a second auth() call
       // exchanges it for tokens, which the provider persists.
-      const result = await auth(provider, { serverUrl })
+      const result = await auth(provider, { serverUrl, fetchFn: provider.fetch, ...slot.authChallenge })
       if (result === 'REDIRECT') {
         const code = provider.takeAuthorizationCode()
         if (!code) throw new Error('Authorization was not completed.')
-        await auth(provider, { serverUrl, authorizationCode: code })
+        await auth(provider, { serverUrl, authorizationCode: code, fetchFn: provider.fetch, ...slot.authChallenge })
       }
     } catch (err) {
       slot.status = 'needs-auth'
@@ -513,13 +760,15 @@ export class McpManager {
   /** Forget a server's tokens/registration and drop to needs-auth. */
   async signOut(name: string): Promise<void> {
     const slot = this.slots.get(name)
-    await clearAuth(name)
     if (slot) {
       this.teardown(name, slot)
+      slot.tools = []; slot.resources = []; slot.prompts = []
       slot.status = 'needs-auth'
       slot.error = undefined
       this.notify()
     }
+    await clearAuth(name)
+    this.schedulePersistCatalogCache()
   }
 
   disconnectAll(): void {
@@ -534,24 +783,11 @@ export class McpManager {
     const data = await chrome.storage.local.get(CATALOG_KEY)
     const cached = data[CATALOG_KEY] as PersistedCatalog | undefined
     if (!cached) return
-    for (const [name, c] of Object.entries(cached)) {
-      const slot = this.slots.get(name)
-      if (slot && slot.tools.length === 0) {
-        slot.tools = c.tools ?? []
-        slot.resources = c.resources ?? []
-        slot.prompts = c.prompts ?? []
-      } else if (!slot) {
-        // Seed a slot so Permissions rows show cached tools before refresh()
-        // classifies it; refresh() will fix status/entry immediately after.
-        this.slots.set(name, {
-          ...this.emptySlot({}),
-          status: 'error',
-          tools: c.tools ?? [],
-          resources: c.resources ?? [],
-          prompts: c.prompts ?? [],
-        })
-      }
+    for (const name of Object.keys(cached)) {
+      if (!this.slots.has(name)) this.slots.set(name, { ...this.emptySlot({}), status: 'error' })
     }
+    // Pre-upgrade snapshots are name-keyed, not account-bound. Their content
+    // cannot safely be exposed before a live, authenticated catalog refresh.
   }
 
   private async persistCatalogCache(): Promise<void> {
