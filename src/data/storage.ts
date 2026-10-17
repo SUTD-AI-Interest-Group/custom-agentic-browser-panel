@@ -5,6 +5,7 @@
 // into a single report and dispatches "clear this one" / "erase everything", so
 // the Data tab never opens a database itself.
 
+import { clearMcpTasks, mcpTasksUsage } from '../mcp/tasks'
 import { clearConversations, conversationsUsage } from './conversations'
 import { clearMemory, memoryUsage } from './memory'
 import { clearMcpArtifacts, mcpArtifactsUsage } from './mcpArtifacts'
@@ -20,7 +21,7 @@ import type { StorageReport, StoreKey, StoreUsage } from './usage'
 
 /** Read every store once and total it up. Counts are dozens, so one pass is cheap. */
 export async function storageReport(): Promise<StorageReport> {
-  const [conversations, screenshots, attachments, mcp, artifacts, memory, skills, research, traces] =
+  const [conversations, screenshots, attachments, mcp, artifacts, memory, skills, research, traces, mcpTasks] =
     await Promise.all([
       conversationsUsage(),
       shotsUsage(),
@@ -31,6 +32,7 @@ export async function storageReport(): Promise<StorageReport> {
       skillsUsage(),
       tasksUsage(),
       tracesUsage(),
+      mcpTasksUsage(),
     ])
   const stores: Record<StoreKey, StoreUsage> = {
     conversations,
@@ -42,6 +44,7 @@ export async function storageReport(): Promise<StorageReport> {
     skills,
     research,
     traces,
+    mcpTasks,
   }
   const total = Object.values(stores).reduce((n, s) => n + s.bytes, 0)
   // estimate() is absent in some contexts; the quota bar simply hides then.
@@ -74,6 +77,9 @@ export async function clearStore(key: StoreKey): Promise<void> {
       return
     case 'attachments':
       await clearAttachments()
+      return
+    case 'mcpTasks':
+      await clearMcpTasks()
       return
     case 'mcp':
       await clearMcpArtifacts()
@@ -126,6 +132,7 @@ const RAW_CLEARERS: Record<StoreKey, () => Promise<void>> = {
   skills: clearSkills,
   research: clearTasks,
   traces: clearTraces,
+  mcpTasks: clearMcpTasks,
 }
 
 /**

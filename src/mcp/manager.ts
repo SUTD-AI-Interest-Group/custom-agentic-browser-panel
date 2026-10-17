@@ -23,7 +23,7 @@ import type { Settings } from '../data/settings'
 import { classifyEntry, mcpSettings, mcpToolPolicy, serverEnabled, type McpServerEntry, type McpUpdateSettings, type McpSettings } from './config'
 import { ChromeOAuthProvider, clearAuth } from './auth'
 import { elicitationQueue, collectInputs } from './elicitation'
-import { TASKS_EXTENSION, parseTask, saveTask, listSavedTasks, expiredTask, taskPollDelay, terminalTask, type SavedTask } from './tasks'
+import { taskStorageEpoch, TASKS_EXTENSION, parseTask, saveTask, listSavedTasks, expiredTask, taskPollDelay, terminalTask, type SavedTask } from './tasks'
 import { ModernMcpClient, LegacyServerError, type SubscriptionState } from './modern'
 
 /** Connection state of one configured server, driving the settings status dot. */
@@ -64,6 +64,7 @@ export interface McpServerRuntime {
   name: string
   status: McpStatus
   protocol?: '2026-07-28' | 'legacy'
+  extensions?: {tasks:boolean; skills:boolean; elicitation:boolean}
   taskScope?: string
   updateScope?: string
   subscriptionState?: SubscriptionState
@@ -167,6 +168,7 @@ export class McpManager {
       name,
       status: s.status,
       protocol: s.client instanceof ModernMcpClient ? '2026-07-28' : s.client ? 'legacy' : undefined,
+      extensions: s.client instanceof ModernMcpClient ? {tasks:s.client.supportsExtension(TASKS_EXTENSION), skills:s.client.supportsExtension('io.modelcontextprotocol/skills'), elicitation:true} : undefined,
       taskScope: s.taskScope,
       updateScope: s.updateScope,
       subscriptionState: s.subscriptionState,
@@ -339,7 +341,7 @@ export class McpManager {
           const task = parseTask(raw)
           const record: SavedTask = { ...task, id: JSON.stringify([name, slot.taskScope, task.taskId]), server: name,
             scope: slot.taskScope, tool: String(params.name), conversationId: options.conversationId, nextPollAt: Date.now() + taskPollDelay(task) }
-          try { await saveTask(record) } catch {
+          try { await saveTask(record, options.taskStorageEpoch) } catch {
             throw Error(`The server started task ${task.taskId}, but local persistence failed. Do not repeat the original tool call; recover the task on the server.`)
           }
           return { resultType: 'complete', content: [{ type: 'text', text: `Task started on ${name}: ${task.taskId}. It continues on the server. Tell the user it is running and wait for them to request results. The MCP tasks panel tracks progress. Do not busy-poll or repeat the original tool call.` }], structuredContent: { taskId: task.taskId, taskRecordId: record.id, status: task.status } }
@@ -625,12 +627,14 @@ export class McpManager {
     args: Record<string, unknown>,
     opts?: { signal?: AbortSignal; timeoutMs?: number; conversationId?: string },
   ) {
+    const epoch = await taskStorageEpoch()
     await this.ensureConnected(server)
     const client = this.slots.get(server)?.client
     if (!client) throw new Error(`Not connected to "${server}".`)
     return client.callTool({ name: tool, arguments: args }, undefined, {
       signal: opts?.signal,
       conversationId: opts?.conversationId,
+      taskStorageEpoch: epoch,
       timeout: opts?.timeoutMs ?? REQUEST_TIMEOUT_MS,
     })
   }
@@ -649,6 +653,7 @@ export class McpManager {
     if (this.taskOperations.has(id)) throw Error('A task operation is already in progress.')
     this.taskOperations.add(id)
     try {
+      const epoch = await taskStorageEpoch()
       const record = (await listSavedTasks()).find(t => t.id === id)
       if (!record) throw Error('Unknown task.')
       if (expiredTask(record)) throw Error('This task has expired on the server.')
@@ -684,7 +689,7 @@ export class McpManager {
         task = parseTask(result, record.taskId, true)
       }
       if (terminalTask(record) && task.status !== record.status) throw Error('Server changed a terminal task state.')
-      await saveTask({ ...record, ...task, nextPollAt: Date.now() + taskPollDelay(task) })
+      await saveTask({ ...record, ...task, nextPollAt: Date.now() + taskPollDelay(task) }, epoch, true)
       return result
     } finally { this.taskOperations.delete(id) }
   }

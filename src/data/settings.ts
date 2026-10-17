@@ -146,6 +146,13 @@ export const TOOL_CATALOG: ToolCatalogEntry[] = [
   // read MCP resources across servers, so they ride the ordinary matrix.
   { name: 'ListMcpResources', group: 'mcp', label: 'List MCP server resources', defaultPolicy: 'always' },
   { name: 'ReadMcpResource', group: 'mcp', label: 'Read an MCP server resource' },
+  { name: 'ListMcpSkills', group: 'mcp', label: 'Discover remote skills' },
+  { name: 'ReadMcpSkill', group: 'mcp', label: 'Load a verified remote skill' },
+  { name: 'ReadMcpSkillFile', group: 'mcp', label: 'Read an approved skill file' },
+  { name: 'ListMcpTasks', group: 'mcp', label: 'List durable task records' },
+  { name: 'GetMcpTask', group: 'mcp', label: 'Read task status and results' },
+  { name: 'CancelMcpTask', group: 'mcp', label: 'Cancel remote task work' },
+
 ]
 
 /** Display order of tool groups in the permission matrix and quick menu. */

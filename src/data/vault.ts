@@ -58,11 +58,11 @@ export async function openSecret(value: string): Promise<string | null> {
 export async function resetVault(): Promise<void> {
   dekPromise = null
   if (typeof indexedDB === 'undefined') return
-  await new Promise<void>((resolve) => {
+  await new Promise<void>((resolve, reject) => {
     const req = indexedDB.deleteDatabase(DB_NAME)
     req.onsuccess = () => resolve()
-    req.onerror = () => resolve()
-    req.onblocked = () => resolve()
+    req.onerror = () => reject(req.error ?? new Error('Vault erasure failed.'))
+    req.onblocked = () => reject(new Error('Vault erasure is blocked by another open context. Close other panels and retry.'))
   })
 }
 

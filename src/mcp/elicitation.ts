@@ -89,3 +89,11 @@ export async function collectInputs(raw: unknown, ask: (params: unknown, signal:
   signal.throwIfAborted()
   return replies
 }
+
+export function elicitationFieldErrors(request: Elicitation, values: Record<string,unknown>): Record<string,string> {
+  if(request.mode !== 'form') return {}
+  return Object.fromEntries(Object.entries(request.requestedSchema.properties).flatMap(([name, field]) => {
+    if(values[name] === undefined) return request.requestedSchema.required?.includes(name) ? [[name,'This field is required.']] : []
+    return new Validator(field as Schema).validate(values[name]).valid ? [] : [[name,'Check this value against the listed requirements.']]
+  }))
+}

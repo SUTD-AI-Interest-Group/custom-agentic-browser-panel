@@ -9,6 +9,7 @@ const ROWS: Array<{ key: StoreKey; label: string }> = [
   { key: 'conversations', label: 'Conversations' },
   { key: 'screenshots', label: 'Screenshots' },
   { key: 'attachments', label: 'Attachments' },
+  { key: 'mcpTasks', label: 'MCP tasks' },
   { key: 'mcp', label: 'MCP content' },
   { key: 'artifacts', label: 'Artifacts' },
   { key: 'memory', label: 'Memory' },
@@ -22,6 +23,7 @@ const CLEAR_EFFECT: Record<StoreKey, string> = {
   conversations: 'Deletes every chat, its screenshots, its attachments, its MCP content and its artifacts.',
   screenshots: 'Deletes every captured image.',
   attachments: 'Deletes every file attached to a message. Old chats show a note in their place.',
+  mcpTasks: 'Deletes local task records. Remote work continues until you cancel it on the server.',
   mcp: 'Deletes media and documents returned by MCP tools.',
   artifacts: 'Deletes every web artifact the agent created.',
   memory: 'Deletes all memories and the episode log.',
@@ -50,6 +52,7 @@ export default function DataTab({
   const [report, setReport] = useState<StorageReport | null>(null)
   // The row whose button is currently armed ("Sure?"), if any.
   const [armed, setArmed] = useState<StoreKey | 'settings' | null>(null)
+  const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
   const [eraseText, setEraseText] = useState('')
 
@@ -70,23 +73,25 @@ export default function DataTab({
 
   async function doClear(key: StoreKey) {
     setBusy(true)
-    await clearStore(key).catch(() => {})
-    setArmed(null)
-    setBusy(false)
-    refresh()
+    setError('')
+    try { await clearStore(key); setArmed(null); refresh() }
+    catch { setError('Could not clear all selected data. Please retry. Some records may already have been removed.') }
+    finally { setBusy(false) }
   }
 
   async function doErase() {
     setBusy(true)
-    await eraseAllData().catch(() => {})
-    setBusy(false)
-    onErased()
+    setError('')
+    try { await eraseAllData(); onErased() }
+    catch { setError('Erasure did not finish. Some data may already have been removed. Please retry.') }
+    finally { setBusy(false) }
   }
 
   const pct = report && report.quota ? Math.min(100, (report.total / report.quota) * 100) : null
 
   return (
     <div className="settings-tabpane">
+      {error && <p role="alert">{error}</p>}
       <Section title="Data & storage">
         <SealedChip scope="all" />
         {!report ? (

@@ -70,7 +70,7 @@ export async function fetchModelList(provider: ProviderConfig): Promise<FetchedM
     headers['anthropic-dangerous-direct-browser-access'] = 'true'
   }
 
-  const res = await fetch(endpoint.url(provider.baseURL), { headers })
+  const res = await fetch(endpoint.url(provider.baseURL), { headers, signal: AbortSignal.timeout(20_000) })
   if (!res.ok) throw new Error(`Request failed (HTTP ${res.status})`)
   const models = parseModelList(kind, await res.json())
   if (models.length === 0) throw new Error('The endpoint returned no models.')

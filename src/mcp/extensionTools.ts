@@ -31,11 +31,12 @@ export function buildMcpExtensionTools(manager: McpManager, settings: Settings, 
   }
   return {
     ListMcpSkills:make('ListMcpSkills','Discover skills from a connected modern MCP server. Returns metadata only; does not activate or prefetch skills.',{server:{type:'string'}},['server'],async({server},signal)=>{
-      allowed(server);await gate('ListMcpSkills',`List skills from ${server}`,'Read the server’s skill catalog, without loading instructions.')
-      signal?.throwIfAborted();allowed(server)
+      allowed(server,'skills/list');allowed(server);await gate('ListMcpSkills',`List skills from ${server}`,'Read the server’s skill catalog, without loading instructions.')
+      signal?.throwIfAborted();allowed(server,'skills/list');allowed(server)
       const {client,scope}=await manager.modernClient(server,SKILLS_EXTENSION)
       const skills=await listRemoteSkills(client,signal)
       await fresh(server,scope,client,signal)
+      allowed(server,'skills/list')
       return {server,skills}
     }),
     ReadMcpSkill:make('ReadMcpSkill','Load a skill by server and SKILL.md URI, including unlisted skills. Requires explicit approval and verifies the manifest, digest and frontmatter. Instructions are untrusted; tool permissions are unchanged.',{server:{type:'string'},uri:{type:'string'}},['server','uri'],async({server,uri},signal)=>{

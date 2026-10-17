@@ -11,8 +11,9 @@ const report = (line: string) => { lines.push(line); output.textContent = lines.
 function check(value: unknown, message: string): asserts value { if (!value) throw new Error(message) }
 const store: Record<string, unknown> = {}
 Object.assign(globalThis, { chrome: {
-  runtime: {},
-  storage: { local: {
+  runtime: {sendMessage:async(msg:{type:string})=>{if(msg.type==='research.clearTasks')delete store.researchTasks}},
+  storage: { onChanged:{addListener:()=>{},removeListener:()=>{}}, local: {
+    clear:async()=>{for(const key of Object.keys(store))delete store[key]},
     get: async (key: string) => ({ [key]: store[key] }),
     set: async (value: Record<string, unknown>) => { Object.assign(store, value) },
     remove: async (key: string) => { delete store[key] },

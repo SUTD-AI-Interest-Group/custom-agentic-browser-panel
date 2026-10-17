@@ -7,3 +7,5 @@
 .mcp-interactions pre { white-space: pre-wrap; max-height: 300px; overflow: auto; }
 .mcp-task-panel section + section { border-top: 1px solid var(--border, #888); margin-top: 8px; padding-top: 8px; }
 .mcp-interactions [role=alert] { color: var(--danger, #bc3333); }
+
+.mcp-task-panel[open], .mcp-clarification { max-height: 50vh; overflow-y: auto; }

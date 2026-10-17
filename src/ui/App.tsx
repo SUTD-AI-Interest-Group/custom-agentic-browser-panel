@@ -426,9 +426,15 @@ export default function App() {
     return () => document.removeEventListener('mousedown', onDown)
   }, [menuOpen])
 
-  function updateSettings(next: Settings) {
-    setSettings(next)
-    void saveSettings(next)
+  const [remoteSkillDraft,setRemoteSkillDraft] = useState<string | null>(null)
+  const settingsWrites = useRef<Promise<void>>(Promise.resolve())
+  function updateSettings(next: Settings): Promise<void> {
+    const write = settingsWrites.current.catch(() => {}).then(async () => {
+      await saveSettings(next)
+      setSettings(next)
+    })
+    settingsWrites.current = write
+    return write
   }
 
   /**
@@ -639,8 +645,11 @@ export default function App() {
             <Chat
               conversationId={id}
               settings={settings}
+              pendingDraft={isVisible ? remoteSkillDraft : null}
+              onDraftHandled={() => setRemoteSkillDraft(null)}
               onUpdateSettings={updateSettings}
               onOpenSettings={() => setShowSettings(true)}
+              onOpenConversation={openConversation}
               onOpenSkills={openSkills}
               onConversationsChanged={refreshConversations}
               // Only the chat on screen can act on a reveal request.
@@ -675,6 +684,7 @@ export default function App() {
       {libraryTab && (
         <Library
           initialTab={libraryTab}
+          onLoadRemoteSkill={text => {setRemoteSkillDraft(text);setLibraryTab(null)}}
           currentConversationId={conversationId}
           onOpenConversation={openConversation}
           onOpenResearch={openResearch}

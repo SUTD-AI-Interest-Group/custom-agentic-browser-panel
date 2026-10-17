@@ -25,6 +25,7 @@ export type SubscriptionState = 'off' | 'connecting' | 'listening' | 'retrying' 
 export interface RequestOptions {
   signal?: AbortSignal
   timeout?: number
+  taskStorageEpoch?: number
   conversationId?: string
   maxResponseBytes?: number
 }

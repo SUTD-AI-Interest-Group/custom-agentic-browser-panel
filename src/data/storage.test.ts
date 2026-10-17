@@ -9,6 +9,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 // table can't silently change what a store's clear actually does. Every sibling
 // module storage.ts composes is mocked — this file tests only the dispatch.
 
+vi.mock('../mcp/tasks', () => ({clearMcpTasks: vi.fn(async () => {}),mcpTasksUsage:vi.fn()}))
 vi.mock('./conversations', () => ({ clearConversations: vi.fn(async () => {}), conversationsUsage: vi.fn() }))
 vi.mock('./memory', () => ({ clearMemory: vi.fn(async () => {}), memoryUsage: vi.fn() }))
 vi.mock('./mcpArtifacts', () => ({ clearMcpArtifacts: vi.fn(async () => {}), mcpArtifactsUsage: vi.fn() }))
@@ -21,6 +22,7 @@ vi.mock('./traces', () => ({ clearTraces: vi.fn(async () => {}), tracesUsage: vi
 vi.mock('./builtinSkills', () => ({ seedBuiltinSkills: vi.fn(async () => {}) }))
 vi.mock('./vault', () => ({ resetVault: vi.fn(async () => {}) }))
 
+import { clearMcpTasks } from '../mcp/tasks'
 import { clearConversations } from './conversations'
 import { clearMemory } from './memory'
 import { clearMcpArtifacts } from './mcpArtifacts'
@@ -40,6 +42,7 @@ const ALL_STORE_KEYS: StoreKey[] = [
   'screenshots',
   'attachments',
   'mcp',
+  'mcpTasks',
   'artifacts',
   'memory',
   'skills',
@@ -93,6 +96,7 @@ describe('eraseAllData', () => {
     expect(clearSkills).toHaveBeenCalledTimes(1)
     expect(clearTasks).toHaveBeenCalledTimes(1)
     expect(clearTraces).toHaveBeenCalledTimes(1)
+    expect(clearMcpTasks).toHaveBeenCalledTimes(1)
     expect(resetVault).toHaveBeenCalledTimes(1)
   })
 
@@ -115,6 +119,7 @@ describe('eraseAllData', () => {
         'screenshots',
         'attachments',
         'mcp',
+  'mcpTasks',
         'artifacts',
         'memory',
         'skills',

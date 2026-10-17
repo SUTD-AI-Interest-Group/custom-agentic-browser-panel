@@ -58,7 +58,7 @@ export default function McpContentCard({ artifactId }: { artifactId: string }) {
   )
 }
 
-function Body({ artifact }: { artifact: McpArtifact }) {
+export function Body({ artifact }: { artifact: Pick<McpArtifact, 'kind' | 'dataUrl' | 'title' | 'text' | 'mimeType'> }) {
   switch (artifact.kind) {
     case 'image':
       return <img className="mcp-content-media" src={artifact.dataUrl} alt={artifact.title} />
