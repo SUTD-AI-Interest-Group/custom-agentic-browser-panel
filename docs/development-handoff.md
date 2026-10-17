@@ -14,7 +14,11 @@ Reconciled 16 October 2026. This index describes the development branch, not the
 
 Implementation, regression tests, browser fixtures and verification reports are versioned together. Historical plans under `docs/superpowers/` are design records rather than a current release checklist.
 
-## GitHub integration state
+## Integration complete — 17 October 2026
+
+PR #4 merged into the release branch at `c471c85`, then PR #2 merged into `main` at `594fb9b`. The merged tree is identical to `dd1462a`. Fresh tests, production builds, dependency audit and targeted browser fixture checks passed on `594fb9b`; see [post-merge verification](verification/2026-10-17-main-merge.md). ChatGPT-provider work and the submitted ZIP remain untouched. The branch snapshot below is retained as historical context.
+
+## GitHub integration state before merging
 
 Verified against GitHub on 16 October:
 
