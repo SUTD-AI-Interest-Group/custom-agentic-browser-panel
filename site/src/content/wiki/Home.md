@@ -28,7 +28,7 @@ simple purpose, simple architecture, simple design, simple implementation.
   host, request, tab, worker, connection and alarm, and how it is released after
   use without cancelling work that should survive panel closure.
 
-The November snapshot is
+The November snapshot at
 [`9180e33`](https://github.com/SUTD-AI-Interest-Group/custom-agentic-browser-panel/commit/9180e33bb35e1cf688a8861443307aacbe6e7b8d)
 was developed on `codex/optimisation-background-cleanup` and is now integrated
 with the newer `main` updates. See the [11 November integration record](https://github.com/SUTD-AI-Interest-Group/custom-agentic-browser-panel/blob/main/docs/verification/2026-11-11-optimisation-merge.md).
