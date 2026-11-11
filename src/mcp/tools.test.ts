@@ -423,3 +423,37 @@ describe('buildMcpTools — a tool discovered after connect (re-invocation refle
     expect(Object.keys(before)).toEqual(['mcp_srv_a'])
   })
 })
+
+it('excludes app-only tools from model discovery', () => {
+  const { manager } = fakeManager([serverRuntime({ name: 'srv', tools: [toolInfo({ name: 'private', meta: { ui: { visibility: ['app'] } } })] })])
+  expect(Object.keys(buildMcpTools(baseOpts(manager, settingsWith({ servers: { srv: { url: 'https://x.test' } } }), fakeApproval(true).gate)))).toEqual([])
+})
+
+it('gates task creation and controls, and maps deferred results through the normal pipeline', async () => {
+  const { manager } = fakeManager([serverRuntime({ name: 'srv', tools: [toolInfo({ name: 'job', taskSupport: 'required' })] })])
+  let starts = 0, controls = 0
+  manager.startTool = async () => { starts++; return { task: { taskId: 't', status: 'working', createdAt: '', lastUpdatedAt: '', ttl: null } } }
+  manager.legacyTaskOperation = async () => { controls++; return { task: { taskId: 't', status: 'completed', createdAt: '', lastUpdatedAt: '', ttl: null }, result: { content: [{ type: 'text', text: 'finished' }] }, args: {} } }
+  const settings = settingsWith({ servers: { srv: { url: 'https://x.test' } } })
+  const denied = buildMcpTools(baseOpts(manager, settings, fakeApproval(false).gate))
+  await (denied.mcp_srv_job as any).execute({}, {})
+  await (denied.mcp_srv_job_task as any).execute({ taskId: 't', action: 'result' }, {})
+  expect([starts, controls]).toEqual([0, 0])
+  const allowed = buildMcpTools(baseOpts(manager, settings, fakeApproval(true).gate))
+  expect(await (allowed.mcp_srv_job as any).execute({}, {})).toMatchObject({ task: { taskId: 't' } })
+  expect(await (allowed.mcp_srv_job_task as any).execute({ taskId: 't', action: 'result' }, {})).toMatchObject({ text: 'finished' })
+  expect([starts, controls]).toEqual([1, 1])
+})
+
+it('keeps full app result metadata in artifact storage, outside model history', async () => {
+  const { getMcpArtifact } = await import('../data/mcpArtifacts')
+  const result = { content: [{ type: 'text', text: 'public' }], _meta: { privateWidgetValue: 'widget-secret' }, structuredContent: { count: 1 } }
+  const { manager } = fakeManager([serverRuntime({ name: 'srv', tools: [toolInfo({ name: 'widget', meta: { ui: { resourceUri: 'ui://widget' } } })] })], { result })
+  manager.readResource = async () => ({ contents: [{ uri: 'ui://widget', mimeType: 'text/html;profile=mcp-app', text: '<p>app</p>' }] })
+  const tools = buildMcpTools(baseOpts(manager, settingsWith({ servers: { srv: { url: 'https://x.test' } } }), fakeApproval(true).gate))
+  const output = await (tools.mcp_srv_widget as any).execute({ q: 'input' }, {})
+  expect(JSON.stringify(output)).not.toContain('widget-secret')
+  expect(output.app.toolInput).toEqual({ q: 'input' })
+  const stored = await getMcpArtifact(output.app.resultArtifactId)
+  expect(JSON.parse(stored!.text!)).toEqual(result)
+})

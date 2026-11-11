@@ -66,6 +66,7 @@ interface Session {
 }
 
 const sessions = new Map<string, Session>()
+const opening = new Map<string, AbortController>()
 
 /** Chrome's wording for "the tab/window this call targeted no longer exists" —
  *  what a dead research tab (SW eviction, the user closing the minimized
@@ -111,9 +112,15 @@ async function openSession(sessionId: string, url: string): Promise<BrowseResult
 
   let session = sessions.get(sessionId)
   if (!session) {
-    const lease = await acquireTab()
-    session = { lease, elements: [], expiresAt: armTtl() }
-    sessions.set(sessionId, session)
+    if (opening.has(sessionId)) return { ok: false, message: 'browse session is already opening' }
+    const controller = new AbortController()
+    opening.set(sessionId, controller)
+    try {
+      const lease = await acquireTab(controller.signal)
+      if (controller.signal.aborted) { lease.release(); return { ok: false, message: 'browse session was cancelled' } }
+      session = { lease, elements: [], expiresAt: armTtl() }
+      sessions.set(sessionId, session)
+    } finally { if (opening.get(sessionId) === controller) opening.delete(sessionId) }
   }
   const nav = await navigateAndWait(session.lease.tabId, url)
   // Fast path only — NOT the real guarantee (see the module header's TOCTOU
@@ -276,6 +283,8 @@ async function observe(session: Session): Promise<ObserveOutcome> {
 
 /** Release the tab and forget the session. Idempotent. */
 export function closeSession(sessionId: string): void {
+  opening.get(sessionId)?.abort()
+  opening.delete(sessionId)
   const session = sessions.get(sessionId)
   if (!session) return
   sessions.delete(sessionId)
@@ -302,7 +311,7 @@ export function reapExpiredSessions(now: number = Date.now()): number {
  *  concurrently-running browse session (and its unsaved page walk) untouched. */
 export function closeSessionsForTask(taskId: string): void {
   const prefix = `${taskId}:`
-  for (const id of [...sessions.keys()]) {
+  for (const id of new Set([...sessions.keys(), ...opening.keys()])) {
     if (id.startsWith(prefix)) closeSession(id)
   }
 }

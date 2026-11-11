@@ -1,5 +1,12 @@
 # Long-Horizon Turns
 
+**11 November 2026 follow-up:** the development snapshot adds durable background
+chat runs and explicit release of continuation-chain resources. Closing the panel
+preserves live runs while releasing parked sessions. See
+[November 2026 Update](November-2026-Update) and
+[Background Work and Cleanup](Background-Work-and-Cleanup) for the integration
+status and the new lifetime rules. The original continuation design follows.
+
 **The problem**, stated in the spec: hitting the step ceiling was *a silent stop*.
 
 > The partial progress renders and the user must manually type "continue". That

@@ -101,7 +101,7 @@ const modelsPath = (auth: ModelsAuth = 'bearer'): ModelsEndpoint => ({
 
 const FOUR: ReasoningEffort[] = ['none', 'low', 'medium', 'high']
 
-const PROFILES: Record<ProviderKind, ProviderProfile> = {
+const PROFILES: Record<Exclude<ProviderKind, 'chatgpt'>, ProviderProfile> = {
   // OpenAI — native Responses API: the only path where reasoning coexists with
   // function tools (chat-completions 400s). reasoningEffort rides providerOptions.
   openai: {
@@ -251,6 +251,12 @@ const PROFILES: Record<ProviderKind, ProviderProfile> = {
 
 /** The capability profile for a provider kind. */
 export function profileFor(kind: ProviderKind): ProviderProfile {
+  if (kind === 'chatgpt') return {
+    ...PROFILES.openai, kind: 'chatgpt',
+    detectReasoning: (id) => /gpt-[56]|^o[134]/i.test(id),
+    // Account catalogs differ. Default effort stays with the service.
+    reasoningLevels: () => ['none', 'low', 'medium', 'high'],
+  }
   return PROFILES[kind]
 }
 

@@ -64,19 +64,19 @@ const MAX_TEXT = 20_000
  * sites in src/tools/research.ts only ever asked for text), deleting the
  * capability beat leaving a warning comment someone could skip past.
  */
-export async function renderPage(url: string): Promise<RenderOutcome> {
+export async function renderPage(url: string, signal?: AbortSignal): Promise<RenderOutcome> {
   // Defense in depth — the SW message handler already guards, re-check here.
   const guard = isFetchableUrl(url)
   if (!guard.ok) return { error: `refused to render (${guard.reason})` }
 
   let lease: TabLease
   try {
-    lease = await acquireTab()
+    lease = await acquireTab(signal)
   } catch (err) {
     return { error: `render failed: ${err instanceof Error ? err.message : String(err)}` }
   }
   try {
-    const nav = await navigateAndWait(lease.tabId, url)
+    const nav = await navigateAndWait(lease.tabId, url, signal)
     // Fast path only — NOT the real guarantee (see the module header's TOCTOU
     // note). Page JS can still redirect the tab during the scroll/settle
     // window below, after this check already passed; this just skips that
@@ -88,6 +88,7 @@ export async function renderPage(url: string): Promise<RenderOutcome> {
     // The real guarantee: readReadableText validates the url it actually read
     // FROM, captured atomically with the content itself — never a url sampled
     // before or after the fact.
+    signal?.throwIfAborted()
     const read = await readReadableText(lease.tabId)
     if (read.blockedReason) return { error: `refused: redirected to a blocked target (${read.blockedReason})` }
     return { text: read.text, title: read.title, finalUrl: read.url }

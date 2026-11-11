@@ -23,6 +23,7 @@ interface Pending {
 
 /** Exported for testing; getPdfEngine() is the real singleton. */
 export class PdfEngine {
+  private idleTimer: ReturnType<typeof setTimeout> | undefined
   private worker: Worker | null = null
   private ready: Promise<void> | null = null
   private pending = new Map<string, Pending>()
@@ -80,10 +81,12 @@ export class PdfEngine {
       )
     } finally {
       releaseTurn()
+      this.idleTimer = setTimeout(() => this.destroy(), 30_000)
     }
   }
 
   private ensure(): Promise<void> {
+    clearTimeout(this.idleTimer)
     if (!this.ready) this.ready = this.boot()
     return this.ready
   }
@@ -96,8 +99,9 @@ export class PdfEngine {
       // without this the ready gate would sit until its timeout for what is
       // an immediate, knowable failure.
       worker.addEventListener('error', (e) => {
-        this.onReady?.(new Error(e.message || 'the PDF worker failed to start'))
-        this.onReady = null
+        const error = new Error(e.message || 'the PDF worker crashed')
+        this.onReady?.(error)
+        this.destroy(error)
       })
       this.worker = worker
       await new Promise<void>((resolve, reject) => {
@@ -138,7 +142,8 @@ export class PdfEngine {
     })
   }
 
-  private destroy() {
+  private destroy(reason?: Error) {
+    clearTimeout(this.idleTimer)
     this.worker?.terminate()
     this.worker = null
     this.ready = null
@@ -147,7 +152,7 @@ export class PdfEngine {
     // ever has the single wedged request to fail cleanly.
     for (const p of this.pending.values()) {
       clearTimeout(p.timer)
-      p.reject(new Error('the PDF engine was torn down'))
+      p.reject(reason ?? new Error('the PDF engine was torn down'))
     }
     this.pending.clear()
   }

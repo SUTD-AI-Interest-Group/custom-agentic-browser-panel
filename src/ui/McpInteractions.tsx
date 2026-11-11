@@ -13,14 +13,14 @@ function choices(field: Field): { value: string; title: string }[] {
   const variants = 'oneOf' in schema ? schema.oneOf : 'anyOf' in schema ? schema.anyOf : undefined
   return Array.isArray(variants) ? variants.map(x => ({ value: x.const, title: x.title ?? x.const })) : []
 }
-function Clarification({ entry }: { entry: PendingElicitation }) {
+function Clarification({ entry, respond = elicitationQueue.respond.bind(elicitationQueue) }: { entry: PendingElicitation; respond?: (id: string, reply: ElicitReply) => void | Promise<void> }) {
   const { request } = entry
   const section = useRef<HTMLElement>(null)
   const [fieldErrors,setFieldErrors] = useState<Record<string,string>>({})
   useEffect(() => {section.current?.querySelector<HTMLElement>('input, select, button')?.focus()},[])
   const [values,setValues]=useState<Record<string,unknown>>(() => request.mode==='form' ? Object.fromEntries(Object.entries(request.requestedSchema.properties).filter(([,f])=>f.default!==undefined).map(([k,f])=>[k,f.default])) : {})
   const [error,setError]=useState(''), [opened,setOpened]=useState(false)
-  const submit=(reply:ElicitReply)=>{if(reply.action==='accept' && request.mode==='form') {const errors=elicitationFieldErrors(request,values);setFieldErrors(errors);const first=Object.keys(errors)[0];if(first){document.getElementById(`mcp-${entry.id}-${first}`)?.focus();return}}try{elicitationQueue.respond(entry.id,reply)}catch(e){setError(e instanceof Error?e.message:String(e))}}
+  const submit=async(reply:ElicitReply)=>{if(reply.action==='accept' && request.mode==='form') {const errors=elicitationFieldErrors(request,values);setFieldErrors(errors);const first=Object.keys(errors)[0];if(first){document.getElementById(`mcp-${entry.id}-${first}`)?.focus();return}}try{await respond(entry.id,reply)}catch(e){setError(e instanceof Error?e.message:String(e))}}
   return <section ref={section} className="mcp-clarification" aria-label={`Clarification from ${entry.server}`}>
     <h3 role="status">{entry.server} needs your input</h3>
     <p>{request.message}</p>
@@ -62,25 +62,43 @@ function TaskPanel({onUse, onOpenConversation}: {onUse?: (text:string)=>void; on
   const [,setConnectionTick]=useState(0)
   useEffect(()=>manager.subscribe(()=>setConnectionTick(n=>n+1)),[manager])
   useEffect(()=>{
-    let alive=true, running=false
-    const retryAfter=new Map<string,number>()
-    const load=()=>{void listSavedTasks().then(t=>{if(alive)setTasks(t)}).catch(e=>{if(alive)setErrors(old=>({...old,storage:String(e)}))})}
-    const tick=async()=>{
-      if(running)return;running=true
+    let alive = true, running = false, dirty = false
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const controller = new AbortController(), retryAfter = new Map<string, number>()
+    const refresh = async () => {
+      dirty = true
+      if (running || !alive) return
+      running = true; clearTimeout(timer)
       try {
-        const records=await listSavedTasks()
-        if(alive)setTasks(records)
-        for(const task of records) {
-          if(!alive)break
-          const server=manager.runtime().find(s=>s.name===task.server)
-          if(manager.isTaskBusy(task.id)||terminalTask(task)||expiredTask(task)||server?.status!=='connected'||server.taskScope!==task.scope||task.nextPollAt>Date.now()||(retryAfter.get(task.id)??0)>Date.now())continue
-          try { await manager.taskOperation(task.id,'get');retryAfter.delete(task.id);if(alive)setErrors(old=>({...old,[task.id]:''})) }
-          catch(e){retryAfter.set(task.id,Date.now()+30_000);if(alive)setErrors(old=>({...old,[task.id]:String(e)}))}
-        }
-      }catch(e){if(alive)setErrors(old=>({...old,storage:String(e)}))}finally{running=false}
+        do {
+          dirty = false
+          const records = await listSavedTasks()
+          if (!alive) return
+          setTasks(records)
+          const eligible = records.filter(task => !terminalTask(task) && !expiredTask(task) && connected(task))
+          for (const task of eligible) {
+            if (!alive) return
+            if (manager.isTaskBusy(task.id) || task.nextPollAt > Date.now() || (retryAfter.get(task.id) ?? 0) > Date.now()) continue
+            try {
+              await manager.taskOperation(task.id, 'get', controller.signal)
+              retryAfter.delete(task.id)
+              if (alive) setErrors(old => ({ ...old, [task.id]: '' }))
+            } catch (error) {
+              retryAfter.set(task.id, Date.now() + 30_000)
+              if (alive) setErrors(old => ({ ...old, [task.id]: String(error) }))
+            }
+          }
+          if (alive && !dirty && eligible.length) {
+            const delay = Math.max(1000, Math.min(...eligible.map(task => Math.max(task.nextPollAt, retryAfter.get(task.id) ?? 0))) - Date.now())
+            timer = setTimeout(() => void refresh(), delay)
+          }
+        } while (alive && dirty)
+      } catch (error) { if (alive) setErrors(old => ({ ...old, storage: String(error) })) }
+      finally { running = false }
     }
-    load(); const unsubscribe=subscribeTasks(load), timer=setInterval(()=>{void tick()},1000)
-    return()=>{alive=false;clearInterval(timer);unsubscribe()}
+    const unsubscribe = subscribeTasks(() => void refresh()), unsubscribeManager = manager.subscribe(() => void refresh())
+    void refresh()
+    return () => { alive = false; controller.abort(); clearTimeout(timer); unsubscribe(); unsubscribeManager() }
   },[manager])
   const run=async(task:SavedTask,action:'get'|'cancel'|'respond')=>{
     setBusy(old=>({...old,[task.id]:true}));setErrors(old=>({...old,[task.id]:''}))
@@ -107,6 +125,34 @@ function TaskPanel({onUse, onOpenConversation}: {onUse?: (text:string)=>void; on
   </details>
 }
 export default function McpInteractions(props: {onUse?: (text:string)=>void; onOpenConversation?: (id:string)=>void}) {
-  const pending=useSyncExternalStore(elicitationQueue.subscribe,elicitationQueue.snapshot)
-  return <div className="mcp-interactions">{pending[0]&&<Clarification key={pending[0].id} entry={pending[0]}/>}<TaskPanel {...props}/></div>
+  const pending = useSyncExternalStore(elicitationQueue.subscribe, elicitationQueue.snapshot)
+  const [background, setBackground] = useState<PendingElicitation[]>([])
+  const [bridgeError, setBridgeError] = useState('')
+  useEffect(() => {
+    if (typeof chrome === 'undefined' || !chrome.runtime?.onMessage || !chrome.runtime.sendMessage) return
+    let alive = true, sequence = 0
+    const load = async () => {
+      const current = ++sequence
+      try {
+        const result = await chrome.runtime.sendMessage({ type: 'mcp.elicitation.list' })
+        if (alive && current === sequence) { setBackground(result?.entries ?? []); setBridgeError('') }
+      } catch (error) { if (alive && current === sequence) setBridgeError(`Clarifications could not be loaded: ${String(error)}`) }
+    }
+    const listener = (message: { type?: string }, sender: chrome.runtime.MessageSender) => {
+      if (sender.id === chrome.runtime.id && message.type === 'mcp.elicitation.changed') void load()
+    }
+    chrome.runtime.onMessage.addListener(listener)
+    void load()
+    return () => { alive = false; chrome.runtime.onMessage.removeListener(listener) }
+  }, [])
+  const respond = async (id: string, reply: ElicitReply) => {
+    const result = await chrome.runtime.sendMessage({ type: 'mcp.elicitation.respond', id, reply })
+    if (!result?.ok) throw new Error(result?.error ?? 'The response could not be sent.')
+    setBackground(entries => entries.filter(entry => entry.id !== id))
+  }
+  return <div className="mcp-interactions">
+    {pending[0] ? <Clarification key={pending[0].id} entry={pending[0]}/> : background[0] ? <Clarification key={background[0].id} entry={background[0]} respond={respond}/> : null}
+    {bridgeError && <p role="alert">{bridgeError}</p>}
+    <TaskPanel {...props}/>
+  </div>
 }

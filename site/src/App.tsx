@@ -62,7 +62,6 @@ export function Footer() {
   return (
     <footer className="footer">
       <div className="shell">
-        <h2 className="footer__statement">Private. Permissioned. Powerful.</h2>
         <div className="footer__bar">
           <a className="nav__mark" href="#/">
             <span className="nav__dot" aria-hidden="true" />

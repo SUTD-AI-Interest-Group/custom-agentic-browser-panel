@@ -1,5 +1,7 @@
+import { hasDomWork, installDomHost } from './domHost'
+import { hasChatWork, installChatHost } from './chatHost'
 // Offscreen document: the headless host for work that outlives — or simply
-// cannot run in — the service worker. Two tenants today: the research pipeline
+// cannot run in — the service worker. Tenants: chat inference, the research pipeline
 // and the dream cycle's generation. Only chrome.runtime messaging + Web APIs are
 // available here — NO chrome.storage/tabs/notifications.
 import { postResearchMsg, type BrowseOp, type BrowseResult, type ResearchMsg } from '../data/researchTasks'
@@ -32,25 +34,34 @@ const HEARTBEAT_MS = 20_000
  */
 const IDLE_REPORT_DELAY_MS = 2_000
 let idleReport: ReturnType<typeof setTimeout> | undefined
+const busy = () => running.size > 0 || dreaming || hasChatWork() || hasDomWork()
 
 /**
  * Tell the service worker this host has nothing left to do, so it can close the
  * document instead of leaving it resident until the browser restarts.
  *
- * This check has to live here: `running` and `dreaming` are the two tenants, and
- * this is the only context that sees both. Called from the settle path of each,
+ * This check has to live here: `running`, `dreaming` and the chat host are the tenants, and
+ * this is the only context that sees all three. Called from the settle path of each,
  * so whichever finishes last is the one that reports idle — and re-checked when
  * the timer fires, so work that arrives in the meantime cancels the shutdown.
  */
 function reportIdleIfDone(): void {
   if (idleReport) clearTimeout(idleReport)
-  if (running.size > 0 || dreaming) return
+  if (busy()) return
   idleReport = setTimeout(() => {
     idleReport = undefined
-    if (running.size > 0 || dreaming) return
-    postResearchMsg({ type: 'offscreen.idle' })
+    if (busy()) return
+    // A close can be deferred by a concurrent dispatch or a transient failure.
+    // Retry while idle so the host cannot become permanently resident.
+    void chrome.runtime.sendMessage({ type: 'offscreen.idle' }).catch(() => {}).finally(reportIdleIfDone)
   }, IDLE_REPORT_DELAY_MS)
 }
+
+installChatHost(reportIdleIfDone)
+installDomHost(reportIdleIfDone)
+chrome.runtime.onMessage.addListener((message, _sender, reply) => {
+  if (message?.type === 'offscreen.status') reply({ busy: busy() })
+})
 
 // Tab brokers (offscreen side): the offscreen host cannot touch tabs, so both the
 // one-shot render and the interactive browse session are round-trips to the SW —
@@ -79,6 +90,7 @@ function roundTrip<T>(
   timedOut: T,
   aborted: T,
 ): Promise<T> {
+  if (signal.aborted) return Promise.resolve(aborted)
   return new Promise<T>((resolve) => {
     const requestId = `${taskId}:${++requestSeq}`
     const cleanup = () => {
@@ -197,6 +209,7 @@ chrome.runtime.onMessage.addListener((msg: ResearchMsg | DreamMsg) => {
       if (ctrl.signal.aborted) return
       postResearchMsg({ type: 'research.heartbeat', taskId: msg.taskId })
     }, HEARTBEAT_MS)
+    ctrl.signal.addEventListener('abort', () => clearInterval(heartbeat), { once: true })
     runResearch({
       taskId: msg.taskId,
       question: msg.question,
@@ -241,8 +254,10 @@ chrome.runtime.onMessage.addListener((msg: ResearchMsg | DreamMsg) => {
         postResearchMsg({ type: 'research.error', taskId: msg.taskId, error: err instanceof Error ? err.message : String(err) })
       })
       .finally(() => {
+        // Also settle any speculative/unawaited broker requests from the run.
+        ctrl.abort()
         clearInterval(heartbeat)
-        running.delete(msg.taskId)
+        if (running.get(msg.taskId) === ctrl) running.delete(msg.taskId)
         reportIdleIfDone()
       })
   } else if (msg?.type === 'research.cancel') {
@@ -262,3 +277,5 @@ chrome.runtime.onMessage.addListener((msg: ResearchMsg | DreamMsg) => {
   }
 })
 console.info('[offscreen] research + dream host loaded')
+// A failed dispatch can leave a newly-created host without any tenant.
+reportIdleIfDone()

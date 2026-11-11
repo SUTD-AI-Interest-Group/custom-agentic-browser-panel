@@ -2,7 +2,8 @@ import 'fake-indexeddb/auto'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { resetVault } from './vault'
 import { isSealed } from './vaultFormat'
-import { defaultSettings, loadSettings, saveSettings, type Settings } from './settings'
+import { TOOL_CONTEXT_GUIDANCE } from './promptGuidance'
+import { DEFAULT_SYSTEM_PROMPT, defaultSettings, loadSettings, saveSettings, type Settings } from './settings'
 
 // Minimal chrome.storage.local stub backed by a plain object — the repo's
 // established per-file pattern (see src/ui/tabChats.test.ts).
@@ -136,5 +137,32 @@ describe('settings storage sealing', () => {
     await saveSettings(loaded)
     const roundTripped = await loadSettings()
     expect(roundTripped.providers[0].apiKey).toBe('sk-live-1')
+  })
+})
+
+
+describe('response preference settings', () => {
+  it('defaults older installs to visual mode off', async () => {
+    const store = stubChromeStorage()
+    const { visualResponse2, ...oldSettings } = defaultSettings()
+    store.settings = oldSettings
+    expect((await loadSettings()).visualResponse2).toBe(false)
+  })
+
+  it('persists visual mode both on and off without modifying a custom prompt', async () => {
+    stubChromeStorage()
+    for (const visualResponse2 of [true, false]) {
+      await saveSettings({ ...defaultSettings(), systemPrompt: 'Custom instructions', visualResponse2 })
+      const loaded = await loadSettings()
+      expect(loaded.visualResponse2).toBe(visualResponse2)
+      expect(loaded.systemPrompt).toBe('Custom instructions')
+    }
+  })
+
+  it('upgrades the previous unedited Lychee default', async () => {
+    const store = stubChromeStorage()
+    const previousDefault = DEFAULT_SYSTEM_PROMPT.replace(`${TOOL_CONTEXT_GUIDANCE}\n\n`, '')
+    store.settings = { ...defaultSettings(), systemPrompt: previousDefault }
+    expect((await loadSettings()).systemPrompt).toBe(DEFAULT_SYSTEM_PROMPT)
   })
 })

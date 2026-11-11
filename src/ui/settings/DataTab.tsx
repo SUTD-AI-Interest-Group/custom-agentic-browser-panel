@@ -52,14 +52,14 @@ export default function DataTab({
   const [report, setReport] = useState<StorageReport | null>(null)
   // The row whose button is currently armed ("Sure?"), if any.
   const [armed, setArmed] = useState<StoreKey | 'settings' | null>(null)
-  const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
   const [eraseText, setEraseText] = useState('')
 
   function refresh() {
     void storageReport()
       .then(setReport)
-      .catch(() => setReport(null))
+      .catch(error => setError(error instanceof Error ? error.message : String(error)))
   }
   useEffect(refresh, [])
 
@@ -73,7 +73,7 @@ export default function DataTab({
 
   async function doClear(key: StoreKey) {
     setBusy(true)
-    setError('')
+    setError(null)
     try { await clearStore(key); setArmed(null); refresh() }
     catch { setError('Could not clear all selected data. Please retry. Some records may already have been removed.') }
     finally { setBusy(false) }
@@ -81,7 +81,7 @@ export default function DataTab({
 
   async function doErase() {
     setBusy(true)
-    setError('')
+    setError(null)
     try { await eraseAllData(); onErased() }
     catch { setError('Erasure did not finish. Some data may already have been removed. Please retry.') }
     finally { setBusy(false) }
@@ -91,11 +91,11 @@ export default function DataTab({
 
   return (
     <div className="settings-tabpane">
-      {error && <p role="alert">{error}</p>}
+      {error && <div className="surface-error" role="alert">{error}<button className="btn small" onClick={() => { setError(null); refresh() }}>Retry</button></div>}
       <Section title="Data & storage">
         <SealedChip scope="all" />
         {!report ? (
-          <p className="hint">Measuring…</p>
+          !error && <p className="hint" role="status">Measuring…</p>
         ) : (
           <>
             <div className="usage-head">

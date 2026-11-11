@@ -1,3 +1,4 @@
+import { drawingImage, drawingCanvas, drawingContext, canvasDataUrl } from '../platform/canvas'
 // Screenshots the agent took, in their own IndexedDB database (extension
 // origin). Kept out of the conversations DB on purpose: a transcript is loaded
 // in full every time a chat is opened, and a screenshot-heavy chat would drag
@@ -207,22 +208,18 @@ function approxBytes(dataUrl: string): number {
 
 /** Shrink a PNG data URL to a thumbnail small enough to sit in the transcript. */
 export async function makeThumb(dataUrl: string): Promise<string> {
-  const img = await new Promise<HTMLImageElement>((resolve, reject) => {
-    const i = new Image()
-    i.onload = () => resolve(i)
-    i.onerror = () => reject(new Error('Failed to decode the screenshot.'))
-    i.src = dataUrl
-  })
-  const scale = Math.min(1, THUMB_SIDE / Math.max(img.naturalWidth, img.naturalHeight))
-  const canvas = document.createElement('canvas')
-  canvas.width = Math.max(1, Math.round(img.naturalWidth * scale))
-  canvas.height = Math.max(1, Math.round(img.naturalHeight * scale))
-  const ctx = canvas.getContext('2d')
+  const img = await drawingImage(dataUrl)
+  const scale = Math.min(1, THUMB_SIDE / Math.max(img.width, img.height))
+  const canvas = drawingCanvas()
+  canvas.width = Math.max(1, Math.round(img.width * scale))
+  canvas.height = Math.max(1, Math.round(img.height * scale))
+  const ctx = drawingContext(canvas)
   if (!ctx) throw new Error('Canvas is unavailable.')
   ctx.drawImage(img, 0, 0, canvas.width, canvas.height)
   // JPEG, not PNG: the thumbnail is decoration, and PNG would keep it ~5x larger
   // inside a record that is read on every chat open.
-  return canvas.toDataURL('image/jpeg', 0.72)
+  img.close()
+  return canvasDataUrl(canvas, 'image/jpeg', 0.72)
 }
 
 /**

@@ -1,5 +1,5 @@
-import { test, expect } from 'vitest'
-import { parseModelList } from './modelList'
+import { test, expect, vi } from 'vitest'
+import { parseModelList, fetchModelList } from './modelList'
 
 test('parses the OpenAI-shaped list (OpenAI / Groq / custom / LM Studio)', () => {
   const json = { object: 'list', data: [{ id: 'gpt-4o' }, { id: 'gpt-5.6-luna' }] }
@@ -39,4 +39,16 @@ test('dedupes ids and skips malformed rows', () => {
 test('returns [] for an unexpected shape rather than throwing', () => {
   expect(parseModelList('openai', { oops: true })).toEqual([])
   expect(parseModelList('openai', null)).toEqual([])
+})
+
+test('owner cancellation aborts a pending model discovery request', async () => {
+  const controller = new AbortController()
+  vi.stubGlobal('fetch', vi.fn((_url, options) => new Promise((_resolve, reject) => {
+    options.signal.addEventListener('abort', () => reject(options.signal.reason), { once: true })
+  })))
+  try {
+    const pending = fetchModelList({ id: 'local', name: 'Local', kind: 'custom', baseURL: 'http://127.0.0.1:1234/v1', apiKey: '', models: [] }, controller.signal)
+    controller.abort()
+    await expect(pending).rejects.toMatchObject({ name: 'AbortError' })
+  } finally { vi.unstubAllGlobals() }
 })

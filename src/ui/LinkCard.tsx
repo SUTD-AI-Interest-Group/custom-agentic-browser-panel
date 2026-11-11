@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import type { LinkRef } from './blocks'
 import { getLinkPreview, type LinkPreview } from '../platform/linkPreview'
-import { faviconUrl } from './Chat'
+import { faviconUrl } from './favicon'
 import { hostOfLink } from './linkHost'
 
 // A run of standalone links, each a card: favicon + domain + link text shown
@@ -25,6 +25,8 @@ function LinkCard({ link }: { link: LinkRef }) {
 
   useEffect(() => {
     let live = true
+    setPreview(null)
+    setImgOk(true)
     void getLinkPreview(link.url).then((p) => {
       if (live) setPreview(p)
     })

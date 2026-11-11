@@ -2,6 +2,11 @@
 
 **[Engineering Log](Home)**
 
+**Latest work**
+- [November 2026 Update](November-2026-Update)
+- [Simplifying Lychee](Simplifying-Lychee)
+- [Background Work and Cleanup](Background-Work-and-Cleanup)
+
 **Start here**
 - [Design-AI Methodology](Design-AI-Methodology)
 - [Origins and Goals](Origins-and-Goals)

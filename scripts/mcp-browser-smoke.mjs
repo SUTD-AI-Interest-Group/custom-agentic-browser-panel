@@ -1,7 +1,7 @@
 // Local-only conformance fixture. Never proxies a real MCP server or account.
 import { createHash } from 'node:crypto'
 import { createServer } from 'node:http'
-import { mkdtemp, readFile } from 'node:fs/promises'
+import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { build } from 'vite'
@@ -91,3 +91,11 @@ const server = createServer(async (req, res) => {
   } catch (error) { res.writeHead(500); res.end(String(error)) }
 })
 server.listen(0, '127.0.0.1', () => { origin = `http://127.0.0.1:${server.address().port}`; console.log(origin) })
+
+async function shutdown() {
+  server.closeAllConnections()
+  await new Promise(resolve => server.close(resolve))
+  await rm(outDir, { recursive: true, force: true })
+}
+process.once('SIGTERM', () => { void shutdown() })
+process.once('SIGINT', () => { void shutdown() })

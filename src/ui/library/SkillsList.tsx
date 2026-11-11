@@ -9,9 +9,11 @@ import SkillEditor, { type EditorMode } from '../SkillEditor'
 export default function SkillsList() {
   const [skills, setSkills] = useState<Skill[]>([])
   const [editor, setEditor] = useState<EditorMode | null>(null)
+  const [error, setError] = useState<string | null>(null)
 
   function refresh() {
-    void listSkills().then(setSkills)
+    setError(null)
+    void listSkills().then(setSkills).catch(error => setError(error instanceof Error ? error.message : String(error)))
   }
   useEffect(refresh, [])
 
@@ -29,18 +31,14 @@ export default function SkillsList() {
 
   return (
     <div className="library-skills">
+      {error && <div className="surface-error" role="alert">{error}<button className="btn small" onClick={refresh}>Retry</button></div>}
       <div className="library-skills-top">
-        <p className="hint">
-          Skills are reusable instruction sets. Run one by typing <code>/name</code> in chat, or let the
-          agent load a relevant one on its own. Tip: type <code>/create-skill</code> in chat to build one
-          with the agent.
-        </p>
         <button className="btn primary small" onClick={() => setEditor({ kind: 'new' })}>
           New skill
         </button>
       </div>
       {skills.length === 0 ? (
-        <div className="library-empty">No skills yet — click “New skill” to create your first.</div>
+        <div className="library-empty">No skills</div>
       ) : (
         <div className="library-list">
           {skills.map((s) => (
@@ -66,9 +64,6 @@ export default function SkillsList() {
                 <span className="library-row-title">{s.name}</span>
                 <span className="library-row-desc">{s.description}</span>
               </div>
-              <span className={`skill-badge ${s.source}`}>
-                {s.source === 'builtin' ? 'Built-in' : 'Custom'}
-              </span>
             </div>
           ))}
         </div>

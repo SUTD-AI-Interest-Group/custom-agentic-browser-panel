@@ -11,12 +11,15 @@ import { profileFor } from '../../data/providerProfiles'
 import { fetchModelList } from '../../platform/modelList'
 import { resolveModelRefresh } from './modelRefresh'
 import { Section, Select } from './primitives'
+import ChatGPTProvider from './ChatGPTProvider'
+import { companionCall, type ChatGPTSession } from '../../platform/chatgpt'
 import { SealedChip } from './SealedChip'
 
 // Common endpoints, offered as one-click starting points, each tagged with the
 // `kind` that selects its capability profile. Anything not listed still works via
 // "Custom" (the generic OpenAI-compatible profile).
 const PRESETS: Array<Pick<ProviderConfig, 'name' | 'baseURL' | 'kind'> & { models: string[] }> = [
+  { name: 'ChatGPT plan', baseURL: 'https://api.openai.com/v1', kind: 'chatgpt', models: [] },
   { name: 'OpenAI', baseURL: 'https://api.openai.com/v1', kind: 'openai', models: ['gpt-4o-mini'] },
   { name: 'Anthropic', baseURL: 'https://api.anthropic.com/v1', kind: 'anthropic', models: ['claude-sonnet-5'] },
   { name: 'OpenRouter', baseURL: 'https://openrouter.ai/api/v1', kind: 'openrouter', models: [] },
@@ -65,16 +68,10 @@ function ModelRates({
   return (
     <div className="model-rates">
       <button className="link-btn tiny" aria-expanded={open} onClick={() => setOpen((o) => !o)}>
-        {open ? 'Hide rates & limits' : 'Rates & context limits (optional)'}
+        Rates ($/million tokens) & context limits
       </button>
       {open && (
         <>
-          <p className="hint">
-            Rates are dollars per <strong>million</strong> tokens, copied from your provider's
-            pricing page — leave blank to show token counts without a cost. <strong>Context</strong>{' '}
-            is the model's window in tokens; older turns are summarized as it fills. Blank uses a
-            conservative default ({fallbackContext.toLocaleString()}).
-          </p>
           <div className="model-rates-grid">
             <span />
             {RATE_FIELDS.map((f) => (
@@ -83,7 +80,7 @@ function ModelRates({
               </span>
             ))}
             <span className="model-rates-head" title="Context window, in tokens">
-              ctx
+              Context
             </span>
             {models.map((modelId) => {
               const price = resolveModelPrice(provider, modelId)
@@ -152,6 +149,7 @@ export default function ProvidersTab({
   const [open, setOpen] = useState<Set<string>>(new Set())
   // "Refresh models" state: the provider id currently loading, plus the last
   // result/error line per provider id.
+  const [removeNotice, setRemoveNotice] = useState('')
   const [refreshingId, setRefreshingId] = useState<string | null>(null)
   const [refreshMsg, setRefreshMsg] = useState<Record<string, string>>({})
   // Always the latest `draft` prop, for refreshModels's async completion to
@@ -278,7 +276,20 @@ export default function ProvidersTab({
     }
   }
 
-  function removeProvider(id: string) {
+  async function removeProvider(id: string) {
+    setRemoveNotice('')
+    const provider = draftRef.current.providers.find(p => p.id === id)
+    if (provider?.kind === 'chatgpt') {
+      try {
+        const result = await companionCall<ChatGPTSession>('signOut', id)
+        if (!result.revoked) {
+          setRemoveNotice('Provider removed and local tokens cleared. Remote revocation was not confirmed; disconnect Lychee in ChatGPT settings.')
+        }
+      } catch {
+        setRemoveNotice('Provider removed from Lychee. The companion could not confirm sign-out, so its local tokens may remain. Disconnect Lychee in ChatGPT settings and see companion setup for local credential removal.')
+      }
+    }
+    const draft = draftRef.current
     commit({
       ...draft,
       providers: draft.providers.filter((p) => p.id !== id),
@@ -294,11 +305,11 @@ export default function ProvidersTab({
     <div className="settings-tabpane">
       <Section
         title="Providers"
-        hint="Any OpenAI-compatible endpoint. Keys stay in your browser, encrypted at rest, and are sent only to that endpoint."
         action={<SealedChip scope="providers" />}
       >
+        {removeNotice && <p className="hint" role="status">{removeNotice}{' '}<a href="https://chatgpt.com/settings/usage" target="_blank" rel="noreferrer">Manage app access</a></p>}
         {draft.providers.length === 0 && (
-          <p className="hint">No providers yet — add one below to get started.</p>
+          <p className="hint">No providers</p>
         )}
 
         {draft.providers.map((p) => {
@@ -317,9 +328,9 @@ export default function ProvidersTab({
                   />
                 </svg>
                 <span className="provider-name">{p.name || 'Unnamed provider'}</span>
-                {active && <span className="provider-active">Active</span>}
+                {active && <span className="provider-active" aria-label="Selected provider">✓</span>}
                 <span className="provider-meta">
-                  {hostLabel(p.baseURL)} · {p.models.length}{' '}
+                  {p.kind === 'chatgpt' ? 'ChatGPT plan' : hostLabel(p.baseURL)} · {p.models.length}{' '}
                   {p.models.length === 1 ? 'model' : 'models'}
                 </span>
               </button>
@@ -351,6 +362,14 @@ export default function ProvidersTab({
                       </svg>
                     </button>
                   </div>
+                  {p.kind === 'chatgpt' ? <>
+                    <ChatGPTProvider provider={p} onChange={(patch) => {
+                      const current = draftRef.current
+                      if (!current.providers.some(q => q.id === p.id)) return
+                      commit({ ...current, providers: current.providers.map(q => q.id === p.id ? { ...q, ...patch } : q) })
+                    }} />
+                    {refreshMsg[p.id] && <p className="hint" role="status">{refreshMsg[p.id]}</p>}
+                  </> : <>
                   <label>
                     Base URL
                     <input
@@ -392,6 +411,8 @@ export default function ProvidersTab({
                       {refreshMsg[p.id] && <span className="hint">{refreshMsg[p.id]}</span>}
                     </div>
                   </div>
+                  </>}
+                  {p.kind !== 'chatgpt' && <>
                   <ModelRates
                     provider={p}
                     onChange={(modelId, field, raw) => updateModelPrice(p.id, modelId, field, raw)}
@@ -416,11 +437,7 @@ export default function ProvidersTab({
                     <option value="medium">medium</option>
                     <option value="high">high</option>
                   </Select>
-                  <p className="hint">
-                    Sent as <code>reasoning_effort</code>. Set to <code>none</code> for an OpenAI
-                    gpt-5 reasoning model, whose default effort is rejected alongside the agent's
-                    tools; leave on <em>Provider default</em> otherwise.
-                  </p>
+                  </>}
                 </div>
               )}
             </div>
@@ -438,7 +455,6 @@ export default function ProvidersTab({
 
       <Section
         title="Chat naming"
-        hint="Chats are named from their first message once the reply lands. A small, fast model does this best — a reasoning model can spend 20s and thousands of thinking tokens on four words."
       >
         <Select
           label="Model"

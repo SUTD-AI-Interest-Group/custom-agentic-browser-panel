@@ -9,7 +9,8 @@ research* something properly while you get on with your day.
 
 The whole application was scaffolded in a single commit — `217a8e2`, *"Agent chat
 side panel: onboarding, memory dreaming, screenshots, @mentions"* — on
-10 July 2026. Everything in this wiki is what happened over the next three days.
+10 July 2026. The original entries covered the first few days; later entries
+follow the project through the [November 2026 update](November-2026-Update).
 
 ## Two constraints that decided everything else
 
@@ -21,9 +22,13 @@ The panel calls whatever OpenAI-compatible endpoint you configure, directly, fro
 the browser. There is no server of ours in the path — no proxy, no key escrow, no
 telemetry funnel.
 
-This is a privacy position first: **your API key lives in
-`chrome.storage.local` and is sent to exactly one place — the endpoint you
-chose.** But it is also a hard engineering constraint, and it bit immediately:
+This is a privacy position first: **the API-key provider connects directly to
+the endpoint you chose.** The original local-storage implementation later gained
+an envelope-encryption vault; see [Security and the Permission Model](Security-and-the-Permission-Model).
+The November development branch also includes an optional local native companion
+with separate credential storage. Neither change introduces a Lychee-hosted
+backend into that implementation. Direct browser access is also a hard
+engineering constraint, and it bit immediately:
 
 - Direct calls to arbitrary API hosts are a CORS violation for any normal web
   page. What makes them legal here is the extension manifest's
@@ -66,8 +71,9 @@ live**, and choose how much of your browsing the agent may see.
 The live test is the part we'd defend hardest. `testModel()` fires one tiny
 completion and **you cannot proceed until it comes back `ok`.** A typo'd base URL
 or a dead key becomes a clear error on step two, instead of a mystifying broken
-chat five minutes later. It has never needed a bug fix — no commit has touched
-`Onboarding.tsx` since the day it was written, other than a directory move.
+chat five minutes later. The November pass tightened the test's lifetime:
+changing provider, going back or leaving onboarding cancels the old request, so
+a late success cannot validate a different draft. See [Simplifying Lychee](Simplifying-Lychee).
 
 The visibility choice made in that same wizard isn't cosmetic either. Choosing
 *"only my current tab"* doesn't hide a button — it **deletes `ReadTabs` from the

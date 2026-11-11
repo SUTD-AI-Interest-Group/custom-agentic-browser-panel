@@ -5,6 +5,29 @@ got wrong twice.
 
 ---
 
+## From the November optimisation pass
+
+**A hidden component can still own expensive work.** Retaining chats preserves
+drafts and background turns, but selection listeners, focus handling and UI clocks
+must follow visibility. Mounting and visibility answer different questions.
+
+**A cache needs an idle lifetime as well as a size limit.** Three retained PDFs
+can hold source bytes and rendering workers indefinitely. Reference counts protect
+active readers; idle eviction releases what nobody is using.
+
+**Subscribe before reading.** Replacing polling with notifications creates a new
+failure if a change can land between the first read and subscription. Commit
+notifications, serialized reads and active-only recovery checks belong together.
+
+**Cancellation needs a path to every resource the job owns.** A cancelled task
+can still hold a model socket, heartbeat or place in a tab-lease queue. The browser
+fixture needs to observe those resources, including the case where another task
+must keep running.
+
+These findings are documented in [Simplifying Lychee](Simplifying-Lychee) and
+[Background Work and Cleanup](Background-Work-and-Cleanup), with measurements,
+source links and the pushed branch's integration status.
+
 ## On agents
 
 **The interaction between two safe systems is not automatically safe.**

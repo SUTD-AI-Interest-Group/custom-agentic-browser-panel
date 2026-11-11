@@ -1,6 +1,6 @@
-import { useEffect, useState } from 'react'
-import { listTasks, type ResearchStatus, type ResearchTask } from '../../data/researchTasks'
+import { type ResearchStatus,type ResearchTask } from '../../data/researchTasks'
 import { relativeTime } from '../../platform/time'
+import { useResearchTasks } from '../useResearchTasks'
 
 // The Library's Research tab: every background-research task across all chats,
 // newest first. Clicking a row navigates to the conversation the research was
@@ -17,29 +17,10 @@ const STATUS_LABEL: Record<ResearchStatus, string> = {
 }
 
 export default function ResearchList({ onOpen }: { onOpen: (task: ResearchTask) => void }) {
-  const [tasks, setTasks] = useState<ResearchTask[]>([])
-
-  // Mirror Chat's loader: read persisted tasks, then refresh off storage
-  // changes so a task that finishes while the Library is open updates live.
-  useEffect(() => {
-    let cancelled = false
-    const load = () =>
-      listTasks().then((t) => {
-        if (!cancelled) setTasks(t)
-      })
-    void load()
-    const onChanged = (changes: { [k: string]: chrome.storage.StorageChange }, area: string) => {
-      if (area === 'local' && changes.researchTasks) void load()
-    }
-    chrome.storage.onChanged.addListener(onChanged)
-    return () => {
-      cancelled = true
-      chrome.storage.onChanged.removeListener(onChanged)
-    }
-  }, [])
+  const tasks = useResearchTasks()
 
   if (tasks.length === 0) {
-    return <div className="library-empty">No research yet — start one with /research in chat.</div>
+    return <div className="library-empty">No research</div>
   }
 
   return (

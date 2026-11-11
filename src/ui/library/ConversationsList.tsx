@@ -37,6 +37,8 @@ export default function ConversationsList({
 }) {
   const [items, setItems] = useState<ConversationSummary[]>([])
   const [query, setQuery] = useState('')
+  const [error, setError] = useState<string | null>(null)
+  const reportError = (error: unknown) => setError(error instanceof Error ? error.message : String(error))
   // Id of the row currently showing the rename input, plus its live draft text.
   const [renamingId, setRenamingId] = useState<string | null>(null)
   const [renameValue, setRenameValue] = useState('')
@@ -48,7 +50,7 @@ export default function ConversationsList({
   const refresh = useCallback(() => {
     void listConversations()
       .then(setItems)
-      .catch(() => {})
+      .catch(reportError)
   }, [])
   useEffect(refresh, [refresh])
 
@@ -63,6 +65,7 @@ export default function ConversationsList({
   async function remove(e: React.MouseEvent, id: string) {
     e.stopPropagation()
     if (!window.confirm('Delete this conversation? This can’t be undone.')) return
+    setError(null)
     try {
       await deleteConversation(id)
       // The per-conversation stores cascade here (their clear-all path lives in
@@ -75,7 +78,8 @@ export default function ConversationsList({
         deleteArtifactsForConversation(id).catch(() => {}),
         deleteTracesForConversation(id).catch(() => {}),
       ])
-    } finally {
+    } catch (error) { reportError(error) }
+    finally {
       refresh()
       onConversationsChanged()
     }
@@ -83,9 +87,11 @@ export default function ConversationsList({
 
   async function togglePinned(e: React.MouseEvent, id: string) {
     e.stopPropagation()
+    setError(null)
     try {
       await togglePin(id)
-    } finally {
+    } catch (error) { reportError(error) }
+    finally {
       refresh()
     }
   }
@@ -100,15 +106,18 @@ export default function ConversationsList({
     const title = renameValue.trim()
     setRenamingId(null)
     if (!title) return
+    setError(null)
     try {
       await renameConversation(id, title)
-    } finally {
+    } catch (error) { reportError(error) }
+    finally {
       refresh()
       onConversationsChanged()
     }
   }
 
   if (items.length === 0) {
+    if (error) return <div className="surface-error" role="alert">{error}<button className="btn small" onClick={() => { setError(null); refresh() }}>Retry</button></div>
     return <div className="library-empty">No conversations yet.</div>
   }
 
@@ -118,6 +127,7 @@ export default function ConversationsList({
     // input) above a non-scrolling .library-list — see styles.css's comment
     // on `.library > .library-list, .library-skills`.
     <div className="library-conversations">
+      {error && <p className="surface-error" role="alert">{error}</p>}
       <div className="library-conversations-top">
         <input
           className="library-search"
@@ -140,6 +150,7 @@ export default function ConversationsList({
               tabIndex={0}
               onClick={() => onOpen(c.id)}
               onKeyDown={(e) => {
+                if (e.target !== e.currentTarget) return
                 if (e.key === 'Enter' || e.key === ' ') {
                   e.preventDefault()
                   onOpen(c.id)

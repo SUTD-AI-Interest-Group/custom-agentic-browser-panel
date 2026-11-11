@@ -242,6 +242,47 @@ model here, so it's exhaustively unit-tested.
 Finished reports cite their sources as inline favicon chips, and a system
 notification tells you when one lands.
 
+## Switching tabs during a chat
+
+Switch browser tabs freely: chat preparation and
+model generation continue on the original tab's conversation. A Chrome system
+notification announces completion when that chat is out of view; clicking it
+returns to the original tab. Chrome/OS notification settings control whether the
+toast is shown. The six most recently viewed chats retain their mounted views,
+including drafts and scroll position, and running chats are retained regardless
+of that limit. Context-menu actions are handled only by the visible chat.
+
+Page-control actions and screenshots that require a foreground tab still pause
+until you return, and approval gates still apply.
+
+**Closing the panel keeps an active answer generating.** Inference runs in the
+extension's offscreen host. Progress and the final reply are saved in IndexedDB;
+reopening attaches to the existing run or shows its saved answer. When the panel
+is closed, Chrome sends a completion notification. Keep Chrome running: quitting
+or reloading the extension interrupts inference.
+
+Tools run in a background executor with the same permission policies. Tools set
+to **Always**, or already granted for the chat/turn, continue with the panel
+closed. Calls that require approval wait at the approval gate and send a Chrome
+notification. Reopen to **Allow** or **Deny** the saved request; answering resumes
+the same call without another model request. Closing the panel again leaves the
+approval pending. Once-only confirmations still require approval every time.
+
+Browser tools run in the service worker; the code sandbox and PDF processing use
+the offscreen document. Screenshots and page control retain their visible-tab
+requirements. Worker interruption reports an unknown tool outcome instead of
+silently repeating an action. Durable MCP tasks retain their separate completion
+queue.
+
+Browser regression: build, then run `node scripts/test-background-chat-browser.mjs`
+with `CHROME_BIN` if needed. It uses a local streaming model fixture and captures
+notification dispatch without displaying OS toasts.
+`node scripts/test-closed-panel-chat-browser.mjs` additionally destroys and
+reopens the panel, checks reconnection, Stop and background tool continuation.
+`node scripts/test-background-tools-browser.mjs` checks sandbox execution, tab
+reads, screenshot capture, PDF processing and durable approval/denial using only
+a local scripted model.
+
 ## Long-horizon turns
 
 A turn is a continuation chain: one 24-step budget bounds *all* activity. As it
@@ -259,11 +300,11 @@ model's copy is condensed. If the window turns out to be smaller than configured
 a context-length rejection is caught and the same fold runs as a retry, instead
 of the turn simply dying. Context limits are per model in Settings → Providers.
 
-**A turn survives the panel closing.** The transcript used to persist only once a
-turn finished, so closing the side panel mid-answer lost the reply *and* your
-message. Turns are now checkpointed as they stream; reopening offers **Resume /
-Discard**. A resumed turn deliberately does not inherit any page-control
-permission — the page has probably moved on, so it asks again.
+**Interrupted turns retain their progress.** An active background answer resumes
+its display without another model request when you reopen. If Chrome or the
+extension shuts down, the last saved text remains and the chat reports the
+interruption. Older interrupted-turn checkpoints retain **Resume / Discard**.
+Resumed work never inherits a page-control permission.
 
 ## Seeing what a turn did
 

@@ -1,5 +1,11 @@
 # Memory and Dreaming
 
+**11 November 2026 follow-up:** memory generation is now counted alongside chat,
+research and DOM work when deciding whether the shared offscreen host can close.
+The configured consolidation schedule remains active even when other task queues
+are empty. See [Background Work and Cleanup](Background-Work-and-Cleanup) for the
+integrated implementation and its verification.
+
 **Goal.** An assistant that "wakes up already knowing the user" — without an
 embeddings backend, without a server, entirely in IndexedDB.
 

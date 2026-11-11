@@ -1,24 +1,25 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
-import { listConversations, type ConversationSummary } from '../data/conversations'
-import { dreamIfDue } from '../agent/dream'
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react'
+import { CHAT_OWNER } from '../agent/durableChat'
 import { seedBuiltinSkills } from '../data/builtinSkills'
+import { getChatRun } from '../data/chatRuns'
+import { listConversations, type ConversationSummary } from '../data/conversations'
+import type { ResearchTask } from '../data/researchTasks'
 import { loadSettings, saveSettings, type Settings } from '../data/settings'
 import { getMcpManager } from '../mcp/manager'
-import type { ResearchTask } from '../data/researchTasks'
+import { isTabShowing, splitPartnerOf } from '../platform/splitView'
 import { relativeTime } from '../platform/time'
-import { splitPartnerOf } from '../platform/splitView'
-import { conversationTitle } from './conversationTitle'
-import { shouldAdoptExternalSettings } from './settingsSync'
 import Chat from './Chat'
-import Library, { type LibraryTab } from './library/Library'
+import { conversationTitle } from './conversationTitle'
+import type { LibraryTab } from './library/Library'
 import Onboarding from './Onboarding'
-import SettingsView from './settings/Settings'
+import { shouldAdoptExternalSettings } from './settingsSync'
 import {
   bindTab,
   boundTabFor,
   liveChatIds,
   loadTabChats,
   needsAttention,
+  rememberChat,
   resolveBinding,
   saveRunningChats,
   saveTabChats,
@@ -28,6 +29,9 @@ import {
   type ChatStatus,
   type TabChatMap,
 } from './tabChats'
+const Studio = lazy(() => import('./Studio'))
+const Library = lazy(() => import('./library/Library'))
+const SettingsView = lazy(() => import('./settings/Settings'))
 
 /**
  * The in-panel half of announcing a background chat: a quiet bar the user can
@@ -106,7 +110,7 @@ async function notifyChatLanded(
         ? `Your chat needs ${host} in front to carry on. Click to go back.`
         : `Your answer about ${host} is ready.`
   try {
-    chrome.notifications.create(`chat:${tabId}`, {
+    await chrome.notifications.create(`chat:${tabId}`, {
       type: 'basic',
       iconUrl: chrome.runtime.getURL('icons/icon-128.png'),
       title: LANDED_TITLE[status],
@@ -121,14 +125,15 @@ async function notifyChatLanded(
 
 export default function App() {
   const [settings, setSettings] = useState<Settings | null>(null)
-  const [showSettings, setShowSettings] = useState(false)
-  // The Library overlay's open tab, or null when closed. Opened to
-  // 'conversations' from the archival-box icon, or 'skills' from the "browse
-  // skills" affordances (slash menu / Settings link).
-  const [libraryTab, setLibraryTab] = useState<LibraryTab | null>(null)
+  const [surface, setSurface] = useState<'chat' | 'studio' | 'settings' | LibraryTab>('chat')
+  const showSettings = surface === 'settings'
+  const studioMode = surface === 'studio'
+  const libraryTab = surface === 'conversations' || surface === 'skills' || surface === 'researches' ? surface : null
   // A conversation id keys the Chat: changing it loads a different chat, while
   // toggling settings leaves it untouched so the transcript is never lost.
   const [conversationId, setConversationId] = useState<string>(() => crypto.randomUUID())
+  const [recentChats, setRecentChats] = useState<string[]>(() => [conversationId])
+  useEffect(() => { setRecentChats((recent) => rememberChat(recent, conversationId)) }, [conversationId])
   // Which chat belongs to which tab, and what each mounted chat is doing. The
   // map is the panel's copy of the session-storage mirror in tabChats.ts; the
   // statuses drive both what stays mounted and what gets announced.
@@ -156,9 +161,8 @@ export default function App() {
   useEffect(() => {
     tabChatsRef.current = tabChats
   }, [tabChats])
-  useEffect(() => {
-    statusesRef.current = statuses
-  }, [statuses])
+  // handleStatusChange updates this ref synchronously. Mirroring older render
+  // state in a parent effect can overwrite a child's newer status report.
   useEffect(() => {
     conversationIdRef.current = conversationId
   }, [conversationId])
@@ -187,9 +191,16 @@ export default function App() {
   const [menuOpen, setMenuOpen] = useState(false)
   const menuRef = useRef<HTMLDivElement>(null)
 
+  const knownConversationIds = useRef(new Set<string>())
   const refreshConversations = useCallback(() => {
     void listConversations()
-      .then(setConversations)
+      .then((next) => {
+        const ids = new Set(next.map((c) => c.id))
+        const removed = new Set([...knownConversationIds.current].filter((id) => !ids.has(id)))
+        knownConversationIds.current = ids
+        if (removed.size) setRecentChats((recent) => recent.filter((id) => !removed.has(id)))
+        setConversations(next)
+      })
       .catch(() => {})
   }, [])
 
@@ -200,7 +211,7 @@ export default function App() {
     // panel open too (covers browsers that were closed overnight). dreamIfDue
     // is self-guarding — it only runs when consolidation is actually due and
     // the user has been away.
-    void dreamIfDue().catch(() => {})
+    void import('../agent/dream').then(({ dreamIfDue }) => dreamIfDue()).catch(() => {})
     refreshConversations()
   }, [refreshConversations])
 
@@ -216,21 +227,22 @@ export default function App() {
   // correctly skipped, while a genuinely different value (another window's
   // save) is adopted.
   //
-  // This never discards an in-progress edit: SettingsView seeds its `draft`
-  // from the `settings` prop only once, in a useState initializer, so a
-  // parent-level refresh while that dialog is open leaves whatever the user
-  // is mid-typing untouched — only the dialog's own next commit reads fresh
-  // data, and only because it goes through this same `settings` prop.
+  // SettingsView merges external updates into unchanged fields while keeping
+  // the user's local edits. An older asynchronous load cannot replace a newer save.
   useEffect(() => {
     const onChanged = (changes: { [key: string]: chrome.storage.StorageChange }, area: string) => {
       if (area !== 'local' || !('settings' in changes)) return
       // No local state to compare against yet — the initial load above will
       // pick up whatever is newest once it resolves.
       if (!settingsRef.current) return
-      const before = JSON.stringify(settingsRef.current)
+      const before = settingsRef.current
       void loadSettings().then((loaded) => {
-        if (shouldAdoptExternalSettings(before, JSON.stringify(loaded))) setSettings(loaded)
-      })
+        if (settingsRef.current !== before) return
+        if (shouldAdoptExternalSettings(JSON.stringify(before), JSON.stringify(loaded))) {
+          settingsRef.current = loaded
+          setSettings(loaded)
+        }
+      }).catch(() => {})
     }
     chrome.storage.onChanged.addListener(onChanged)
     return () => chrome.storage.onChanged.removeListener(onChanged)
@@ -362,11 +374,25 @@ export default function App() {
     // conversation this one is still running — two panels mounting the same chat
     // would race on its transcript row.
     void saveRunningChats(Object.keys(next).filter((k) => next[k] === 'running'))
-    const visible = id === conversationIdRef.current
-    if (shouldToast(before, status, { visible, panelFocused: document.hasFocus() })) {
-      if (!visible) setLanded({ conversationId: id, status })
-      void notifyChatLanded(id, status, tabChatsRef.current)
-    }
+    if (before === 'running' && status === 'idle') void (async () => {
+      const run = await getChatRun(id)
+      // The worker notifies for runs whose original panel has disappeared.
+      if (run && run.owner !== CHAT_OWNER) return
+      // A tab activation can precede showChatForTab's async split-view lookup.
+      // Check the browser too, or a reply landing in that gap looks "visible"
+      // and silently misses its completion notification.
+      let tabShowing = false
+      const tabId = boundTabFor(tabChatsRef.current, id)
+      if (tabId !== undefined) {
+        try { tabShowing = await isTabShowing(await chrome.tabs.get(tabId)) } catch { /* tab closed */ }
+      }
+      const visible = id === conversationIdRef.current && tabShowing
+      if (shouldToast(before, status, { visible, panelFocused: document.hasFocus() })) {
+        if (!visible) setLanded({ conversationId: id, status })
+        await notifyChatLanded(id, status, tabChatsRef.current)
+      }
+    })()
+
   }, [])
 
   /**
@@ -426,16 +452,23 @@ export default function App() {
     return () => document.removeEventListener('mousedown', onDown)
   }, [menuOpen])
 
-  const [remoteSkillDraft,setRemoteSkillDraft] = useState<string | null>(null)
+  const [remoteSkillDraft, setRemoteSkillDraft] = useState<string | null>(null)
   const settingsWrites = useRef<Promise<void>>(Promise.resolve())
-  function updateSettings(next: Settings): Promise<void> {
-    const write = settingsWrites.current.catch(() => {}).then(async () => {
-      await saveSettings(next)
-      setSettings(next)
-    })
-    settingsWrites.current = write
-    return write
-  }
+  const [saveError, setSaveError] = useState<string | null>(null)
+  const updateSettings = useCallback(async (next: Settings) => {
+    settingsRef.current = next
+    setSettings(next)
+    try {
+      const write = settingsWrites.current.catch(() => {}).then(() => saveSettings(next))
+      settingsWrites.current = write
+      await write
+      setSaveError(null)
+      return true
+    } catch (error) {
+      setSaveError(`Settings could not be saved: ${error instanceof Error ? error.message : String(error)}`)
+      return false
+    }
+  }, [])
 
   /**
    * Point the current tab at a conversation and show it. Used by "new chat" and
@@ -464,8 +497,7 @@ export default function App() {
 
   function newChat() {
     adoptConversation(crypto.randomUUID())
-    setShowSettings(false)
-    setLibraryTab(null)
+    setSurface('chat')
     setMenuOpen(false)
   }
 
@@ -479,8 +511,7 @@ export default function App() {
       return
     }
     if (id !== conversationId) adoptConversation(id)
-    setShowSettings(false)
-    setLibraryTab(null)
+    setSurface('chat')
     setMenuOpen(false)
   }
 
@@ -512,8 +543,7 @@ export default function App() {
   }
 
   function openSkills() {
-    setLibraryTab('skills')
-    setShowSettings(false)
+    setSurface('skills')
   }
 
   // Navigate to the research's originating conversation, then hand Chat the task
@@ -524,8 +554,7 @@ export default function App() {
       adoptConversation(task.conversationId)
     }
     setPendingResearchId(task.id)
-    setShowSettings(false)
-    setLibraryTab(null)
+    setSurface('chat')
     setMenuOpen(false)
   }
 
@@ -550,10 +579,11 @@ export default function App() {
         <div className="topbar-title-wrap" ref={menuRef}>
           <button
             className="topbar-title"
-            title="Chat history"
+            title={surface === 'chat' ? 'Chat history' : undefined}
+            disabled={surface !== 'chat'}
             onClick={() => setMenuOpen((o) => !o)}
           >
-            <span className="topbar-title-text">{title}</span>
+            <span className="topbar-title-text">{surface === 'chat' ? title : studioMode ? 'Studio' : showSettings ? 'Settings' : 'Library'}</span>
             <svg width="10" height="10" viewBox="0 0 12 12" fill="none">
               <path
                 d="M3 4.5l3 3 3-3"
@@ -564,7 +594,7 @@ export default function App() {
               />
             </svg>
           </button>
-          {menuOpen && (
+          {menuOpen && surface === 'chat' && (
             <div className="chat-menu">
               {conversations.length === 0 ? (
                 <div className="chat-menu-empty">No previous chats yet</div>
@@ -589,13 +619,17 @@ export default function App() {
               <path d="M8 3v10M3 8h10" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
             </svg>
           </button>
+          <button className={`icon-btn ${studioMode ? 'active' : ''}`} title="Studio Mode" aria-label="Studio Mode" aria-pressed={studioMode} onClick={() => setSurface(studioMode ? 'chat' : 'studio')}>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <path d="M5 3h14v8a3 3 0 0 1-3 3h-2v5a2 2 0 0 1-4 0v-5H8a3 3 0 0 1-3-3V3Z" />
+              <path d="M5 9h14M9 3v3M15 3v3" />
+            </svg>
+          </button>
           <button
             className={`icon-btn ${libraryTab ? 'active' : ''}`}
             title="Library"
-            onClick={() => {
-              setLibraryTab((t) => (t ? null : 'conversations'))
-              setShowSettings(false)
-            }}
+            aria-pressed={!!libraryTab}
+            onClick={() => setSurface(libraryTab ? 'chat' : 'conversations')}
           >
             <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
               <rect x="2" y="3" width="12" height="3" rx="1" stroke="currentColor" strokeWidth="1.4" />
@@ -606,10 +640,8 @@ export default function App() {
           <button
             className={`icon-btn ${showSettings ? 'active' : ''}`}
             title="Settings"
-            onClick={() => {
-              setShowSettings((s) => !s)
-              setLibraryTab(null)
-            }}
+            aria-pressed={showSettings}
+            onClick={() => setSurface(showSettings ? 'chat' : 'settings')}
           >
             <svg
               width="16"
@@ -628,19 +660,19 @@ export default function App() {
         </div>
       </header>
 
+      {saveError && <div className="surface-error" role="alert">{saveError}<button className="btn small" onClick={() => settingsRef.current && void updateSettings(settingsRef.current)}>Retry</button></div>}
       {landed && <LandedBar landed={landed} onOpen={openLanded} onDismiss={() => setLanded(null)} />}
 
       {/* Every chat that is still working stays mounted alongside the visible
-          one — that is what lets a turn survive the user switching tabs. Idle
-          chats unmount as before, so the usual cost is one chat, not one per
-          tab. Each is keyed by its conversation id, so switching chats never
+          one, plus a bounded cache of recent views to preserve drafts/scroll.
+          Running chats are never evicted by the cache limit. Each is keyed by its conversation id, so switching chats never
           re-mounts (and never restarts) a turn that is already running. */}
-      {liveChatIds(conversationId, statuses).map((id) => {
+      {liveChatIds(conversationId, statuses, recentChats).map((id) => {
         const isVisible = id === conversationId
         return (
           <div
             key={id}
-            className={`view-host ${!isVisible || showSettings || libraryTab ? 'is-hidden' : ''}`}
+            className={`view-host ${!isVisible || surface !== 'chat' ? 'is-hidden' : ''}`}
           >
             <Chat
               conversationId={id}
@@ -648,34 +680,37 @@ export default function App() {
               pendingDraft={isVisible ? remoteSkillDraft : null}
               onDraftHandled={() => setRemoteSkillDraft(null)}
               onUpdateSettings={updateSettings}
-              onOpenSettings={() => setShowSettings(true)}
+              onOpenSettings={() => setSurface('settings')}
               onOpenConversation={openConversation}
               onOpenSkills={openSkills}
               onConversationsChanged={refreshConversations}
               // Only the chat on screen can act on a reveal request.
               pendingResearchId={isVisible ? pendingResearchId : null}
               onPendingResearchHandled={() => setPendingResearchId(null)}
-              hidden={!isVisible}
+              hidden={!isVisible || surface !== 'chat'}
               boundTabId={boundTabFor(tabChats, id)}
               onStatusChange={handleStatusChange}
             />
           </div>
         )
       })}
+      <Suspense fallback={<div className="surface-loading" role="status">Loading…</div>}>
+      {studioMode && <Studio settings={settings} onUpdateSettings={updateSettings} onOpenSettings={() => setSurface('settings')} />}
       {showSettings && (
         <SettingsView
           settings={settings}
           onChange={updateSettings}
           onOpenSkills={openSkills}
-          onClose={() => setShowSettings(false)}
+          onClose={() => setSurface('chat')}
           onErased={() => {
             // eraseAllData() has already emptied chrome.storage.local, so re-reading
             // yields an un-onboarded config and the gate above renders the wizard.
             // The stale conversation is dropped too, or onboarding would finish into
             // a transcript whose stored copy no longer exists.
-            setShowSettings(false)
-            setLibraryTab(null)
+            setSurface('chat')
             setConversations([])
+            setRecentChats([])
+            knownConversationIds.current.clear()
             setConversationId(crypto.randomUUID())
             void loadSettings().then(setSettings)
           }}
@@ -683,15 +718,17 @@ export default function App() {
       )}
       {libraryTab && (
         <Library
-          initialTab={libraryTab}
-          onLoadRemoteSkill={text => {setRemoteSkillDraft(text);setLibraryTab(null)}}
+          tab={libraryTab}
+          onTabChange={setSurface}
+          onLoadRemoteSkill={text => { setRemoteSkillDraft(text); setSurface('chat') }}
           currentConversationId={conversationId}
           onOpenConversation={openConversation}
           onOpenResearch={openResearch}
           onConversationsChanged={refreshConversations}
-          onClose={() => setLibraryTab(null)}
+          onClose={() => setSurface('chat')}
         />
       )}
+      </Suspense>
     </div>
   )
 }

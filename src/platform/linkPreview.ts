@@ -1,3 +1,4 @@
+import { parseExtractionHtml, htmlText, htmlAttr, findHtml } from './extractionHtml'
 // Client-side link previews for standalone links. host_permissions:["<all_urls>"]
 // exempts these cross-origin reads from CORS, so no backend/proxy is needed.
 // The OG parser is pure (testable without network); getLinkPreview adds a memory
@@ -31,17 +32,15 @@ export interface LinkPreview {
  *  rather than failing the whole preview: the title/description/siteName
  *  are unaffected. */
 export function parseOpenGraph(html: string, baseUrl: string): LinkPreview | null {
-  const doc = new DOMParser().parseFromString(html, 'text/html')
-  const meta = (sel: string): string | undefined => {
-    const el = doc.querySelector(sel)
-    const v = el?.getAttribute('content')?.trim()
-    return v || undefined
+  const doc = parseExtractionHtml(html)
+  const meta = (attribute: string, value: string): string | undefined => {
+    const node = findHtml(doc, node => node.tagName === 'meta' && htmlAttr(node, attribute) === value)
+    return (node ? htmlAttr(node, 'content').trim() : '') || undefined
   }
-  const title = (meta('meta[property="og:title"]') ?? doc.querySelector('title')?.textContent?.trim()) || undefined
-  const description =
-    meta('meta[property="og:description"]') ?? meta('meta[name="description"]')
-  const siteName = meta('meta[property="og:site_name"]')
-  let image = meta('meta[property="og:image"]') ?? meta('meta[property="og:image:url"]')
+  const title = (meta('property', 'og:title') ?? htmlText(findHtml(doc, node => node.tagName === 'title')).trim()) || undefined
+  const description = meta('property', 'og:description') ?? meta('name', 'description')
+  const siteName = meta('property', 'og:site_name')
+  let image = meta('property', 'og:image') ?? meta('property', 'og:image:url')
   if (image) {
     try {
       image = new URL(image, baseUrl).href
@@ -60,7 +59,14 @@ export function parseOpenGraph(html: string, baseUrl: string): LinkPreview | nul
 
 const TTL_MS = 7 * 24 * 60 * 60 * 1000
 const TIMEOUT_MS = 6000
-const mem = new Map<string, LinkPreview | null>()
+const CACHE_MAX = 128
+const mem = new Map<string, CacheEntry>()
+const pending = new Map<string, Promise<LinkPreview | null>>()
+function remember(url: string, data: LinkPreview | null) {
+  mem.delete(url)
+  mem.set(url, { data, ts: Date.now() })
+  while (mem.size > CACHE_MAX) mem.delete(mem.keys().next().value!)
+}
 
 interface CacheEntry {
   data: LinkPreview | null
@@ -92,10 +98,23 @@ function release(): void {
 export async function getLinkPreview(url: string): Promise<LinkPreview | null> {
   const settings = await loadSettings().catch(() => null)
   if (settings && settings.fetchLinkPreviews === false) return null
-  if (mem.has(url)) return mem.get(url)!
+  const cached = mem.get(url)
+  if (cached && Date.now() - cached.ts < TTL_MS) {
+    mem.delete(url); mem.set(url, cached)
+    return cached.data
+  }
+  mem.delete(url)
+  const existing = pending.get(url)
+  if (existing) return existing
+  const request = fetchPreview(url).finally(() => pending.delete(url))
+  pending.set(url, request)
+  return request
+}
+
+async function fetchPreview(url: string): Promise<LinkPreview | null> {
 
   if (!isSafeRenderUrl(url)) {
-    mem.set(url, null)
+    remember(url, null)
     return null
   }
 
@@ -103,7 +122,7 @@ export async function getLinkPreview(url: string): Promise<LinkPreview | null> {
   try {
     const stored = (await chrome.storage.local.get(key))[key] as CacheEntry | undefined
     if (stored && Date.now() - stored.ts < TTL_MS) {
-      mem.set(url, stored.data)
+      remember(url, stored.data)
       return stored.data
     }
   } catch {
@@ -123,7 +142,7 @@ export async function getLinkPreview(url: string): Promise<LinkPreview | null> {
     release()
   }
 
-  mem.set(url, data)
+  remember(url, data)
   try {
     await chrome.storage.local.set({ [key]: { data, ts: Date.now() } satisfies CacheEntry })
   } catch {

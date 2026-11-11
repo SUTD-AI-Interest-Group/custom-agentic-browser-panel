@@ -9,6 +9,10 @@ import { test, expect, vi, beforeAll, afterEach } from 'vitest'
 // watchdog, offscreen dispatch, …) — only the lines this hardening pass changed,
 // plus enough non-regression coverage that a change to the dispatch shape would
 // be caught. background.ts had zero test coverage before this file.
+vi.mock('./platform/studio', () => ({ installStudio: vi.fn() }))
+vi.mock('./background/mcpTasks', () => ({ installMcpTaskMonitor: vi.fn() }))
+vi.mock('./background/pageWatches', () => ({ installPageWatchMonitor: vi.fn() }))
+vi.mock('./background/toolHost', () => ({ installToolHost: vi.fn(), releaseChatTools: vi.fn(), releaseDetachedSessions: vi.fn(async () => {}) }))
 vi.mock('./agent/dream', () => ({
   dreamIfDue: vi.fn(async () => ({ status: 'skipped', reason: 'not exercised' })),
 }))
@@ -99,7 +103,7 @@ function fakeChrome() {
         onConnect: on('onConnect'),
         onMessage: on('onMessage'),
         getURL: vi.fn((p: string) => `chrome-extension://ext/${p}`),
-        sendMessage: vi.fn(async () => {}),
+        sendMessage: vi.fn(async (_message: any) => {}),
       },
       storage: {
         onChanged: on('storageChanged'),
@@ -109,6 +113,7 @@ function fakeChrome() {
         onAlarm: on('onAlarm'),
         create: vi.fn(),
         get: vi.fn(async () => undefined),
+        clear: vi.fn(async () => true),
       },
       commands: { onCommand: on('onCommand') },
       notifications: {
@@ -362,7 +367,7 @@ test('two racing watchdog ticks claim and dispatch a stranded task only once', a
     fire('onAlarm', { name: 'research-watchdog' })
 
     await vi.waitFor(() => {
-      const starts = vi.mocked(researchTasks.postResearchMsg).mock.calls.filter(([m]) => (m as any).type === 'research.start')
+      const starts = vi.mocked(env.chrome.runtime.sendMessage).mock.calls.filter(([m]) => (m as any).type === 'research.start')
       if (starts.length === 0) throw new Error('not dispatched yet')
     })
     // Give the second (now-serialized) call a chance to run its own
@@ -370,7 +375,7 @@ test('two racing watchdog ticks claim and dispatch a stranded task only once', a
     // already claimed and dispatch nothing.
     await new Promise((r) => setTimeout(r, 0))
 
-    const starts = vi.mocked(researchTasks.postResearchMsg).mock.calls.filter(([m]) => (m as any).type === 'research.start')
+    const starts = vi.mocked(env.chrome.runtime.sendMessage).mock.calls.filter(([m]) => (m as any).type === 'research.start')
     expect(starts).toHaveLength(1)
     expect(researchTasks.applyUpdate).toHaveBeenCalledTimes(1)
     // The dispatched research.start message must carry the persisted task's
@@ -446,4 +451,10 @@ test('a research.ensureAndStart message persists the launch card sites onto the 
       attachments: [{ id: 'att-1', name: 'spec-sheet.pdf', kind: 'pdf', pageCount: 42 }],
     }),
   )
+})
+
+test('Studio picker acknowledgements are left to the owning panel', () => {
+  const reply = vi.fn()
+  fire('onMessage', { kind: 'studio.zap', token: 'panel-owned' }, {}, reply)
+  expect(reply).not.toHaveBeenCalled()
 })

@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<title>Lychee native WebMCP fixture</title>
+<h1>Native WebMCP fixture</h1>
+<p>Local counter: <output id="count">0</output></p>
+<script>
+window.stats = { count: 0, started: 0, aborted: 0 };
+window.installIncrement = async (description = 'Increment the local counter') => {
+  window.registration?.abort();
+  window.registration = new AbortController();
+  await document.modelContext.registerTool({
+    name: 'increment', title: 'Increment fixture', description,
+    inputSchema: { type: 'object', properties: { amount: { type: 'number' } }, required: ['amount'] },
+    outputSchema: { type: 'object', properties: { count: { type: 'number' } } },
+    annotations: { readOnlyHint: false, consequentialHint: false, untrustedContentHint: true },
+    execute: async ({ amount }) => {
+      stats.count += amount;
+      document.querySelector('output').textContent = stats.count;
+      return JSON.stringify({ count: stats.count });
+    },
+  }, { signal: registration.signal });
+};
+window.ready = (async () => {
+  if (!document.modelContext?.getTools) throw new Error('Native WebMCP unavailable. Enable WebMCPTesting.');
+  await installIncrement();
+  await document.modelContext.registerTool({
+    name: 'wait', description: 'Wait until cancelled', inputSchema: { type: 'object', properties: {} },
+    execute: async (_, { signal }) => {
+      stats.started++;
+      signal.addEventListener('abort', () => stats.aborted++, { once: true });
+      // Deliberately ignore abort for completion: the harness must stop waiting anyway.
+      return new Promise(() => {});
+    },
+  });
+})();
+</script>
+</html>

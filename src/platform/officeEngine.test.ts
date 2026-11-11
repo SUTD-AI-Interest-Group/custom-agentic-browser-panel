@@ -214,3 +214,23 @@ describe('OfficeEngine', () => {
     expect(Array.from(original)).toEqual([9, 9, 9])
   })
 })
+
+describe('idle document resources', () => {
+  afterEach(() => vi.useRealTimers())
+  it('releases the worker after inactivity and recreates it on the next parse', async () => {
+    vi.useFakeTimers()
+    const workers: FakeWorker[] = []
+    const engine = new OfficeEngine(() => { const worker = new FakeWorker(() => 'ok'); workers.push(worker); return worker })
+    await engine.parse(new Uint8Array([1]), 'a.docx', '')
+    await vi.advanceTimersByTimeAsync(29_000)
+    expect(workers[0].terminated).toBe(false)
+    await engine.parse(new Uint8Array([2]), 'b.docx', '')
+    await vi.advanceTimersByTimeAsync(29_000)
+    expect(workers[0].terminated).toBe(false)
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(workers[0].terminated).toBe(true)
+    expect(await engine.parse(new Uint8Array([3]), 'c.docx', '')).toEqual(DOC)
+    expect(workers).toHaveLength(2)
+    await vi.advanceTimersByTimeAsync(30_000)
+  })
+})

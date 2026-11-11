@@ -19,11 +19,13 @@
     "identity"
   ],
   "optional_permissions": [
+    "userScripts",
     "history",
     "bookmarks",
     "topSites",
     "downloads",
-    "tabGroups"
+    "tabGroups",
+    "nativeMessaging"
   ],
   "host_permissions": [
     "<all_urls>"

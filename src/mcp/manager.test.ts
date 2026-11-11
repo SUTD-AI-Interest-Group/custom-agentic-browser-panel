@@ -1,3 +1,6 @@
+import 'fake-indexeddb/auto'
+import { webcrypto } from 'node:crypto'
+import { deleteMcpTasks } from '../data/mcpTasks'
 // McpManager's connection lifecycle is Chrome/SSE-coupled (real transports,
 // real chrome.storage.local), so this suite substitutes the one seam the
 // module already depends on for its network identity — the SDK's `Client`
@@ -89,12 +92,15 @@ function deferred<T>(): { promise: Promise<T>; resolve: (v: T) => void; reject: 
     resolve = res
     reject = rej
   })
+  void promise.catch(() => {}) // storage reads may delay the client attaching its handler
   return { promise, resolve, reject }
 }
 
 const settings = { mcp: { servers: { srv: { url: 'https://example.com/mcp' } } } } as unknown as Settings
 
-beforeEach(() => {
+beforeEach(async () => {
+  vi.stubGlobal('crypto', webcrypto)
+  await deleteMcpTasks()
   state.listToolsImpl = async () => ({ tools: [] })
 })
 

@@ -1,3 +1,4 @@
+import { drawingCanvas, drawingContext, drawingImage, canvasDataUrl } from './canvas'
 // Set-of-marks: capture a clean screenshot of the tab and draw the registry's
 // numbered boxes onto it, so a vision model can pick an element by number. The
 // same [index] maps to the same DOM node the text registry uses.
@@ -23,12 +24,7 @@ export async function captureWithMarks(
   // any two of them chained back-to-back (e.g. ReadPage(mode:"elements")
   // immediately followed by GetScreenshot) must share the same clock.
   const shot = await throttledCaptureVisibleTab(windowId)
-  const img = new Image()
-  await new Promise<void>((resolve, reject) => {
-    img.onload = () => resolve()
-    img.onerror = () => reject(new Error('Failed to decode screenshot.'))
-    img.src = shot
-  })
+  const img = await drawingImage(shot)
 
   // `elements[].rect` is a snapshot taken whenever buildInteractiveIndex ran,
   // several awaited round trips before this line (the presence-hide, the tab
@@ -40,11 +36,11 @@ export async function captureWithMarks(
   // from the page since the snapshot, or the injection failed outright).
   const live = await readLiveRects(tabId, elements.map((el) => el.index))
 
-  const down = Math.min(1, MAX_SIDE / Math.max(img.naturalWidth, img.naturalHeight))
-  const canvas = document.createElement('canvas')
-  canvas.width = Math.round(img.naturalWidth * down)
-  canvas.height = Math.round(img.naturalHeight * down)
-  const ctx = canvas.getContext('2d')!
+  const down = Math.min(1, MAX_SIDE / Math.max(img.width, img.height))
+  const canvas = drawingCanvas()
+  canvas.width = Math.round(img.width * down)
+  canvas.height = Math.round(img.height * down)
+  const ctx = drawingContext(canvas)
   ctx.drawImage(img, 0, 0, canvas.width, canvas.height)
   ctx.font = 'bold 12px system-ui'
   for (const el of elements) {
@@ -63,7 +59,7 @@ export async function captureWithMarks(
     ctx.fillStyle = '#ffffff'
     ctx.fillText(tag, x + 3, Math.max(10, y - 3))
   }
-  return canvas.toDataURL('image/png')
+  return canvasDataUrl(canvas)
 }
 
 type Rect = { x: number; y: number; width: number; height: number }

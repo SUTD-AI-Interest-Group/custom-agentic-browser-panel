@@ -310,7 +310,7 @@ export function createResearchTools(deps: {
       inputSchema: z.object({
         text: z.string(),
         instruction: z.string(),
-        schema: z.record(z.any()),
+        schema: z.record(z.string(), z.any()),
       }),
       execute: async ({ text, instruction, schema }, { abortSignal }) => {
         if (!deps.selected) return { error: 'No model configured.' }

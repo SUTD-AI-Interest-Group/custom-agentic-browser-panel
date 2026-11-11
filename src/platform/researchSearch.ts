@@ -18,10 +18,10 @@ export interface SearchOutcome {
 }
 
 /** Run one search in the isolated tab and scrape the rendered results. */
-export async function searchInTab(query: string, maxResults = 8): Promise<SearchOutcome> {
+export async function searchInTab(query: string, maxResults = 8, signal?: AbortSignal): Promise<SearchOutcome> {
   let lease: TabLease
   try {
-    lease = await acquireTab()
+    lease = await acquireTab(signal)
   } catch (err) {
     return { error: `tab search failed: ${err instanceof Error ? err.message : String(err)}` }
   }
@@ -29,7 +29,7 @@ export async function searchInTab(query: string, maxResults = 8): Promise<Search
     // The no-JS HTML endpoint: a real navigation renders full result rows with
     // inline snippets, and its markup is stabler to scrape than the SPA SERP.
     const url = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`
-    const nav = await navigateAndWait(lease.tabId, url)
+    const nav = await navigateAndWait(lease.tabId, url, signal)
     // Defense in depth: the destination is a fixed, hardcoded DDG host (the
     // query is the only attacker-influenced part), so this isn't reachable
     // today the way researchRender.ts's/researchBrowse.ts's arbitrary-url

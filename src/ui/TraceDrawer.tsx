@@ -1,8 +1,9 @@
+import type { UIPart } from '../agent/agent'
 import { useEffect, useState } from 'react'
 import { getTrace, type StoredTrace, type TraceStep } from '../data/traces'
 import { formatTokens } from '../agent/pricing'
 
-// The local trace of one turn, as a collapsible drawer under its reply.
+// The local trace of one turn, as a collapsible drawer above its reply.
 //
 // Renders the things the transcript structurally cannot show: which tools were
 // actually available at each step (progressive disclosure is invisible from the
@@ -57,12 +58,19 @@ function StepRow({ step }: { step: TraceStep }) {
   )
 }
 
-export default function TraceDrawer({ turnId }: { turnId: string }) {
+export default function TraceDrawer({ turnId, parts, recorded, streaming }: {
+  turnId: string
+  parts: UIPart[]
+  recorded: boolean
+  streaming: boolean
+}) {
+  const calls = parts.filter((part): part is Extract<UIPart, { type: 'tool' }> => part.type === 'tool')
+  const running = calls.find(call => call.state === 'running')
   const [open, setOpen] = useState(false)
   const [trace, setTrace] = useState<StoredTrace | null | undefined>(undefined)
 
   useEffect(() => {
-    if (!open || trace !== undefined) return
+    if (!open || !recorded || streaming) return
     let cancelled = false
     void getTrace(turnId)
       .then((t) => {
@@ -74,7 +82,7 @@ export default function TraceDrawer({ turnId }: { turnId: string }) {
     return () => {
       cancelled = true
     }
-  }, [open, turnId, trace])
+  }, [open, turnId, recorded, streaming])
 
   return (
     <div className={`trace-drawer ${open ? 'open' : ''}`}>
@@ -83,11 +91,30 @@ export default function TraceDrawer({ turnId }: { turnId: string }) {
           <path d="M3 1l4 4-4 4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
         </svg>
         <span>Trace</span>
+        {calls.length > 0 && <span className="trace-call-count">{running ? `${running.toolName}…` : `${calls.length} call${calls.length === 1 ? '' : 's'}`}</span>}
       </button>
       {open && (
         <div className="trace-body">
-          {trace === undefined && <div className="trace-empty">Loading…</div>}
-          {trace === null && <div className="trace-empty">No trace recorded for this turn.</div>}
+          {recorded && !streaming && trace === undefined && <div className="trace-empty">Loading…</div>}
+          {recorded && trace === null && calls.length === 0 && <div className="trace-empty">No trace recorded for this turn.</div>}
+          {calls.length > 0 && (
+            <ol className="trace-steps trace-calls">
+              {calls.map(call => {
+                const output = call.output as { denied?: boolean; error?: unknown } | undefined
+                const error = call.errorText ?? (typeof output?.error === 'string' ? output.error : undefined)
+                const status = call.state === 'running' ? 'In progress' : output?.denied ? 'Denied' : call.state === 'error' || error ? 'Failed' : 'Done'
+                return (
+                  <li key={call.toolCallId}>
+                    <details className="trace-call">
+                      <summary><span>{call.toolName}</span><span className="trace-call-status">{status}</span></summary>
+                      {error && <div className="tool-error-text">{error}</div>}
+                      <pre>{JSON.stringify({ input: call.input, output: call.output }, null, 2)}</pre>
+                    </details>
+                  </li>
+                )
+              })}
+            </ol>
+          )}
           {trace && (
             <>
               <div className="trace-summary">

@@ -4,6 +4,7 @@
 // profile (src/data/providerProfiles.ts), so this file only has to normalise the
 // several response shapes the various providers return.
 
+import { companionCall, type ChatGPTModel } from './chatgpt'
 import { profileFor } from '../data/providerProfiles'
 import { providerKind, type ProviderConfig, type ProviderKind } from '../data/settings'
 
@@ -56,8 +57,13 @@ export function parseModelList(kind: ProviderKind, json: unknown): FetchedModel[
  * public catalog). Extension host_permissions bypass CORS, so this runs straight
  * from the panel. Throws on network/HTTP/empty so the caller can surface it.
  */
-export async function fetchModelList(provider: ProviderConfig): Promise<FetchedModel[]> {
+export async function fetchModelList(provider: ProviderConfig, signal?: AbortSignal): Promise<FetchedModel[]> {
   const kind = providerKind(provider)
+  if (kind === 'chatgpt') {
+    const models = await companionCall<ChatGPTModel[]>('models', provider.id, { signal })
+    if (models.length === 0) throw new Error('No models available for this ChatGPT account.')
+    return models
+  }
   const endpoint = profileFor(kind).modelsEndpoint
   if (!endpoint) throw new Error('This provider does not support listing models.')
 
@@ -70,7 +76,7 @@ export async function fetchModelList(provider: ProviderConfig): Promise<FetchedM
     headers['anthropic-dangerous-direct-browser-access'] = 'true'
   }
 
-  const res = await fetch(endpoint.url(provider.baseURL), { headers, signal: AbortSignal.timeout(20_000) })
+  const res = await fetch(endpoint.url(provider.baseURL), { headers, signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(20_000)]) : AbortSignal.timeout(20_000) })
   if (!res.ok) throw new Error(`Request failed (HTTP ${res.status})`)
   const models = parseModelList(kind, await res.json())
   if (models.length === 0) throw new Error('The endpoint returned no models.')

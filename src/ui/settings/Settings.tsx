@@ -1,13 +1,15 @@
-import { useRef, useState } from 'react'
+import { TabStrip } from '../TabStrip'
+import { lazy, Suspense, useEffect, useRef, useState } from 'react'
 import type { Settings } from '../../data/settings'
-import McpSection from './McpSection'
-import GeneralTab from './GeneralTab'
-import ProvidersTab from './ProvidersTab'
-import PermissionsTab from './PermissionsTab'
-import MemoryTab from './MemoryTab'
-import SkillsTab from './SkillsTab'
-import DataTab from './DataTab'
+import { mergeSettingsDraft } from '../settingsSync'
+const McpSection = lazy(() => import('./McpSection'))
 import { normalizeSettings } from './normalizeSettings'
+const GeneralTab = lazy(() => import('./GeneralTab'))
+const ProvidersTab = lazy(() => import('./ProvidersTab'))
+const PermissionsTab = lazy(() => import('./PermissionsTab'))
+const MemoryTab = lazy(() => import('./MemoryTab'))
+const SkillsTab = lazy(() => import('./SkillsTab'))
+const DataTab = lazy(() => import('./DataTab'))
 
 type TabKey = 'connections' | 'general' | 'providers' | 'permissions' | 'memory' | 'skills' | 'data'
 
@@ -36,21 +38,26 @@ export default function SettingsView({
   onErased,
 }: {
   settings: Settings
-  onChange: (next: Settings) => void | Promise<void>
+  onChange: (next: Settings) => Promise<boolean>
   onOpenSkills: () => void
   onClose: () => void
   /** Called after a full erase — App reloads settings, which re-enters onboarding. */
   onErased: () => void
 }) {
   const [tab, setTab] = useState<TabKey>('general')
-  const [draft, setDraft] = useState<Settings>(() => structuredClone(settings))
+  const [localDraft, setDraft] = useState<Settings>(() => structuredClone(settings))
+  const base = useRef(settings)
+  const draft = mergeSettingsDraft(base.current, localDraft, settings)
   // draftRef holds the latest draft synchronously so onBlur can commit without
   // waiting for a re-render.
   const draftRef = useRef(draft)
   const [error, setError] = useState('')
   const saveSequence = useRef(0)
+  draftRef.current = draft
   const [saved, setSaved] = useState(false)
   const savedTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  useEffect(() => () => { if (savedTimer.current) clearTimeout(savedTimer.current) }, [])
 
   function flashSaved() {
     setSaved(true)
@@ -76,37 +83,23 @@ export default function SettingsView({
   }
 
   function persist(next: Settings) {
+    const normalized = normalizeSettings(mergeSettingsDraft(base.current, next, settings))
+    if (!error && JSON.stringify(normalized) === JSON.stringify(settings)) return
+    base.current = normalized
+    buffer(normalized)
     const sequence = ++saveSequence.current
     setSaved(false); setError('')
-    void Promise.resolve().then(() => onChange(normalizeSettings(next))).then(() => {
-      if(sequence === saveSequence.current) flashSaved()
-    }).catch(() => { if(sequence === saveSequence.current) {setSaved(false);setError('Settings could not be saved. Retry your changes.')} })
+    void onChange(normalized).then(ok => {
+      if (sequence !== saveSequence.current) return
+      if (ok) flashSaved()
+      else setError('Settings could not be saved. Retry your changes.')
+    }).catch(() => { if (sequence === saveSequence.current) setError('Settings could not be saved. Retry your changes.') })
   }
 
   return (
     <div className="settings">
       <div className="settings-topbar">
-        <div className="settings-tabs" role="tablist">
-          {TABS.map((t) => (
-            <button
-              key={t.key}
-              role="tab"
-              id={`settings-tab-${t.key}`}
-              aria-controls={`settings-panel-${t.key}`}
-              tabIndex={tab === t.key ? 0 : -1}
-              onKeyDown={e => {
-                const index = TABS.findIndex(item => item.key === tab)
-                const next = e.key === 'Home' ? 0 : e.key === 'End' ? TABS.length - 1 : e.key === 'ArrowRight' ? (index + 1) % TABS.length : e.key === 'ArrowLeft' ? (index + TABS.length - 1) % TABS.length : -1
-                if (next >= 0) {e.preventDefault();setTab(TABS[next].key);document.getElementById(`settings-tab-${TABS[next].key}`)?.focus()}
-              }}
-              aria-selected={tab === t.key}
-              className={`settings-tab ${tab === t.key ? 'active' : ''}`}
-              onClick={() => setTab(t.key)}
-            >
-              {t.label}
-            </button>
-          ))}
-        </div>
+        <TabStrip id="settings" label="Settings" tabs={TABS} value={tab} onChange={setTab} className="settings-tabs" tabClassName="settings-tab" />
         <div className="settings-topbar-right">
           <span className={`saved-pill ${saved ? 'show' : ''}`} aria-live="polite">
             Saved ✓
@@ -119,10 +112,11 @@ export default function SettingsView({
         </div>
       </div>
 
-      <div className="settings-body" role="tabpanel" id={`settings-panel-${tab}`} aria-labelledby={`settings-tab-${tab}`}>
+      <div className="settings-body" id="settings-panel" role="tabpanel" aria-labelledby={`settings-${tab}`}>
+        <Suspense fallback={<div className="surface-loading" role="status">Loading…</div>}>
         {error && <p role="alert">{error} <button onClick={commitDraft}>Retry save</button></p>}
         <p className="hint">Lychee {chrome.runtime.getManifest().version} · {import.meta.env.VITE_BUILD_COMMIT ?? 'development'}</p>
-        {tab === 'connections' && <McpSection draft={draft} commit={commit} />}
+        {tab === 'connections' && <div className="settings-tabpane"><McpSection draft={draft} commit={commit} /></div>}
         {tab === 'general' && (
           <GeneralTab draft={draft} buffer={buffer} commit={commit} commitDraft={commitDraft} />
         )}
@@ -135,6 +129,7 @@ export default function SettingsView({
         {tab === 'memory' && <MemoryTab draft={draft} commit={commit} />}
         {tab === 'skills' && <SkillsTab onOpenSkills={onOpenSkills} onSaved={flashSaved} />}
         {tab === 'data' && <DataTab draft={draft} commit={commit} onErased={onErased} />}
+        </Suspense>
       </div>
     </div>
   )

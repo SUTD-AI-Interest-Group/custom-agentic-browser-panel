@@ -83,12 +83,8 @@ export default function McpSection({
       <div className="settings-section-head">
         <h2>MCP servers</h2>
       </div>
-      <p className="hint">
-        Connect Model Context Protocol servers to give the agent their tools, resources and
-        prompts. Tool calls still ask for your approval.
-      </p>
 
-      {names.length === 0 && <p className="hint">No servers configured — add one below or import your JSON.</p>}
+      {names.length === 0 && <p className="hint">No servers</p>}
 
       {names.map((name) => (
         <div key={name}>

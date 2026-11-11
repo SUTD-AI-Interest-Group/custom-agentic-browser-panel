@@ -19,6 +19,19 @@ for that history.
 
 ## [Unreleased]
 
+### Optimisation integration — 11 November 2026
+
+- Merge the optimisation and background-cleanup work with the newer MCP and user-journey updates on `main`; retain both histories and the existing store-submission record.
+- Preserve both MCP task formats through an atomic database migration, shared erasure/accounting and protection against delayed writes.
+- Connect background MCP clarification to the panel, wait for live tool catalogs and stop idle task polling. Preserve Connections, remote skills, model discovery and request-preparation recovery alongside lazy screens and simpler surface state.
+- Apply current dependency security fixes, including Zod 4 record-schema compatibility. See [integration decisions and verification](docs/verification/2026-11-11-optimisation-merge.md).
+
+### Added
+
+- ChatGPT plan as a separate provider in onboarding and Settings, with account-specific model discovery, a composer usage indicator, sign-out, and Manage usage links.
+- A privacy-label modal directly beneath Continue with ChatGPT explaining OpenAI-bound context, account/usage linkage, Lychee access, local credential storage, and optional tracing/MCP destinations. It also distinguishes the current local connection from proposed Supabase hosting, disclosing the additional backend data access and the hosted storage/retention details that remain unimplemented.
+- A macOS/Linux native messaging companion for OpenAI's loopback OAuth flow, protected local token storage, serialized refresh, and nonstored streaming Responses requests. Requires per-user installation; see [companion setup](companion/chatgpt/README.md). Windows and live eligible-account verification remain outstanding.
+
 - Consolidate implementation, PR status and verification records in the [development handoff](docs/development-handoff.md); refresh MCP setup and feature boundaries.
 
 - Bound chat preparation with stage labels, Stop, visible errors and Retry; skip automatic attachment of restricted browser pages.
@@ -31,7 +44,7 @@ for that history.
 - Add interactive MCP form/URL clarification, with explicit user responses and bounded multi-round continuations.
 - Persist modern MCP task handles locally, resume status checks after reopening the panel, and expose progress, results, input and cancellation controls.
 - Discover and load skills over MCP with explicit approval, same-server file access and size/SHA-256/frontmatter verification.
-- Keep the new flows browser-native; preserve the submitted 0.5.0 archive and exclude ChatGPT-provider work.
+- Keep the MCP flows browser-native; the submitted 0.5.0 archive remains unchanged and excludes ChatGPT-provider work.
 - See [implementation boundaries and verification](docs/mcp-interactive-tasks-skills.md).
 
 ## [0.5.0] — 2026-10-14 — *Submitted for Chrome Web Store review*

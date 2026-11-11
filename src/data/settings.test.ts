@@ -38,8 +38,7 @@ function base(overrides: Partial<Settings> = {}): Settings {
 
 describe('groupPolicy', () => {
   it('returns the shared policy when every tool in the group agrees', () => {
-    // 'reading' holds ReadPage, ReadTabs, ExtractData, ProposeResearch — all default 'ask'.
-    expect(groupPolicy(base(), 'reading')).toBe('ask')
+    expect(groupPolicy(setGroupPolicy(base(), 'reading', 'ask'), 'reading')).toBe('ask')
   })
 
   it("returns 'mixed' when the group's tools disagree", () => {
@@ -48,6 +47,7 @@ describe('groupPolicy', () => {
   })
 
   it('reflects catalog defaults, not just explicit overrides', () => {
+    expect(groupPolicy(base(), 'reading')).toBe('mixed') // ReadPage asks; ListPageWatches is read-only.
     // ListAllSkills + ReadSkill default to 'always', SaveSkill to 'ask'.
     expect(groupPolicy(base(), 'skills')).toBe('mixed')
   })

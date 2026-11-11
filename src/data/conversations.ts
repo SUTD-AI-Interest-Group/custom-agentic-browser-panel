@@ -1,3 +1,5 @@
+import { clearPageWatches } from './pageWatches'
+import { removeChatRuns } from './chatRuns'
 // Persisted chat history, housed in its own IndexedDB database (extension
 // origin). Each conversation stores both the UI-facing transcript (so it can be
 // rendered on reopen) and the model-facing history (so the agent can continue
@@ -12,6 +14,7 @@
 // cost that scales with an install's entire lifetime of chat data and was paid
 // on every single turn (Chat.tsx refreshes the list after every save).
 
+import { deleteMcpTasks } from './mcpTasks'
 import type { ModelMessage } from 'ai'
 import type { MessageSource, UIMessage } from '../agent/agent'
 import { estimateBytes, type StoreUsage } from './usage'
@@ -51,6 +54,8 @@ export interface StoredConversation {
   history: ModelMessage[]
   /** Pinned conversations sort first in the Library. Absent means false. */
   pinned?: boolean
+  /** Completion receipts committed atomically with the continued transcript. */
+  completedMcpTasks?: string[]
   /** Undo point for the last turn. Absent on chats saved before this existed
    *  (and on any whose last turn predates it) — Regenerate is simply not
    *  offered until their next turn writes one. */
@@ -326,6 +331,7 @@ export async function saveConversation(input: {
   messages: UIMessage[]
   history: ModelMessage[]
   regen?: RegenTarget
+  completedMcpTask?: string
 }): Promise<void> {
   const now = Date.now()
   await mutate(input.id, (existing) => ({
@@ -339,6 +345,9 @@ export async function saveConversation(input: {
     // spread), so the pin must be carried forward explicitly or every
     // transcript save would silently unpin the conversation.
     pinned: existing?.pinned ?? false,
+    completedMcpTasks: input.completedMcpTask
+      ? [...new Set([...(existing?.completedMcpTasks ?? []), input.completedMcpTask])]
+      : existing?.completedMcpTasks,
     // Likewise the undo point: a save that can't name one (an older chat whose
     // last turn predates the field) must leave the stored one alone rather
     // than retire a Regenerate button that still works.
@@ -369,6 +378,9 @@ export async function togglePin(id: string): Promise<void> {
 /** Deletes both the full record and its summary — leaving the latter behind
  *  would show a phantom "deleted" conversation in the history dropdown forever. */
 export async function deleteConversation(id: string): Promise<void> {
+  await clearPageWatches(id)
+  await removeChatRuns(id)
+  await deleteMcpTasks(id)
   const db = await openDb()
   await new Promise<void>((resolve, reject) => {
     const tx = db.transaction([STORE, SUMMARY_STORE, INFLIGHT_STORE], 'readwrite')
@@ -388,6 +400,9 @@ export async function deleteConversation(id: string): Promise<void> {
  * in their own database, so the caller (`storage.ts`) clears them alongside.
  */
 export async function clearConversations(): Promise<void> {
+  await clearPageWatches()
+  await removeChatRuns()
+  await deleteMcpTasks()
   const db = await openDb()
   await new Promise<void>((resolve, reject) => {
     const tx = db.transaction([STORE, SUMMARY_STORE, INFLIGHT_STORE], 'readwrite')

@@ -429,3 +429,9 @@ describe('in-flight turns', () => {
     expect(await getInFlight('c1')).toBeDefined()
   })
 })
+
+it('persists MCP completion receipts with the transcript and keeps them on later saves', async () => {
+  await saveConversation({ id: 'mcp-receipt', messages: [], history: [], completedMcpTask: 'event-1' })
+  await saveConversation({ id: 'mcp-receipt', messages: [], history: [] })
+  expect((await getConversation('mcp-receipt'))?.completedMcpTasks).toEqual(['event-1'])
+})

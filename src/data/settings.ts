@@ -2,6 +2,7 @@
 // A "provider" is any OpenAI-compatible endpoint (OpenAI, OpenRouter, Groq,
 // Ollama, Anthropic's /v1 compat layer, LM Studio, vLLM, ...).
 
+import { TOOL_CONTEXT_GUIDANCE } from './promptGuidance'
 import type { ModelPrice } from '../agent/pricing'
 import type { McpSettings } from '../mcp/config'
 import { clearAuth } from '../mcp/auth'
@@ -17,6 +18,7 @@ import { isSealed } from './vaultFormat'
  */
 export type ProviderKind =
   | 'openai'
+  | 'chatgpt'
   | 'anthropic'
   | 'openrouter'
   | 'groq'
@@ -79,6 +81,8 @@ export interface ProviderConfig {
   kind?: ProviderKind
   /** Model ids offered by this provider, one per entry. */
   models: string[]
+  /** Account catalog labels for ChatGPT model slugs; no credentials. */
+  modelNames?: Record<string, string>
   /**
    * Default reasoning effort for this provider's models — a per-model override in
    * `modelConfigs` beats it (resolution: `resolveReasoningEffort`). Unset preserves
@@ -125,6 +129,11 @@ export interface ToolCatalogEntry {
  * default-policy map derive from one list.
  */
 export const TOOL_CATALOG: ToolCatalogEntry[] = [
+  { name: 'CreatePageWatch', group: 'reading', label: 'Watch a page on a schedule (confirm every time)' },
+  { name: 'ListPageWatches', group: 'reading', label: 'List page watches', defaultPolicy: 'always' },
+  { name: 'CancelPageWatch', group: 'reading', label: 'Cancel a page watch', defaultPolicy: 'always' },
+  { name: 'DiscoverWebMcp', group: 'mcp', label: 'Discover page WebMCP actions', defaultPolicy: 'always' },
+  { name: 'RunWebMcp', group: 'mcp', label: 'Run a page WebMCP action (confirm every time)' },
   { name: 'ReadPage', group: 'reading', label: 'Read the current tab (text / DOM / elements)' },
   { name: 'ReadPdf', group: 'reading', label: 'Read / search the open PDF' },
   { name: 'HighlightContent', group: 'reading', label: 'Highlight a passage on the page' },
@@ -228,6 +237,8 @@ export interface Settings {
    */
   dreamIntervalMs?: number
   systemPrompt: string
+  /** Opt-in visual-first presentation; absent on older installs means off. */
+  visualResponse2?: boolean
   tabAccess: TabAccess
   /**
    * Per-tool Never/Ask/Always overrides. Sparse: a tool absent here uses its
@@ -345,10 +356,12 @@ The user can @mention tabs in their message; when they do, the tab's content arr
 
 You also have a long-term memory stored locally in the browser. The most relevant memories appear in a "Long-term memory" section of this prompt when any exist; while you sleep, a consolidation process ("dreaming") distills each day's conversations into new memories.
 
+${TOOL_CONTEXT_GUIDANCE}
+
 Be concise and direct.`
 
 /**
- * Defaults that shipped as `systemPrompt` before the Lychee rename, frozen
+ * Previous defaults that shipped as `systemPrompt`, frozen
  * verbatim. `systemPrompt` is *persisted* — every install that has ever saved
  * settings carries its own copy of the default it onboarded with — so bumping
  * `DEFAULT_SYSTEM_PROMPT` alone would never reach an existing user. `loadSettings`
@@ -359,6 +372,15 @@ Be concise and direct.`
  * silently overwriting prompts that users had deliberately customised.
  */
 const SUPERSEDED_SYSTEM_PROMPTS: readonly string[] = [
+  `You are Lychee, a helpful AI agent living in the user's browser side panel.
+
+You cannot see any webpage by default — use your tools (they are described to you separately) to read a page the user refers to, and never fabricate page content: if you were denied access or could not read a page, say so and answer from general knowledge.
+
+The user can @mention tabs in their message; when they do, the tab's content arrives inside <tab> blocks appended to their message — treat it as up-to-date page content they chose to share (no tool call needed for it). They may also type @memory to ask you to consult your long-term memory before answering.
+
+You also have a long-term memory stored locally in the browser. The most relevant memories appear in a "Long-term memory" section of this prompt when any exist; while you sleep, a consolidation process ("dreaming") distills each day's conversations into new memories.
+
+Be concise and direct.`,
   `You are a helpful AI agent living in the user's browser side panel.
 
 You cannot see any webpage by default — use your tools (they are described to you separately) to read a page the user refers to, and never fabricate page content: if you were denied access or could not read a page, say so and answer from general knowledge.
@@ -376,6 +398,7 @@ const EMPTY: Settings = {
   providers: [],
   selected: null,
   systemPrompt: DEFAULT_SYSTEM_PROMPT,
+  visualResponse2: false,
   tabAccess: 'active-tab',
   onboarded: false,
   fetchLinkPreviews: true,
@@ -405,8 +428,7 @@ export async function loadSettings(): Promise<Settings> {
   if (stored && stored.onboarded === undefined && (stored.providers?.length ?? 0) > 0) {
     settings.onboarded = true
   }
-  // Migration: an unedited pre-rename prompt is refreshed so the agent learns
-  // its name. A customised prompt is never touched.
+  // Refresh known unedited defaults. A customised prompt is never touched.
   if (stored?.systemPrompt && SUPERSEDED_SYSTEM_PROMPTS.includes(stored.systemPrompt)) {
     settings.systemPrompt = DEFAULT_SYSTEM_PROMPT
   }
@@ -440,8 +462,16 @@ function warnVaultUnavailable(): void {
   )
 }
 
-export async function saveSettings(settings: Settings): Promise<void> {
-  await chrome.storage.local.set({ [STORAGE_KEY]: await sealSettings(settings) })
+// Encryption is asynchronous. Serialize saves so an older, slower seal cannot
+// overwrite a newer edit. A failed write must not block subsequent saves.
+let settingsWrites: Promise<void> = Promise.resolve()
+export function saveSettings(settings: Settings): Promise<void> {
+  const snapshot = structuredClone(settings)
+  const write = settingsWrites.then(async () => {
+    await chrome.storage.local.set({ [STORAGE_KEY]: await sealSettings(snapshot) })
+  })
+  settingsWrites = write.catch(() => {})
+  return write
 }
 
 /**

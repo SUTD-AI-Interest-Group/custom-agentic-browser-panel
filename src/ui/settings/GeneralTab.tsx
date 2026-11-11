@@ -46,11 +46,29 @@ export default function GeneralTab({
       >
         <textarea
           className="system-prompt"
+          aria-label="System prompt"
           rows={5}
           value={draft.systemPrompt}
           onChange={(e) => buffer({ ...draft, systemPrompt: e.target.value })}
           onBlur={commitDraft}
         />
+      </Section>
+
+      <Section title="Responses">
+        <div className="switch-row">
+          <span className="switch-label" id="visual-response-label">Prefer visual responses</span>
+          <label className="switch-toggle">
+            <input
+              type="checkbox"
+              role="switch"
+              aria-labelledby="visual-response-label"
+              checked={draft.visualResponse2 === true}
+              onChange={(e) => commit({ ...draft, visualResponse2: e.target.checked })}
+            />
+            <span className="track" />
+            <span className="thumb" />
+          </label>
+        </div>
       </Section>
 
       <ShortcutSection />
@@ -62,22 +80,16 @@ export default function GeneralTab({
             checked={draft.fetchLinkPreviews !== false}
             onChange={(e) => commit({ ...draft, fetchLinkPreviews: e.target.checked })}
           />
-          Fetch link previews
+          Fetch previews from linked sites
         </label>
-        <p className="hint">Contacts linked sites for their title, description and image.</p>
         <label className="check">
           <input
             type="checkbox"
             checked={draft.turnTrace === true}
             onChange={(e) => commit({ ...draft, turnTrace: e.target.checked })}
           />
-          Record turn traces
+          Record local turn traces
         </label>
-        <p className="hint">
-          Adds a “Trace” drawer under each reply showing its steps, the tools available at
-          each one, and tokens used. Stored locally, with values redacted; nothing is sent
-          anywhere. Clear them in the Data tab.
-        </p>
       </Section>
 
 
@@ -120,19 +132,13 @@ function ObservabilitySection({
 
   return (
     <Section title="Observability">
-      <Disclosure summary="Langfuse tracing (beta)" status={obs.enabled ? `On · ${host}` : 'Off'}>
-      <p className="hint">
-        Trace every model call — turns, tools, tokens, cost — to your own{' '}
-        <a href="https://langfuse.com" target="_blank" rel="noreferrer">
-          Langfuse
-        </a>{' '}
-        project. Nothing leaves the browser until you turn this on.
-      </p>
+      <Disclosure summary="Langfuse" status={obs.enabled ? `On · ${host}` : 'Off'}>
       <div className="switch-row">
-        <span className="switch-label">Enable Langfuse observability</span>
+        <span className="switch-label">Send traces to Langfuse</span>
         <label className="switch-toggle">
           <input
             type="checkbox"
+            aria-label="Send traces to Langfuse"
             checked={obs.enabled}
             onChange={(e) => patch({ enabled: e.target.checked }, commit)}
           />
@@ -187,7 +193,7 @@ function ObservabilitySection({
               disabled={!obs.captureContent}
               onChange={(e) => patch({ captureScreenshots: e.target.checked }, commit)}
             />
-            Include screenshots (heavy)
+            Include screenshots
           </label>
           <div className="obs-actions">
             <button
@@ -239,7 +245,6 @@ function ShortcutSection() {
   return (
     <Section
       title="Keyboard shortcut"
-      hint="Chrome owns global shortcuts, so rebinding opens its shortcuts page."
     >
       <div className="shortcut-row">
         <span className="shortcut-label">Toggle sidebar</span>
@@ -248,7 +253,7 @@ function ShortcutSection() {
           className="btn ghost small"
           onClick={() => void chrome.tabs.create({ url: 'chrome://extensions/shortcuts' })}
         >
-          Change ↗
+          Change in Chrome ↗
         </button>
       </div>
     </Section>

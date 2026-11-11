@@ -2,6 +2,10 @@
 
 Reconciled 16 October 2026. This index describes the development branch, not the installed Chrome Web Store release. The implementation last tested in Chrome is `b20e8ff`; the handoff changes only documentation.
 
+## Optimisation integration — 11 November 2026
+
+The optimisation branch has been integrated with the October `main` history. It adds durable background chats, Studio, page watches, the optional local companion, surface simplification and resource cleanup while retaining the MCP work below. The previous exclusion of companion work applies to the preserved 0.5.0 submission, not the newly integrated source tree. See [merge decisions and verification](verification/2026-11-11-optimisation-merge.md). Earlier branch/release notes below remain historical.
+
 ## Implementation and artifacts
 
 | Area | Implementation guide / evidence | Status |

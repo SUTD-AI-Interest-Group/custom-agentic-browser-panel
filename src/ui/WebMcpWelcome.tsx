@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from 'react'
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import type { ProviderConfig } from '../data/settings'
 import { discoverWebMcp, type WebMcpSnapshot } from '../platform/webmcp'
 import { createModel } from '../agent/provider'
@@ -14,7 +14,8 @@ export function WebMcpWelcome({ tabId, url, selected, onChoose, children }: {
 }) {
   const [snapshot, setSnapshot] = useState<WebMcpSnapshot | null>(null)
   const [suggestions, setSuggestions] = useState<WebMcpSuggestion[]>([])
-  const [status, setStatus] = useState<'loading' | 'ready' | 'failed'>('loading')
+  const [status, setStatus] = useState<'idle' | 'loading' | 'ready' | 'failed'>('idle')
+  const request = useRef<AbortController | null>(null)
   useEffect(() => {
     setSnapshot(null)
     if (tabId === undefined) return
@@ -30,33 +31,43 @@ export function WebMcpWelcome({ tabId, url, selected, onChoose, children }: {
       finally { busy = false }
     }
     void refresh()
-    const timer = setInterval(() => void refresh(), 4000)
-    return () => { cancelled = true; clearInterval(timer) }
+    const changed = (message: { type?: string }, sender: chrome.runtime.MessageSender) => {
+      if (message?.type === 'webmcp.changed' && sender.tab?.id === tabId) void refresh()
+    }
+    const focus = () => void refresh()
+    chrome.runtime.onMessage.addListener(changed)
+    window.addEventListener('focus', focus)
+    return () => { cancelled = true; chrome.runtime.onMessage.removeListener(changed); window.removeEventListener('focus', focus) }
   }, [tabId, url])
 
-  // Stable serialized provider config avoids regenerating on composer keystrokes.
-  const providerKey = JSON.stringify(selected)
+  // Invalidate pending work when its inputs change. Only a click starts
+  // inference; tool refreshes, navigation and provider changes never do.
+  const providerKey = useMemo(() => JSON.stringify(selected), [selected?.provider, selected?.modelId])
   useEffect(() => {
+    request.current?.abort()
+    setSuggestions([])
+    setStatus('idle')
+    return () => request.current?.abort()
+  }, [snapshot, providerKey, tabId, url])
+
+  const suggest = async () => {
+    if (!selected || !snapshot?.tools.length) return
+    request.current?.abort()
+    const controller = new AbortController()
+    request.current = controller
     setSuggestions([])
     setStatus('loading')
-    if (!snapshot?.tools.length || !providerKey || providerKey === 'null') return
-    const controller = new AbortController()
-    const timer = setTimeout(() => {
-      const config = JSON.parse(providerKey) as NonNullable<typeof selected>
-      void Promise.resolve().then(() => generateWebMcpSuggestions(createModel(config.provider, config.modelId), snapshot, controller.signal))
-        .then(items => { if (!controller.signal.aborted) { setSuggestions(items); setStatus(items.length ? 'ready' : 'failed') } })
-        .catch(() => { if (!controller.signal.aborted) setStatus('failed') })
-    }, 600)
-    return () => { clearTimeout(timer); controller.abort() }
-  }, [snapshot, providerKey])
+    try {
+      const items = await generateWebMcpSuggestions(createModel(selected.provider, selected.modelId), snapshot, controller.signal)
+      if (!controller.signal.aborted) { setSuggestions(items); setStatus(items.length ? 'ready' : 'failed') }
+    } catch { if (!controller.signal.aborted) setStatus('failed') }
+  }
 
   if (!snapshot?.tools.length || (url && snapshot.url !== url)) return <>{children}</>
   return <section className="webmcp-welcome" aria-label="Page actions">
-    <span className="webmcp-label">WebMCP connected</span>
-    <h2>What can we do here?</h2>
-    <p className="webmcp-intro">This page shares {snapshot.tools.length} actions with Lychee.</p>
+
     <details className="webmcp-actions" open>
-      <summary>Available actions <span>{snapshot.tools.length}</span></summary>
+      <summary>Page actions <span>{snapshot.tools.length}</span></summary>
       <ul>{snapshot.tools.map((action, index) => <li key={`${action.name}:${index}`}>
         <button type="button" onClick={() => onChoose(`Help me use the WebMCP action "${action.name}" on this page. Ask me for any missing details before running it.`)}>
           <strong>{action.name.replace(/[_-]+/g, ' ')}</strong>
@@ -65,12 +76,10 @@ export function WebMcpWelcome({ tabId, url, selected, onChoose, children }: {
       </li>)}</ul>
     </details>
     <div className="webmcp-examples" aria-live="polite">
-      <h3>Try asking Lychee</h3>
-      {!selected ? <p>Choose a chat model to get ideas for this page.</p>
-        : status === 'loading' ? <p>Thinking of a few useful ideas…</p>
-        : status === 'failed' ? <p>Ideas are unavailable right now. Choose an action above to get started.</p>
-        : suggestions.map(item => <button type="button" key={item.prompt} onClick={() => onChoose(`${item.prompt}\n\nUse the page’s WebMCP actions: ${item.toolNames.join(', ')}.`)}>{item.prompt}<span aria-hidden="true">↗</span></button>)}
+      {status === 'loading' ? <p role="status">Suggesting prompts…</p> :
+        <button type="button" disabled={!selected} title="Uses your selected model and shares this site's origin and action descriptions." onClick={() => void suggest()}>Suggest prompts</button>}
+      {status === 'failed' && <p role="alert">Could not generate suggestions.</p>}
+      {suggestions.map(item => <button type="button" key={item.prompt} onClick={() => onChoose(`${item.prompt}\n\nUse the page’s WebMCP actions: ${item.toolNames.join(', ')}.`)}>{item.prompt}<span aria-hidden="true">↗</span></button>)}
     </div>
-    <p className="webmcp-disclosure">Ideas use your chat model and share this site’s origin and action descriptions. Selecting an idea fills your message. Actions need your confirmation.</p>
   </section>
 }
