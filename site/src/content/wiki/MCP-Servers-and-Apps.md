@@ -222,3 +222,74 @@ The zod error in that widget was the most precise spec document we ever
 received — but we only got it because we'd already built everything else
 correctly enough for a real third-party app to boot, object, and tell us
 exactly which four fields it wanted.
+
+## November branch: asynchronous MCP tasks
+
+The sections below were previously recorded only in the website's copy of this
+wiki. They describe the implementation in the November snapshot
+[`9180e33`](https://github.com/SUTD-AI-Interest-Group/custom-agentic-browser-panel/commit/9180e33bb35e1cf688a8861443307aacbe6e7b8d).
+That branch has not yet integrated all the October MCP changes now on `main`;
+use the [integration record](https://github.com/SUTD-AI-Interest-Group/custom-agentic-browser-panel/blob/bb027218be5b0be384232f4d99b44fc86fff2afb/docs/development-handoff.md)
+for the merged transport, clarification, task and skill flows.
+
+Tools declaring `execution.taskSupport: "required"` or `"optional"` use task
+execution when the server advertises `tasks.requests.tools.call`. The initial
+call returns a task handle immediately, freeing Lychee to do other work. A
+companion tool, normally named `mcp_<server>_<tool>_task`, accepts `taskId` and
+an `action` of `status`, `result`, or `cancel`. It follows the producing tool's
+permission policy and approval gate. An unfinished `result` request returns
+status immediately; final results use the same text, media, and app-card
+pipeline as ordinary tool results. Status responses include the server's
+`pollInterval`; the agent is instructed to respect it between checks.
+
+Handles belong to the initiating conversation and server configuration. Task IDs,
+arguments, protocol/session identity and completed results are stored in IndexedDB.
+A service-worker alarm checks pending tasks roughly once per minute while Chrome
+is running, respecting longer server poll intervals. The cleanup pass disarms
+that alarm when the queue is empty and closes each polling client in `finally`. It retries transient errors
+without resubmitting the original job, and queues final outcomes while the panel
+is closed. Results already retrieved are retained locally even if the server later
+expires the task.
+
+When the corresponding chat is visible and idle, Lychee receives an automatic
+completion message, retrieves the result through the task companion tool, and
+continues the original request. If the chat was interrupted, its saved checkpoint
+is restored first. Follow-up calls retain ordinary approval requirements; this automatic MCP
+completion flow does not start a model continuation while the panel is closed. Completion delivery is leased across
+panels and acknowledged after the continued conversation is saved. An interrupted
+delivery can be retried after its one-minute lease expires.
+
+Stop suppresses automatic continuation for outstanding tasks in that chat; it does
+not cancel remote work. Use the task tool's `cancel` action to request remote
+cancellation. Deleting a chat removes its tracked tasks. Disabled servers and tools
+are not polled or automatically resumed, and changing server configuration
+invalidates old handles. Browser shutdown pauses polling; reopening Chrome resumes
+it, subject to the server retaining the task/session. `input_required` is surfaced
+as a status in this snapshot; its task flow does not include sampling or the
+interactive elicitation support merged into `main`.
+
+This implements the installed SDK's [2025-11-25 task protocol](https://modelcontextprotocol.io/specification/2025-11-25/basic/utilities/tasks),
+including `tasks/get`, `tasks/result`, and `tasks/cancel`. The newer separate
+Tasks extension and its `tasks/update` API are not implemented.
+
+Validation: `npm run build`, focused Vitest suites for MCP tasks, background polling,
+conversation deletion and recovery, and `node scripts/test-mcp-tasks-browser.mjs`
+(with `CHROME_BIN` when needed). The browser test uses local MCP and model fixtures,
+closes the creating context, completes the job in the service worker, opens the
+production chat and verifies automatic continuation and no duplicate on reopening.
+
+## November branch: app interoperability
+
+The client advertises `io.modelcontextprotocol/ui` with
+`text/html;profile=mcp-app`. App-only tools (`_meta.ui.visibility` excluding
+`model`) stay out of model discovery but remain available through the
+approval-gated app bridge. Full producing results, including app-only `_meta`,
+are kept in the artifact store and delivered to the widget without exposing
+that metadata to model history. Standard array-shaped `ui/message` content
+becomes a composer draft. Unsupported model-context updates return an explicit
+error, and the handshake reports the supported `2026-01-26` revision.
+
+App-originated calls to task-capable tools wait through SDK polling and return
+the final MCP result to the widget. Apps remain inline, with the existing
+network-restricted sandbox; external scripts and server-declared CSP domain
+allowlists are not supported.
