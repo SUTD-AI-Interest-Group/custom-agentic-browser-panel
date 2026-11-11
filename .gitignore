@@ -24,3 +24,6 @@ dist/
 
 # Superpowers brainstorming companion (local mockups)
 .superpowers/
+
+# Local browser regression evidence
+test-results/

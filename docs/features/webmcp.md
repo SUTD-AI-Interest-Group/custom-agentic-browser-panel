@@ -4,7 +4,23 @@ Lychee discovers actions exposed by the current document's WebMCP API. A count b
 
 The suggestion request sends the page origin and up to 40 action names/descriptions, not the page body, full URL, input schemas, or conversation. Each action remains visible even when model generation fails. Generation is cancelled when the page, tool list, or model changes and when the welcome view unmounts. Suggestions are not persisted.
 
-`DiscoverWebMcp` exposes action schemas to the agent. `RunWebMcp` validates arguments and requests one-time approval including the action, URL, and arguments. Execution is pinned to the discovered Chrome document ID and checks the URL and descriptor again after approval. A failed execution is not retried by the adapter. Page descriptions and results remain untrusted data.
+`DiscoverWebMcp` exposes action schemas, opaque per-action handles, and a snapshot revision to the agent. `RunWebMcp` requires the exact `name`, `handle`, and `revision` from discovery, validates arguments and requests one-time approval including the action, URL, and arguments. Execution is pinned to the discovered Chrome document ID and checks the URL and descriptor again after approval. A failed execution is not retried by the adapter. Page descriptions and results remain untrusted data. Titles, origins, output schemas, and the supported boolean annotations are preserved; annotations never bypass approval. Approval includes the tool origin when available.
+
+## Discovery identity and bounded execution
+
+Handles and revisions live in the document's isolated extension world, so separate harness turns can resolve them without a panel-local cache. Equivalent descriptor/key ordering preserves identity. URL changes, changed metadata (including output schema and annotations), API replacement, observed owner-window changes, and `toolchange` invalidate the revision. A same-URL top-document reload gets a fresh registry and Chrome document ID. Duplicate names still fail closed; frame-scoped execution is not part of this slice. Identical re-registration is observable through `toolchange`; legacy APIs without that event cannot identify an unobserved identical replacement.
+
+`RunWebMcp` checks the supplied identity before approval and the injected adapter checks it again after approval. Old conversations with name-only calls must rediscover. An example call is:
+
+```json
+{"name":"search","handle":"<tools[0].handle>","revision":"<snapshot.revision>","args":{"query":"tea"},"reason":"Find tea"}
+```
+
+Discovery skips malformed descriptors independently and returns bounded `diagnostics`. Limits are 100 descriptors, 20 diagnostic messages, 256 characters per name, 2,000 per description, 2,048 per title/origin, 65,536 per schema, 32 nesting levels, and 262,144 total descriptor characters. Schemas must parse to objects; input-schema validation errors or unsupported references fail before approval. Output schemas are preserved but output-schema validation is not implemented. Metadata limits use JavaScript string length, not UTF-8 byte counts.
+
+Discovery waits are capped at 10 seconds. Execution defaults to 30 seconds (adapter callers may select 1–120,000 ms), including preparation and in-page validation. The harness abort signal is passed through discovery and execution. Each invocation has an isolated-world controller prepared in the pinned document before dispatch. Stop signals that controller; modern native execution receives its signal. Both page and harness waits are bounded, including legacy APIs and callbacks that ignore cancellation. Timers, listeners, and invocation entries are cleaned up; successful completion does not abort the tool's signal. Serialized output is limited to 262,144 characters, with oversized or unserializable results reported as uncertain execution failures.
+
+Cancellation and timeouts cannot undo side effects or forcibly stop arbitrary page JavaScript. A failed transport or missing response is not success and must not trigger an automatic retry.
 
 ## Compatibility and scope
 
@@ -20,8 +36,19 @@ Reference: [Chrome WebMCP imperative API](https://developer.chrome.com/docs/ai/w
 
 ## Verification
 
-Automated tests cover current/legacy discovery, unsupported and empty pages, original-descriptor execution, stale documents and tool metadata, duplicate names, schema validation, denial, one-time approval, badge open/closed state, suggestion metadata boundaries, UI prefill, tools disappearing, and late suggestion cancellation.
+Automated tests cover stable and stale handles/revisions, metadata and owner changes, malformed and oversized descriptors, cancellation before/during execution, discovery/preparation/execution timeouts, cleanup, transport failures, current/legacy discovery, unsupported and empty pages, original-descriptor execution, stale documents and tool metadata, duplicate names, schema validation, denial, one-time approval, badge open/closed state, suggestion metadata boundaries, UI prefill, tools disappearing, and late suggestion cancellation.
 
 The welcome component was visually checked at 430px and 320px using fixture actions and fixture suggestions. This checks rendering and composer-prefill behavior, not a live provider or native WebMCP site.
 
 For live verification, reload the unpacked `dist/` extension, visit a page with registered WebMCP tools in a compatible browser, verify the closed-panel badge and open-panel welcome, then send a suggested request and check both Deny and Allow. Also unregister tools, navigate (including same-URL reload), change tabs, and switch models while suggestions are pending. Live verification on 2026-10-14 in Chrome 155 on WanderNote passed: all 11 tools appeared in the welcome view, the selected chat model generated three suggestions, and the normal chat → DiscoverWebMcp → GetTool → one-time approval → RunWebMcp path returned a real get_itinerary_map result for 2026-09-19 (2 stops, 1.17 km, 0 unmapped activities). The raw tool card payload was inspected. No itinerary mutations were performed; the add-activity operation remains for the user to retest. The rebuilt unpacked extension was reloaded before this check.
+
+
+### Repeatable native-browser regression
+
+Run `npx playwright install chromium` once, then `npm run test:webmcp:browser`. The command builds the production extension and runs `scripts/test-webmcp-browser.mjs`. Set `CHROME_BIN` to a compatible Chrome for Testing executable to use an existing installation. A browser without native WebMCP fails the test instead of silently using a polyfill or skipping it.
+
+The test loads a temporary copy of the extension in a fresh headless profile with WebMCP testing enabled, serves a local native-tool fixture and deterministic OpenAI-compatible model, and renders the real production sidepanel page in an extension tab. It exercises the real agent loop, tool loading, approval cards, Chrome scripting bridge, and native callbacks. The model is scripted; this does not measure model reasoning quality or the physical side-panel container. No user profile, credentials, remote provider, or real site mutation is used. The supplemental adapter probe is bundled from source for precise timing and stale-document checks.
+
+On 2026-11-11, Chrome for Testing 156.0.8078.4 passed all 12 browser checks: discovery/metadata/stable identity, exact-once mutation, cancellation, adapter timeout, metadata invalidation, same-URL reload, welcome view, Deny, Allow/result round trip, changed tool during approval, Stop, and the production 30-second timeout with no retry. This browser exposed title, origin, and annotations but omitted the draft `outputSchema` field; the test compares against the native descriptor rather than inventing metadata.
+
+Browser verification also fixed the running-tool label (which incorrectly continued to say “Waiting for permission…” after approval) and preparation errors on an unloaded document (now explicitly unexecuted and requiring rediscovery). Screenshots and a JSON report are written to ignored `test-results/webmcp/`, or `WEBMCP_RESULTS_DIR` when set.

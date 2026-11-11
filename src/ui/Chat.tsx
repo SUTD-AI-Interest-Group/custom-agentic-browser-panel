@@ -5667,7 +5667,8 @@ function ToolPill({
   const [authError, setAuthError] = useState<string | null>(null)
   const denied = output && typeof output === 'object' && output.denied
   let label: string
-  if (part.state === 'running') label = 'Waiting for permission…'
+  // Running covers both approval and execution; the approval card shows consent state.
+  if (part.state === 'running') label = 'In progress…'
   else if (part.state === 'error') label = `${part.toolName} failed`
   else if (denied) label = 'Permission denied'
   else if (part.toolName === 'ReadPage') {

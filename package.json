@@ -12,7 +12,8 @@
     "package": "bash scripts/package.sh",
     "store:assets": "node scripts/store-assets.mjs",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "test:webmcp:browser": "npm run build && node scripts/test-webmcp-browser.mjs"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^4.0.16",
@@ -44,6 +45,7 @@
     "fake-indexeddb": "^6.2.5",
     "fflate": "^0.8.3",
     "jsdom": "^29.1.1",
+    "playwright": "^1.65.0",
     "typescript": "^5.9.3",
     "vite": "^6.0.0",
     "vitest": "^4.1.10"

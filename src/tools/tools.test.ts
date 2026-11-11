@@ -338,27 +338,64 @@ vi.mock('../platform/webmcp', () => ({ discoverWebMcp: vi.fn(), executeWebMcp: v
 import { discoverWebMcp, executeWebMcp } from '../platform/webmcp'
 
 describe('WebMCP tool approval', () => {
-  const action = { name: 'search', description: 'Search', inputSchema: { type: 'object', properties: { query: { type: 'string' } }, required: ['query'] } }
+  const action = { name: 'search', handle: 'h-1', description: 'Search', inputSchema: { type: 'object', properties: { query: { type: 'string' } }, required: ['query'] } }
   function setup(allow: boolean) {
     const approval = vi.fn(async () => allow)
-    vi.mocked(discoverWebMcp).mockResolvedValue({ url: 'https://example.com/', documentId: 'doc-1', tools: [action] })
+    vi.mocked(discoverWebMcp).mockResolvedValue({ url: 'https://example.com/', documentId: 'doc-1', revision: 'r-1', tools: [action] })
     vi.mocked(executeWebMcp).mockReset()
     const tools = createAgentTools(approval, 'all-tabs', new Set(), noopPageControl, null, false, [], () => 'always', 'chat', new Set(), undefined, undefined, { resolveTab: async () => ({ id: 7, url: 'https://example.com/' } as chrome.tabs.Tab) })
     return { approval, run: tools.RunWebMcp.execute as any }
   }
   it('requires one-time approval even for an Always policy, then executes against the bound document', async () => {
     const { approval, run } = setup(true)
-    await run({ name: 'search', args: { query: 'tea' }, reason: 'Find tea' })
+    await run({ name: 'search', handle: 'h-1', revision: 'r-1', args: { query: 'tea' }, reason: 'Find tea' }, {})
     expect(approval).toHaveBeenCalledWith(expect.objectContaining({ once: true, toolName: 'RunWebMcp' }))
-    expect(executeWebMcp).toHaveBeenCalledWith(7, expect.objectContaining({ documentId: 'doc-1' }), action, { query: 'tea' })
+    expect(executeWebMcp).toHaveBeenCalledWith(7, expect.objectContaining({ documentId: 'doc-1' }), action, { query: 'tea' }, { signal: undefined })
   })
   it('does not execute denied actions or arguments that fail the page schema', async () => {
     const { approval, run } = setup(false)
-    await run({ name: 'search', args: { query: 'tea' }, reason: 'Find tea' })
+    await run({ name: 'search', handle: 'h-1', revision: 'r-1', args: { query: 'tea' }, reason: 'Find tea' }, {})
     expect(executeWebMcp).not.toHaveBeenCalled()
     approval.mockClear()
-    await run({ name: 'search', args: { query: 42 }, reason: 'Find tea' })
+    await run({ name: 'search', handle: 'h-1', revision: 'r-1', args: { query: 42 }, reason: 'Find tea' }, {})
     expect(approval).not.toHaveBeenCalled()
     expect(executeWebMcp).not.toHaveBeenCalled()
   })
+  it.each([{ handle: 'stale' }, { revision: 'stale' }, { handle: undefined }, { revision: undefined }])('rejects stale or missing discovery identity before approval: %j', async identity => {
+    const { approval, run } = setup(true)
+    const result = await run({ name: 'search', handle: 'h-1', revision: 'r-1', args: { query: 'tea' }, reason: 'Find tea', ...identity }, {})
+    expect(result.error).toBeTruthy()
+    expect(approval).not.toHaveBeenCalled()
+    expect(executeWebMcp).not.toHaveBeenCalled()
+  })
+  it('passes cancellation through discovery and execution', async () => {
+    const { run } = setup(true)
+    const signal = new AbortController().signal
+    await run({ name: 'search', handle: 'h-1', revision: 'r-1', args: { query: 'tea' }, reason: 'Find tea' }, { abortSignal: signal })
+    expect(discoverWebMcp).toHaveBeenCalledWith(7, false, { signal })
+    expect(executeWebMcp).toHaveBeenCalledWith(7, expect.anything(), action, { query: 'tea' }, { signal })
+  })
+  it('does not execute if Stop is pressed while approval is pending', async () => {
+    const { approval, run } = setup(true)
+    const controller = new AbortController()
+    approval.mockImplementationOnce(async () => { controller.abort(); return true })
+    await expect(run({ name: 'search', handle: 'h-1', revision: 'r-1', args: { query: 'tea' }, reason: 'Find tea' }, { abortSignal: controller.signal })).rejects.toThrow()
+    expect(executeWebMcp).not.toHaveBeenCalled()
+  })
+  it('includes preserved title and origin in approval without trusting read-only claims', async () => {
+    const { approval, run } = setup(true)
+    vi.mocked(discoverWebMcp).mockResolvedValue({ url: 'https://example.com/', documentId: 'doc-1', revision: 'r-1', tools: [{ ...action, title: 'Find tea', origin: 'https://provider.example', annotations: { readOnlyHint: true } }] })
+    await run({ name: 'search', handle: 'h-1', revision: 'r-1', args: { query: 'tea' }, reason: 'Find tea' }, {})
+    expect(approval).toHaveBeenCalledWith(expect.objectContaining({ once: true, summary: expect.stringContaining('https://provider.example') }))
+    expect(approval).toHaveBeenCalledWith(expect.objectContaining({ summary: expect.stringContaining('Find tea (search)') }))
+  })
+  it('returns a safe failure for schemas the validator cannot resolve', async () => {
+    const { approval, run } = setup(true)
+    vi.mocked(discoverWebMcp).mockResolvedValue({ url: 'https://example.com/', documentId: 'doc-1', revision: 'r-1', tools: [{ ...action, inputSchema: { $ref: 'https://missing.example/schema' } }] })
+    const result = await run({ name: 'search', handle: 'h-1', revision: 'r-1', args: { query: 'tea' }, reason: 'Find tea' }, {})
+    expect(result.error).toContain('invalid or unsupported input schema')
+    expect(approval).not.toHaveBeenCalled()
+    expect(executeWebMcp).not.toHaveBeenCalled()
+  })
+
 })
