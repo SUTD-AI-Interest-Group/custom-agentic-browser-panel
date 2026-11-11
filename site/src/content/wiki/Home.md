@@ -2,17 +2,42 @@
 
 An AI agent that lives in Chrome's side panel: it reads the page you're on,
 controls it with your permission, and runs long web research in the background.
-Manifest V3, React 18, TypeScript, built on the Vercel AI SDK. **No backend** —
-the panel talks straight to whatever OpenAI-compatible endpoint you give it.
+Manifest V3, React 18, TypeScript, built on the Vercel AI SDK. API-key providers
+connect directly to the configured endpoint. The November development branch
+also includes an optional local native companion; no Lychee-hosted backend is
+enabled in that implementation.
 
 This wiki is the engineering log: what we set out to build, how each feature was
 actually built, what broke, and why the code looks the way it does. It is
 written against the commit history rather than from memory — where we claim a
 bug, there's a commit, a comment, or a regression test behind it.
 
+## Latest work — 11 November 2026
+
+The latest pass applies the same standard to every surface and background job:
+simple purpose, simple architecture, simple design, simple implementation.
+
+- **[November 2026 Update](November-2026-Update)** — background chats, native
+  WebMCP, Studio, page watches and the local companion, with the distinction
+  between merged work and the new development snapshot.
+- **[Simplifying Lychee](Simplifying-Lychee)** — less copy, fewer overlapping
+  states, lazy screens and change notifications. In the five-chat idle fixture,
+  panel database transactions fell from 61 to zero; initial entry JavaScript was
+  about 10.1% smaller. The article records what those measurements cover.
+- **[Background Work and Cleanup](Background-Work-and-Cleanup)** — who owns each
+  host, request, tab, worker, connection and alarm, and how it is released after
+  use without cancelling work that should survive panel closure.
+
+The November snapshot is
+[`9180e33`](https://github.com/SUTD-AI-Interest-Group/custom-agentic-browser-panel/commit/9180e33bb35e1cf688a8861443307aacbe6e7b8d)
+on `codex/optimisation-background-cleanup`, pushed but unmerged at this writing.
+This is an engineering update, not a new store-release announcement.
+
 ---
 
-## The shape of the project
+## The project through 10 August 2026
+
+The counts and milestones below are the original August snapshot.
 
 | | |
 | --- | --- |
@@ -23,7 +48,7 @@ bug, there's a commit, a comment, or a regression test behind it.
 | **`fix` / `harden`** | 93 |
 
 That ratio is the most honest summary of how this was built. **More than a third of
-the commits produced no feature code at all** — the repository now contains 41 design
+the commits produced no feature code at all** — the repository then contained 41 design
 specs and 21 implementation plans, and another 93 fixes and hardening commits landed
 *after* features already "worked." Almost every
 capability in the codebase landed as the same three-beat sequence:
@@ -35,14 +60,14 @@ feat: X                     ← the build
 fix: / harden: …            ← what the build taught us
 ```
 
-Thirty-eight design specs and twenty implementation plans are still in the repo
+At that snapshot, thirty-eight design specs and twenty implementation plans remained
 under
 [`docs/superpowers/`](https://github.com/SUTD-AI-Interest-Group/custom-agentic-browser-panel/tree/main/docs/superpowers).
 One of them — `docs: drop abandoned LM Studio/SSE design spec` (`c0f77af`) — was
 deleted rather than built. Designing something and then *not* building it is a
 result, not a waste.
 
-## Recent milestones
+## July–August milestones
 
 The original feature log was written on 24 July. The later work extended the same
 patterns rather than changing the architecture:

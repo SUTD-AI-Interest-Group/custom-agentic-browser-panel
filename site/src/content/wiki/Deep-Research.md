@@ -1,5 +1,11 @@
 # Deep Research
 
+**11 November 2026 follow-up:** [Background Work and Cleanup](Background-Work-and-Cleanup)
+covers task-scoped cancellation, queued tab leases, clearing active research and
+shared-host shutdown. [Simplifying Lychee](Simplifying-Lychee) covers the shared
+panel subscription. These changes are on the pushed, unmerged optimisation branch;
+the sections below retain the original design history.
+
 **Goal.** Give the agent a real research capability — search, fetch, extract,
 synthesize a cited report — that runs as a background task and *survives you
 closing the side panel*. Entirely client-side, no research API keys.
