@@ -67,15 +67,40 @@ export function buildMcpTools(opts: {
     if (!(server.name in mcp.servers) || !serverEnabled(mcp, server.name)) continue
     for (const t of server.tools) {
       if (mcpToolPolicy(mcp, server.name, t.name) === 'never') continue
+      const ui = t.meta?.ui as { visibility?: string[] } | undefined
+      if (Array.isArray(ui?.visibility) && !ui.visibility.includes('model')) continue
       const key = mcpToolName(server.name, t.name, taken)
       taken.add(key)
       tools[key] = makeTool(key, server.name, t)
+      if (t.taskSupport === 'required' || t.taskSupport === 'optional') {
+        const taskKey = mcpToolName(server.name, `${t.name}_task`, taken)
+        taken.add(taskKey)
+        tools[taskKey] = dynamicTool({
+          description: `[MCP · ${server.name}] Check, retrieve, or cancel a task started by ${key}. Respect pollInterval between checks; do other work while it runs. Tasks persist across panel restarts. Completion automatically resumes this chat when open.`,
+          inputSchema: jsonSchema({ type: 'object', properties: {
+            taskId: { type: 'string' }, action: { type: 'string', enum: ['status', 'result', 'cancel'] },
+          }, required: ['taskId', 'action'], additionalProperties: false }),
+          execute: async (input, { abortSignal }) => {
+            const args = input as { taskId: string; action: 'status' | 'result' | 'cancel' }
+            if (mcpToolPolicy(mcp, server.name, t.name) !== 'always' && !await requestApproval({
+              toolName: taskKey, summary: `${args.action} task on ${server.name}`,
+              reason: `Manage the task started by ${t.name}.`,
+            })) return DENIED
+            try {
+              const response = await manager.taskOperation(server.name, t.name, conversationId, args.taskId, args.action, abortSignal)
+              if (response.result) return renderResult(response.result, server.name, t, response.args ?? {}, abortSignal)
+              return { task: response.task, note: 'Use the task tool to check later or retrieve the final result. Do not resubmit the original tool call.' }
+            } catch (error) {
+              return { error: error instanceof Error ? error.message : String(error) }
+            }
+          },
+        })
+      }
     }
   }
   return tools
 
   function makeTool(key: string, serverName: string, info: McpToolInfo) {
-    const appTemplate = uiTemplateOf(info.meta)
     return dynamicTool({
       // The provenance prefix keeps ToolSearch results honest about where a
       // capability comes from (and whose approval card will appear).
@@ -93,7 +118,11 @@ export function buildMcpTools(opts: {
         }
         let result
         try {
-          result = await manager.callTool(serverName, info.name, args, {
+          if (info.taskSupport === 'required' || info.taskSupport === 'optional') {
+            const started = await manager.startTool(serverName, info.name, args, conversationId, abortSignal)
+            if ('task' in started) return { task: started.task, note: `Task started. Use the task management tool for ${info.name} to check status, retrieve the result, or cancel. Respect pollInterval; do not resubmit this call.` }
+            result = started.result
+          } else result = await manager.callTool(serverName, info.name, args, {
             signal: abortSignal,
             timeoutMs: CALL_TIMEOUT_MS,
           })
@@ -114,84 +143,97 @@ export function buildMcpTools(opts: {
           return { error: `MCP call failed (${msg}).` }
         }
 
-        const mapped = mapCallResult(
-          result as { content?: unknown[]; structuredContent?: unknown; isError?: boolean },
-          { server: serverName, tool: info.name },
-        )
-
-        // Persist rich payloads as user-facing cards; only ids ride the return.
-        const artifactIds: string[] = []
-        for (const a of mapped.artifacts) {
-          try {
-            artifactIds.push(
-              await saveMcpArtifact({ ...a, conversationId, server: serverName, tool: info.name }),
-            )
-          } catch {
-            /* a full disk must not fail the call */
-          }
-        }
-
-        // The image invariant: pictures reach the model via imageQueue only —
-        // and only when the model can actually see (a blind model told an
-        // image "follows" would loop waiting for it).
-        const value = { ...mapped.modelValue }
-        if (mapped.images.length > 0) {
-          if (visionCapable) {
-            imageQueue.push(...mapped.images)
-          } else {
-            value.note = [
-              value.note,
-              'You cannot view images, so the image was shown to the user only.',
-            ]
-              .filter(Boolean)
-              .join(' ')
-          }
-        }
-        if (artifactIds.length > 0) value.artifactIds = artifactIds
-
-        // MCP Apps: a tool with a ui:// output template gets an interactive
-        // card (McpAppCard → the manifest-sandboxed page). The template is
-        // fetched here and cached as an HTML artifact so the card survives
-        // reload and disconnection; a text/uri-list template becomes a direct
-        // external-URL iframe instead. The model just learns the app was shown.
-        if (appTemplate) {
-          const app: Record<string, unknown> = {
-            server: serverName,
-            tool: info.name,
-            template: appTemplate,
-          }
-          try {
-            const res = await manager.readResource(serverName, appTemplate, { signal: abortSignal })
-            const c = ((res as { contents?: unknown[] }).contents?.[0] ?? {}) as Record<string, unknown>
-            const mime = typeof c.mimeType === 'string' ? c.mimeType : 'text/html'
-            const text = typeof c.text === 'string' ? c.text : undefined
-            if (mime.startsWith('text/uri-list') && text) {
-              const url = text
-                .split('\n')
-                .map((l) => l.trim())
-                .find((l) => /^https?:\/\//i.test(l))
-              if (url) app.externalUrl = url
-            } else if (text) {
-              app.artifactId = await saveMcpArtifact({
-                kind: 'html',
-                mimeType: mime,
-                text,
-                title: `${info.name} app`,
-                conversationId,
-                server: serverName,
-                tool: info.name,
-              })
-            }
-          } catch {
-            // Card falls back to a live template read on mount.
-          }
-          value.app = app
-          value.note = [value.note, 'An interactive app card was shown to the user for this result.']
-            .filter(Boolean)
-            .join(' ')
-        }
-        return value
+        return renderResult(result, serverName, info, args, abortSignal)
       },
     })
+  }
+
+  async function renderResult(result: unknown, serverName: string, info: McpToolInfo, args: Record<string, unknown>, signal?: AbortSignal) {
+    const appTemplate = uiTemplateOf(info.meta)
+    const mapped = mapCallResult(
+      result as { content?: unknown[]; structuredContent?: unknown; isError?: boolean },
+      { server: serverName, tool: info.name },
+    )
+
+    // Persist rich payloads as user-facing cards; only ids ride the return.
+    const artifactIds: string[] = []
+    for (const a of mapped.artifacts) {
+      try {
+        artifactIds.push(
+          await saveMcpArtifact({ ...a, conversationId, server: serverName, tool: info.name }),
+        )
+      } catch {
+        /* a full disk must not fail the call */
+      }
+    }
+
+    // The image invariant: pictures reach the model via imageQueue only —
+    // and only when the model can actually see (a blind model told an
+    // image "follows" would loop waiting for it).
+    const value = { ...mapped.modelValue }
+    if (mapped.images.length > 0) {
+      if (visionCapable) {
+        imageQueue.push(...mapped.images)
+      } else {
+        value.note = [
+          value.note,
+          'You cannot view images, so the image was shown to the user only.',
+        ]
+          .filter(Boolean)
+          .join(' ')
+      }
+    }
+    if (artifactIds.length > 0) value.artifactIds = artifactIds
+
+    // MCP Apps: a tool with a ui:// output template gets an interactive
+    // card (McpAppCard → the manifest-sandboxed page). The template is
+    // fetched here and cached as an HTML artifact so the card survives
+    // reload and disconnection; a text/uri-list template becomes a direct
+    // external-URL iframe instead. The model just learns the app was shown.
+    if (appTemplate) {
+      const app: Record<string, unknown> = {
+        server: serverName,
+        tool: info.name,
+        template: appTemplate,
+        toolInput: args,
+      }
+      try {
+        // Preserve the full result, including app-only _meta, outside model history.
+        app.resultArtifactId = await saveMcpArtifact({
+          kind: 'blob', mimeType: 'application/json', text: JSON.stringify(result),
+          title: `${info.name} app result`, conversationId, server: serverName, tool: info.name,
+        })
+      } catch { /* storage failure leaves the budgeted result fallback */ }
+      try {
+        const res = await manager.readResource(serverName, appTemplate, { signal })
+        const c = ((res as { contents?: unknown[] }).contents?.[0] ?? {}) as Record<string, unknown>
+        const mime = typeof c.mimeType === 'string' ? c.mimeType : 'text/html'
+        const text = typeof c.text === 'string' ? c.text : undefined
+        if (mime.startsWith('text/uri-list') && text) {
+          const url = text
+            .split('\n')
+            .map((l) => l.trim())
+            .find((l) => /^https?:\/\//i.test(l))
+          if (url) app.externalUrl = url
+        } else if (text) {
+          app.artifactId = await saveMcpArtifact({
+            kind: 'html',
+            mimeType: mime,
+            text,
+            title: `${info.name} app`,
+            conversationId,
+            server: serverName,
+            tool: info.name,
+          })
+        }
+      } catch {
+        // Card falls back to a live template read on mount.
+      }
+      value.app = app
+      value.note = [value.note, 'An interactive app card was shown to the user for this result.']
+        .filter(Boolean)
+        .join(' ')
+    }
+    return value
   }
 }

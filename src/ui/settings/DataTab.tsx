@@ -51,12 +51,13 @@ export default function DataTab({
   // The row whose button is currently armed ("Sure?"), if any.
   const [armed, setArmed] = useState<StoreKey | 'settings' | null>(null)
   const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
   const [eraseText, setEraseText] = useState('')
 
   function refresh() {
     void storageReport()
       .then(setReport)
-      .catch(() => setReport(null))
+      .catch(error => setError(error instanceof Error ? error.message : String(error)))
   }
   useEffect(refresh, [])
 
@@ -70,27 +71,34 @@ export default function DataTab({
 
   async function doClear(key: StoreKey) {
     setBusy(true)
-    await clearStore(key).catch(() => {})
-    setArmed(null)
-    setBusy(false)
-    refresh()
+    setError(null)
+    try {
+      await clearStore(key)
+      setArmed(null)
+      refresh()
+    } catch (error) { setError(error instanceof Error ? error.message : String(error)) }
+    finally { setBusy(false) }
   }
 
   async function doErase() {
     setBusy(true)
-    await eraseAllData().catch(() => {})
-    setBusy(false)
-    onErased()
+    setError(null)
+    try {
+      await eraseAllData()
+      onErased()
+    } catch (error) { setError(error instanceof Error ? error.message : String(error)) }
+    finally { setBusy(false) }
   }
 
   const pct = report && report.quota ? Math.min(100, (report.total / report.quota) * 100) : null
 
   return (
     <div className="settings-tabpane">
+      {error && <div className="surface-error" role="alert">{error}<button className="btn small" onClick={() => { setError(null); refresh() }}>Retry</button></div>}
       <Section title="Data & storage">
         <SealedChip scope="all" />
         {!report ? (
-          <p className="hint">Measuring…</p>
+          !error && <p className="hint" role="status">Measuring…</p>
         ) : (
           <>
             <div className="usage-head">

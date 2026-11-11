@@ -1,3 +1,4 @@
+import { domWork } from '../background/domWork'
 // The panel-resident manager for the sealed execution sandbox — the McpManager
 // analog. Owns one hidden sandbox-exec.html iframe: created lazily on first
 // run, initialized once by fetching the bundled QuickJS wasm (the PANEL is
@@ -20,6 +21,7 @@ interface Pending {
 
 /** Exported for host.test.ts (a fake-iframe harness); getExecHost() is the real singleton. */
 export class ExecHost {
+  private idleTimer: ReturnType<typeof setTimeout> | undefined
   private frame: HTMLIFrameElement | null = null
   private ready: Promise<void> | null = null
   private pending = new Map<string, Pending>()
@@ -51,6 +53,7 @@ export class ExecHost {
 
   /** Run one script; rejects if the sandbox is dead or the round-trip wedges. */
   async run(code: string, limits: { timeoutMs: number; memoryBytes: number }): Promise<RunOutcome> {
+    if (typeof document === 'undefined') return domWork<RunOutcome>('runCode', [code, limits])
     // Join the queue before doing anything else, then wait for our turn. The
     // previous link always resolves (never rejects — see `finally` below) so
     // one call's failure can never poison every call queued behind it.
@@ -85,10 +88,12 @@ export class ExecHost {
       return reply.outcome
     } finally {
       releaseTurn()
+      this.idleTimer = setTimeout(() => this.destroy(), 30_000)
     }
   }
 
   private ensure(): Promise<void> {
+    clearTimeout(this.idleTimer)
     if (!this.ready) this.ready = this.boot()
     return this.ready
   }
@@ -149,6 +154,7 @@ export class ExecHost {
   }
 
   private destroy() {
+    clearTimeout(this.idleTimer)
     window.removeEventListener('message', this.listener)
     this.frame?.remove()
     this.frame = null

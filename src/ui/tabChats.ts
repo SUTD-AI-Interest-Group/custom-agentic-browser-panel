@@ -177,17 +177,18 @@ export function boundTabFor(map: TabChatMap, conversationId: string): number | u
   return best?.tabId
 }
 
-/**
- * Which chats App must keep mounted: the visible one, plus every chat still
- * doing something. Deduped, visible first — a chat that is both visible and
- * running must mount exactly once, or two components would race on one
- * conversation's IndexedDB row.
- */
-export function liveChatIds(visibleId: string, statuses: Record<string, ChatStatus>): string[] {
+/** Keep a bounded recent-view cache so tab switches preserve drafts and scroll. */
+export function rememberChat(recent: string[], id: string, limit = 6): string[] {
+  return [id, ...recent.filter((other) => other !== id)].slice(0, limit)
+}
+
+/** Keep every active chat plus recent idle views, with no duplicate mounts. */
+export function liveChatIds(visibleId: string, statuses: Record<string, ChatStatus>, recent: string[] = []): string[] {
   const ids = [visibleId]
   for (const [id, status] of Object.entries(statuses)) {
     if (id !== visibleId && isLive(status)) ids.push(id)
   }
+  for (const id of recent) if (!ids.includes(id)) ids.push(id)
   return ids
 }
 

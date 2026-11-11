@@ -1,3 +1,5 @@
+import { TOOL_CONTEXT_GUIDANCE, VISUAL_RESPONSE_GUIDANCE } from '../data/promptGuidance'
+import { DEFAULT_SYSTEM_PROMPT } from '../data/settings'
 import { describe, it, expect } from 'vitest'
 import { assembleSystemPrompt, splitSystemPrompt, type SystemPromptParts } from './systemPrompt'
 
@@ -58,7 +60,7 @@ describe('assembleSystemPrompt: empty parts', () => {
     expect(out.indexOf('SKILLS_CATALOG') < out.indexOf('ACTIVE_SKILL')).toBe(true)
   })
 
-  it('produces just the base prompt when every optional part is empty', () => {
+  it('keeps built-in context guidance when every optional part is empty', () => {
     const out = assembleSystemPrompt(
       parts({
         toolDisclosureNote: '',
@@ -71,7 +73,7 @@ describe('assembleSystemPrompt: empty parts', () => {
         retryNote: '',
       }),
     )
-    expect(out).toBe('BASE')
+    expect(out).toBe(`BASE\n\n${TOOL_CONTEXT_GUIDANCE}`)
   })
 })
 
@@ -124,5 +126,27 @@ describe('splitSystemPrompt', () => {
     const { volatile } = splitSystemPrompt(parts({ memoryContext: '' }))
     expect(volatile.startsWith('\n\n\n\n')).toBe(false)
     expect(volatile).toBe('\n\nACTIVE_SKILL\n\nRETRY')
+  })
+})
+
+
+describe('built-in response preferences', () => {
+  it('includes tool/context guidance once for both default and custom prompts', () => {
+    for (const systemPrompt of [DEFAULT_SYSTEM_PROMPT, 'My custom prompt']) {
+      const { stable } = splitSystemPrompt(parts({ systemPrompt }))
+      expect(stable.startsWith(systemPrompt)).toBe(true)
+      expect(stable.split(TOOL_CONTEXT_GUIDANCE)).toHaveLength(2)
+    }
+  })
+
+  it('opts in to visual guidance and removes it when switched off', () => {
+    const enabled = splitSystemPrompt(parts({ visualResponse2: true }))
+    expect(enabled.stable).toContain(VISUAL_RESPONSE_GUIDANCE)
+    expect(enabled.volatile).not.toContain(VISUAL_RESPONSE_GUIDANCE)
+    for (const visualResponse2 of [false, undefined]) {
+      const disabled = splitSystemPrompt(parts({ visualResponse2 }))
+      expect(disabled.stable).not.toContain(VISUAL_RESPONSE_GUIDANCE)
+      expect(disabled.volatile).toBe(enabled.volatile)
+    }
   })
 })

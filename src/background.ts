@@ -1,4 +1,13 @@
-// MV3 service worker. The agent loop lives in the side panel; this worker
+import { cancelResearchWork, withResearchWork } from './background/researchWork'
+import { syncTaskAlarm } from './background/taskAlarm'
+import { withOffscreen, closeOffscreenIfIdle } from './background/offscreenLifecycle'
+import { installStudio } from './platform/studio'
+import { installPageWatchMonitor } from './background/pageWatches'
+import { installToolHost, releaseChatTools, releaseDetachedSessions } from './background/toolHost'
+import { saveConversation } from './data/conversations'
+import { dehydrateHistory } from './data/attachmentRefs'
+import { chatRunMessages, activeChatRun, getChatRun, updateChatRun } from './data/chatRuns'
+// MV3 service worker. Chat inference lives in the offscreen host; this worker
 // hosts work that must outlive the panel — today that is the "dreaming"
 // memory-consolidation cycle, which runs on an hourly alarm and only fires
 // when the user has been idle for a while (see dream.ts).
@@ -13,8 +22,11 @@
 // message (dream.result / dream.failed) that revives this worker if it has since
 // been killed.
 
+import { installMcpTaskMonitor } from './background/mcpTasks'
+
+
 import { abandonDispatchedDream, completeDispatchedDream, dreamIfDue, type DreamJob } from './agent/dream'
-import { postDreamMsg, type DreamMsg } from './data/dreamMessages'
+import type { DreamMsg } from './data/dreamMessages'
 import type { ComposerAction } from './platform/composerActions'
 import { COMPOSER_ACTION_MSG, setComposerAction } from './platform/composerActions'
 import type { ResearchMsg } from './data/researchTasks'
@@ -42,6 +54,11 @@ import { JANITOR_ALARM, runJanitorTick, sweepOrphanWindows, teardownNow } from '
 import { installWebMcpBadge } from './platform/webmcpBadge'
 import { removeLegacySystem1 } from './data/legacyCleanup'
 
+installStudio()
+installMcpTaskMonitor()
+installPageWatchMonitor()
+installToolHost()
+
 chrome.sidePanel
   .setPanelBehavior({ openPanelOnActionClick: true })
   .catch((err) => console.error('sidePanel.setPanelBehavior failed', err))
@@ -54,7 +71,7 @@ const DREAM_ALARM = 'dream'
 // so recovery after a restart or eviction is prompt.
 const RESEARCH_WATCHDOG_ALARM = 'research-watchdog'
 function scheduleWatchdog(): void {
-  chrome.alarms.create(RESEARCH_WATCHDOG_ALARM, { delayInMinutes: 1, periodInMinutes: 1 })
+  void listTasks().then(tasks => syncTaskAlarm(RESEARCH_WATCHDOG_ALARM, tasks.some(t => isActiveStatus(t.status)))).catch(console.error)
 }
 
 // Backs resumeStrandedResearch()'s self-serialization (defined further down,
@@ -104,6 +121,7 @@ chrome.runtime.onStartup.addListener(() => {
 // takes effect without waiting for the next browser restart. Settings live under
 // one 'settings' key; only reschedule when the derived period actually changes.
 chrome.storage.onChanged.addListener((changes, area) => {
+  if (area === 'local' && changes.researchTasks) scheduleWatchdog()
   if (area !== 'local' || !changes.settings) return
   void (async () => {
     const period = dreamAlarmPeriodMinutes(await loadSettings())
@@ -156,13 +174,7 @@ chrome.alarms.onAlarm.addListener((alarm) => {
  * "Dream now") until the lock's TTL expires.
  */
 async function dispatchDream(job: DreamJob, token: string): Promise<void> {
-  try {
-    await ensureOffscreen()
-  } catch (err) {
-    console.warn('[dream] could not start the offscreen host', err)
-    throw err
-  }
-  postDreamMsg({ type: 'dream.run', token, job })
+  await withOffscreen(() => chrome.runtime.sendMessage({ type: 'dream.run', token, job }))
 }
 
 // ---------------------------------------------------------------------------
@@ -197,6 +209,7 @@ chrome.runtime.onConnect.addListener((port) => {
     // passage highlights it left on this window's pages. Only the worker can —
     // the panel context that tracked them is already being destroyed.
     void sweepHighlightsForWindow(windowId).catch(() => {})
+    void releaseDetachedSessions(windowId).catch(console.error)
   })
 })
 
@@ -323,60 +336,6 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
 // (re)create on demand.
 // ---------------------------------------------------------------------------
 
-const OFFSCREEN_URL = 'offscreen.html'
-
-// A synchronous module-scope gate: the assignment to `creating` happens before
-// any await yields control, so two near-simultaneous calls share ONE in-flight
-// createDocument() instead of racing two. This is a synchronization primitive
-// for a disposable browser resource (like the existing openPanels Map), not
-// persisted research state — and it self-heals on SW restart (creating resets
-// to null, and hasDocument() reflects reality).
-let creatingOffscreen: Promise<void> | null = null
-function ensureOffscreen(): Promise<void> {
-  if (creatingOffscreen) return creatingOffscreen
-  creatingOffscreen = (async () => {
-    if (await chrome.offscreen.hasDocument()) return
-    await chrome.offscreen.createDocument({
-      url: OFFSCREEN_URL,
-      reasons: [chrome.offscreen.Reason.DOM_PARSER],
-      justification: 'Parse fetched HTML for background research and consolidate memories while idle.',
-    })
-  })().finally(() => { creatingOffscreen = null })
-  return creatingOffscreen
-}
-
-/**
- * Close the offscreen document once nothing needs it.
- *
- * It hosts two tenants — research and the dream cycle — and the HOST is what
- * reports idle (`offscreen.idle`), since it is the only context that sees both.
- * This side re-checks storage for a task dispatched in the gap, because the
- * host's view can be one message behind. Getting this wrong in the "too late"
- * direction merely leaves the document resident a while longer; getting it
- * wrong in the "too early" direction would strand a live generation — hence
- * both checks, and the `creatingOffscreen` guard for a caller that is at this
- * moment bringing the document up precisely because it needs it.
- *
- * The one gap left is a dream dispatched in the milliseconds between the host
- * reporting idle and this close landing: that `dream.run` reaches no listener.
- * It self-heals rather than wedging — the dream lock the worker took is
- * reclaimed once its TTL expires (see dream.ts) and the next alarm tick starts a
- * fresh cycle over the same unconsolidated episodes — so it costs one cycle, not
- * correctness, and closing the document is not worth a second coordination
- * protocol to avoid it.
- */
-async function closeOffscreen(): Promise<void> {
-  if (creatingOffscreen) return
-  try {
-    const tasks = await listTasks()
-    if (tasks.some((t) => isActiveStatus(t.status))) return
-    if (!(await chrome.offscreen.hasDocument())) return
-    await chrome.offscreen.closeDocument()
-  } catch (err) {
-    console.warn('[offscreen] could not close the host', err)
-  }
-}
-
 /**
  * Everything that must be handed back when a task stops being active — done,
  * errored, or cancelled.
@@ -390,6 +349,7 @@ async function closeOffscreen(): Promise<void> {
  * later cold boot happened to sweep it.
  */
 async function releaseTaskResources(taskId: string): Promise<void> {
+  cancelResearchWork(taskId)
   // Each of this task's browse sessions holds a lease on the shared research
   // tab. Scoped to THIS task — tasks run concurrently, and a global close would
   // tear down another task's open page-walk mid-flight (see FIX H1).
@@ -441,8 +401,7 @@ async function startResearchTask(taskId: string, opts: { resume?: boolean } = {}
     )
     return
   }
-  await ensureOffscreen()
-  postResearchMsg({
+  await withOffscreen(() => chrome.runtime.sendMessage({
     type: 'research.start',
     taskId,
     question: task.question,
@@ -463,7 +422,7 @@ async function startResearchTask(taskId: string, opts: { resume?: boolean } = {}
     brief: task.brief,
     subQuestions: task.subQuestions,
     attachments: task.attachments,
-  } satisfies ResearchMsg)
+  } satisfies ResearchMsg))
 }
 
 /**
@@ -502,7 +461,7 @@ async function doResumeStrandedResearch(): Promise<void> {
     }
   } catch (err) {
     console.error('[research] resume scan failed', err)
-  }
+  } finally { scheduleWatchdog() }
 }
 
 // Returning `true` tells Chrome "a response is coming asynchronously" and holds
@@ -514,6 +473,8 @@ async function doResumeStrandedResearch(): Promise<void> {
 // gets "A listener indicated an asynchronous response by returning true, but the
 // message channel closed before a response was received" as an uncaught rejection.
 chrome.runtime.onMessage.addListener((msg: ResearchMsg | DreamMsg, _sender, sendResponse) => {
+  if ((msg as { kind?: string })?.kind === 'studio.zap') return
+  if (typeof msg?.type === 'string' && msg.type.startsWith('chat.')) return
   ;(async () => {
     try {
       if (msg?.type === 'dream.result') {
@@ -615,18 +576,29 @@ chrome.runtime.onMessage.addListener((msg: ResearchMsg | DreamMsg, _sender, send
       } else if (msg?.type === 'offscreen.idle') {
         // The host has no research task and no dream left. Shut it down rather
         // than leaving it resident until the browser restarts.
-        await closeOffscreen()
+        await closeOffscreenIfIdle()
       } else if (msg?.type === 'research.clearTasks') {
         // Panel-issued "Clear"/"Erase all data" (Settings → Data). Only the SW
         // ever writes researchTasks state — see researchTasks.ts's clearTasks()
         // doc comment — so this relays the removal onto the SAME writeChain
         // saveTask/applyUpdate/heartbeat use, instead of the panel racing them by
         // touching storage itself.
+        const tasks = await listTasks()
+        for (const task of tasks) {
+          if (isActiveStatus(task.status)) {
+            await applyUpdate(task.id, () => ({ status: 'cancelled' }))
+            postResearchMsg({ type: 'research.cancel', taskId: task.id })
+          }
+          await releaseTaskResources(task.id)
+        }
         await clearTasksNow()
       } else if (msg?.type === 'research.browse') {
         // Interactive browse: the offscreen sub-agent drives the isolated tab one
         // policy-checked step at a time (see platform/researchBrowse.ts).
-        const result = await handleBrowseOp(msg.sessionId, msg.op)
+        const task = await getTask(msg.taskId)
+        const result = task && isActiveStatus(task.status)
+          ? await handleBrowseOp(msg.sessionId, msg.op)
+          : { ok: false, message: 'Research is no longer active.' }
         postResearchMsg({
           type: 'research.browseResult',
           taskId: msg.taskId,
@@ -636,7 +608,7 @@ chrome.runtime.onMessage.addListener((msg: ResearchMsg | DreamMsg, _sender, send
       } else if (msg?.type === 'research.searchTab') {
         // Tab-search fallback: the keyless fetch was throttled, so run the search in
         // a real tab that can clear the bot wall (see platform/researchSearch.ts).
-        const { results, error } = await searchInTab(msg.query, msg.maxResults)
+        const { results, error } = await withResearchWork(msg.taskId, signal => searchInTab(msg.query, msg.maxResults, signal)).catch(() => ({ error: 'Research is no longer active.', results: undefined }))
         postResearchMsg({
           type: 'research.searchTabResult',
           taskId: msg.taskId,
@@ -648,7 +620,7 @@ chrome.runtime.onMessage.addListener((msg: ResearchMsg | DreamMsg, _sender, send
         // Hybrid-escalation broker: the offscreen agent can't touch tabs, so it asks
         // the SW to render a hard URL in an isolated tab and return the text/shot.
         const guard = isFetchableUrl(msg.url)
-        const outcome = guard.ok ? await renderPage(msg.url) : { error: `refused (${guard.reason})` }
+        const outcome = guard.ok ? await withResearchWork(msg.taskId, signal => renderPage(msg.url, signal)).catch(() => ({ error: 'Research is no longer active.' })) : { error: `refused (${guard.reason})` }
         postResearchMsg({
           type: 'research.renderResult',
           taskId: msg.taskId,
@@ -668,5 +640,52 @@ chrome.runtime.onMessage.addListener((msg: ResearchMsg | DreamMsg, _sender, send
       } catch {}
     }
   })()
+  return true
+})
+
+
+// Chat inference belongs to the offscreen document, not to the panel or this
+// disposable worker. Control messages carry IDs; inference inputs are read from IDB.
+chrome.runtime.onMessage.addListener((msg, sender, respond) => {
+  if (sender.id !== chrome.runtime.id || !['chat.start', 'chat.abort', 'chat.settled', 'chat.inspect'].includes(msg?.type)) return
+  void (async () => {
+    const run = await getChatRun(msg.conversationId)
+    if (msg.type === 'chat.inspect') {
+      // A browser restart/reload destroys the offscreen host. Preserve the last
+      // streamed text and mark interruption; never silently replay model/tool calls.
+      const stale = activeChatRun(run) && Date.now() - run.updatedAt > 5000
+      const hosted = stale && await chrome.offscreen.hasDocument()
+        ? await chrome.runtime.sendMessage({ type: 'chat.hasRun', id: run.id }).then(reply => reply?.active === true, () => false)
+        : !stale
+      if (stale && !hosted) {
+        const failed = await updateChatRun(run.conversationId, old => old?.id === run.id && activeChatRun(old)
+          ? { ...old, providerSealed: undefined, error: 'Generation was interrupted because its background host closed. Send a message to continue.', updatedAt: Date.now() } : old)
+        if (failed?.id === run.id) {
+          await saveConversation({ id: failed.conversationId, messages: chatRunMessages(failed), history: dehydrateHistory(failed.history) })
+          await updateChatRun(run.conversationId, old => old?.id === run.id ? { ...old, state: 'error' } : old)
+          releaseChatTools(run.conversationId, run.id)
+        }
+      }
+      return { ok: true }
+    }
+    if (!run || run.id !== msg.id) return { error: 'Chat run is unavailable.' }
+    if (msg.type === 'chat.start') {
+      return await withOffscreen(() => chrome.runtime.sendMessage({ type: 'chat.execute', conversationId: run.conversationId, id: run.id }))
+    }
+    if (msg.type === 'chat.abort') {
+      await updateChatRun(run.conversationId, (old) => old?.id === run.id ? { ...old, cancelRequested: true } : old)
+      releaseChatTools(run.conversationId, run.id)
+      return { ok: true }
+    }
+    if (run.state !== 'cancelled' && (run.ownerUntil < Date.now() || run.windowId === undefined || !openPanels.has(run.windowId))) {
+      const needsPanel = run.needsPanel || (run.result && run.result.stop.reason !== 'completed')
+      await chrome.notifications.create(`chat:${run.tabId ?? -1}`, {
+        type: 'basic', iconUrl: chrome.runtime.getURL('icons/icon-128.png'),
+        title: run.error ? 'Lychee encountered an error' : needsPanel ? 'Lychee needs your attention' : 'Lychee finished',
+        message: run.error ? 'Open the chat to review the generation error.' : needsPanel ? 'Open the panel to continue through the normal tool and permission checks.' : 'Your answer is ready. Click to return to your chat.',
+      })
+    }
+    return { ok: true }
+  })().then(respond, (error) => respond({ error: error instanceof Error ? error.message : String(error) }))
   return true
 })

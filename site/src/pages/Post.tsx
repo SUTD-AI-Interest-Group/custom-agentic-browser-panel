@@ -32,7 +32,6 @@ export default function Post({ slug }: { slug: string }) {
           <ArrowLeft /> Engineering log
         </a>
         <h1>{article.title}</h1>
-        <p className="doc-head__meta">{article.minutes} min read</p>
       </header>
       <div
         className="shell prose"

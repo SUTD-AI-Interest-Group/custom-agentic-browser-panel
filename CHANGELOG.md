@@ -17,6 +17,14 @@ for that history.
 
 ---
 
+## [Unreleased]
+
+### Added
+
+- ChatGPT plan as a separate provider in onboarding and Settings, with account-specific model discovery, a composer usage indicator, sign-out, and Manage usage links.
+- A privacy-label modal directly beneath Continue with ChatGPT explaining OpenAI-bound context, account/usage linkage, Lychee access, local credential storage, and optional tracing/MCP destinations. It also distinguishes the current local connection from proposed Supabase hosting, disclosing the additional backend data access and the hosted storage/retention details that remain unimplemented.
+- A macOS/Linux native messaging companion for OpenAI's loopback OAuth flow, protected local token storage, serialized refresh, and nonstored streaming Responses requests. Requires per-user installation; see [companion setup](companion/chatgpt/README.md). Windows and live eligible-account verification remain outstanding.
+
 ## [0.4.0] — 2026-08-21 — *Chrome Web Store update*
 
 The third store release, and the first whose headline is durability rather than reach. A turn

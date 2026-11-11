@@ -70,7 +70,7 @@ export default function PermissionsTab({
 
   return (
     <div className="settings-tabpane">
-      <Section title="Tab visibility" hint="How much of your browsing the agent may see.">
+      <Section title="Tab visibility">
         <label className={`access-option ${draft.tabAccess === 'active-tab' ? 'chosen' : ''}`}>
           <input
             type="radio"
@@ -80,7 +80,6 @@ export default function PermissionsTab({
           />
           <div>
             <div className="access-title">Only my current tab</div>
-            <div className="access-desc">@mentions offer just the tab you're on.</div>
           </div>
         </label>
         <label className={`access-option ${draft.tabAccess === 'all-tabs' ? 'chosen' : ''}`}>
@@ -92,7 +91,6 @@ export default function PermissionsTab({
           />
           <div>
             <div className="access-title">All open tabs</div>
-            <div className="access-desc">The agent can list and read any open tab.</div>
           </div>
         </label>
         <p className="derived-state">
@@ -435,7 +433,6 @@ function BrowsingInsightsSection({
   return (
     <Section
       title="Browsing insights"
-      hint="Let the agent look up your history, bookmarks, top sites and downloads."
     >
       <label className="toggle-row master">
         <div className="access-title">Enable all browsing insights</div>

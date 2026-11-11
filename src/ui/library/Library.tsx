@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { TabStrip } from '../TabStrip'
 import type { ResearchTask } from '../../data/researchTasks'
 import ConversationsList from './ConversationsList'
 import ResearchList from './ResearchList'
@@ -18,14 +18,16 @@ const TABS: { key: LibraryTab; label: string }[] = [
 ]
 
 export default function Library({
-  initialTab,
+  tab,
+  onTabChange,
   currentConversationId,
   onOpenConversation,
   onOpenResearch,
   onConversationsChanged,
   onClose,
 }: {
-  initialTab: LibraryTab
+  tab: LibraryTab
+  onTabChange: (tab: LibraryTab) => void
   /** Highlighted in the Chats list so the open conversation is obvious. */
   currentConversationId: string
   onOpenConversation: (id: string) => void
@@ -34,24 +36,10 @@ export default function Library({
   onConversationsChanged: () => void
   onClose: () => void
 }) {
-  const [tab, setTab] = useState<LibraryTab>(initialTab)
-
   return (
     <div className="library">
       <div className="library-header">
-        <div className="library-tabs" role="tablist" aria-label="Library">
-          {TABS.map((t) => (
-            <button
-              key={t.key}
-              role="tab"
-              aria-selected={tab === t.key}
-              className={`library-tab ${tab === t.key ? 'active' : ''}`}
-              onClick={() => setTab(t.key)}
-            >
-              {t.label}
-            </button>
-          ))}
-        </div>
+        <TabStrip id="library" label="Library" tabs={TABS} value={tab} onChange={onTabChange} className="library-tabs" tabClassName="library-tab" />
         <button className="icon-btn" title="Close" onClick={onClose}>
           <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
             <path d="M3 3l8 8M11 3l-8 8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
@@ -59,6 +47,7 @@ export default function Library({
         </button>
       </div>
 
+      <div className="library-panel" id="library-panel" role="tabpanel" aria-labelledby={`library-${tab}`}>
       {tab === 'conversations' && (
         <ConversationsList
           currentConversationId={currentConversationId}
@@ -68,6 +57,7 @@ export default function Library({
       )}
       {tab === 'skills' && <SkillsList />}
       {tab === 'researches' && <ResearchList onOpen={onOpenResearch} />}
+      </div>
     </div>
   )
 }

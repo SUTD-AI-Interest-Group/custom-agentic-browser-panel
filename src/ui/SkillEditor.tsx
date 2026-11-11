@@ -38,14 +38,14 @@ export default function SkillEditor({ mode, onBack }: { mode: EditorMode; onBack
     const renaming = originalName !== null && originalName !== name
     // A rename must not collide with a different existing skill, and must
     // remove the old record rather than leaving an orphaned duplicate.
-    if (renaming) {
-      const clash = await getSkill(name)
-      if (clash) {
-        setNotice(`A skill named “${name}” already exists.`)
-        return
-      }
-    }
     try {
+      if (renaming) {
+        const clash = await getSkill(name)
+        if (clash) {
+          setNotice(`A skill named “${name}” already exists.`)
+          return
+        }
+      }
       await saveSkill({ name, description, body, icon: icon || undefined, userInvocable, modelInvocable })
     } catch (e) {
       setNotice(e instanceof Error ? e.message : String(e))
@@ -73,11 +73,11 @@ export default function SkillEditor({ mode, onBack }: { mode: EditorMode; onBack
     // Find a free "-copy" name so duplicating twice never overwrites the first copy.
     let candidate = `${name}-copy`
     let n = 2
-    while (await getSkill(candidate)) {
-      candidate = `${name}-copy-${n}`
-      n++
-    }
     try {
+      while (await getSkill(candidate)) {
+        candidate = `${name}-copy-${n}`
+        n++
+      }
       await saveSkill({
         name: candidate,
         description,
@@ -118,8 +118,8 @@ export default function SkillEditor({ mode, onBack }: { mode: EditorMode; onBack
       createdAt: 0,
       updatedAt: 0,
     })
-    void navigator.clipboard.writeText(md)
-    setNotice('Copied SKILL.md to clipboard.')
+    void navigator.clipboard.writeText(md).then(() => setNotice('Copied SKILL.md.'))
+      .catch(error => setNotice(error instanceof Error ? error.message : String(error)))
   }
 
   function importMd(text: string) {

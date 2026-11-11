@@ -14,35 +14,36 @@ export default function SkillsTab({
   onSaved: () => void
 }) {
   const [skills, setSkills] = useState<Skill[]>([])
+  const [error, setError] = useState<string | null>(null)
 
   function refresh() {
-    void listSkills().then(setSkills).catch(() => {})
+    void listSkills().then(setSkills).catch(error => setError(error instanceof Error ? error.message : String(error)))
   }
   useEffect(refresh, [])
 
   async function toggle(name: string, enabled: boolean) {
     // Optimistic flip so the switch feels instant, then persist + refresh.
     setSkills((list) => list.map((s) => (s.name === name ? { ...s, enabled } : s)))
-    await setSkillEnabled(name, enabled).catch(() => {})
-    onSaved()
-    refresh()
+    setError(null)
+    try {
+      await setSkillEnabled(name, enabled)
+      onSaved()
+    } catch (error) { setError(error instanceof Error ? error.message : String(error)) }
+    finally { refresh() }
   }
 
   return (
     <div className="settings-tabpane">
+      {error && <p className="surface-error" role="alert">{error}</p>}
       <div className="skills-tab-head">
         <h2>Skills</h2>
         <button className="link-btn" onClick={onOpenSkills}>
-          Manage in Skills Library →
+          Edit skills →
         </button>
       </div>
-      <p className="hint">
-        Turn skills on or off for the agent. A disabled skill won't appear in the agent's catalog
-        or the “/” menu. Create and edit skills in the Skills Library.
-      </p>
 
       {skills.length === 0 ? (
-        <p className="hint">No skills yet — open the Skills Library to create one.</p>
+        <p className="hint">No skills</p>
       ) : (
         <div className="skill-toggle-list">
           {skills.map((s) => {
@@ -53,9 +54,6 @@ export default function SkillsTab({
                 <span className="skill-toggle-text">
                   <span className="skill-toggle-name">
                     {s.name}
-                    <span className={`skill-badge ${s.source}`}>
-                      {s.source === 'builtin' ? 'Built-in' : 'Custom'}
-                    </span>
                   </span>
                   <span className="skill-toggle-desc">{s.description}</span>
                 </span>

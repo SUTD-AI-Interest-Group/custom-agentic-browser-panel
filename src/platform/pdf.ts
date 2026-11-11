@@ -1,4 +1,5 @@
 /// <reference types="vite/client" />
+import { domWork } from '../background/domWork'
 // PDF fetch/extract/render core. Chrome's PDF viewer is a plugin with no
 // scriptable DOM, so a PDF tab cannot be read the way ordinary pages are
 // (tabs.ts) — instead the bytes are fetched directly (host_permissions
@@ -107,8 +108,10 @@ const cache = new Map<string, Promise<CacheEntry>>()
 // it out from under that caller aborts pdf.js's worker mid-operation. See
 // planEviction.
 const refCounts = new Map<string, number>()
+let idleTimer: ReturnType<typeof setTimeout> | undefined
 
 function acquire(key: string) {
+  clearTimeout(idleTimer)
   refCounts.set(key, (refCounts.get(key) ?? 0) + 1)
 }
 
@@ -116,6 +119,11 @@ function release(key: string) {
   const n = (refCounts.get(key) ?? 0) - 1
   if (n <= 0) refCounts.delete(key)
   else refCounts.set(key, n)
+  // Release decoded documents, rendering workers and source bytes even when
+  // the cache never reaches its size cap. Active checkouts are never evicted.
+  clearTimeout(idleTimer)
+  evictExcess()
+  idleTimer = setTimeout(() => evictExcess(0), 30_000)
 }
 
 /**
@@ -142,8 +150,8 @@ export function planEviction(
   return evict
 }
 
-function evictExcess() {
-  const doomed = planEviction([...cache.keys()], CACHE_MAX, (k) => (refCounts.get(k) ?? 0) > 0)
+function evictExcess(max = CACHE_MAX) {
+  const doomed = planEviction([...cache.keys()], max, (k) => (refCounts.get(k) ?? 0) > 0)
   for (const k of doomed) {
     const v = cache.get(k)
     cache.delete(k)
@@ -425,6 +433,7 @@ export async function loadPdf(
   url: string,
   opts?: { credentials?: RequestCredentials; signal?: AbortSignal },
 ): Promise<LoadedPdf> {
+  if (typeof document === 'undefined') return domWork('loadPdf', [url, { credentials: opts?.credentials }])
   const { entry, release } = await getEntry(url, opts)
   release() // .loaded is already fully computed — no further async work to protect
   return entry.loaded
@@ -441,6 +450,7 @@ export async function loadPdfMeta(
   url: string,
   opts?: { credentials?: RequestCredentials; signal?: AbortSignal },
 ): Promise<PdfMeta> {
+  if (typeof document === 'undefined') return domWork('loadPdfMeta', [url, { credentials: opts?.credentials }])
   const { entry, release } = await getEntry(url, opts)
   try {
     if (!entry.meta) {
@@ -551,6 +561,7 @@ export async function renderPdfPage(
   pageNumber: number,
   opts?: { credentials?: RequestCredentials; signal?: AbortSignal },
 ) {
+  if (typeof document === 'undefined') return domWork<{ dataUrl: string; width: number; height: number; pageCount: number; title: string }>('renderPdfPage', [url, pageNumber, { credentials: opts?.credentials }])
   return renderFromEntry(await getEntry(url, opts), pageNumber)
 }
 
@@ -590,6 +601,7 @@ export async function renderPdfPageHighlighted(
   matched: boolean
   matchCount: number
 }> {
+  if (typeof document === 'undefined') return domWork('renderPdfPageHighlighted', [url, pageNumber, query, { credentials: opts?.credentials }])
   const { entry, release } = await getEntry(url, opts)
   try {
     const { doc } = await getRenderDoc(entry)

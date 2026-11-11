@@ -49,7 +49,7 @@ export default function MemoryView({
   }
 
   useEffect(() => {
-    void refresh()
+    void refresh().catch(error => setOutcome(error instanceof Error ? error.message : String(error)))
   }, [])
 
   // Disarm the reset button after a few seconds — an armed destructive button
@@ -61,8 +61,10 @@ export default function MemoryView({
   }, [resetArmed])
 
   async function forget(id: string) {
-    await deleteMemory(id)
-    setMemories((m) => m.filter((r) => r.id !== id))
+    try {
+      await deleteMemory(id)
+      setMemories((m) => m.filter((r) => r.id !== id))
+    } catch (error) { setOutcome(error instanceof Error ? error.message : String(error)) }
   }
 
   async function dreamNow() {
@@ -82,8 +84,10 @@ export default function MemoryView({
   async function resetMemory() {
     setResetArmed(false)
     setOutcome(null)
-    await clearMemory()
-    await refresh()
+    try {
+      await clearMemory()
+      await refresh()
+    } catch (error) { setOutcome(error instanceof Error ? error.message : String(error)) }
   }
 
   const nothingToReset = memories.length === 0 && pendingEpisodes === 0 && lastDreamAt === null
@@ -93,15 +97,11 @@ export default function MemoryView({
 
   return (
     <div className="memory">
-      <h2>Dreaming</h2>
-      <p className="hint">
-        While you're away, the assistant reviews recent conversations and distills them into the
-        long-term memories below. Everything is stored locally in your browser.
-      </p>
+      <h2>Memory consolidation</h2>
 
       <div className="dream-controls">
         <Select
-          label="Consolidate at most every"
+          label="Interval"
           value={String(resolveDreamIntervalMs(draft))}
           onChange={(value) => commit({ ...draft, dreamIntervalMs: Number(value) })}
         >
@@ -112,7 +112,7 @@ export default function MemoryView({
           ))}
         </Select>
         <Select
-          label="Dreaming model"
+          label="Model"
           value={dreamModelValue}
           onChange={(value) => {
             const [providerId, ...rest] = value.split('::')
@@ -137,18 +137,18 @@ export default function MemoryView({
 
       <div className="dream-card">
         <div className="dream-meta">
-          <span>{lastDreamAt ? `Last dreamed ${relativeTime(lastDreamAt)}` : 'Has not dreamed yet'}</span>
+          <span>{lastDreamAt ? `Last run ${relativeTime(lastDreamAt)}` : 'Not run yet'}</span>
           <span>
             {pendingEpisodes > 0
-              ? `${pendingEpisodes} conversation${pendingEpisodes === 1 ? '' : 's'} waiting for the next dream`
+              ? `${pendingEpisodes} conversation${pendingEpisodes === 1 ? '' : 's'} pending`
               : 'All conversations consolidated'}
           </span>
         </div>
         <button className="btn small" disabled={dreaming} onClick={() => void dreamNow()}>
-          {dreaming ? 'Dreaming…' : 'Dream now'}
+          {dreaming ? 'Consolidating…' : 'Consolidate now'}
         </button>
       </div>
-      {outcome && <p className="dream-status">{outcome}</p>}
+      {outcome && <p className="dream-status" role="status">{outcome}</p>}
 
       <div className="dream-reset">
         <div className="data-row-main">
@@ -168,10 +168,7 @@ export default function MemoryView({
 
       <h2>Memories ({memories.length})</h2>
       {memories.length === 0 && (
-        <p className="hint">
-          No memories yet. They'll appear here after the assistant dreams over your
-          conversations, or when you ask it to remember something.
-        </p>
+        <p className="hint">No memories</p>
       )}
       {memories.map((m) => (
         <div className="memory-item" key={m.id}>

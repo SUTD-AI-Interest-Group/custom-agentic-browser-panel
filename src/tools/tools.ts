@@ -1,3 +1,4 @@
+import { createPageWatchTools } from './pageWatches'
 import { Validator } from '@cfworker/json-schema'
 import { discoverWebMcp, executeWebMcp, webMcpDiagnostic } from '../platform/webmcp'
 import { tool, type ToolSet } from 'ai'
@@ -2112,6 +2113,7 @@ export function createAgentTools(
   // question off to the offscreen research host that runs the real (ungated)
   // research tools headlessly — see src/tools/research.ts and src/agent/research.ts.
   Object.assign(tools, createProposeResearchTool())
+  Object.assign(tools, createPageWatchTools({ conversationId, resolveTab: () => resolveTab(), approve: requestApproval }))
 
   // MCP server tools, pre-gated and policy-filtered by buildMcpTools. Built-in
   // names win a collision (the mcp_ prefix makes one implausible anyway).

@@ -312,13 +312,9 @@ export type ResearchMsg =
       results?: { title: string; url: string; snippet: string }[]
       error?: string
     }
-  // Shutdown (offscreen → SW): the host has nothing left to do — no research task
-  // running AND no dream cycle in flight. Only the host can say this, since it is
-  // the one context that sees both tenants; the SW answers by closing the document
-  // (re-checking storage for an active task first, in case one was dispatched in
-  // the gap). Nothing is lost if this message is dropped — ensureOffscreen
-  // recreates the host on demand, and the worst case is a document that lives
-  // until the next task finishes.
+  // Shutdown (offscreen → SW): all chat, research, dream and DOM tenants are
+  // idle. The worker serializes a live status check/close against new dispatches;
+  // the host retries idle reporting until it closes or receives more work.
   | { type: 'offscreen.idle' }
 
 /**

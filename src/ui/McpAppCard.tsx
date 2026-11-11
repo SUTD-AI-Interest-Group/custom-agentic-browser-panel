@@ -24,6 +24,8 @@ export interface McpAppRef {
   template: string
   /** Cached template HTML in the artifact store — survives reload/offline. */
   artifactId?: string
+  resultArtifactId?: string
+  toolInput?: unknown
   /** text/uri-list template: render this URL directly instead of sandboxed HTML. */
   externalUrl?: string
 }
@@ -55,7 +57,18 @@ export default function McpAppCard({
   const frameRef = useRef<HTMLIFrameElement>(null)
   const [height, setHeight] = useState(DEFAULT_H)
   const [error, setError] = useState<string | null>(null)
+  const [loadedResultId, setLoadedResultId] = useState<string | undefined>()
+  const [appResult, setAppResult] = useState<{ content?: unknown[]; structuredContent?: unknown; _meta?: Record<string, unknown>; isError?: boolean } | null>(null)
   const [html, setHtml] = useState<string | null>(null)
+
+  useEffect(() => {
+    let alive = true
+    setAppResult(null)
+    if (app.resultArtifactId) void getMcpArtifact(app.resultArtifactId).then((artifact) => {
+      if (alive && artifact?.text) setAppResult(JSON.parse(artifact.text))
+    }).catch(() => {}).finally(() => { if (alive) setLoadedResultId(app.resultArtifactId) })
+    return () => { alive = false }
+  }, [app.resultArtifactId])
 
   // The app HTML: cached artifact first (survives reload and disconnects),
   // else a live template read from the server.
@@ -82,7 +95,7 @@ export default function McpAppCard({
 
   // Mount the app into the sandbox and relay its JSON-RPC.
   useEffect(() => {
-    if (!html || app.externalUrl) return
+    if (!html || app.externalUrl || (app.resultArtifactId && loadedResultId !== app.resultArtifactId)) return
     const frame = frameRef.current
     if (!frame) return
 
@@ -104,10 +117,10 @@ export default function McpAppCard({
         return {
           theme: window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light',
           toolName: app.tool,
-          toolInput,
-          // Rebuild an MCP-shaped result from what the tool layer kept: the
-          // budgeted text + structuredContent (raw media never rides history).
-          toolResult: {
+          toolInput: app.toolInput ?? toolInput,
+          // Prefer the full stored result; older/pruned cards fall back to
+          // budgeted text and structuredContent from the transcript.
+          toolResult: appResult ?? {
             content: typeof out.text === 'string' ? [{ type: 'text', text: out.text }] : [],
             ...(out.structured !== undefined ? { structuredContent: out.structured } : {}),
           },
@@ -135,7 +148,7 @@ export default function McpAppCard({
       window.removeEventListener('message', onMessage)
       frame.removeEventListener('load', send)
     }
-  }, [html, app.server, app.externalUrl, toolInput, toolOutput, conversationId])
+  }, [html, app.server, app.tool, app.toolInput, app.externalUrl, app.resultArtifactId, loadedResultId, appResult, toolInput, toolOutput, conversationId])
 
   if (app.externalUrl) {
     return (
@@ -163,7 +176,7 @@ export default function McpAppCard({
   }
 
   if (error) return <div className="shot-card-missing">Could not load the app: {error}</div>
-  if (!html) return <div className="mcp-app-loading">Loading app…</div>
+  if (!html || (app.resultArtifactId && loadedResultId !== app.resultArtifactId)) return <div className="mcp-app-loading">Loading app…</div>
 
   return (
     <figure className="mcp-app-card" style={{ height }}>

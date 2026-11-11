@@ -1,5 +1,5 @@
 import { test, expect, afterEach, vi } from 'vitest'
-import { generateText, type Instructions } from 'ai'
+import { generateText, streamText, type Instructions } from 'ai'
 import { reasoningBodyTransform, createModel } from './provider'
 import { LYCHEE_PROVIDER_OPTIONS_NS } from './agent'
 import { profileFor } from '../data/providerProfiles'
@@ -225,4 +225,66 @@ test('Groq (compatible, reasoning model): no cache_control even though reasoning
   // field that's unconditionally present for a detected reasoning model.
   expect(body.reasoning_effort).toBe('high')
   expect(JSON.stringify(body)).not.toContain('cache_control')
+})
+
+// Exercise the actual AI SDK adapter with native transport, including generateText
+// callers (titles, probes), rather than testing only the fetch wrapper in isolation.
+test('ChatGPT uses native inference with store:false and ignores configurable API credentials/URL', async () => {
+  let messageListener: (message: unknown) => void = () => {}
+  let captured: Record<string, any> | undefined
+  vi.stubGlobal('chrome', { runtime: { connectNative: () => ({
+    onMessage: { addListener: (fn: typeof messageListener) => { messageListener = fn } },
+    onDisconnect: { addListener: () => {} }, disconnect: () => {},
+    postMessage: (message: Record<string, any>) => {
+      captured = message
+      queueMicrotask(() => {
+        messageListener({ type: 'headers', json: true })
+        messageListener({ type: 'chunk', text: JSON.stringify({
+          id: 'resp_fixture', object: 'response', created_at: 1, model: 'gpt-6.1-sol', status: 'completed',
+          output: [{ type: 'message', id: 'msg_fixture', role: 'assistant', status: 'completed', content: [{ type: 'output_text', text: 'ready', annotations: [] }] }],
+          usage: { input_tokens: 5, output_tokens: 1, total_tokens: 6 },
+        }) })
+        messageListener({ type: 'end' })
+      })
+    },
+  }) } })
+  try {
+    const model = createModel({ id: 'native-profile', kind: 'chatgpt', name: 'ChatGPT plan', baseURL: 'https://attacker.invalid', apiKey: 'must-never-send', models: ['gpt-6.1-sol'] }, 'gpt-6.1-sol')
+    const result = await generateText({ model, prompt: 'Reply ready', maxRetries: 0 })
+    expect(result.text).toBe('ready')
+    expect(captured?.profileId).toBe('native-profile')
+    expect(captured?.body.store).toBe(false)
+    expect(JSON.stringify(captured)).not.toContain('must-never-send')
+    expect(JSON.stringify(captured)).not.toContain('attacker.invalid')
+  } finally { vi.unstubAllGlobals() }
+})
+
+test('ChatGPT streaming reaches the SDK as incremental text with final usage', async () => {
+  let listener: (message: unknown) => void = () => {}
+  const events = [
+    { type: 'response.created', response: { id: 'resp_fixture', created_at: 1, model: 'gpt-6.1-sol' } },
+    { type: 'response.output_item.added', output_index: 0, item: { type: 'message', id: 'msg_fixture' } },
+    { type: 'response.output_text.delta', item_id: 'msg_fixture', delta: 'hello' },
+    { type: 'response.output_item.done', output_index: 0, item: { type: 'message', id: 'msg_fixture' } },
+    { type: 'response.completed', response: { status: 'completed', usage: { input_tokens: 5, output_tokens: 1 } } },
+  ]
+  vi.stubGlobal('chrome', { runtime: { connectNative: () => ({
+    onMessage: { addListener: (fn: typeof listener) => { listener = fn } },
+    onDisconnect: { addListener: () => {} }, disconnect: () => {},
+    postMessage: (message: { body: { stream: boolean } }) => {
+      expect(message.body.stream).toBe(true)
+      queueMicrotask(() => {
+        listener({ type: 'headers' })
+        for (const event of events) listener({ type: 'chunk', text: `data: ${JSON.stringify(event)}\n\n` })
+        listener({ type: 'end' })
+      })
+    },
+  }) } })
+  try {
+    const result = streamText({ model: createModel({ id: 'native-profile', kind: 'chatgpt', name: 'ChatGPT', baseURL: '', apiKey: '', models: [] }, 'gpt-6.1-sol'), prompt: 'Hello', maxRetries: 0 })
+    const chunks: string[] = []
+    for await (const chunk of result.textStream) chunks.push(chunk)
+    expect(chunks).toEqual(['hello'])
+    expect((await result.usage).inputTokens).toBe(5)
+  } finally { vi.unstubAllGlobals() }
 })

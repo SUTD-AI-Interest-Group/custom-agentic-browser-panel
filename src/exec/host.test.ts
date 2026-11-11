@@ -119,6 +119,23 @@ afterEach(() => {
 })
 
 describe('ExecHost', () => {
+  it('removes its idle iframe and recreates it for a later call', async () => {
+    vi.useFakeTimers()
+    const sandbox = fakeSandbox()
+    try {
+      const host = new ExecHost()
+      const run = host.run('first', { timeoutMs: 5000, memoryBytes: 1000 })
+      await completeBoot(sandbox)
+      sandbox.reply(findRun(sandbox, 'first').requestId, { ok: true, outcome: outcome('first') })
+      await run
+      await vi.advanceTimersByTimeAsync(30_000)
+      expect(sandbox.frame.remove).toHaveBeenCalledTimes(1)
+      const next = host.run('second', { timeoutMs: 5000, memoryBytes: 1000 })
+      await completeBoot(sandbox)
+      sandbox.reply(findRun(sandbox, 'second').requestId, { ok: true, outcome: outcome('second') })
+      expect((await next).value).toBe('second')
+    } finally { vi.clearAllTimers(); vi.useRealTimers(); sandbox.restore() }
+  })
   it('boots and completes a single run', async () => {
     const sandbox = fakeSandbox()
     try {

@@ -106,7 +106,8 @@ export interface TabLease {
  * render and browse for the life of the service worker. Long-lived holders
  * (browse sessions) are expected to arm their own TTL watchdog.
  */
-export function acquireTab(): Promise<TabLease> {
+export function acquireTab(signal?: AbortSignal): Promise<TabLease> {
+  if (signal?.aborted) return Promise.reject(signal.reason)
   let unlock!: () => void
   const gate = new Promise<void>((resolve) => {
     unlock = resolve
@@ -115,11 +116,14 @@ export function acquireTab(): Promise<TabLease> {
   // The NEXT acquirer waits on this lease's gate, not on our setup work.
   chain = previous.then(() => gate)
 
-  return previous.then(async () => {
+  const acquired = previous.then(async () => {
     // Never claim a lease over a teardown that is already committed — see
     // `tearingDown`. It resolves quickly (one windows.remove) and only ever
     // runs when no lease was outstanding.
-    if (tearingDown) await tearingDown.catch(() => {})
+    try {
+      if (tearingDown) await tearingDown.catch(() => {})
+      signal?.throwIfAborted()
+    } catch (error) { unlock(); throw error }
     leaseCount++
     idleSince = undefined
     let released = false
@@ -131,12 +135,24 @@ export function acquireTab(): Promise<TabLease> {
       unlock()
     }
     try {
-      return { tabId: await ensureTab(), release }
+      const tabId = await ensureTab()
+      signal?.throwIfAborted()
+      return { tabId, release }
     } catch (err) {
       // Never strand the queue behind a lease we failed to hand out.
       release()
       throw err
     }
+  })
+  if (!signal) return acquired
+  return new Promise((resolve, reject) => {
+    const abort = () => reject(signal.reason)
+    signal.addEventListener('abort', abort, { once: true })
+    acquired.then(lease => {
+      signal.removeEventListener('abort', abort)
+      if (signal.aborted) { lease.release(); reject(signal.reason) }
+      else resolve(lease)
+    }, error => { signal.removeEventListener('abort', abort); reject(error) })
   })
 }
 
@@ -255,14 +271,17 @@ export interface NavigateOutcome {
  * re-validate WHERE it actually landed (see the module-level Redirects note).
  * Never throws for a blocked landing — callers must check `blockedReason`.
  */
-export async function navigateAndWait(tabId: number, url: string): Promise<NavigateOutcome> {
+export async function navigateAndWait(tabId: number, url: string, signal?: AbortSignal): Promise<NavigateOutcome> {
+  signal?.throwIfAborted()
   await chrome.tabs.update(tabId, { url })
+  signal?.throwIfAborted()
   await new Promise<void>((resolve) => {
     let done = false
     const finish = () => {
       if (done) return
       done = true
       chrome.tabs.onUpdated.removeListener(listener)
+      signal?.removeEventListener('abort', finish)
       clearTimeout(timer)
       resolve()
     }
@@ -271,12 +290,14 @@ export async function navigateAndWait(tabId: number, url: string): Promise<Navig
     }
     chrome.tabs.onUpdated.addListener(listener)
     const timer = setTimeout(finish, NAV_TIMEOUT_MS)
+    signal?.addEventListener('abort', finish, { once: true })
     // Guard against a load that completed before the listener attached.
     void chrome.tabs
       .get(tabId)
       .then((t) => t.status === 'complete' && finish())
       .catch(() => finish())
   })
+  signal?.throwIfAborted()
   const tab = await chrome.tabs.get(tabId).catch(() => undefined)
   // Deliberately OPTIMISTIC, not fail-closed, when this lookup itself fails:
   // falling back to the REQUESTED `url` (not refusing outright) means a

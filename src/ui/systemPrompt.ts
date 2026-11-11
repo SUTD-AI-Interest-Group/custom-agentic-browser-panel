@@ -1,3 +1,5 @@
+import { TOOL_CONTEXT_GUIDANCE, VISUAL_RESPONSE_GUIDANCE } from '../data/promptGuidance'
+
 // Pure assembly of the per-chain system prompt from its constituent notes —
 // no Chrome, no React, no AI SDK. Extracted from runTurnChain (Chat.tsx) so
 // the split below is independently testable.
@@ -23,15 +25,16 @@
 //   VOLATILE (recomputed and generally different every turn):
 //              memoryContext, activeSkills, retryNote
 //
-// Splitting is a pure REORDER-then-CUT of the terms the caller already
-// assembled — no note's own text changes, and each one still carries its own
-// leading blank line (`\n\n`) except memoryContext, which is wrapped with one
-// here exactly as the pre-extraction code did. So `stable + volatile` is the
-// same set of substrings as before, just cut at the point where cache
-// placement actually needs it.
+// Built-in tool/context guidance and the opt-in visual preference also live
+// in the stable prefix, including when the editable prompt is customized.
+// Each supplied note carries its own leading blank line (`\n\n`), except
+// memoryContext, which is wrapped here. Built-in guidance is added once to
+// the stable prefix; changing the visual preference invalidates that prefix.
 export interface SystemPromptParts {
   /** The user's own, editable system prompt (settings.systemPrompt). */
   systemPrompt: string
+  /** Opt-in visual presentation preference, applied to this turn. */
+  visualResponse2?: boolean
   /** Progressive-disclosure protocol note (TOOL_DISCLOSURE_NOTE). */
   toolDisclosureNote: string
   /** Set when tabAccess is restricted to the active tab; '' otherwise. */
@@ -70,6 +73,8 @@ export interface SplitSystemPrompt {
 export function splitSystemPrompt(parts: SystemPromptParts): SplitSystemPrompt {
   const stable =
     parts.systemPrompt +
+    (parts.systemPrompt.includes(TOOL_CONTEXT_GUIDANCE) ? '' : `\n\n${TOOL_CONTEXT_GUIDANCE}`) +
+    (parts.visualResponse2 === true ? VISUAL_RESPONSE_GUIDANCE : '') +
     parts.toolDisclosureNote +
     parts.accessNote +
     parts.browsingInsightsNote +

@@ -1,5 +1,5 @@
 import { test, expect, vi, afterEach } from 'vitest'
-import { handleBrowseOp, reapExpiredSessions, SESSION_TTL_MS } from './researchBrowse'
+import { handleBrowseOp, closeSessionsForTask, reapExpiredSessions, SESSION_TTL_MS } from './researchBrowse'
 import { acquireTab } from './researchTab'
 
 // A single fake chrome covering exactly what open→(tab dies)→read touches:
@@ -62,6 +62,21 @@ function fakeChrome() {
 
 afterEach(() => {
   vi.unstubAllGlobals()
+})
+
+test('cancelling an opening session removes it from the tab queue without disturbing its current owner', async () => {
+  const fake = fakeChrome()
+  vi.stubGlobal('chrome', fake.chrome)
+  const owner = await acquireTab()
+  const opening = handleBrowseOp('cancelled-task:browse:0', { kind: 'open', url: 'https://example.com/' })
+  closeSessionsForTask('cancelled-task')
+  try {
+    expect((await opening).ok).toBe(false)
+    expect(fake.chrome.tabs.update).not.toHaveBeenCalled()
+  } finally { owner.release() }
+  const next = await acquireTab()
+  next.release()
+  expect((await handleBrowseOp('cancelled-task:browse:0', { kind: 'read' })).ok).toBe(false)
 })
 
 test('a dead underlying tab releases its browse session AND the shared research-tab lease, instead of stalling until the TTL', async () => {

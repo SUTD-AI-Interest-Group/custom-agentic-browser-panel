@@ -1,3 +1,4 @@
+import { parseExtractionHtml, htmlElements, htmlText, htmlAttr, closestHtml, findHtml } from './extractionHtml'
 // Keyless, attribution-first extra modalities for the research agent: academic
 // search (OpenAlex), image search (Wikimedia Commons + Openverse), and harvesting
 // <img> assets from a page. Network helpers never throw — they return {error} or
@@ -199,11 +200,11 @@ export async function searchImages(
 /** Extract meaningful <img> from a page's HTML, resolving relative URLs and
  *  preferring a figure's <figcaption> / alt as the caption. Pure/testable. */
 export function parseImgTags(html: string, baseUrl: string, max = 12): ImageResult[] {
-  const doc = new DOMParser().parseFromString(html, 'text/html')
+  const doc = parseExtractionHtml(html)
   const out: ImageResult[] = []
   const seen = new Set<string>()
-  for (const img of Array.from(doc.querySelectorAll('img'))) {
-    const raw = img.getAttribute('src') || img.getAttribute('data-src') || ''
+  for (const img of Array.from(htmlElements(doc)).filter(node => node.tagName === 'img')) {
+    const raw = htmlAttr(img, 'src') || htmlAttr(img, 'data-src') || ''
     if (!raw) continue
     let abs: string
     try {
@@ -214,11 +215,11 @@ export function parseImgTags(html: string, baseUrl: string, max = 12): ImageResu
     if (!/^https?:\/\//i.test(abs) || seen.has(abs)) continue
     // Skip obvious sprites/icons/trackers.
     if (/sprite|icon|logo|avatar|pixel|1x1|spacer|blank\./i.test(abs)) continue
-    const w = Number(img.getAttribute('width')) || 0
-    const h = Number(img.getAttribute('height')) || 0
+    const w = Number(htmlAttr(img, 'width')) || 0
+    const h = Number(htmlAttr(img, 'height')) || 0
     if ((w && w < 100) || (h && h < 100)) continue
-    const fig = img.closest('figure')
-    const caption = (fig?.querySelector('figcaption')?.textContent || img.getAttribute('alt') || '').trim()
+    const fig = closestHtml(img, 'figure')
+    const caption = (htmlText(fig ? findHtml(fig, node => node.tagName === 'figcaption') : undefined) || htmlAttr(img, 'alt') || '').trim()
     seen.add(abs)
     out.push({ url: abs, title: caption || 'image', sourcePageUrl: baseUrl, caption: caption || undefined, dims: w && h ? { w, h } : undefined })
     if (out.length >= max) break

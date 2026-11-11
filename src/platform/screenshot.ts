@@ -1,3 +1,4 @@
+import { drawingCanvas, drawingContext, canvasDataUrl, drawingImage, type DrawingCanvas } from './canvas'
 // Agent-facing capture engine: the viewport, one element, or the whole page.
 //
 // Everything is built on chrome.tabs.captureVisibleTab, which only ever returns
@@ -300,28 +301,21 @@ function exec<A extends unknown[], R>(tabId: number, func: (...args: A) => R, ar
     .then((r) => r[0]?.result as R)
 }
 
-async function shoot(windowId: number): Promise<HTMLImageElement> {
+async function shoot(windowId: number): Promise<ImageBitmap> {
   const dataUrl = await throttledCaptureVisibleTab(windowId)
   return await loadImage(dataUrl)
 }
 
-function loadImage(src: string): Promise<HTMLImageElement> {
-  return new Promise((resolve, reject) => {
-    const img = new Image()
-    img.onload = () => resolve(img)
-    img.onerror = () => reject(new ShotError('Failed to decode the screenshot.'))
-    img.src = src
-  })
-}
+const loadImage = drawingImage
 
 /** Downscale a canvas so its longest side fits MAX_SIDE. No-op when it already does. */
-function fit(canvas: HTMLCanvasElement): HTMLCanvasElement {
+function fit(canvas: DrawingCanvas): DrawingCanvas {
   const scale = Math.min(1, MAX_SIDE / Math.max(canvas.width, canvas.height))
   if (scale === 1) return canvas
-  const out = document.createElement('canvas')
+  const out = drawingCanvas()
   out.width = Math.max(1, Math.round(canvas.width * scale))
   out.height = Math.max(1, Math.round(canvas.height * scale))
-  const ctx = out.getContext('2d')
+  const ctx = drawingContext(out)
   if (!ctx) throw new ShotError('Canvas is unavailable.')
   ctx.drawImage(canvas, 0, 0, out.width, out.height)
   return out
@@ -350,20 +344,20 @@ export function fitTileDimensions(
 
 /** Downscale a TILE canvas per `fitTileDimensions` — width only; height never
  *  moves. No-op when the tile already fits both axes. */
-function fitTile(canvas: HTMLCanvasElement): HTMLCanvasElement {
+function fitTile(canvas: DrawingCanvas): DrawingCanvas {
   const { width, height } = fitTileDimensions(canvas.width, canvas.height, MAX_SIDE)
   if (width === canvas.width && height === canvas.height) return canvas
-  const out = document.createElement('canvas')
+  const out = drawingCanvas()
   out.width = Math.max(1, Math.round(width))
   out.height = Math.max(1, Math.round(height))
-  const ctx = out.getContext('2d')
+  const ctx = drawingContext(out)
   if (!ctx) throw new ShotError('Canvas is unavailable.')
   ctx.drawImage(canvas, 0, 0, out.width, out.height)
   return out
 }
 
-const toShot = (canvas: HTMLCanvasElement): Shot => ({
-  dataUrl: canvas.toDataURL('image/png'),
+const toShot = async (canvas: DrawingCanvas): Promise<Shot> => ({
+  dataUrl: await canvasDataUrl(canvas),
   width: canvas.width,
   height: canvas.height,
 })
@@ -388,18 +382,18 @@ export async function tileShot(shot: Shot, maxTiles: number): Promise<{ tiles: S
   }
 
   const img = await loadImage(shot.dataUrl)
-  const cropTile = (y: number, h: number): Shot => {
-    const c = document.createElement('canvas')
+  const cropTile = async (y: number, h: number): Promise<Shot> => {
+    const c = drawingCanvas()
     c.width = shot.width
     c.height = h
-    const ctx = c.getContext('2d')
+    const ctx = drawingContext(c)
     if (!ctx) throw new ShotError('Canvas is unavailable.')
     ctx.drawImage(img, 0, y, shot.width, h, 0, 0, shot.width, h)
     return toShot(fitTile(c))
   }
 
-  if (plan.tiles.length <= 1) return { tiles: [cropTile(0, shot.height)], dropped: plan.dropped }
-  const tiles = plan.tiles.map((t) => cropTile(t.y, t.h))
+  if (plan.tiles.length <= 1) return { tiles: [await cropTile(0, shot.height)], dropped: plan.dropped }
+  const tiles = await Promise.all(plan.tiles.map((t) => cropTile(t.y, t.h)))
   return { tiles, dropped: plan.dropped }
 }
 
@@ -488,17 +482,17 @@ async function captureViewport(
   prep: Prep,
 ): Promise<{ shot: Shot; artifact: Shot; meta: ShotMeta }> {
   const img = await shoot(windowId)
-  const canvas = document.createElement('canvas')
-  canvas.width = img.naturalWidth
-  canvas.height = img.naturalHeight
-  const ctx = canvas.getContext('2d')
+  const canvas = drawingCanvas()
+  canvas.width = img.width
+  canvas.height = img.height
+  const ctx = drawingContext(canvas)
   if (!ctx) throw new ShotError('Canvas is unavailable.')
   ctx.drawImage(img, 0, 0)
   return {
     // Untouched capture for the model to tile; fit() is a no-op here for the
     // common case (viewport already within MAX_SIDE), so the two are equal.
-    shot: toShot(canvas),
-    artifact: toShot(fit(canvas)),
+    shot: await toShot(canvas),
+    artifact: await toShot(fit(canvas)),
     meta: { url: prep.url || tab.url || '', title: prep.title || tab.title || '', label: 'the visible viewport' },
   }
 }
@@ -546,14 +540,14 @@ async function captureFullPage(
     if (added.length === 0) break
 
     const neededPx = Math.max(1, Math.round(plan.height * dpr))
-    let ctx = canvas.getContext('2d')
+    let ctx = drawingContext(canvas)
     if (neededPx > canvas.height) {
       // Growing a canvas element's height clears its content, so copy the
       // already-stitched pixels onto a taller one before drawing more.
-      const grown = document.createElement('canvas')
+      const grown = drawingCanvas()
       grown.width = canvas.width
       grown.height = neededPx
-      const gctx = grown.getContext('2d')
+      const gctx = drawingContext(grown)
       if (!gctx) throw new ShotError('Canvas is unavailable.')
       gctx.drawImage(canvas, 0, 0)
       canvas = grown
@@ -574,7 +568,7 @@ async function captureFullPage(
   }
   // The full-resolution stitched canvas is the tiling source for the model;
   // the fit()-downscaled copy is the small strip saved for the user.
-  return { shot: toShot(canvas), artifact: toShot(fit(canvas)), meta }
+  return { shot: await toShot(canvas), artifact: await toShot(fit(canvas)), meta }
 }
 
 async function captureElement(
@@ -623,8 +617,8 @@ async function captureElement(
 
   const name = box.name ? ` "${box.name}"` : ''
   return {
-    shot: toShot(canvas),
-    artifact: toShot(fit(canvas)),
+    shot: await toShot(canvas),
+    artifact: await toShot(fit(canvas)),
     meta: {
       url: prep.url || tab.url || '',
       title: prep.title || tab.title || '',
@@ -644,13 +638,13 @@ async function stitch(
   plan: StitchPlan,
   prep: Prep,
   crop: { left: number; width: number } | null,
-): Promise<HTMLCanvasElement> {
+): Promise<DrawingCanvas> {
   const dpr = prep.dpr || 1
   const widthCss = crop ? crop.width : prep.clientWidth
-  const canvas = document.createElement('canvas')
+  const canvas = drawingCanvas()
   canvas.width = Math.max(1, Math.round(widthCss * dpr))
   canvas.height = Math.max(1, Math.round(plan.height * dpr))
-  const ctx = canvas.getContext('2d')
+  const ctx = drawingContext(canvas)
   if (!ctx) throw new ShotError('Canvas is unavailable.')
   await drawSlices(ctx, tabId, windowId, plan.slices, dpr, crop, widthCss, 1)
   return canvas
@@ -669,7 +663,7 @@ async function stitch(
  * a harmless no-op, but re-showing the header partway through is not.
  */
 async function drawSlices(
-  ctx: CanvasRenderingContext2D,
+  ctx: CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D,
   tabId: number,
   windowId: number,
   slices: StitchSlice[],

@@ -1,3 +1,5 @@
+import { parseExtractionHtml, htmlElements, htmlText, htmlAttr, hasHtmlClass, closestHtml, nextHtmlSibling, findHtml } from './extractionHtml'
+
 /**
  * Tolerant JSON parse for model output that may be fenced or wrapped in prose.
  * Strips ```json fences, then falls back to the outermost brace/bracket span.
@@ -102,16 +104,14 @@ export function resolveDdgHref(href: string): string {
 
 /** Parse the lite.duckduckgo.com/lite result table into ranked rows. Fragile by nature — tolerant of missing snippets. */
 export function parseDuckDuckGoLite(html: string): SearchResultRow[] {
-  const doc = new DOMParser().parseFromString(html, 'text/html')
-  const links = Array.from(doc.querySelectorAll('a.result-link')) as HTMLAnchorElement[]
-  return links.map((a) => {
-    // The snippet cell is the next .result-snippet after this link's row.
-    let snippet = ''
-    const row = a.closest('tr')
-    const snipCell = row?.nextElementSibling?.querySelector('.result-snippet')
-    if (snipCell) snippet = (snipCell.textContent ?? '').trim()
-    return { title: (a.textContent ?? '').trim(), url: resolveDdgHref(a.getAttribute('href') ?? ''), snippet }
-  }).filter((r) => r.title && r.url)
+  const doc = parseExtractionHtml(html)
+  const links = Array.from(htmlElements(doc)).filter(node => node.tagName === 'a' && hasHtmlClass(node, 'result-link'))
+  return links.map(a => {
+    const row = closestHtml(a, 'tr')
+    const next = row && nextHtmlSibling(row)
+    const snippet = next ? findHtml(next, node => hasHtmlClass(node, 'result-snippet')) : undefined
+    return { title: htmlText(a).trim(), url: resolveDdgHref(htmlAttr(a, 'href')), snippet: htmlText(snippet).trim() }
+  }).filter(r => r.title && r.url)
 }
 
 /**
@@ -120,17 +120,16 @@ export function parseDuckDuckGoLite(html: string): SearchResultRow[] {
  * carries the snippet inline — simpler and less positional than the lite table.
  */
 export function parseDuckDuckGoHtml(html: string): SearchResultRow[] {
-  const doc = new DOMParser().parseFromString(html, 'text/html')
-  const results = Array.from(doc.querySelectorAll('.result, .web-result'))
+  const doc = parseExtractionHtml(html)
+  const results = Array.from(htmlElements(doc)).filter(node => hasHtmlClass(node, 'result') || hasHtmlClass(node, 'web-result'))
   const rows: SearchResultRow[] = []
-  for (const r of results) {
-    const a = r.querySelector('a.result__a') as HTMLAnchorElement | null
+  for (const result of results) {
+    const a = findHtml(result, node => node.tagName === 'a' && hasHtmlClass(node, 'result__a'))
     if (!a) continue
-    // An ad row carries the same class but a `y.js` tracking href — skip it.
-    const href = a.getAttribute('href') ?? ''
+    const href = htmlAttr(a, 'href')
     if (!href || href.includes('duckduckgo.com/y.js')) continue
-    const snippet = (r.querySelector('.result__snippet')?.textContent ?? '').trim()
-    const title = (a.textContent ?? '').trim()
+    const snippet = htmlText(findHtml(result, node => hasHtmlClass(node, 'result__snippet'))).trim()
+    const title = htmlText(a).trim()
     const url = resolveDdgHref(href)
     if (title && url) rows.push({ title, url, snippet })
   }
@@ -139,14 +138,14 @@ export function parseDuckDuckGoHtml(html: string): SearchResultRow[] {
 
 /** Reduce a fetched HTML document to readable text: strip chrome, prefer <main>/<article>, collapse whitespace, cap length. */
 export function extractReadableText(html: string, maxChars = 20_000): { title: string; text: string } {
-  const doc = new DOMParser().parseFromString(html, 'text/html')
-  const title = (doc.querySelector('title')?.textContent ?? '').trim()
-  doc.querySelectorAll('script,style,noscript,nav,footer,header,aside,form,svg').forEach((n) => n.remove())
-  const root = doc.querySelector('main') ?? doc.querySelector('article') ?? doc.body
-  // Block elements carry no separator between siblings, so adjacent blocks' text runs together
-  // (e.g. "<p>A</p><p>B</p>" -> "AB"). Insert a newline after each so words stay separated.
-  root?.querySelectorAll('p,div,section,article,h1,h2,h3,h4,h5,h6,li,br,tr,td,th,blockquote,pre').forEach((el) => el.after(doc.createTextNode('\n')))
-  const text = (root?.textContent ?? '').replace(/[ \t]+/g, ' ').replace(/\n\s*\n\s*/g, '\n\n').trim()
+  const doc = parseExtractionHtml(html)
+  const title = htmlText(findHtml(doc, node => node.tagName === 'title')).trim()
+  const exclude = new Set(['script','style','noscript','nav','footer','header','aside','form','svg'])
+  const root = findHtml(doc, node => node.tagName === 'main', exclude)
+    ?? findHtml(doc, node => node.tagName === 'article', exclude)
+    ?? findHtml(doc, node => node.tagName === 'body')
+  const blocks = new Set(['p','div','section','article','h1','h2','h3','h4','h5','h6','li','br','tr','td','th','blockquote','pre'])
+  const text = htmlText(root, exclude, blocks).replace(/[ \t]+/g, ' ').replace(/\n\s*\n\s*/g, '\n\n').trim()
   return { title, text: text.slice(0, maxChars) }
 }
 

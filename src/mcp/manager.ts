@@ -9,6 +9,7 @@
 // show a server's tools while it is disconnected; the first real call connects
 // on demand. The pure config/policy logic lives in src/mcp/config.ts.
 
+import { getMcpTask, listMcpTasks, updateMcpTask, mcpTaskKey, mcpConfigHash, terminalTask } from '../data/mcpTasks'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
 import { SSEClientTransport } from '@modelcontextprotocol/sdk/client/sse.js'
@@ -18,6 +19,9 @@ import {
   PromptListChangedNotificationSchema,
   ResourceListChangedNotificationSchema,
   ToolListChangedNotificationSchema,
+  CallToolResultSchema,
+  type CallToolResult,
+  type Task,
 } from '@modelcontextprotocol/sdk/types.js'
 import type { Settings } from '../data/settings'
 import { classifyEntry, mcpSettings, serverEnabled, type McpServerEntry } from './config'
@@ -33,6 +37,7 @@ export interface McpToolInfo {
   inputSchema: unknown
   /** MCP `_meta` (e.g. MCP Apps output templates). */
   meta?: Record<string, unknown>
+  taskSupport?: 'required' | 'optional' | 'forbidden'
 }
 
 export interface McpResourceInfo {
@@ -124,7 +129,9 @@ interface PersistedCatalog {
 function newClient(): Client {
   return new Client(
     { name: 'lychee-ai', version: '0.1.0' },
-    { capabilities: {}, jsonSchemaValidator: new CfWorkerJsonSchemaValidator() },
+    { capabilities: {
+      extensions: { 'io.modelcontextprotocol/ui': { mimeTypes: ['text/html;profile=mcp-app'] } },
+    }, jsonSchemaValidator: new CfWorkerJsonSchemaValidator() },
   )
 }
 
@@ -194,11 +201,15 @@ export class McpManager {
       if (!(name in mcp.servers)) {
         this.teardown(name, slot)
         this.slots.delete(name)
+        for (const task of await listMcpTasks()) {
+          if (task.server === name) await updateMcpTask(task.id, () => undefined)
+        }
         void clearAuth(name).catch(() => {})
       }
     }
     for (const [name, entry] of wanted) {
       const slot = this.slots.get(name) as ServerSlot
+      const hadEntry = typeof slot.entry.url === 'string'
       const changed = JSON.stringify(slot.entry) !== JSON.stringify(entry)
       // A bearer token is only ever valid for the URL that issued it, so a
       // name repointed at a different URL must not reconnect carrying the
@@ -209,7 +220,12 @@ export class McpManager {
       // first connection each session, forcing re-auth on every panel open.
       const urlChanged = changed && typeof slot.entry.url === 'string' && slot.entry.url !== entry.url
       slot.entry = entry
-      if (changed) this.teardown(name, slot)
+      if (changed) {
+        this.teardown(name, slot)
+        if (hadEntry) for (const task of await listMcpTasks()) {
+          if (task.server === name) await updateMcpTask(task.id, () => undefined)
+        }
+      }
       if (urlChanged) await clearAuth(name).catch(() => {})
       if (!slot.client && !slot.connectPromise) {
         void this.ensureConnected(name).catch(() => {})
@@ -373,6 +389,7 @@ export class McpManager {
                 name: t.name,
                 description: t.description ?? '',
                 inputSchema: t.inputSchema,
+                taskSupport: t.execution?.taskSupport,
                 meta: (t as { _meta?: Record<string, unknown> })._meta,
               }),
             ),
@@ -451,10 +468,122 @@ export class McpManager {
     await this.ensureConnected(server)
     const client = this.slots.get(server)?.client
     if (!client) throw new Error(`Not connected to "${server}".`)
+    const support = this.slots.get(server)?.tools.find((t) => t.name === tool)?.taskSupport
+    if (support === 'required' || support === 'optional') {
+      if (!client.getServerCapabilities()?.tasks?.requests?.tools?.call) {
+        if (support === 'required') throw new Error('Server requires tasks but does not advertise task calls.')
+      } else {
+        // App-originated calls retain a normal tools/call result while the SDK
+        // polls the remote task; timeout applies to each request, not the job.
+        for await (const message of client.experimental.tasks.callToolStream(
+          { name: tool, arguments: args }, undefined,
+          { signal: opts?.signal, timeout: opts?.timeoutMs ?? REQUEST_TIMEOUT_MS, task: {} },
+        )) {
+          if (message.type === 'result') return message.result
+          if (message.type === 'error') throw message.error
+        }
+        throw new Error('Task stream ended without a result.')
+      }
+    }
     return client.callTool({ name: tool, arguments: args }, undefined, {
       signal: opts?.signal,
       timeout: opts?.timeoutMs ?? REQUEST_TIMEOUT_MS,
     })
+  }
+
+  /** Return immediately after task creation, freeing the agent to do other work. */
+  async startTool(server: string, tool: string, args: Record<string, unknown>, conversationId: string, signal?: AbortSignal)
+    : Promise<{ task: Task } | { result: CallToolResult }> {
+    await this.ensureConnected(server)
+    const slot = this.slots.get(server)
+    const client = slot?.client
+    if (!client || !slot) throw new Error(`Not connected to "${server}".`)
+    const support = slot.tools.find((t) => t.name === tool)?.taskSupport
+    if (!client.getServerCapabilities()?.tasks?.requests?.tools?.call || !['required', 'optional'].includes(support ?? '')) {
+      if (support === 'required') throw new Error('Server requires tasks but does not advertise task calls.')
+      return { result: await this.callTool(server, tool, args, { signal }) as CallToolResult }
+    }
+    const entry = slot.entry
+    const generation = slot.gen
+    for await (const message of client.experimental.tasks.callToolStream(
+      { name: tool, arguments: args }, CallToolResultSchema, { signal, timeout: REQUEST_TIMEOUT_MS, task: {} },
+    )) {
+      if (message.type === 'error') throw message.error
+      if (message.type === 'result') return { result: message.result }
+      if (message.type === 'taskCreated') {
+        if (this.slots.get(server) !== slot || slot.gen !== generation) {
+          throw new Error(`Task ${message.task.taskId} was created, but the server configuration changed. Do not resubmit the job.`)
+        }
+        const id = mcpTaskKey(conversationId, server, tool, message.task.taskId)
+        const configHash = await mcpConfigHash(entry)
+        const sessionId = slot.transport && 'sessionId' in slot.transport ? slot.transport.sessionId : undefined
+        await updateMcpTask(id, () => ({
+          id, conversationId, server, tool, configHash, sessionId,
+          protocolVersion: slot.transport && 'protocolVersion' in slot.transport ? slot.transport.protocolVersion : undefined,
+          cancelSupported: !!client.getServerCapabilities()?.tasks?.cancel,
+          task: message.task, args, createdAt: Date.now(), suppressed: signal?.aborted,
+          nextPollAt: Date.now() + Math.max(1000, message.task.pollInterval ?? 5000),
+        }))
+        return { task: message.task }
+      }
+    }
+    throw new Error('Task stream ended without a result.')
+  }
+
+  async taskOperation(server: string, tool: string, conversationId: string, taskId: string,
+    action: 'status' | 'result' | 'cancel', signal?: AbortSignal) {
+    const key = mcpTaskKey(conversationId, server, tool, taskId)
+    const record = await getMcpTask(key)
+    const entry = this.slots.get(server)?.entry
+    if (!record || !entry || record.configHash !== await mcpConfigHash(entry)) {
+      throw new Error('Task is unavailable in this chat or its server configuration changed.')
+    }
+    if (action === 'result' && record.result) {
+      await updateMcpTask(key, (old) => old && ({ ...old, delivered: old.lease ? old.delivered : true }))
+      return { task: record.task, result: record.result, args: record.args }
+    }
+    if (record.ready && action !== 'cancel') {
+      if (record.error) throw new Error(record.error)
+      return { task: record.task }
+    }
+    await this.ensureConnected(server)
+    let client = this.slots.get(server)?.client
+    if (!client) throw new Error(`Not connected to "${server}".`)
+    // Re-check after connection awaits: settings may have changed mid-handshake.
+    if (!await getMcpTask(key) || record.configHash !== await mcpConfigHash(this.slots.get(server)!.entry)) {
+      throw new Error('Task server configuration changed while connecting.')
+    }
+    let taskClient: Client | undefined
+    if (record.sessionId) {
+      // A new SDK Client with an existing session intentionally skips initialize
+      // and has no catalog capabilities. Use it only for the persisted task.
+      taskClient = newClient()
+      const url = new URL(String(entry.url))
+      const transport = new StreamableHTTPClientTransport(url, {
+        sessionId: record.sessionId, requestInit: entry.headers ? { headers: entry.headers } : undefined,
+        authProvider: new ChromeOAuthProvider(server, url.toString()),
+      })
+      transport.setProtocolVersion(record.protocolVersion ?? '2025-11-25')
+      try { await taskClient.connect(transport, { signal, timeout: REQUEST_TIMEOUT_MS }) }
+      catch (error) { await taskClient.close().catch(() => {}); throw error }
+      client = taskClient
+    }
+    try {
+      const options = { signal, timeout: REQUEST_TIMEOUT_MS }
+      if (action === 'cancel') {
+        if (!(record.cancelSupported ?? !!client.getServerCapabilities()?.tasks?.cancel)) throw new Error('Server does not support task cancellation.')
+        record.task = await client.experimental.tasks.cancelTask(taskId, options)
+        await updateMcpTask(key, (old) => old && ({ ...old, task: record.task, ready: true, suppressed: true }))
+        return { task: record.task }
+      }
+      record.task = await client.experimental.tasks.getTask(taskId, options)
+      // Never block an agent step on tasks/result for a job that is still running.
+      await updateMcpTask(key, (old) => old && ({ ...old, task: record.task }))
+      if (action !== 'result' || !terminalTask(record.task)) return { task: record.task }
+      const result = await client.experimental.tasks.getTaskResult(taskId, CallToolResultSchema, options)
+      await updateMcpTask(key, (old) => old && ({ ...old, task: record.task, result, ready: true, delivered: old.lease ? old.delivered : true }))
+      return { task: record.task, result, args: record.args }
+    } finally { await taskClient?.close().catch(() => {}) }
   }
 
   async readResource(server: string, uri: string, opts?: { signal?: AbortSignal }) {

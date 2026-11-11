@@ -4,6 +4,7 @@ import {
   boundTabFor,
   isLive,
   liveChatIds,
+  rememberChat,
   loadRunningChats,
   loadTabChats,
   needsAttention,
@@ -316,4 +317,14 @@ test('storage failures degrade to empty rather than throwing', async () => {
   expect(await loadRunningChats()).toEqual([])
   await expect(saveTabChats({})).resolves.toBeUndefined()
   await expect(saveRunningChats(['a'])).resolves.toBeUndefined()
+})
+
+test('recent idle chats retain their views without evicting any running chat', () => {
+  expect(liveChatIds('visible', { running: 'running', parked: 'parked' }, ['old', 'visible']))
+    .toEqual(['visible', 'running', 'parked', 'old'])
+})
+
+test('recent views are bounded and revisiting a chat moves it to the front', () => {
+  expect(rememberChat(['a', 'b', 'c'], 'b', 3)).toEqual(['b', 'a', 'c'])
+  expect(rememberChat(['a', 'b', 'c'], 'd', 3)).toEqual(['d', 'a', 'b'])
 })

@@ -37,7 +37,7 @@ const DAMPING = 0.14
 /** Below this, the seek is imperceptible and not worth a decode. */
 const SETTLED = 1 / 120
 
-const HEADING = 'Nothing moves without you.'
+const HEADING = 'Permissions'
 const BODY =
   'Every action that touches a page, your data or the network asks first — and you set each capability to always allow, ask every time, or never. Steps you can’t take back stop and ask again, even mid-task.'
 

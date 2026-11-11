@@ -24,3 +24,26 @@ test('adopts when the incoming value genuinely differs (a concurrent window save
   const incoming = '{"providers":[{"id":"p1","apiKey":"sk-new"}]}'
   expect(shouldAdoptExternalSettings(current, incoming)).toBe(true)
 })
+
+import { mergeSettingsDraft } from './settingsSync'
+
+test('preserves external fields and nested settings while committing local edits', () => {
+  const base = { prompt: 'before', policies: { read: 'ask', write: 'ask' }, theme: 'light' }
+  const draft = { ...base, prompt: 'local', policies: { ...base.policies, read: 'always' } }
+  const external = { ...base, policies: { ...base.policies, write: 'never' }, theme: 'dark' }
+  expect(mergeSettingsDraft(base, draft, external)).toEqual({ prompt: 'local', policies: { read: 'always', write: 'never' }, theme: 'dark' })
+})
+
+test('merges provider rows by id, preserving remote additions and deletions', () => {
+  const base = [{ id: 'a', name: 'A', key: 'old' }, { id: 'b', name: 'B', key: '' }]
+  const draft = [{ ...base[0], name: 'Renamed' }, { ...base[1], name: 'Edited deleted row' }]
+  const external = [{ ...base[0], key: 'rotated' }, { id: 'c', name: 'New', key: '' }]
+  expect(mergeSettingsDraft(base, draft, external)).toEqual([{ id: 'a', name: 'Renamed', key: 'rotated' }, external[1]])
+})
+
+test('keeps local removals and does not mutate the current settings', () => {
+  const base = { a: 1, b: 2 }
+  const current = { a: 1, b: 3 }
+  expect(mergeSettingsDraft<Record<string, number>>(base, { a: 2 }, current)).toEqual({ a: 2 })
+  expect(current).toEqual({ a: 1, b: 3 })
+})

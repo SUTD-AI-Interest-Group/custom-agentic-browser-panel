@@ -142,13 +142,13 @@ describe('handleAppMessage', () => {
     expect(out[0]).toEqual({ jsonrpc: '2.0', id: 7, result: {} })
   })
 
-  it('acknowledges ui/message without calling the host when content is missing or non-text', async () => {
+  it('rejects ui/message when content is missing or non-text', async () => {
     const h = host()
     const noContent = await handleAppMessage(req(7, 'ui/message', {}), h)
     const nonText = await handleAppMessage(req(7, 'ui/message', { content: { type: 'image', data: 'x' } }), h)
     expect(h.onUserMessage).not.toHaveBeenCalled()
-    expect(noContent[0]).toEqual({ jsonrpc: '2.0', id: 7, result: {} })
-    expect(nonText[0]).toEqual({ jsonrpc: '2.0', id: 7, result: {} })
+    expect(noContent[0]).toMatchObject({ id: 7, error: { code: -32602 } })
+    expect(nonText[0]).toMatchObject({ id: 7, error: { code: -32602 } })
   })
 
   it('grants only inline display mode', async () => {
@@ -161,12 +161,12 @@ describe('handleAppMessage', () => {
     expect(out[0]).toEqual({ jsonrpc: '2.0', id: 9, result: {} })
   })
 
-  it('accepts ui/update-model-context without failing', async () => {
+  it('reports unsupported context updates instead of silently discarding them', async () => {
     const out = await handleAppMessage(
       req(10, 'ui/update-model-context', { structuredContent: { done: true } }),
       host(),
     )
-    expect(out[0]).toEqual({ jsonrpc: '2.0', id: 10, result: {} })
+    expect(out[0]).toMatchObject({ id: 10, error: { code: -32601 } })
   })
 
   it('ignores app log notifications silently', async () => {
@@ -190,3 +190,19 @@ describe('handleAppMessage', () => {
     expect(await handleAppMessage({ jsonrpc: '2.0' }, host())).toEqual([])
   })
 })
+
+ it('drafts standard array-shaped ui/message content', async () => {
+  const h = host()
+  await handleAppMessage(req(22, 'ui/message', { content: [{ type: 'text', text: 'one' }, { type: 'text', text: 'two' }] }), h)
+  expect(h.onUserMessage).toHaveBeenCalledWith('one\ntwo')
+ })
+ it('delivers app-only metadata and error flags to the widget', async () => {
+  const result = { content: [], _meta: { token: 'app-only' }, isError: true }
+  const h = host({ context: () => ({ theme: 'light', toolName: 'x', toolInput: {}, toolResult: result }) })
+  const out = await handleAppMessage({ jsonrpc: '2.0', method: 'ui/notifications/initialized' }, h)
+  expect(out[1].params).toEqual(result)
+ })
+ it('does not claim an unknown app protocol version', async () => {
+  const out = await handleAppMessage(req(1, 'ui/initialize', { protocolVersion: '2099-01-01' }), host())
+  expect(out[0].result).toMatchObject({ protocolVersion: '2026-01-26' })
+ })

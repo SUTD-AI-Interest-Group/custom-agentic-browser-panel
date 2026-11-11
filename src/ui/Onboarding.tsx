@@ -1,4 +1,5 @@
-import { useState } from 'react'
+import ChatGPTProvider from './settings/ChatGPTProvider'
+import { useEffect, useRef, useState } from 'react'
 import { testModel, type TestResult } from '../agent/provider'
 import {
   type ProviderConfig,
@@ -83,31 +84,31 @@ export default function Onboarding({
   settings: Settings
   onComplete: (next: Settings) => void
 }) {
+  const [chatGPT, setChatGPT] = useState<ProviderConfig>(() => ({ id: crypto.randomUUID(), name: 'ChatGPT plan', kind: 'chatgpt', baseURL: 'https://api.openai.com/v1', apiKey: '', models: [] }))
   const [step, setStep] = useState<Step>('endpoint')
-  const [presetName, setPresetName] = useState<string | null>(null)
-  const [name, setName] = useState('')
-  const [baseURL, setBaseURL] = useState('')
-  const [apiKey, setApiKey] = useState('')
-  const [modelId, setModelId] = useState('')
+  const [draft, setDraft] = useState<OnboardingDraft>({ presetName: null, name: '', baseURL: '', apiKey: '', modelId: '' })
+  const { presetName, name, baseURL, apiKey, modelId } = draft
+  const patchDraft = (patch: Partial<OnboardingDraft>) => setDraft(current => ({ ...current, ...patch }))
   const [tabAccess, setTabAccess] = useState<TabAccess>('active-tab')
-  const [testing, setTesting] = useState(false)
-  const [result, setResult] = useState<TestResult | null>(null)
+  const [test, setTest] = useState<{ status: 'idle' | 'testing' } | { status: 'done'; result: TestResult }>({ status: 'idle' })
+  const testing = test.status === 'testing'
+  const result = test.status === 'done' ? test.result : null
+  const pending = useRef<AbortController | null>(null)
+  useEffect(() => () => pending.current?.abort(), [])
+  function clearTest() { pending.current?.abort(); pending.current = null; setTest({ status: 'idle' }) }
 
   const preset = PRESETS.find((p) => p.name === presetName)
-  const endpointValid =
+  const isChatGPT = presetName === 'ChatGPT plan'
+  const endpointValid = isChatGPT ? chatGPT.models.includes(modelId) :
     baseURL.trim().length > 0 && modelId.trim().length > 0 && hasValidEndpointScheme(baseURL)
 
   function pickPreset(p: (typeof PRESETS)[number]) {
-    const next = applyPreset({ presetName, name, baseURL, apiKey, modelId }, p)
-    setPresetName(next.presetName)
-    setName(next.name)
-    setBaseURL(next.baseURL)
-    setApiKey(next.apiKey)
-    setModelId(next.modelId)
-    setResult(null)
+    clearTest()
+    setDraft(current => applyPreset(current, p))
   }
 
   function draftProvider(): ProviderConfig {
+    if (isChatGPT) return { ...chatGPT, models: [modelId, ...chatGPT.models.filter(id => id !== modelId)] }
     return {
       id: crypto.randomUUID(),
       name: name.trim() || 'My provider',
@@ -118,10 +119,14 @@ export default function Onboarding({
   }
 
   async function runTest() {
-    setTesting(true)
-    setResult(null)
-    setResult(await testModel(draftProvider(), modelId.trim()))
-    setTesting(false)
+    if (pending.current) return
+    const controller = new AbortController()
+    pending.current = controller
+    setTest({ status: 'testing' })
+    const result = await testModel(draftProvider(), modelId.trim(), controller.signal)
+    if (controller.signal.aborted) return
+    pending.current = null
+    setTest({ status: 'done', result })
   }
 
   function finish() {
@@ -147,12 +152,11 @@ export default function Onboarding({
 
       {step === 'endpoint' && (
         <>
-          <h1>Welcome 👋</h1>
-          <p className="hint">
-            This agent runs entirely in your browser against any OpenAI-compatible endpoint.
-            Pick where your model lives:
-          </p>
+          <h1>Connect a model</h1>
           <div className="preset-row">
+            <button className={`btn small ${isChatGPT ? 'primary' : 'ghost'}`} onClick={() => {
+              clearTest(); setDraft({ presetName: 'ChatGPT plan', name: 'ChatGPT plan', baseURL: 'https://api.openai.com/v1', apiKey: '', modelId: chatGPT.models[0] || '' })
+            }}>ChatGPT plan</button>
             {PRESETS.map((p) => (
               <button
                 key={p.name}
@@ -164,12 +168,22 @@ export default function Onboarding({
             ))}
           </div>
 
+          {isChatGPT && <div className="provider-card onboard-form">
+            <ChatGPTProvider provider={chatGPT} onChange={patch => {
+              setChatGPT(current => ({ ...current, ...patch }))
+              if (patch.models) patchDraft({ modelId: patch.models[0] || '' })
+              clearTest()
+            }} />
+            {chatGPT.models.length > 0 && <label>Model<select value={modelId} onChange={event => patchDraft({ modelId: event.target.value })}>
+              {chatGPT.models.map(id => <option key={id} value={id}>{chatGPT.modelNames?.[id] || id}</option>)}
+            </select></label>}
+          </div>}
           {preset && (
             <div className="provider-card onboard-form">
               {preset.name === 'Custom' && (
                 <label>
                   Name
-                  <input value={name} placeholder="My endpoint" onChange={(e) => setName(e.target.value)} />
+                  <input value={name} placeholder="My endpoint" onChange={(e) => patchDraft({ name: e.target.value })} />
                 </label>
               )}
               <label>
@@ -177,7 +191,7 @@ export default function Onboarding({
                 <input
                   value={baseURL}
                   placeholder="https://api.example.com/v1"
-                  onChange={(e) => setBaseURL(e.target.value)}
+                  onChange={(e) => patchDraft({ baseURL: e.target.value })}
                 />
               </label>
               <label>
@@ -186,7 +200,7 @@ export default function Onboarding({
                   type="password"
                   value={apiKey}
                   placeholder={preset.keyHint}
-                  onChange={(e) => setApiKey(e.target.value)}
+                  onChange={(e) => patchDraft({ apiKey: e.target.value })}
                 />
               </label>
               <label>
@@ -194,7 +208,7 @@ export default function Onboarding({
                 <input
                   value={modelId}
                   placeholder={preset.placeholderModel}
-                  onChange={(e) => setModelId(e.target.value)}
+                  onChange={(e) => patchDraft({ modelId: e.target.value })}
                 />
               </label>
             </div>
@@ -206,7 +220,7 @@ export default function Onboarding({
               className="btn primary"
               disabled={!endpointValid}
               onClick={() => {
-                setResult(null)
+                clearTest()
                 setStep('test')
               }}
             >
@@ -218,11 +232,9 @@ export default function Onboarding({
 
       {step === 'test' && (
         <>
-          <h1>Test your endpoint</h1>
-          <p className="hint">
-            One tiny message is sent to <b>{modelId.trim()}</b> at <b>{baseURL.trim()}</b> to make
-            sure everything is wired up.
-          </p>
+          <h1>Test connection</h1>
+          {isChatGPT && <p className="hint">This test uses your ChatGPT plan or credits.</p>}
+          <dl className="connection-summary"><dt>Model</dt><dd>{modelId.trim()}</dd><dt>Endpoint</dt><dd>{baseURL.trim()}</dd></dl>
           <button className="btn primary" disabled={testing} onClick={() => void runTest()}>
             {testing ? 'Testing…' : result ? 'Test again' : 'Run test'}
           </button>
@@ -243,7 +255,7 @@ export default function Onboarding({
           )}
 
           <div className="onboard-footer">
-            <button className="btn ghost" onClick={() => setStep('endpoint')}>
+            <button className="btn ghost" onClick={() => { clearTest(); setStep('endpoint') }}>
               Back
             </button>
             <button
@@ -260,11 +272,6 @@ export default function Onboarding({
       {step === 'access' && (
         <>
           <h1>Tab visibility</h1>
-          <p className="hint">
-            Choose what the agent is allowed to see. Every individual read still asks for your
-            permission in the chat, and you can @mention tabs to share them explicitly. Changeable
-            any time in Settings.
-          </p>
 
           <label className={`access-option ${tabAccess === 'active-tab' ? 'chosen' : ''}`}>
             <input
@@ -275,10 +282,6 @@ export default function Onboarding({
             />
             <div>
               <div className="access-title">Only my current tab</div>
-              <div className="access-desc">
-                The agent can only ever see the tab you're looking at. @mentions offer just the
-                current tab.
-              </div>
             </div>
           </label>
 
@@ -291,10 +294,6 @@ export default function Onboarding({
             />
             <div>
               <div className="access-title">All open tabs</div>
-              <div className="access-desc">
-                The agent can list and (with permission) read any open tab, and you can @mention
-                any of them.
-              </div>
             </div>
           </label>
 
@@ -303,7 +302,7 @@ export default function Onboarding({
               Back
             </button>
             <button className="btn primary" onClick={finish}>
-              Start chatting
+              Open chat
             </button>
           </div>
         </>

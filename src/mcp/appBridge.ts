@@ -27,7 +27,8 @@
 //                                     lands in the composer as a draft — the
 //                                     user reviews; apps never speak as them).
 //   ui/request-display-mode           request → this host only does 'inline'.
-//   ui/update-model-context, ping     request → acknowledged.
+//   ping                             request → acknowledged.
+//   ui/update-model-context           request → unsupported (explicit error).
 //   notifications/message             notify  → app-side logging, ignored.
 //
 // Anything malformed is ignored; an unknown request gets a proper JSON-RPC
@@ -53,7 +54,7 @@ export interface AppBridgeHost {
     toolName: string
     toolInput: unknown
     /** The producing tool call's result, MCP-shaped (content + structuredContent). */
-    toolResult: { content?: unknown[]; structuredContent?: unknown }
+    toolResult: { content?: unknown[]; structuredContent?: unknown; _meta?: Record<string, unknown>; isError?: boolean }
   }
 }
 
@@ -90,9 +91,8 @@ export async function handleAppMessage(msg: unknown, host: AppBridgeHost): Promi
     case 'ui/initialize': {
       if (id === undefined) return []
       const ctx = host.context()
-      // Echo the app's requested revision when it names one — the SDK treats a
-      // mismatch as an incompatibility even when the shapes line up.
-      const version = typeof params.protocolVersion === 'string' ? params.protocolVersion : APP_PROTOCOL_VERSION
+      // Return the revision we implement; never claim an unknown future protocol.
+      const version = APP_PROTOCOL_VERSION
       return [
         respond(id, {
           protocolVersion: version,
@@ -125,6 +125,7 @@ export async function handleAppMessage(msg: unknown, host: AppBridgeHost): Promi
       return [
         notify('ui/notifications/tool-input', { arguments: ctx.toolInput ?? {} }),
         notify('ui/notifications/tool-result', {
+          ...ctx.toolResult,
           content: ctx.toolResult.content ?? [],
           ...(ctx.toolResult.structuredContent !== undefined
             ? { structuredContent: ctx.toolResult.structuredContent }
@@ -166,8 +167,12 @@ export async function handleAppMessage(msg: unknown, host: AppBridgeHost): Promi
       return [ok ? respond(id, {}) : fail(id, -32602, 'Only http(s) links can be opened.')]
     }
     case 'ui/message': {
-      const content = params.content as { type?: string; text?: string } | undefined
-      if (content?.type === 'text' && typeof content.text === 'string') host.onUserMessage(content.text)
+      const content = Array.isArray(params.content) ? params.content : [params.content]
+      const text = content.filter((part): part is { type: 'text'; text: string } =>
+        typeof part === 'object' && part !== null && part.type === 'text' && typeof part.text === 'string',
+      ).map((part) => part.text).join('\n')
+      if (!text) return id === undefined ? [] : [fail(id, -32602, 'ui/message needs text content.')]
+      host.onUserMessage(text)
       return id === undefined ? [] : [respond(id, {})]
     }
     case 'ui/request-display-mode': {
@@ -175,6 +180,7 @@ export async function handleAppMessage(msg: unknown, host: AppBridgeHost): Promi
       return id === undefined ? [] : [respond(id, { mode: 'inline' })]
     }
     case 'ui/update-model-context':
+      return id === undefined ? [] : [fail(id, -32601, 'Model context updates are not supported by this host.')]
     case 'ping': {
       return id === undefined ? [] : [respond(id, {})]
     }

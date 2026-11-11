@@ -9,6 +9,7 @@ import {
 } from '../data/settings'
 import { isReasoningModel, reasoningLevelsFor } from '../data/providerProfiles'
 import { resolveEffortSlider } from './effortSlider'
+import { CHATGPT_USAGE_URL } from '../platform/chatgpt'
 import { useDismissOnOutside } from './hooks'
 
 /**
@@ -69,12 +70,15 @@ export default function ModelPicker({
         aria-expanded={open}
         onClick={() => setOpen((o) => !o)}
       >
-        <span className="model-select-label">{selected ? selected.modelId : 'Select model'}</span>
+        <span className="model-select-label">{selected ? selected.provider.modelNames?.[selected.modelId] || selected.modelId : 'Select model'}</span>
         <svg width="9" height="9" viewBox="0 0 10 10" fill="none" aria-hidden="true">
           <path d="M1 3.5l4 4 4-4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
         </svg>
       </button>
 
+      {selected?.provider.kind === 'chatgpt' && <div className="chatgpt-plan-badge">
+        <span>Using ChatGPT plan</span> · <a href={CHATGPT_USAGE_URL} target="_blank" rel="noreferrer">Manage usage</a>
+      </div>}
       {open && (
         <div className="model-menu" role="menu">
           <div className="model-menu-list">
@@ -94,7 +98,7 @@ export default function ModelPicker({
                         className={`model-menu-item ${active ? 'active' : ''}`}
                         onClick={() => selectModel(p.id, m)}
                       >
-                        <span className="model-menu-item-name">{m}</span>
+                        <span className="model-menu-item-name">{p.modelNames?.[m] || m}</span>
                         {active && (
                           <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true">
                             <path d="M2.5 6.5l2.5 2.5 4.5-5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />

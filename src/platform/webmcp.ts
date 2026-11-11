@@ -212,7 +212,7 @@ export async function inspectWebMcp(call?: {
           const a = resolveApi()
           const list = a?.getTools ? await a.getTools() : a?.listTools ? await a.listTools() : []
           const count = Array.isArray(list) ? list.filter(t => t && typeof t.name === 'string' && !t.annotations?.debugging).length : 0
-          const signature = `${location.href}:${count}`
+          const signature = `${location.href}:${JSON.stringify(Array.isArray(list) ? list.map(t => [t.name, t.description, t.inputSchema]) : [])}`
           if (signature !== previous) {
             await chrome.runtime.sendMessage({ type: 'webmcp.changed', count, url: location.href })
             previous = signature
@@ -221,9 +221,16 @@ export async function inspectWebMcp(call?: {
         finally { busy = false }
       }
       api?.addEventListener?.('toolchange', () => void report())
-      document.addEventListener('visibilitychange', () => void report())
-      setInterval(() => void report(), 4000)
+      // Native toolchange is authoritative. Older/late-registering APIs get a
+      // visible-page fallback; hidden pages have no timer at all.
+      let timer: ReturnType<typeof setTimeout> | undefined
+      const schedule = () => {
+        clearTimeout(timer)
+        if (!document.hidden && !api?.addEventListener) timer = setTimeout(() => { void report().finally(schedule) }, 15_000)
+      }
+      document.addEventListener('visibilitychange', () => { void report(); schedule() })
       void report()
+      schedule()
     }
     return { url: location.href, tools, revision: registry.revision, diagnostics, status: !api?.getTools && !api?.listTools ? 'unsupported' : tools.length ? 'ready' : 'empty' }
   } catch (error) {

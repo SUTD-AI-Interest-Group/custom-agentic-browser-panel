@@ -52,6 +52,7 @@ interface Pending {
  * /verify-extension. See officeEngine.test.ts.
  */
 export class OfficeEngine {
+  private idleTimer: ReturnType<typeof setTimeout> | undefined
   private worker: WorkerLike | null = null
   private ready: Promise<void> | null = null
   private pending = new Map<string, Pending>()
@@ -110,10 +111,12 @@ export class OfficeEngine {
       )
     } finally {
       releaseTurn()
+      this.idleTimer = setTimeout(() => this.destroy(), 30_000)
     }
   }
 
   private ensure(): Promise<void> {
+    clearTimeout(this.idleTimer)
     if (!this.ready) this.ready = this.boot()
     return this.ready
   }
@@ -186,6 +189,7 @@ export class OfficeEngine {
    * reaches the caller instead of being overwritten by this generic one.
    */
   private destroy(reason?: Error) {
+    clearTimeout(this.idleTimer)
     this.worker?.terminate()
     this.worker = null
     this.ready = null

@@ -1,12 +1,14 @@
-import { useRef, useState } from 'react'
+import { TabStrip } from '../TabStrip'
+import { lazy, Suspense, useEffect, useRef, useState } from 'react'
 import type { Settings } from '../../data/settings'
-import GeneralTab from './GeneralTab'
-import ProvidersTab from './ProvidersTab'
-import PermissionsTab from './PermissionsTab'
-import MemoryTab from './MemoryTab'
-import SkillsTab from './SkillsTab'
-import DataTab from './DataTab'
+import { mergeSettingsDraft } from '../settingsSync'
 import { normalizeSettings } from './normalizeSettings'
+const GeneralTab = lazy(() => import('./GeneralTab'))
+const ProvidersTab = lazy(() => import('./ProvidersTab'))
+const PermissionsTab = lazy(() => import('./PermissionsTab'))
+const MemoryTab = lazy(() => import('./MemoryTab'))
+const SkillsTab = lazy(() => import('./SkillsTab'))
+const DataTab = lazy(() => import('./DataTab'))
 
 type TabKey = 'general' | 'providers' | 'permissions' | 'memory' | 'skills' | 'data'
 
@@ -34,19 +36,24 @@ export default function SettingsView({
   onErased,
 }: {
   settings: Settings
-  onChange: (next: Settings) => void
+  onChange: (next: Settings) => Promise<boolean>
   onOpenSkills: () => void
   onClose: () => void
   /** Called after a full erase — App reloads settings, which re-enters onboarding. */
   onErased: () => void
 }) {
   const [tab, setTab] = useState<TabKey>('general')
-  const [draft, setDraft] = useState<Settings>(() => structuredClone(settings))
+  const [localDraft, setDraft] = useState<Settings>(() => structuredClone(settings))
+  const base = useRef(settings)
+  const draft = mergeSettingsDraft(base.current, localDraft, settings)
   // draftRef holds the latest draft synchronously so onBlur can commit without
   // waiting for a re-render.
   const draftRef = useRef(draft)
+  draftRef.current = draft
   const [saved, setSaved] = useState(false)
   const savedTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  useEffect(() => () => { if (savedTimer.current) clearTimeout(savedTimer.current) }, [])
 
   function flashSaved() {
     setSaved(true)
@@ -63,32 +70,27 @@ export default function SettingsView({
   /** Buffer + persist (normalized) + flash. For immediate controls. */
   function commit(next: Settings) {
     buffer(next)
-    onChange(normalizeSettings(next))
-    flashSaved()
+    persist(next)
   }
 
   /** Persist the currently-buffered draft. For text fields committing on blur. */
   function commitDraft() {
-    onChange(normalizeSettings(draftRef.current))
-    flashSaved()
+    persist(draftRef.current)
+  }
+
+  function persist(next: Settings) {
+    const normalized = normalizeSettings(mergeSettingsDraft(base.current, next, settings))
+    if (JSON.stringify(normalized) === JSON.stringify(settings)) return
+    base.current = normalized
+    buffer(normalized)
+    setSaved(false)
+    void onChange(normalized).then(ok => { if (ok) flashSaved() })
   }
 
   return (
     <div className="settings">
       <div className="settings-topbar">
-        <div className="settings-tabs" role="tablist">
-          {TABS.map((t) => (
-            <button
-              key={t.key}
-              role="tab"
-              aria-selected={tab === t.key}
-              className={`settings-tab ${tab === t.key ? 'active' : ''}`}
-              onClick={() => setTab(t.key)}
-            >
-              {t.label}
-            </button>
-          ))}
-        </div>
+        <TabStrip id="settings" label="Settings" tabs={TABS} value={tab} onChange={setTab} className="settings-tabs" tabClassName="settings-tab" />
         <div className="settings-topbar-right">
           <span className={`saved-pill ${saved ? 'show' : ''}`} aria-live="polite">
             Saved ✓
@@ -101,7 +103,8 @@ export default function SettingsView({
         </div>
       </div>
 
-      <div className="settings-body">
+      <div className="settings-body" id="settings-panel" role="tabpanel" aria-labelledby={`settings-${tab}`}>
+        <Suspense fallback={<div className="surface-loading" role="status">Loading…</div>}>
         {tab === 'general' && (
           <GeneralTab draft={draft} buffer={buffer} commit={commit} commitDraft={commitDraft} />
         )}
@@ -114,6 +117,7 @@ export default function SettingsView({
         {tab === 'memory' && <MemoryTab draft={draft} commit={commit} />}
         {tab === 'skills' && <SkillsTab onOpenSkills={onOpenSkills} onSaved={flashSaved} />}
         {tab === 'data' && <DataTab draft={draft} commit={commit} onErased={onErased} />}
+        </Suspense>
       </div>
     </div>
   )

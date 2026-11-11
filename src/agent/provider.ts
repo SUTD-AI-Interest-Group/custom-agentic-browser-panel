@@ -1,4 +1,5 @@
 import { createOpenAICompatible } from '@ai-sdk/openai-compatible'
+import { chatGPTFetch } from '../platform/chatgpt'
 import { createOpenAI } from '@ai-sdk/openai'
 import { createAnthropic } from '@ai-sdk/anthropic'
 import {
@@ -198,6 +199,17 @@ export function createModel(config: ProviderConfig, modelId: string): LanguageMo
   const reasoning = isReasoningModel(config, modelId)
   const apiKey = config.apiKey || undefined
 
+  if (providerKind(config) === 'chatgpt') {
+    const model = createOpenAI({
+      baseURL: 'https://api.openai.com/v1',
+      apiKey: 'native-companion', // SDK placeholder; the companion supplies real auth.
+      fetch: chatGPTFetch(config.id),
+    }).responses(modelId)
+    return withReasoningOptions(model, 'openai', {
+      ...(reasoning ? profile.reasoningOptions!(effort) : {}), store: false,
+    })
+  }
+
   if (profile.adapter === 'openai') {
     const model = createOpenAI({ baseURL: config.baseURL, apiKey }).responses(modelId)
     return withReasoningOptions(model, 'openai', reasoning ? profile.reasoningOptions!(effort) : {})
@@ -318,13 +330,13 @@ export async function generateChatTitle(
 }
 
 /** Fires one tiny completion at the endpoint to prove the config works. */
-export async function testModel(config: ProviderConfig, modelId: string): Promise<TestResult> {
+export async function testModel(config: ProviderConfig, modelId: string, signal?: AbortSignal): Promise<TestResult> {
   const started = Date.now()
   try {
     const { text } = await generateText({
       model: createModel(config, modelId),
       prompt: 'Reply with the single word: ready',
-      abortSignal: AbortSignal.timeout(20_000),
+      abortSignal: signal ? AbortSignal.any([signal, AbortSignal.timeout(20_000)]) : AbortSignal.timeout(20_000),
     })
     return { ok: true, message: text.trim().slice(0, 100), latencyMs: Date.now() - started }
   } catch (err) {

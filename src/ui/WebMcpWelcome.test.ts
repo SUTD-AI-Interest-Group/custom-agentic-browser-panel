@@ -13,6 +13,7 @@ const selected = { provider: { id: 'test', name: 'Test', baseURL: 'http://localh
 const action = { name: 'find_items', description: 'Find products', inputSchema: {} }
 beforeEach(() => {
   vi.useFakeTimers()
+  vi.stubGlobal('chrome', { runtime: { onMessage: { addListener: vi.fn(), removeListener: vi.fn() } } })
   vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true)
   host = document.createElement('div'); document.body.append(host); root = createRoot(host)
   vi.mocked(discoverWebMcp).mockResolvedValue({ url: 'https://example.com/', tools: [action] })
@@ -22,26 +23,29 @@ afterEach(async () => { await act(async () => root.unmount()); host.remove(); vi
 async function render(onChoose = vi.fn(), url = 'https://example.com/') {
   await act(async () => root.render(createElement(WebMcpWelcome, { tabId: 2, url, selected, onChoose, children: 'How can I help?' })))
 }
-it('replaces helper text with actions and generated examples; click only prefills the composer', async () => {
+it('shows actions without model calls; suggestions are explicitly requested and only prefill the composer', async () => {
   const choose = vi.fn()
   await render(choose)
   expect(host.textContent).toContain('Find products')
   expect(host.textContent).not.toContain('How can I help?')
+  expect(generateWebMcpSuggestions).not.toHaveBeenCalled()
+  await act(async () => host.querySelector<HTMLButtonElement>('.webmcp-examples button')!.click())
   await act(async () => { await vi.advanceTimersByTimeAsync(601) })
   expect(host.textContent).toContain('Find some tea')
-  await act(async () => host.querySelector<HTMLButtonElement>('.webmcp-examples button')!.click())
+  await act(async () => Array.from(host.querySelectorAll<HTMLButtonElement>('.webmcp-examples button')).find(button => button.textContent?.includes('Find some tea'))!.click())
   expect(choose).toHaveBeenCalledWith(expect.stringContaining('Find some tea'))
 })
 it('returns to the helper text when tools are unregistered', async () => {
   await render()
   vi.mocked(discoverWebMcp).mockResolvedValue({ url: 'https://example.com/', tools: [] })
-  await act(async () => { await vi.advanceTimersByTimeAsync(4001) })
+  await act(async () => { window.dispatchEvent(new Event('focus')) })
   expect(host.textContent).toBe('How can I help?')
 })
 it('ignores late suggestions after navigating and aborts the old request', async () => {
   let complete!: (value: any) => void
   vi.mocked(generateWebMcpSuggestions).mockImplementation(() => new Promise(resolve => { complete = resolve }))
   await render()
+  await act(async () => host.querySelector<HTMLButtonElement>('.webmcp-examples button')!.click())
   await act(async () => { await vi.advanceTimersByTimeAsync(601) })
   const signal = vi.mocked(generateWebMcpSuggestions).mock.calls[0][2]
   vi.mocked(discoverWebMcp).mockResolvedValue({ url: 'https://other.example/', tools: [] })
@@ -49,4 +53,14 @@ it('ignores late suggestions after navigating and aborts the old request', async
   expect(signal.aborted).toBe(true)
   await act(async () => complete([{ prompt: 'Stale idea', toolNames: ['find_items'] }]))
   expect(host.textContent).not.toContain('Stale idea')
+})
+it('does not generate again when the page changes its available actions', async () => {
+  await render()
+  await act(async () => host.querySelector<HTMLButtonElement>('.webmcp-examples button')!.click())
+  expect(generateWebMcpSuggestions).toHaveBeenCalledTimes(1)
+  vi.mocked(discoverWebMcp).mockResolvedValue({ url: 'https://example.com/', tools: [{ ...action, description: 'Updated action' }] })
+  await act(async () => { window.dispatchEvent(new Event('focus')) })
+  expect(host.textContent).toContain('Updated action')
+  expect(host.textContent).not.toContain('Find some tea')
+  expect(generateWebMcpSuggestions).toHaveBeenCalledTimes(1)
 })

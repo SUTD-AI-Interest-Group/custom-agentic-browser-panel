@@ -20,7 +20,10 @@ export function parseHash(hash: string): Route {
   if (path === 'log') return { name: 'log' }
   if (path === 'privacy') return { name: 'privacy' }
   const post = path.match(/^log\/(.+)$/)
-  if (post) return { name: 'post', slug: decodeURIComponent(post[1]) }
+  if (post) {
+    try { return { name: 'post', slug: decodeURIComponent(post[1]) } }
+    catch { return { name: 'log' } }
+  }
   return { name: 'home' }
 }
 
@@ -28,14 +31,21 @@ export function useRoute(): Route {
   const [route, setRoute] = useState<Route>(() => parseHash(window.location.hash))
 
   useEffect(() => {
+    let frame = 0
     const onChange = () => {
       setRoute(parseHash(window.location.hash))
-      // A hash change is a navigation, not an anchor jump — start at the top,
-      // unless the user asked for reduced motion mid-flight.
-      window.scrollTo({ top: 0, behavior: 'instant' as ScrollBehavior })
+      cancelAnimationFrame(frame)
+      // Wait for the destination to mount before resolving its section anchor.
+      frame = requestAnimationFrame(() => {
+        const anchor = window.location.hash.match(/^#\/#([\w-]+)$/)?.[1]
+        const section = anchor ? document.getElementById(anchor) : null
+        if (section) section.scrollIntoView({ behavior: 'instant' as ScrollBehavior })
+        else window.scrollTo({ top: 0, behavior: 'instant' as ScrollBehavior })
+      })
     }
+    onChange()
     window.addEventListener('hashchange', onChange)
-    return () => window.removeEventListener('hashchange', onChange)
+    return () => { cancelAnimationFrame(frame); window.removeEventListener('hashchange', onChange) }
   }, [])
 
   return route

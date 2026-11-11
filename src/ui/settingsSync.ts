@@ -19,3 +19,30 @@ export function shouldAdoptExternalSettings(currentJson: string | null, incoming
   if (currentJson === null) return true
   return incomingJson !== currentJson
 }
+
+/** Keep external edits to untouched fields while preserving a local text draft.
+ * Provider rows merge by id so editing one does not overwrite another. */
+export function mergeSettingsDraft<T>(base: T, draft: T, current: T): T {
+  if (JSON.stringify(base) === JSON.stringify(draft)) return current
+  if (Array.isArray(base) && Array.isArray(draft) && Array.isArray(current) &&
+      [...base, ...draft, ...current].every(row => row && typeof row.id === 'string')) {
+    const before = new Map(base.map(row => [row.id, row]))
+    const edited = new Map(draft.map(row => [row.id, row]))
+    const merged = current.filter(row => !before.has(row.id) || edited.has(row.id)).map(row =>
+      edited.has(row.id) ? mergeSettingsDraft(before.get(row.id), edited.get(row.id), row) : row)
+    for (const row of draft) if (!before.has(row.id) && !current.some(item => item.id === row.id)) merged.push(row)
+    return merged as T
+  }
+  if (base && draft && current && typeof base === 'object' && typeof draft === 'object' && typeof current === 'object' &&
+      !Array.isArray(base) && !Array.isArray(draft) && !Array.isArray(current)) {
+    const result = { ...current } as Record<string, unknown>
+    const old = base as Record<string, unknown>, next = draft as Record<string, unknown>
+    for (const key of new Set([...Object.keys(old), ...Object.keys(next)])) {
+      if (JSON.stringify(old[key]) === JSON.stringify(next[key])) continue
+      if (!(key in next)) delete result[key]
+      else result[key] = mergeSettingsDraft(old[key], next[key], result[key])
+    }
+    return result as T
+  }
+  return draft
+}

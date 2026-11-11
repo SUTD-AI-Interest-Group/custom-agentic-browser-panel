@@ -17,7 +17,6 @@ import SceneMock, { type SceneVariant } from './SceneMock'
 
 export interface Feature {
   key: string
-  eyebrow: string
   title: string
   body: string
   /** Which live product mock this step shows. */
@@ -28,36 +27,31 @@ export const FEATURES: Feature[] = [
   {
     key: 'read',
     scene: 'read',
-    eyebrow: 'READ & ASK',
-    title: 'Ask the page you’re on.',
+    title: 'Page reading',
     body: 'Point Lychee at an article, a pricing table, a dashboard — or a PDF — and ask. It reads the page you are on, and other open tabs when you ask it to compare.',
   },
   {
     key: 'control',
     scene: 'control',
-    eyebrow: 'BROWSER USE',
-    title: 'Let it drive, when you say so.',
+    title: 'Browser control',
     body: 'It clicks, types, scrolls and fills forms while you watch — a visible cursor and a spotlight show every step. Anything irreversible stops and asks again.',
   },
   {
     key: 'skills',
     scene: 'skills',
-    eyebrow: 'SKILLS & MCP',
-    title: 'Teach it your own moves.',
+    title: 'Skills and integrations',
     body: 'Write reusable skills you invoke by name for the work you repeat, and connect Model Context Protocol servers to give it your own tools — each one behind its own permission.',
   },
   {
     key: 'memory',
     scene: 'memory',
-    eyebrow: 'MEMORY & DREAMING',
-    title: 'It remembers what mattered.',
+    title: 'Memory',
     body: 'Conversations distil into durable memories while you are away, so the context you built yesterday is still there today. You can read, edit or wipe all of it.',
   },
   {
     key: 'local',
     scene: 'local',
-    eyebrow: 'LOCAL FIRST',
-    title: 'Run it entirely on your machine.',
+    title: 'Local models',
     body: 'Bring a hosted provider with your own key, or point Lychee at Ollama or LM Studio on localhost and let nothing leave your computer at all.',
   },
 ]
@@ -99,7 +93,6 @@ export default function Features() {
 
             {FEATURES.map((f, i) => (
               <div key={f.key} className={`features__text${i === active ? ' is-active' : ''}`} aria-hidden={i !== active}>
-                <p className="eyebrow eyebrow--ink">{f.eyebrow}</p>
                 <h2>{f.title}</h2>
                 <p className="features__body">{f.body}</p>
               </div>
