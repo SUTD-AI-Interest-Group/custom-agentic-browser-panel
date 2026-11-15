@@ -22,7 +22,26 @@ export interface ActionResult {
 }
 
 function injClick(attr: string, index: number) {
-  const el = document.querySelector(`[${attr}="${index}"]`) as HTMLElement | null
+  // Kept inside each injected function: executeScript serializes no imports.
+  // Query the light DOM first; walk open roots only on a miss. No DOM cache can
+  // outlive a page mutation or navigation, and closed roots remain inaccessible.
+  const find = (): Element | null => {
+    const selector = `[${attr}="${index}"]`
+    const roots: (Document | ShadowRoot)[] = [document]
+    while (roots.length) {
+      const root = roots.pop()!
+      const match = root.querySelector(selector)
+      if (match) return match
+      const walker = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT)
+      let node: Node | null
+      while ((node = walker.nextNode())) {
+        const shadow = (node as Element).shadowRoot
+        if (shadow) roots.push(shadow)
+      }
+    }
+    return null
+  }
+  const el = find() as HTMLElement | null
   if (!el) return { ok: false, message: `element ${index} is no longer on the page` }
   el.scrollIntoView({ block: 'center', behavior: 'instant' as ScrollBehavior })
   el.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))
@@ -32,7 +51,26 @@ function injClick(attr: string, index: number) {
 }
 
 function injType(attr: string, index: number, text: string, clear: boolean) {
-  const el = document.querySelector(`[${attr}="${index}"]`) as HTMLElement | null
+  // Kept inside each injected function: executeScript serializes no imports.
+  // Query the light DOM first; walk open roots only on a miss. No DOM cache can
+  // outlive a page mutation or navigation, and closed roots remain inaccessible.
+  const find = (): Element | null => {
+    const selector = `[${attr}="${index}"]`
+    const roots: (Document | ShadowRoot)[] = [document]
+    while (roots.length) {
+      const root = roots.pop()!
+      const match = root.querySelector(selector)
+      if (match) return match
+      const walker = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT)
+      let node: Node | null
+      while ((node = walker.nextNode())) {
+        const shadow = (node as Element).shadowRoot
+        if (shadow) roots.push(shadow)
+      }
+    }
+    return null
+  }
+  const el = find() as HTMLElement | null
   if (!el) return { ok: false, message: `element ${index} is no longer on the page` }
   const isContentEditable = (el as HTMLElement).isContentEditable
   // WebIDL accessor branding: the native `value` setter obtained from
@@ -54,7 +92,7 @@ function injType(attr: string, index: number, text: string, clear: boolean) {
     // in a fresh isolated-world context with no shared state.
     const prior = el.textContent ?? ''
     el.textContent = clear ? text : (el.textContent ?? '') + text
-    el.dispatchEvent(new InputEvent('input', { bubbles: true }))
+    el.dispatchEvent(new InputEvent('input', { bubbles: true, composed: true }))
     return { ok: true, message: `typed into element ${index}`, prior }
   }
   const input = el as HTMLInputElement
@@ -67,13 +105,32 @@ function injType(attr: string, index: number, text: string, clear: boolean) {
   const next = clear ? text : (input.value ?? '') + text
   if (setter) setter.call(input, next)
   else input.value = next
-  input.dispatchEvent(new Event('input', { bubbles: true }))
+  input.dispatchEvent(new Event('input', { bubbles: true, composed: true }))
   input.dispatchEvent(new Event('change', { bubbles: true }))
   return { ok: true, message: `typed into element ${index}`, prior }
 }
 
 function injSelect(attr: string, index: number, value: string) {
-  const el = document.querySelector(`[${attr}="${index}"]`) as HTMLSelectElement | null
+  // Kept inside each injected function: executeScript serializes no imports.
+  // Query the light DOM first; walk open roots only on a miss. No DOM cache can
+  // outlive a page mutation or navigation, and closed roots remain inaccessible.
+  const find = (): Element | null => {
+    const selector = `[${attr}="${index}"]`
+    const roots: (Document | ShadowRoot)[] = [document]
+    while (roots.length) {
+      const root = roots.pop()!
+      const match = root.querySelector(selector)
+      if (match) return match
+      const walker = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT)
+      let node: Node | null
+      while ((node = walker.nextNode())) {
+        const shadow = (node as Element).shadowRoot
+        if (shadow) roots.push(shadow)
+      }
+    }
+    return null
+  }
+  const el = find() as HTMLSelectElement | null
   if (!el) return { ok: false, message: `element ${index} is no longer on the page` }
   // el.options is undefined on anything that isn't a real <select> (both are
   // addressed the same way via [index]); Array.from(undefined) throws, so
@@ -94,7 +151,26 @@ function injSelect(attr: string, index: number, value: string) {
 
 function injScroll(attr: string, direction: string, index: number) {
   if (direction === 'toElement') {
-    const el = document.querySelector(`[${attr}="${index}"]`)
+    // Kept inside each injected function: executeScript serializes no imports.
+    // Query the light DOM first; walk open roots only on a miss. No DOM cache can
+    // outlive a page mutation or navigation, and closed roots remain inaccessible.
+    const find = (): Element | null => {
+      const selector = `[${attr}="${index}"]`
+      const roots: (Document | ShadowRoot)[] = [document]
+      while (roots.length) {
+        const root = roots.pop()!
+        const match = root.querySelector(selector)
+        if (match) return match
+        const walker = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT)
+        let node: Node | null
+        while ((node = walker.nextNode())) {
+          const shadow = (node as Element).shadowRoot
+          if (shadow) roots.push(shadow)
+        }
+      }
+      return null
+    }
+    const el = find()
     if (!el) return { ok: false, message: `element ${index} is no longer on the page` }
     el.scrollIntoView({ block: 'center', behavior: 'smooth' })
     return { ok: true, message: `scrolled to element ${index}` }
@@ -104,13 +180,14 @@ function injScroll(attr: string, direction: string, index: number) {
 }
 
 function injPress(keys: string) {
-  const el = (document.activeElement as HTMLElement) ?? document.body
+  let el = (document.activeElement as HTMLElement) ?? document.body
+  while (el.shadowRoot?.activeElement) el = el.shadowRoot.activeElement as HTMLElement
   // Track defaultPrevented per-dispatch: a page's own keydown handler (e.g. an
   // SPA that calls preventDefault on Enter to run its own submit logic) should
   // be left alone below, same as a real keypress would.
   let defaultPrevented = false
   const fire = (type: string) => {
-    const evt = new KeyboardEvent(type, { key: keys, bubbles: true, cancelable: true })
+    const evt = new KeyboardEvent(type, { key: keys, bubbles: true, cancelable: true, composed: true })
     el.dispatchEvent(evt)
     if (evt.defaultPrevented) defaultPrevented = true
   }

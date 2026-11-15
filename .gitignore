@@ -27,3 +27,6 @@ dist/
 
 # Local browser regression evidence
 test-results/
+
+# Optional checksum-verified local Mirage assets (see docs/mirage.md).
+public/mirage/

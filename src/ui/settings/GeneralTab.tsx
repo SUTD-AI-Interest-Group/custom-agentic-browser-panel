@@ -71,6 +71,22 @@ export default function GeneralTab({
         </div>
       </Section>
 
+      <Section title="Local visual perception (experimental)">
+        <label>
+          Mirage
+          <select aria-label="Mirage local visual perception" value={draft.mirageMode ?? 'off'}
+            onChange={(e) => commit({ ...draft, mirageMode: e.target.value as Settings['mirageMode'] })}>
+            <option value="off">Off</option>
+            <option value="shadow">Evaluate locally only</option>
+            <option value="assist">Share observations with the planner</option>
+          </select>
+        </label>
+        <p>Processes screenshots only after capture permission. Requires a build with Mirage assets.
+          Local evaluation keeps recognized text on this device. Sharing observations sends recognized text
+          and object labels to your selected model provider. Existing screenshot delivery is unchanged.</p>
+        <p>Experimental OCR may miss or misread controls. It never grants permissions or confirms that an action succeeded.</p>
+      </Section>
+
       <ShortcutSection />
 
       <Section title="Privacy">
