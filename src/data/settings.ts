@@ -213,6 +213,10 @@ export interface ObservabilityConfig {
 }
 
 export interface Settings {
+  /** Local screenshot perception; absent means off. Assist sends observations to the selected provider. */
+  mirageMode?: 'off' | 'shadow' | 'assist'
+  /** Image-only decision experiment; never classifies chat or authorizes actions. */
+  mirageDecisionMode?: 'off' | 'shadow' | 'assist'
   providers: ProviderConfig[]
   selected: SelectedModel | null
   /**

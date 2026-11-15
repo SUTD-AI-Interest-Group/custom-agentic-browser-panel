@@ -886,3 +886,60 @@ describe('domIndex — bounded walk does not materialize the whole document (fol
     spy.mockRestore()
   })
 })
+
+describe('domIndex — stale shadow stamps', () => {
+  function fixture() {
+    const host = document.body.appendChild(document.createElement('div'))
+    const outer = host.attachShadow({ mode: 'open' })
+    const nestedHost = outer.appendChild(document.createElement('div'))
+    const inner = nestedHost.attachShadow({ mode: 'open' })
+    inner.innerHTML = '<button>Old action</button><button>New action</button>'
+    return { outer, inner, buttons: [...inner.querySelectorAll('button')] }
+  }
+
+  it('removes a hidden old index before reusing it for another nested shadow control', () => {
+    const { buttons: [oldButton, newButton] } = fixture()
+    const build = extractInjected('buildInteractiveIndex')
+    stubLayoutFor(oldButton)
+    const first = build('data-agent-idx', 100)
+    expect(first.elements).toHaveLength(1)
+    expect(oldButton.getAttribute('data-agent-idx')).toBe('0')
+    // The previous target becomes invisible while another control is shown.
+    stubLayoutFor(newButton)
+    const second = build('data-agent-idx', 100)
+    expect(second.elements).toHaveLength(1)
+    expect(newButton.getAttribute('data-agent-idx')).toBe('0')
+    expect(oldButton.hasAttribute('data-agent-idx')).toBe(false)
+  })
+
+  it('cleans shadow controls beyond a newly reduced indexing cap', () => {
+    const { buttons } = fixture()
+    const build = extractInjected('buildInteractiveIndex')
+    for (const [i, button] of buttons.entries()) {
+      button.getBoundingClientRect = () => ({ x: 0, y: i * 50, top: i * 50, left: 0,
+        right: 100, bottom: i * 50 + 40, width: 100, height: 40, toJSON() {} }) as DOMRect
+    }
+    document.elementFromPoint = (_x, y) => buttons[Math.floor(y / 50)]
+    build('data-agent-idx', 100)
+    expect(buttons.map(b => b.getAttribute('data-agent-idx'))).toEqual(['0', '1'])
+    const second = build('data-agent-idx', 1)
+    expect(second.elements).toHaveLength(1)
+    expect(buttons[0].getAttribute('data-agent-idx')).toBe('0')
+    expect(buttons[1].hasAttribute('data-agent-idx')).toBe(false)
+  })
+
+  it('explicit cleanup strips light and nested open-root stamps without touching other attributes', () => {
+    const { outer, buttons } = fixture()
+    const light = document.body.appendChild(document.createElement('button'))
+    const parent = outer.appendChild(document.createElement('button'))
+    for (const element of [light, parent, ...buttons]) {
+      element.setAttribute('data-agent-idx', '7')
+      element.setAttribute('data-kept', 'yes')
+    }
+    extractInjected('clearAgentIndex')('data-agent-idx')
+    for (const element of [light, parent, ...buttons]) {
+      expect(element.hasAttribute('data-agent-idx')).toBe(false)
+      expect(element.getAttribute('data-kept')).toBe('yes')
+    }
+  })
+})

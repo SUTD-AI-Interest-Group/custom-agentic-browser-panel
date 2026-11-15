@@ -33,6 +33,7 @@ export default defineConfig({
         // unhashed filename exactly like background.js and offscreen.js — which
         // is what entryFileNames below already guarantees.
         pdfWorker: 'src/platform/pdfWorker.ts',
+        mirageWorker: 'src/platform/mirageWorker.ts',
         // The officeParser host (C1/H1 fix — see officeEngine.ts). Same plain-
         // entry reasoning as pdfWorker above: officeEngine.ts spawns it by
         // extension URL (chrome.runtime.getURL('officeWorker.js')), so it

@@ -139,3 +139,81 @@ describe('injSelect — clean failure on the wrong control type (F7)', () => {
     expect((document.querySelector('select') as HTMLSelectElement).value).toBe('b')
   })
 })
+
+describe('open shadow root actions', () => {
+  afterEach(() => { document.body.innerHTML = '' })
+  function nested(html: string) {
+    const host = document.body.appendChild(document.createElement('div'))
+    const first = host.attachShadow({ mode: 'open' })
+    const inner = first.appendChild(document.createElement('div'))
+    const root = inner.attachShadow({ mode: 'open' })
+    root.innerHTML = html
+    return { host, root }
+  }
+
+  it('clicks a nested shadow button exactly once and scrolls it into view', () => {
+    const { root } = nested('<button data-agent-idx="7">Save</button>')
+    const button = root.querySelector('button')!
+    let clicks = 0
+    let scrolls = 0
+    button.addEventListener('click', () => clicks++)
+    button.scrollIntoView = () => { scrolls++ }
+    expect(extractInjected('injClick')('data-agent-idx', 7).ok).toBe(true)
+    expect(clicks).toBe(1)
+    expect(scrolls).toBe(1)
+    expect(extractInjected('injScroll')('data-agent-idx', 'toElement', 7).ok).toBe(true)
+    expect(scrolls).toBe(2)
+  })
+
+  it('types, appends and restores a field with native setters and composed input events', () => {
+    const { root, host } = nested('<input data-agent-idx="8" value="old">')
+    const input = root.querySelector('input')!
+    let events = 0
+    host.addEventListener('input', () => events++)
+    const type = extractInjected('injType')
+    expect(type('data-agent-idx', 8, 'new', true).prior).toBe('old')
+    expect(input.value).toBe('new')
+    expect(type('data-agent-idx', 8, '!', false).prior).toBe('new')
+    expect(input.value).toBe('new!')
+    type('data-agent-idx', 8, 'old', true)
+    expect(input.value).toBe('old')
+    expect(events).toBe(3)
+  })
+
+  it('selects a nested option and preserves the previous value for undo', () => {
+    const { root } = nested('<select data-agent-idx="9"><option value="a">A</option><option value="b">B</option></select>')
+    const select = root.querySelector('select')!
+    let changes = 0
+    select.addEventListener('change', () => changes++)
+    expect(extractInjected('injSelect')('data-agent-idx', 9, 'B')).toMatchObject({ ok: true, prior: 'a' })
+    expect(select.value).toBe('b')
+    expect(changes).toBe(1)
+  })
+
+  it('does not resolve detached or closed shadow controls', () => {
+    const { host } = nested('<button data-agent-idx="7">Save</button>')
+    host.remove()
+    const closed = document.body.appendChild(document.createElement('div')).attachShadow({ mode: 'closed' })
+    closed.innerHTML = '<button data-agent-idx="7">Save</button>'
+    for (const [name, args] of [
+      ['injClick', ['data-agent-idx', 7]],
+      ['injType', ['data-agent-idx', 7, 'x', true]],
+      ['injSelect', ['data-agent-idx', 7, 'x']],
+      ['injScroll', ['data-agent-idx', 'toElement', 7]],
+    ] as const) expect(extractInjected(name)(...args).ok).toBe(false)
+  })
+
+  it('sends keys to the deepest focused field and respects prevented submission', () => {
+    const { root, host } = nested('<form><input data-agent-idx="8"></form>')
+    const input = root.querySelector('input')!
+    input.focus()
+    let keys = 0
+    let hostKeys = 0
+    input.addEventListener('keydown', event => { keys++; event.preventDefault() })
+    host.addEventListener('keydown', () => hostKeys++)
+    const result = extractInjected('injPress')('Enter')
+    expect(result.message).toBe('pressed Enter')
+    expect(keys).toBe(1)
+    expect(hostKeys).toBe(1)
+  })
+})

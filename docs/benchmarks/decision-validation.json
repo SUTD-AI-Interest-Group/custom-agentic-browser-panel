@@ -1,0 +1,46 @@
+{
+  "baselineCommit": "807eea6f011bd2f3198a85b34b66b19c6c6b9a46",
+  "baseline": {
+    "tests": 2277,
+    "passed": 2264,
+    "failed": 13,
+    "files": 185
+  },
+  "after": {
+    "tests": 2323,
+    "passed": 2310,
+    "failed": 13,
+    "files": 186
+  },
+  "additionalPassingTests": 46,
+  "sameFailureNames": true,
+  "failures": [
+    "src/agent/agent.test.ts > active tool order is a strict append as activeNames grows > never reorders an already-active tool when a later GetTool call loads another one",
+    "src/agent/agent.test.ts > agent steering: steerPending halts the loop at the next step boundary > runs normally (to the ceiling) when no steer is pending",
+    "src/agent/agent.test.ts > agent steering: steerPending halts the loop at the next step boundary > runs normally when nothing has parked",
+    "src/agent/agent.test.ts > agent steering: steerPending halts the loop at the next step boundary > stops after the current step when a steer is pending, well short of the ceiling",
+    "src/agent/agent.test.ts > agent-state block injection > re-reads the facts every step instead of freezing the first snapshot",
+    "src/agent/agent.test.ts > imageQueue: prepareStep drains queued images into captioned synthetic user messages > injects each queued image as its own message paired with its own caption ahead of the next step, and never resends it",
+    "src/agent/agent.test.ts > runAgentTurn: repairToolCall repairs a validation error (malformed tool-call arguments) > silently reissues the same tool with corrected arguments via a generateText fallback, and execute() runs on the repaired input",
+    "src/agent/agent.test.ts > runAgentTurn: unloaded-tool calls are repaired into GetTool > loads a real but unloaded gated tool instead of dead-ending, so its approval card can appear",
+    "src/agent/agent.test.ts > step-budget stop reason > reports 'budget' when the model is cut off at the ceiling mid-tool-call",
+    "src/agent/browseAgent.test.ts > runBrowseSession > passes a policy refusal back to the model as a normal result, with a fresh view",
+    "src/agent/browseAgent.test.ts > runBrowseSession > stops at the step budget instead of clicking forever",
+    "src/agent/browseAgent.test.ts > runBrowseSession > walks the page, records findings in the shared notebook, and reports back",
+    "src/agent/traceSink.test.ts > local trace sink > emits one step per model step, indexed in order"
+  ],
+  "build": "npm run build passed (TypeScript + both Vite builds)",
+  "commands": [
+    "npm install --ignore-scripts --package-lock=false --no-audit --no-fund",
+    "npm test -- --maxWorkers=2",
+    "npm run build",
+    "npm run prepare:mirage",
+    "npm run benchmark:mirage:decisions"
+  ],
+  "browserCheck": {
+    "command": "node scripts/benchmark-shadow.mjs",
+    "status": "failed before page creation",
+    "reason": "process_singleton_posix.cc:297: socket() failed: Operation not permitted"
+  },
+  "scope": "Real Node WASM inference plus production-policy serialization replay and mocked worker/gate tests; no real Chrome execution, planner task outcomes or semantic chat compaction."
+}

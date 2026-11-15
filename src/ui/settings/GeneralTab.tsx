@@ -71,6 +71,34 @@ export default function GeneralTab({
         </div>
       </Section>
 
+      <Section title="Local visual perception (experimental)">
+        <label>
+          Mirage
+          <select aria-label="Mirage local visual perception" value={draft.mirageMode ?? 'off'}
+            onChange={(e) => commit({ ...draft, mirageMode: e.target.value as Settings['mirageMode'] })}>
+            <option value="off">Off</option>
+            <option value="shadow">Evaluate locally only</option>
+            <option value="assist">Share observations with the planner</option>
+          </select>
+        </label>
+        <p>Processes screenshots only after capture permission. Requires a build with Mirage assets.
+          Local evaluation keeps recognized text on this device. Sharing observations sends recognized text
+          and object labels to your selected model provider. Existing screenshot delivery is unchanged.</p>
+        <label>
+          Visual decision experiment
+          <select aria-label="Mirage visual decision experiment" value={draft.mirageDecisionMode ?? 'off'}
+            onChange={(e) => commit({ ...draft, mirageDecisionMode: e.target.value as Settings['mirageDecisionMode'] })}>
+            <option value="off">Off</option>
+            <option value="shadow">Evaluate locally only</option>
+            <option value="assist">Suggest read tools and compact visual records</option>
+          </select>
+        </label>
+        <p>Requires local visual perception above. Classifies the approved image in a second inference pass.
+          Suggestions and reversible visual-record compaction apply only when both settings allow planner assistance.
+          This does not classify chat intent, summarize conversations, or execute tools.</p>
+        <p>Experimental OCR may miss or misread controls. It never grants permissions or confirms that an action succeeded.</p>
+      </Section>
+
       <ShortcutSection />
 
       <Section title="Privacy">

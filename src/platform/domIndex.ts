@@ -281,7 +281,20 @@ function buildInteractiveIndex(attr: string, maxElements: number) {
   }
 
   // Clear any stamps from a previous snapshot before re-indexing.
-  document.querySelectorAll(`[${attr}]`).forEach((n) => n.removeAttribute(attr))
+  // Complete cleanup must ignore visibility and the new snapshot's cap: an
+  // excluded shadow control must never retain an index reassigned elsewhere.
+  // Keep this walk self-contained in both injections (no shared closures).
+  const stampRoots: (Document | ShadowRoot)[] = [document]
+  while (stampRoots.length) {
+    const root = stampRoots.pop()!
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT)
+    let node: Node | null
+    while ((node = walker.nextNode())) {
+      const el = node as Element
+      if (el.hasAttribute(attr)) el.removeAttribute(attr)
+      if (el.shadowRoot) stampRoots.push(el.shadowRoot)
+    }
+  }
 
   // Perf: labelAssociationTextOf (below) used to re-run
   // `root.querySelectorAll('label')` from scratch for EVERY indexed element
@@ -528,7 +541,20 @@ function buildInteractiveIndex(attr: string, maxElements: number) {
 
 // Runs inside the page: strip all stamps.
 function clearAgentIndex(attr: string) {
-  document.querySelectorAll(`[${attr}]`).forEach((n) => n.removeAttribute(attr))
+  // Complete cleanup must ignore visibility and the new snapshot's cap: an
+  // excluded shadow control must never retain an index reassigned elsewhere.
+  // Keep this walk self-contained in both injections (no shared closures).
+  const stampRoots: (Document | ShadowRoot)[] = [document]
+  while (stampRoots.length) {
+    const root = stampRoots.pop()!
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT)
+    let node: Node | null
+    while ((node = walker.nextNode())) {
+      const el = node as Element
+      if (el.hasAttribute(attr)) el.removeAttribute(attr)
+      if (el.shadowRoot) stampRoots.push(el.shadowRoot)
+    }
+  }
 }
 
 /** Serialize the registry to the compact text the model reads. */

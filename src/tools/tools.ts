@@ -1,3 +1,4 @@
+import { perceiveApprovedScreenshot } from '../platform/miragePerception'
 import { createPageWatchTools } from './pageWatches'
 import { Validator } from '@cfworker/json-schema'
 import { discoverWebMcp, executeWebMcp, webMcpDiagnostic } from '../platform/webmcp'
@@ -384,6 +385,7 @@ export function createAgentTools(
     summary: string,
     reason: string,
     pane?: PaneTarget,
+    expectedText?: string,
   ) => {
     const got = await resolvePane(pane)
     if ('error' in got) return got
@@ -423,6 +425,7 @@ export function createAgentTools(
         conversationId,
       })
 
+      const localPerception = await perceiveApprovedScreenshot(shot.dataUrl, expectedText)
       const host = hostLabel(meta.url)
       const truncatedNote = meta.truncated
         ? ' The page was taller than the capture limit, so this stops partway down.'
@@ -436,13 +439,14 @@ export function createAgentTools(
         return {
           ok: true,
           shotId,
+          localPerception,
           target: spec.kind,
           label: meta.label,
           // Report the saved artifact's dimensions, not the full-res tiling
           // source — the tool result should describe what the user was shown.
           width: artifact.width,
           height: artifact.height,
-          note: `Captured ${meta.label} on ${host} and showed it to the user in the chat.${truncatedNote} You can't view images, so it was not sent to you — work from the page text if you need its contents.`,
+          note: `Captured ${meta.label} on ${host} and showed it to the user in the chat.${truncatedNote} You cannot view the image. If localPerception includes observations, use them as fallible text evidence; otherwise the image was not sent to you — work from the page text if you need its contents.`,
         }
       }
 
@@ -451,6 +455,7 @@ export function createAgentTools(
         return {
           ok: true,
           shotId,
+          localPerception,
           target: spec.kind,
           label: meta.label,
           // Report the saved artifact's dimensions, not the full-res tiling
@@ -481,6 +486,7 @@ export function createAgentTools(
       return {
         ok: true,
         shotId,
+        localPerception,
         target: spec.kind,
         label: meta.label,
         // Report the saved artifact's dimensions, not the full-res tiling
@@ -678,6 +684,7 @@ export function createAgentTools(
       description:
         'LOOK at the active tab as an image — a screenshot of the live rendered browser viewport (the composited page: charts, diagrams, maps, photos, rendered layout, anything whose meaning is visual and would be lost as text). Also use it to check your own work after a ControlPage action: confirm a click landed, or spot a modal, error, or CAPTCHA the element list does not convey. By default it shoots what is on screen; pass fullPage:true to scroll and stitch the whole page (costs several images — prefer the default). The shot is always shown to the user in the chat. Asks the user for permission first (except while a page-control session already owns this tab).',
       inputSchema: z.object({
+        expectedText: z.string().trim().min(1).max(160).optional().describe('Optional exact visible text to look for after an action using opt-in Mirage OCR. An observation is not proof of success; missing text is inconclusive. Never retry a committing action based only on this check.'),
         fullPage: z
           .boolean()
           .optional()
@@ -692,11 +699,11 @@ export function createAgentTools(
           .string()
           .describe('Short reason shown to the user, e.g. "To read the revenue chart"'),
       }),
-      execute: async ({ fullPage, pane, reason }) => {
+      execute: async ({ fullPage, pane, reason, expectedText }) => {
         const summary = fullPage
           ? 'Take a screenshot of this whole page'
           : 'Take a screenshot of this page'
-        return runScreenshot('GetScreenshot', { kind: fullPage ? 'fullpage' : 'viewport' }, summary, reason, pane)
+        return runScreenshot('GetScreenshot', { kind: fullPage ? 'fullpage' : 'viewport' }, summary, reason, pane, expectedText)
       },
     }),
 

@@ -1,0 +1,55 @@
+{
+  "baselineCommit": "ff3b750daa30534fb04507354c68be82d17a7e44",
+  "build": "npm run build: baseline and changed build succeeded; both emitted pre-existing large-chunk warning",
+  "bundleBytes": {
+    "before": {
+      "fileCount": 104,
+      "bytes": 17562520
+    },
+    "afterWithOptionalAssets": {
+      "fileCount": 110,
+      "bytes": 40558359
+    },
+    "optionalAssets": {
+      "fileCount": 5,
+      "bytes": 22987596
+    },
+    "afterWithoutAssets": 17570763,
+    "codeAndDocumentationDelta": 8243
+  },
+  "tests": {
+    "baseline": {
+      "passed": 2216,
+      "failed": 13,
+      "files": 182
+    },
+    "after": {
+      "passed": 2264,
+      "failed": 13,
+      "files": 185
+    },
+    "newPassing": 48,
+    "sameFailureNames": true,
+    "failures": [
+      "src/agent/agent.test.ts > runAgentTurn: unloaded-tool calls are repaired into GetTool > loads a real but unloaded gated tool instead of dead-ending, so its approval card can appear",
+      "src/agent/agent.test.ts > runAgentTurn: repairToolCall repairs a validation error (malformed tool-call arguments) > silently reissues the same tool with corrected arguments via a generateText fallback, and execute() runs on the repaired input",
+      "src/agent/agent.test.ts > active tool order is a strict append as activeNames grows > never reorders an already-active tool when a later GetTool call loads another one",
+      "src/agent/agent.test.ts > step-budget stop reason > reports 'budget' when the model is cut off at the ceiling mid-tool-call",
+      "src/agent/agent.test.ts > agent steering: steerPending halts the loop at the next step boundary > stops after the current step when a steer is pending, well short of the ceiling",
+      "src/agent/agent.test.ts > agent steering: steerPending halts the loop at the next step boundary > runs normally (to the ceiling) when no steer is pending",
+      "src/agent/agent.test.ts > agent steering: steerPending halts the loop at the next step boundary > runs normally when nothing has parked",
+      "src/agent/agent.test.ts > imageQueue: prepareStep drains queued images into captioned synthetic user messages > injects each queued image as its own message paired with its own caption ahead of the next step, and never resends it",
+      "src/agent/agent.test.ts > agent-state block injection > re-reads the facts every step instead of freezing the first snapshot",
+      "src/agent/browseAgent.test.ts > runBrowseSession > walks the page, records findings in the shared notebook, and reports back",
+      "src/agent/browseAgent.test.ts > runBrowseSession > passes a policy refusal back to the model as a normal result, with a fresh view",
+      "src/agent/browseAgent.test.ts > runBrowseSession > stops at the step budget instead of clicking forever",
+      "src/agent/traceSink.test.ts > local trace sink > emits one step per model step, indexed in order"
+    ]
+  },
+  "limitations": [
+    "Bundle byte counts are uncompressed files, not CRX transfer size or memory.",
+    "Optional model assets are ignored in git and must be prepared explicitly.",
+    "Tests run with identical installed dependencies; npm ci failed on existing incomplete optional-package lock entries.",
+    "Neither build success nor Node/jsdom tests validate MV3 worker execution in Chromium."
+  ]
+}
