@@ -1,13 +1,15 @@
 # Mirage WASM evaluation
 
+> License update: the initial licensing observation below is historical. The preparation script now pins an Apache-2.0-labeled revision with the identical weight hash and packages notices. See [verified provenance](../mirage-license-provenance.md).
+
 This report measures the real pinned Mirage model in **Node/V8 WASM on generated UI-like images**. It is not a Chromium extension, screenshot-capture, planner, action-success, or end-to-end browser benchmark. Chromium could not start in this execution environment (`socket() failed: Operation not permitted` in its process singleton initialization), including an escalated launch. No browser performance claim is made.
 
 ## Reproduce
 
-Use the repository's installed dependencies and Python 3 with Pillow and DejaVu Sans (`/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf`). Obtain the optional assets only after resolving your right to use the model weights:
+Use the repository's installed dependencies and Python 3 with Pillow and DejaVu Sans (`/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf`). The current preparer includes the verified Apache-2.0 model/runtime notices:
 
 ```sh
-npm run prepare:mirage -- --acknowledge-model-license
+npm run prepare:mirage
 npm run benchmark:mirage
 ```
 
@@ -29,7 +31,9 @@ Word recall/precision use normalized **unique** OCR word sets per image (case/pu
 
 ## Licensing and deployment
 
-The Cactus source and prebuilt runtime are Apache-2.0 (license checksum verified by the preparation script). The pinned Hugging Face Mirage repository contains no LICENSE file or explicit license metadata; weight redistribution rights remain unresolved. Model/runtime binaries are ignored and are not part of the PR. Resolve the weights license before distributing a Mirage-enabled extension build. The normal extension build remains usable without these optional assets, and local perception fails closed when they are missing.
+**Update (2026-11-15):** the publisher now explicitly declares Apache-2.0 for the same weight bytes. The preparer uses the updated licensed-card revision and includes notices; no acknowledgment flag is required. See [verified provenance correction](../mirage-license-provenance.md). The following paragraph records the original inspection, not the current deployment conclusion.
+
+The Cactus source and prebuilt runtime are Apache-2.0 (license checksum verified by the preparation script). The pinned Hugging Face Mirage repository contains no LICENSE file or explicit license metadata; this was the historical metadata gap, now resolved by the [hash-matched licensed revision](../mirage-license-provenance.md). Model/runtime binaries are ignored and are not part of the PR. Retain the packaged Apache-2.0 notices when distributing a Mirage-enabled extension build. The normal extension build remains usable without these optional assets, and local perception fails closed when they are missing.
 
 The actual ABI uses `unsigned long long` for the `cactus_load` archive length, requiring JavaScript `BigInt`. `cactus_describe` uses ordinary `int` for dimensions/output capacity. Actual OCR records use `string`, not `text`, with `bbox: [x1,y1,x2,y2]` normalized to 0–1000. These details were checked against real outputs and the published header, not inferred from the marketing example.
 

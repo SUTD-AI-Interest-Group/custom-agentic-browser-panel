@@ -17,7 +17,8 @@
     "test:surfaces:browser": "npm run build && node scripts/test-product-surfaces-browser.mjs",
     "test:site:browser": "npm --prefix site run build && node scripts/test-site-browser.mjs",
     "prepare:mirage": "node scripts/prepare-mirage.mjs",
-    "benchmark:mirage": "node scripts/benchmark-mirage.mjs"
+    "benchmark:mirage": "node scripts/benchmark-mirage.mjs",
+    "benchmark:mirage:decisions": "node scripts/benchmark-mirage-decisions.mjs"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^4.0.16",

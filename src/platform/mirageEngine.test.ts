@@ -52,6 +52,29 @@ describe('Mirage worker lifecycle',()=>{
   expect(MockWorker.instances[1].terminate).toHaveBeenCalledOnce()
   MockWorker.instances[1].onmessage!({data:{id:2,value:{result:{text:['stale']}}}})
  })
+ it('serializes perception and the separate fixed visual classifier on one worker',async()=>{
+  const {describeMirage,classifyMirage,disposeMirage}=await import('./mirageEngine')
+  const image='data:image/png;base64,AA=='
+  const perception=describeMirage(image), worker=MockWorker.instances[0]
+  expect(worker.postMessage.mock.calls[0][0]).toMatchObject({dataUrl:image,decision:false})
+  await expect(classifyMirage(image)).rejects.toThrow('busy')
+  worker.onmessage!({data:{id:worker.postMessage.mock.calls[0][0].id,value:{result:{text:[]}}}})
+  await perception
+  const decision=classifyMirage(image)
+  expect(MockWorker.instances).toHaveLength(1)
+  expect(worker.postMessage.mock.calls[1][0]).toMatchObject({dataUrl:image,decision:true})
+  const result={form:{screen_type:{value:null,probabilities:{dialog:.1,form:.1,document:.1,other:.1,'-':.6}}}}
+  worker.onmessage!({data:{id:worker.postMessage.mock.calls[1][0].id,value:{result}}})
+  await expect(decision).resolves.toMatchObject({result})
+  disposeMirage()
+ })
+ it('revokes in-flight classification when decision consent changes',async()=>{
+  const {classifyMirage}=await import('./mirageEngine')
+  const revoked=expect(classifyMirage('data:image/png;base64,AA==')).rejects.toThrow('stopped')
+  changed({settings:{oldValue:{mirageMode:'assist',mirageDecisionMode:'assist'},newValue:{mirageMode:'assist',mirageDecisionMode:'off'}}},'local')
+  await revoked
+  expect(MockWorker.instances[0].terminate).toHaveBeenCalledOnce()
+ })
  it('rejects remote or oversized images before creating a worker',async()=>{
   const {describeMirage}=await import('./mirageEngine')
   await expect(describeMirage('https://example.com/private.png')).rejects.toThrow('Unsupported')

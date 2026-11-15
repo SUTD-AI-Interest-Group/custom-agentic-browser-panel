@@ -1,5 +1,5 @@
 // Dedicated module worker: no page access, no remote URLs, no action execution.
-export {}
+import { MIRAGE_SCREEN_FORM } from './mirageDecisionRequest'
 type Runtime = {
   HEAPU8: Uint8Array
   _malloc(size: number): number
@@ -34,7 +34,7 @@ async function load() {
   runtime = engine
   return engine
 }
-self.onmessage = async (event: MessageEvent<{ id: number; dataUrl: string }>) => {
+self.onmessage = async (event: MessageEvent<{ id: number; dataUrl: string; decision?: boolean }>) => {
   const { id, dataUrl } = event.data
   if (busy) { self.postMessage({ id, error: 'Mirage is busy' }); return }
   busy = true
@@ -63,7 +63,7 @@ self.onmessage = async (event: MessageEvent<{ id: number; dataUrl: string }>) =>
     try {
       const input = allocate(rgb.length)
       engine.HEAPU8.set(rgb, input)
-      const json = new TextEncoder().encode(JSON.stringify(options) + '\0')
+      const json = new TextEncoder().encode(JSON.stringify(event.data.decision === true ? { form: MIRAGE_SCREEN_FORM } : options) + '\0')
       const opts = allocate(json.length)
       engine.HEAPU8.set(json, opts)
       const outputSize = 1024 * 1024

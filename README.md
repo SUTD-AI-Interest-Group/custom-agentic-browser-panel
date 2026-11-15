@@ -480,3 +480,5 @@ An optional Mirage build adds local OCR/object observations to approved screensh
 including explicit post-action text checks. It defaults to off and preserves page
 control approvals. See [setup, privacy boundaries and architecture diagrams](docs/mirage.md)
 and the [measured benchmark scope and limitations](docs/benchmarks/README.md).
+
+The separately opt-in [decision experiment](docs/mirage-decisions.md) evaluates image-based read-tool hints and reversible visual-record compaction. It does not generate action arguments or summarize chat history.

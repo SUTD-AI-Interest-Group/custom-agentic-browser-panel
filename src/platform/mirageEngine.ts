@@ -22,6 +22,13 @@ export function disposeMirage(): void {
   }
 }
 export function describeMirage(dataUrl: string): Promise<MirageResult> {
+  return requestMirage(dataUrl, false)
+}
+/** Separate image-only form request: does not run OCR or summarize chat. */
+export function classifyMirage(dataUrl: string): Promise<MirageResult> {
+  return requestMirage(dataUrl, true)
+}
+function requestMirage(dataUrl: string, decision: boolean): Promise<MirageResult> {
   if (pending) return Promise.reject(new Error('Local Mirage perception is busy'))
   if (typeof dataUrl !== 'string' || dataUrl.length > 24 * 1024 * 1024 || !/^data:image\/(png|jpeg|webp);base64,/.test(dataUrl)) return Promise.reject(new Error('Unsupported Mirage image'))
   clearTimeout(idle)
@@ -45,13 +52,16 @@ export function describeMirage(dataUrl: string): Promise<MirageResult> {
   const id = ++sequence
   return new Promise((resolve, reject) => {
     pending = { id, resolve, reject, timer: setTimeout(disposeMirage, TIMEOUT_MS) }
-    try { worker!.postMessage({ id, dataUrl }) } catch { disposeMirage() }
+    try { worker!.postMessage({ id, dataUrl, decision }) } catch { disposeMirage() }
   })
 }
 // A mode change revokes in-flight delivery and releases model memory.
 if (typeof chrome !== 'undefined' && chrome.storage?.onChanged) {
   chrome.storage.onChanged.addListener((changes, area) => {
-    if (area === 'local' && changes.settings && changes.settings.oldValue?.mirageMode !== changes.settings.newValue?.mirageMode) disposeMirage()
+    if (area === 'local' && changes.settings && (
+      changes.settings.oldValue?.mirageMode !== changes.settings.newValue?.mirageMode ||
+      changes.settings.oldValue?.mirageDecisionMode !== changes.settings.newValue?.mirageDecisionMode
+    )) disposeMirage()
   })
 }
 if (typeof window !== 'undefined') window.addEventListener('pagehide', disposeMirage)

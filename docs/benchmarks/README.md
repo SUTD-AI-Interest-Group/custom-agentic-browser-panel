@@ -1,5 +1,7 @@
 # Mirage integration: validation and performance scope
 
+> License update: the initial licensing observation below is historical. The preparation script now pins an Apache-2.0-labeled revision with the identical weight hash and packages notices. See [verified provenance](../mirage-license-provenance.md).
+
 Baseline: `ff3b750daa30534fb04507354c68be82d17a7e44`. The results separate a DOM executor correctness fix from model inference. Neither is an end-to-end browser-agent success benchmark.
 
 ## Measurements
@@ -30,7 +32,7 @@ The unchanged baseline full suite produced **13 failures / 2,216 passes**, in th
 2. Run the Chromium resolver harness and model worker on real screenshots across low/mid/high-end devices; measure cold load, steady-state p50/p95, peak renderer RSS, teardown, full-page/crop behavior, and the cost of each capture/IPC step.
 3. Evaluate a labeled browser task corpus against DOM-only and DOM+Mirage: target-selection correctness, task completion, false confirmation, inconclusive rate and repeated-action safety. This PR's exact OCR match is intentionally only an observation.
 4. Run live agent testing only against the repository-prescribed local LM Studio model. No hosted model benchmarks or provider spending were performed.
-5. Resolve standalone model-weight redistribution licensing before releasing a model-inclusive extension. Runtime source/binaries are Apache-2.0; the model repository did not supply an explicit weight license in the inspection.
+5. Retain runtime/model Apache-2.0 notices when distributing the optional assets. The original metadata gap is resolved by the newer, hash-matched licensed model revision; see the provenance update above.
 
 The implementation remains opt-in and should stay experimental until these checks pass. The included data cannot support a claim that Mirage improves real-world browser task success or user-perceived latency.
 
@@ -46,3 +48,7 @@ Measured on the two actual Vite production build directories, same installed dep
 | Optional assets alone | 22,987,596 |
 
 The integration adds 8,243 bytes of compiled code with assets excluded. Counts include all files in each `dist/`; they are not compressed CRX/network transfer size or process memory. Mirage assets are absent from the PR and normal clean builds. Both builds reported existing chunks over Vite's 500 kB advisory limit.
+
+## Decision experiment follow-up
+
+The [image-only decision benchmark](mirage-decisions.md) separately evaluates fixed visual classes, abstention, label-order sensitivity, read-tool hints and reversible visual-record encoding. It does not measure semantic chat routing, generated tool arguments, or conversation summarization.
