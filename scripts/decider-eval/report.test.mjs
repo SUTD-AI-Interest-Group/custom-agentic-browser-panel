@@ -1,7 +1,7 @@
 // Pairing, step states, cost and the 2×2: node --test scripts/decider-eval/report.test.mjs
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { controlSteps, estimateCost, pairCalls, renderMarkdown, scoreRow, summarize, urlAt } from './report.mjs'
+import { controlSteps, estimateCost, pairCalls, renderMarkdown, RESERVE_USD, scoreRow, summarize, taskCost, urlAt, usageOf } from './report.mjs'
 
 const BASE = 'http://127.0.0.1:8770'
 const call = (action, index) => ({ input: index === undefined ? { action } : { action, index } })
@@ -69,6 +69,28 @@ test('estimateCost: $0 locally; the high bound charges uncached input at 1.25×'
   const c = estimateCost({ inputTokens: 108_000, cachedInputTokens: 38_000, outputTokens: 1_500 }, 'anthropic')
   assert.equal(c.low, 0.1588)
   assert.equal(c.high, 0.1938)
+})
+
+test('taskCost: trace usage when readable; the $0.50 reserve when a sent prompt left none', () => {
+  const steps = [{ usage: { inputTokens: 60_000, cachedInputTokens: 20_000, outputTokens: 1_000 } }, { usage: { inputTokens: 48_000, cachedInputTokens: 18_000, outputTokens: 500 } }]
+  assert.deepEqual(taskCost(steps, { providerKind: 'anthropic', sent: true }), { low: 0.1588, high: 0.1938, estimated: 'trace' })
+  // The run threw / the browser died / a stopped turn wrote no trace: spend unknown → reserve.
+  for (const unreadable of [null, []]) assert.deepEqual(taskCost(unreadable, { providerKind: 'anthropic', sent: true }), { low: 0, high: RESERVE_USD, estimated: 'reserve' })
+  assert.equal(RESERVE_USD, 0.5)
+  // Nothing went out, or the model is local: nothing to charge.
+  assert.deepEqual(taskCost(null, { providerKind: 'anthropic', sent: false }), { low: 0, high: 0, estimated: 'not-sent' })
+  assert.deepEqual(taskCost(null, { providerKind: 'lmstudio', sent: true }), { low: 0, high: 0, estimated: 'local' })
+  assert.deepEqual(usageOf(steps), { inputTokens: 108_000, outputTokens: 1_500, cachedInputTokens: 38_000 })
+})
+
+test('a reserve-charged row renders its cost as a reserve', () => {
+  const row = {
+    task: 'shop-mug', family: 'store', arm: 'shadow', rep: 1, success: false, ended: 'harness-error', error: 'boom', wallMs: 1000, llmSteps: 0,
+    inputTokens: 0, outputTokens: 0, cost: taskCost(null, { providerKind: 'anthropic', sent: true }), tools: [], traceCalls: [], urlTimeline: [], shadow: [],
+  }
+  row.score = scoreRow(row)
+  const md = renderMarkdown({ meta: { startedAt: 'now', provider: 'anthropic', model: 'm', arms: ['shadow'], reps: 1, threshold: 0.6, spent: 0.5, cap: 10 }, rows: [row], summary: summarize([row]) })
+  assert.match(md, /\$0\.500 \(reserve\)/)
 })
 
 test('scoreRow: both models scored against the key, into the 2×2', () => {

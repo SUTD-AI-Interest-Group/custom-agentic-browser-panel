@@ -46,6 +46,9 @@ per task the settings, fixture tab, panel and composer.
     input is charged at 1.25×, the cache-write upper bound, and the cap uses that upper figure.
   - Not counted: the chat-naming call and Assist's profile-structuring call. Neither appears in
     the turn trace. Both are small, and the $0.50 margin covers them.
+  - Sometimes a prompt went out but no trace usage can be read back: the harness errored, the
+    browser died, or a stopped turn wrote no trace. Then the cap is charged a flat **$0.50
+    reserve**, and the row's cost is labelled `estimated: 'reserve'`.
   - The run's `finally` overwrites `settings` with the LM Studio provider, so the key does not
     persist in the profile. Every run also scrubs at startup, which covers a run that crashed.
 
@@ -98,7 +101,8 @@ read from the model's claim.
 `key(taskId, registryText, url)` returns the correct next actions as
 `{op: 'click'|'type'|'select'|'press'|'scroll'|'done', index?}`. Elements are matched by their
 registry **label**, never by a remembered index. A key entry without an index (`press`, `scroll`,
-`done`) matches any index.
+`done`) matches any index. A bare `press` also matches any key, and a bare `scroll` any direction:
+`matches()` compares only `op` and `index`.
 
 - **Store:**
   - a search box that is empty, or holds a query that would not find the target → type into
@@ -134,7 +138,12 @@ a sent form from an unsent one.
     start of the model step that made the call. Trace step *k*'s calls are mapped to
     conversation call *k*. If the counts differ, the URL falls back to the latest output URL.
 - **Pairing.** `kind: 'next'` shadow records pair with calls in `seq` order, by the
-  longest order-preserving match on `(op, index)`.
+  longest order-preserving match on `(op, index)` (an LCS), not by raw `seq`.
+  - Raw `seq` cannot be used directly. The hooks number only the calls that reach them, and they
+    also number steps whose decision was superseded and never written. So `seq` *k* is not
+    conversation call *k*.
+  - Each record's `llm` is the call's own `(op, index)`, so matching on it, in order, recovers
+    the pairing despite both kinds of gap.
   - A call that returned before the decider hook has no record by design. Examples are no
     session yet, the tab not in front, origin drift, or an unreadable page; `tools.ts` returns
     these before the snapshot the hook observes.

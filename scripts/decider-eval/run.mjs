@@ -19,7 +19,7 @@ import { homedir } from 'node:os'
 import { dirname, extname, join, normalize, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { TASK_IDS } from './keys.mjs'
-import { DEFAULT_THRESHOLD, estimateCost, scoreRow, summarize, writeReport } from './report.mjs'
+import { DEFAULT_THRESHOLD, scoreRow, summarize, taskCost, usageOf, writeReport } from './report.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const REPO = resolve(HERE, '..', '..')
@@ -432,7 +432,8 @@ async function settleShadow(panel, since) {
 
 let interrupted = false
 
-async function runTask(ctx, extId, origin, task, arm, rep) {
+/** `progress.sentAt` is set the moment the prompt is about to go out (see the error path in main). */
+async function runTask(ctx, extId, origin, task, arm, rep, progress = {}) {
   const panelUrl = `chrome-extension://${extId}/sidepanel.html`
   await onQuietPage(ctx, extId, (p) => writeSettings(p, settingsFor(PROVIDER, arm)))
   const panel = await ctx.newPage()
@@ -472,6 +473,8 @@ async function runTask(ctx, extId, origin, task, arm, rep) {
     const since = Date.now()
     log(`${task.id}/${arm}/${rep}: start`)
     await composer.fill(task.prompt)
+    // Set just before the prompt can leave: from here on a harness error may have cost money.
+    progress.sentAt = since
     await composer.press('Enter')
     const approvals = []
     let seen = false
@@ -532,15 +535,12 @@ async function runTask(ctx, extId, origin, task, arm, rep) {
     const form = task.family === 'form'
     const fields = form ? await fx.evaluate(() => (typeof window.__fields === 'function' ? window.__fields() : null)).catch(() => null) : null
     const submitted = form ? await submittedOf(fx).catch(() => null) : null
-    const usage = {
-      inputTokens: db.steps.reduce((a, s) => a + (s.usage?.inputTokens ?? 0), 0),
-      outputTokens: db.steps.reduce((a, s) => a + (s.usage?.outputTokens ?? 0), 0),
-      cachedInputTokens: db.steps.reduce((a, s) => a + (s.usage?.cachedInputTokens ?? 0), 0),
-    }
     return {
       task: task.id, family: task.family, arm, rep, assist: !!task.assist, provider: PROVIDER.kind, model: MODEL, prompt: task.prompt,
       success, ended, wallMs, startUrl, finalUrl: fx.url(),
-      llmSteps: db.steps.length, llmStepMs: db.steps.map((s) => s.durationMs), ...usage, cost: estimateCost(usage, PROVIDER.kind),
+      llmSteps: db.steps.length, llmStepMs: db.steps.map((s) => s.durationMs), ...usageOf(db.steps),
+      // A stopped turn may have written no trace: then the cap is charged the reserve.
+      cost: taskCost(db.steps, { providerKind: PROVIDER.kind, sent: true }),
       approvals: approvals.map((a) => a.head), reply, conversationIds: db.conversationIds,
       tools: db.tools, traceCalls: db.traceCalls, urlTimeline: timeline, shadow: db.shadow, fields, submitted,
     }
@@ -616,14 +616,22 @@ try {
           break outer
         }
         let row
+        const progress = { sentAt: null }
         try {
-          row = await runTask(ctx, extId, origin, task, arm, rep)
+          row = await runTask(ctx, extId, origin, task, arm, rep, progress)
         } catch (e) {
           log(`${task.id}/${arm}/${rep}: harness error: ${e?.message ?? e}`)
-          row = { task: task.id, family: task.family, arm, rep, assist: !!task.assist, provider: PROVIDER.kind, model: MODEL, prompt: task.prompt,
-            success: false, ended: 'harness-error', error: String(e?.message ?? e), wallMs: 0, llmSteps: 0, inputTokens: 0, outputTokens: 0,
-            cachedInputTokens: 0, cost: { low: 0, high: 0 }, tools: [], traceCalls: [], urlTimeline: [], shadow: [] }
           if (DRY) throw e
+          // The turn may have run (and been paid for) before the harness broke: charge the cap
+          // from whatever trace usage is readable, else the reserve (taskCost).
+          let steps = null
+          if (progress.sentAt)
+            steps = await onQuietPage(ctx, extId, async (p) => (await readStores(p, progress.sentAt, task.prompt.slice(0, 20))).steps).catch(() => null)
+          const cost = taskCost(steps, { providerKind: PROVIDER.kind, sent: !!progress.sentAt })
+          row = { task: task.id, family: task.family, arm, rep, assist: !!task.assist, provider: PROVIDER.kind, model: MODEL, prompt: task.prompt,
+            success: false, ended: 'harness-error', error: String(e?.message ?? e), wallMs: progress.sentAt ? Date.now() - progress.sentAt : 0,
+            llmSteps: steps?.length ?? 0, ...usageOf(steps ?? []), cost, tools: [], traceCalls: [], urlTimeline: [], shadow: [] }
+          log(`  charged $${cost.high.toFixed(3)} against the cap (${cost.estimated})`)
         }
         if (!row) continue // dry run
         spent += row.cost.high

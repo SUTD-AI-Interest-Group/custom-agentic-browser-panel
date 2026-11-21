@@ -28,6 +28,30 @@ export function estimateCost({ inputTokens = 0, outputTokens = 0, cachedInputTok
   return { low: +low.toFixed(4), high: +high.toFixed(4) }
 }
 
+/** Token usage summed over turn-trace steps. */
+export function usageOf(steps) {
+  const sum = (k) => (steps ?? []).reduce((a, s) => a + (s?.usage?.[k] ?? 0), 0)
+  return { inputTokens: sum('inputTokens'), outputTokens: sum('outputTokens'), cachedInputTokens: sum('cachedInputTokens') }
+}
+
+/** Charged against the cap for a hosted task whose spend cannot be read back. */
+export const RESERVE_USD = 0.5
+
+/**
+ * One task's cost for the spend cap. From the turn-trace steps when any are readable. When none
+ * are (the run threw, the browser died, a stopped turn wrote no trace) but the prompt went out
+ * to the hosted model, the spend is unknown, so `high` (the figure the cap uses) is a flat
+ * $0.50 reserve, labelled `estimated: 'reserve'`. A prompt never sent cost nothing. A local
+ * model is always $0.
+ * @returns {{ low: number, high: number, estimated: 'trace' | 'reserve' | 'not-sent' | 'local' }}
+ */
+export function taskCost(steps, { providerKind, sent }) {
+  if (providerKind !== 'anthropic') return { low: 0, high: 0, estimated: 'local' }
+  if (!sent) return { low: 0, high: 0, estimated: 'not-sent' }
+  if (Array.isArray(steps) && steps.length) return { ...estimateCost(usageOf(steps), providerKind), estimated: 'trace' }
+  return { low: 0, high: RESERVE_USD, estimated: 'reserve' }
+}
+
 // ── pairing ───────────────────────────────────────────────────────────────────────────────────
 const sameAction = (call, rec) =>
   !!rec.llm && rec.llm.op === call.input?.action && (rec.llm.index ?? null) === (call.input?.index ?? null)
@@ -359,7 +383,7 @@ export function renderMarkdown(results) {
     const d = s.decider
     const g = s.grid
     L.push(
-      `| ${r.task} | ${r.arm} | ${r.rep} | ${r.success ? '✓' : '✗'} | ${r.ended} | ${Math.round(r.wallMs / 1000)} | ${r.llmSteps} | ${r.inputTokens} / ${r.outputTokens} | ${usd(r.cost?.high)} | ${s.controlCalls} | ${s.keyed} | ${s.chatCorrect} | ${d.correct}/${d.keyed} | ${g.both} / ${g.chatOnly} / ${g.deciderOnly} / ${g.neither} | ${frac(d.agreement)} | ${d.decisions}${Object.keys(d.skipped).length ? ` (skipped ${JSON.stringify(d.skipped)})` : ''} | ${num(d.msP50)} / ${num(d.msP95)} | ${frac(d.coverage)} | ${s.unpaired.calls} / ${s.unpaired.records} |`,
+      `| ${r.task} | ${r.arm} | ${r.rep} | ${r.success ? '✓' : '✗'} | ${r.ended} | ${Math.round(r.wallMs / 1000)} | ${r.llmSteps} | ${r.inputTokens} / ${r.outputTokens} | ${usd(r.cost?.high)}${r.cost?.estimated === 'reserve' ? ' (reserve)' : ''} | ${s.controlCalls} | ${s.keyed} | ${s.chatCorrect} | ${d.correct}/${d.keyed} | ${g.both} / ${g.chatOnly} / ${g.deciderOnly} / ${g.neither} | ${frac(d.agreement)} | ${d.decisions}${Object.keys(d.skipped).length ? ` (skipped ${JSON.stringify(d.skipped)})` : ''} | ${num(d.msP50)} / ${num(d.msP95)} | ${frac(d.coverage)} | ${s.unpaired.calls} / ${s.unpaired.records} |`,
     )
   }
   L.push('')
