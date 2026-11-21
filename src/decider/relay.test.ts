@@ -14,9 +14,10 @@ import { readViewportText } from '../platform/viewportText'
 import { readSelectOptions, type IndexedElement, type PageSnapshot } from '../platform/domIndex'
 import type { ControlSession, ControlSpec } from '../tools/pageControl'
 import type { ControlJournalEntry } from '../tools/pageControlJournal'
-import type { DeciderSettings } from './config'
+import { PREVIOUS_ACTIONS_WINDOW, type DeciderSettings } from './config'
 import type { FillPlan } from './fillPlan'
 import {
+  deciderActionLine,
   forwardDeciderHooks,
   MAP_FORM_TIMEOUT_MS,
   parseDeciderRelay,
@@ -137,14 +138,15 @@ describe('stepOf', () => {
         el({ index: 2, tag: 'input', type: 'checkbox', name: 'Agree', checked: true }),
       ]),
       spec,
-      session: session({ journal: journal(['a1', 'a2', 'a3', 'a4', 'a5', 'a6', 'a7']), undoState: new Map([[1, { value: 'old', kind: 'type' }]]) }),
+      session: session({ journal: journal(['a1', 'a2', 'a3', 'a4', 'a5', 'a6', 'a7', 'a8', 'a9', 'a10', 'a11', 'a12']), undoState: new Map([[1, { value: 'old', kind: 'type' }]]) }),
     })
     expect(step).toEqual({
       tabId: 7,
       url: 'https://shop.test/checkout',
       title: 'Checkout',
       plan: 'Check out',
-      previousActions: ['a2', 'a3', 'a4', 'a5', 'a6', 'a7'],
+      // The last ten: an eight-field form keeps its first field in view.
+      previousActions: ['a3', 'a4', 'a5', 'a6', 'a7', 'a8', 'a9', 'a10', 'a11', 'a12'],
       elements: [
         { index: 0, tag: 'a', role: 'link', name: 'Home', sensitive: false },
         { index: 1, tag: 'input', type: 'password', name: 'Password', value: SENSITIVE_VALUE_MASK, sensitive: true },
@@ -154,6 +156,82 @@ describe('stepOf', () => {
     })
     expect(JSON.stringify(step)).not.toContain('hunter2')
     expect(JSON.stringify(step)).not.toContain('typed-text')
+  })
+
+  it('describes each previous action with its (redacted) value, and a checkbox click by the state it left', () => {
+    const URL_NOW = 'https://shop.test/checkout'
+    const entry = (over: Partial<ControlJournalEntry>): ControlJournalEntry => ({
+      at: 0, action: 'click', summary: 'clicked something', undoable: false, sensitive: false, origin: 'https://shop.test', url: URL_NOW, ...over,
+    })
+    const step = stepOf({
+      tabId: 7,
+      snap: snap([
+        el({ index: 3, tag: 'input', type: 'text', name: 'Full name', value: 'Ada Lovelace' }),
+        el({ index: 8, tag: 'input', type: 'checkbox', name: 'I agree', checked: true }),
+        el({ index: 9, tag: 'input', type: 'checkbox', name: 'Newsletter', checked: false }),
+        el({ index: 10, tag: 'button', type: 'submit', name: 'Send' }),
+      ]),
+      spec: { action: 'click', index: 10 },
+      session: session({
+        journal: [
+          entry({ action: 'type', index: 3, label: 'Full name', summary: 'typed into “Full name”', redactedValue: 'Ada Lovelace' }),
+          entry({ action: 'select', index: 6, label: 'Topic', summary: 'chose an option in “Topic”', redactedValue: 'Billing' }),
+          entry({ action: 'click', index: 8, label: 'I agree', summary: 'clicked “I agree”' }),
+          entry({ action: 'click', index: 9, label: 'Newsletter', summary: 'clicked “Newsletter”' }),
+          // On another page: what [8] is now says nothing about what this click did.
+          entry({ action: 'click', index: 8, label: 'Remember me', summary: 'clicked “Remember me”', url: 'https://shop.test/login' }),
+          entry({ action: 'click', index: 10, label: 'Send', summary: 'clicked “Send”' }), // not a checkbox
+          entry({ action: 'scroll', summary: 'scrolled down' }),
+        ],
+      }),
+    })
+    expect(step.previousActions).toEqual([
+      'typed "Ada Lovelace" into “Full name”',
+      'chose "Billing" in “Topic”',
+      'ticked “I agree”',
+      'unticked “Newsletter”',
+      'clicked “Remember me”',
+      'clicked “Send”',
+      'scrolled down',
+    ])
+  })
+})
+
+describe('deciderActionLine', () => {
+  const entry = (over: Partial<ControlJournalEntry>): ControlJournalEntry => ({
+    at: 0, action: 'type', summary: 'the summary', undoable: true, sensitive: false, origin: 'o', url: 'u', ...over,
+  })
+
+  it('puts the value a type or select set into the line', () => {
+    expect(deciderActionLine(entry({ action: 'type', label: 'Email', redactedValue: 'ada@example.com' }))).toBe('typed "ada@example.com" into “Email”')
+    expect(deciderActionLine(entry({ action: 'select', label: 'Topic', redactedValue: 'Billing' }))).toBe('chose "Billing" in “Topic”')
+    // The journal already redacted it: what it holds is what the decider sees.
+    expect(deciderActionLine(entry({ action: 'type', label: 'Password', redactedValue: '••••' }))).toBe('typed "••••" into “Password”')
+  })
+
+  it('names an unlabelled target by its index, else the page', () => {
+    expect(deciderActionLine(entry({ action: 'type', index: 4, redactedValue: 'x' }))).toBe('typed "x" into element 4')
+    expect(deciderActionLine(entry({ action: 'type', redactedValue: 'x' }))).toBe('typed "x" into the page')
+  })
+
+  it('caps a long value at 80 characters, ellipsis included', () => {
+    const line = deciderActionLine(entry({ action: 'type', label: 'Message', redactedValue: 'y'.repeat(200) }))
+    expect(line).toBe(`typed "${'y'.repeat(79)}…" into “Message”`)
+    expect(deciderActionLine(entry({ action: 'type', label: 'Message', redactedValue: 'z'.repeat(80) }))).toBe(`typed "${'z'.repeat(80)}" into “Message”`)
+  })
+
+  it('says ticked/unticked for a checkbox click whose state is known, and keeps the summary otherwise', () => {
+    const click = entry({ action: 'click', index: 8, label: 'I agree', summary: 'clicked “I agree”' })
+    expect(deciderActionLine(click, true)).toBe('ticked “I agree”')
+    expect(deciderActionLine(click, false)).toBe('unticked “I agree”')
+    expect(deciderActionLine(click)).toBe('clicked “I agree”')
+    expect(deciderActionLine(entry({ action: 'type', label: 'Name', summary: 'typed into “Name”' }))).toBe('typed into “Name”') // no value
+    expect(deciderActionLine(entry({ action: 'scroll', summary: 'scrolled down', redactedValue: 'down' }))).toBe('scrolled down')
+    expect(deciderActionLine(entry({ action: 'navigate', summary: 'went to shop.test', redactedValue: 'https://shop.test' }))).toBe('went to shop.test')
+  })
+
+  it('the window is ten', () => {
+    expect(PREVIOUS_ACTIONS_WINDOW).toBe(10)
   })
 })
 

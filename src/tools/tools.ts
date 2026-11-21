@@ -61,6 +61,10 @@ import {
 
 type PlannedFill = FillPlan['fills'][number]
 
+/** RequestPageControl's grant, in Assist mode: the one place the model learns the path exists. */
+const ASSIST_GRANT_NOTE =
+  'Assist mode is on: for a form, call AutofillForm with `values` (the details from the user\'s request) and omit `fields` — the decision model maps the fields from the user\'s saved profile in one step.'
+
 /** text → type (replacing what is there), select → select, checkbox → click. Never a submit. */
 function fillSpecOf(f: PlannedFill): ControlSpec {
   if (f.kind === 'select') return { action: 'select', index: f.index, value: f.value }
@@ -1518,9 +1522,18 @@ export function createAgentTools(
         // Entering active control: turn the soft dark tint on (ambient shows the
         // frame only). The spotlight/cursor come alive on the first ControlPage.
         await setTint(tab.id, true)
+        // Assist is only useful if the model knows the path exists: say so where it matters, on
+        // the grant, and only when the settings say Assist (in the worker, decider.mode() IS the
+        // settings mode — the panel checks the model's readiness when it is asked to map).
+        let assistOn = false
+        try {
+          assistOn = decider?.mode() === 'assist'
+        } catch {
+          /* additive only */
+        }
         try {
           const snap = await snapshotPage(tab.id)
-          return await lookResult(tab, snap, { started: true }, selected, visionCapable, imageQueue)
+          return await lookResult(tab, snap, { started: true, ...(assistOn ? { note: ASSIST_GRANT_NOTE } : {}) }, selected, visionCapable, imageQueue)
         } catch (err) {
           pageControl.endSession()
           return { error: `Cannot control this page (${err instanceof Error ? err.message : String(err)}).` }

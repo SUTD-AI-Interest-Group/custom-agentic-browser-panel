@@ -31,6 +31,8 @@ export function planFill(
     if (q.field.kind === 'checkbox') {
       const yes = a.yes ?? 0
       if (yes >= threshold) plan.fills.push({ index, kind: 'checkbox', key: 'tick', value: 'tick', p: yes })
+      // A confident no (p(no) ≥ threshold) is a decision to leave the box alone, not a doubt.
+      else if (yes <= 1 - threshold) plan.left.push({ index, reason: 'leave-empty' })
       else plan.left.push({ index, reason: 'low-confidence' })
       continue
     }

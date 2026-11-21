@@ -20,7 +20,8 @@
 // by field against the worker's own snapshot before AutofillForm's guarded loop types a thing.
 //
 // WHAT CROSSES THE CHANNEL is exactly what a decision needs and nothing more — `stepOf` below:
-// url/title, the plan, the last six journal summaries (already redacted, pageControlJournal.ts),
+// url/title, the plan, the last ten journal entries as `deciderActionLine`s (built from the
+// journal's already-redacted values, pageControlJournal.ts),
 // the spec's action/index/direction (never its text/value/url/label), and per element only the
 // fields the request builder reads, with a sensitive field's value masked — plus the viewport text,
 // read by the worker before the action runs (see forwardDeciderHooks). The panel validates every
@@ -30,6 +31,7 @@
 import { readSelectOptions, type IndexedElement, type PageSnapshot } from '../platform/domIndex'
 import { readViewportText } from '../platform/viewportText'
 import type { ControlAction, ControlSession, ControlSpec } from '../tools/pageControl'
+import type { ControlJournalEntry } from '../tools/pageControlJournal'
 import { DEFAULT_ACT_THRESHOLD, PAGE_TEXT_CAP, PREVIOUS_ACTIONS_WINDOW, type DeciderMode, type DeciderSettings } from './config'
 import type { FillPlan } from './fillPlan'
 import type { DeciderHooks } from './hooks'
@@ -136,6 +138,37 @@ function decisionElement(e: IndexedElement): DecisionElement {
   return out
 }
 
+const VALUE_CAP = 80
+
+/**
+ * One previous action as the decider reads it. The journal's summary ("typed into “Full name”")
+ * carries no value, and without one the decider cannot tell a field is done: the option
+ * `type into [3] … = "Ada Lovelace"` then matches the goal best at every step (agreement 1/6 →
+ * 6/6 with the value in, diag 2026-11-22). The value is the journal's own `redactedValue` —
+ * already redacted there, and nothing new is persisted. A checkbox click says what it left
+ * behind (`checkedNow`), since "clicked" alone does not say ticked or unticked.
+ */
+export function deciderActionLine(e: ControlJournalEntry, checkedNow?: boolean): string {
+  const v = e.redactedValue
+  const target = e.label ? `“${e.label}”` : e.index !== undefined ? `element ${e.index}` : 'the page'
+  if (e.action === 'click' && checkedNow !== undefined) return `${checkedNow ? 'ticked' : 'unticked'} ${target}`
+  if (v === undefined || (e.action !== 'type' && e.action !== 'select')) return e.summary
+  const shown = v.length > VALUE_CAP ? v.slice(0, VALUE_CAP - 1) + '…' : v
+  return e.action === 'type' ? `typed "${shown}" into ${target}` : `chose "${shown}" in ${target}`
+}
+
+/**
+ * A checkbox/radio's state NOW, for a journal entry that clicked it — only when the entry ran on
+ * this same page (url) and the element at its index is still a checkbox or radio; otherwise the
+ * current element says nothing about what that click did.
+ */
+function checkedNowFor(e: ControlJournalEntry, snap: PageSnapshot): boolean | undefined {
+  if (e.action !== 'click' || e.index === undefined || e.url !== snap.url) return undefined
+  const el = snap.elements.find((x) => x.index === e.index)
+  if (!el || el.tag !== 'input' || (el.type !== 'checkbox' && el.type !== 'radio')) return undefined
+  return el.checked
+}
+
 /**
  * Capture one ControlPage step NOW, synchronously: the action it describes is about to run, and
  * its own journal entry lands the moment runControlStep finishes.
@@ -149,7 +182,7 @@ export function stepOf(i: { tabId: number; snap: PageSnapshot; spec: ControlSpec
     url: i.snap.url,
     title: i.snap.title,
     plan: i.session.plan,
-    previousActions: (i.session.journal ?? []).slice(-PREVIOUS_ACTIONS_WINDOW).map((e) => e.summary),
+    previousActions: (i.session.journal ?? []).slice(-PREVIOUS_ACTIONS_WINDOW).map((e) => deciderActionLine(e, checkedNowFor(e, i.snap))),
     elements: i.snap.elements.map(decisionElement),
     spec,
   }

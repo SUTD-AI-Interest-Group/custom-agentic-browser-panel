@@ -30,9 +30,9 @@ describe('nextActionRequest', () => {
     expect(q.criteria.done).toBe('the goal is complete, or the answer is now visible on the page')
   })
   it('slices previous_actions and adds page_text only when given', () => {
-    const prev = Array.from({ length: 9 }, (_, i) => `a${i}`)
+    const prev = Array.from({ length: 13 }, (_, i) => `a${i}`)
     const s = nextActionRequest(facts({ previousActions: prev })).request.state as Record<string, unknown>
-    expect(s.previous_actions).toEqual(prev.slice(-6))
+    expect(s.previous_actions).toEqual(prev.slice(-10))
     expect(Object.keys(s)).toEqual(['goal', 'plan', 'url', 'title', 'previous_actions'])
     const s2 = nextActionRequest(facts({ pageText: 'hi' })).request.state as Record<string, unknown>
     expect(s2.page_text).toBe('hi')
@@ -101,9 +101,21 @@ describe('form fill', () => {
     expect(plan.left).toEqual([
       { index: 4, reason: 'low-confidence' },
       { index: 5, reason: 'leave-empty' },
-      { index: 9, reason: 'low-confidence' },
+      { index: 9, reason: 'leave-empty' }, // p(yes) 0.1 ≤ 1 − 0.6: a confident "leave it unticked"
     ])
     const checked = fillRequest({ goal: 'g', url: 'u', title: 't', lookup, fields: [{ ...fields[5], checked: true }] })
     expect(planFill(checked.questions, { f8: ans('true', 1, 1) }, lookup, 0.6).left).toEqual([{ index: 8, reason: 'already-set' }])
+  })
+  it('planFill: an unticked checkbox is leave-empty on a confident no, low-confidence only in between', () => {
+    const box = fillRequest({ goal: 'g', url: 'u', title: 't', lookup, fields: [fields[5]] }).questions
+    const ans = (yes: number): Answer => ({ kind: 'noul', options: ['false', 'true'], probs: [1 - yes, yes], top: yes >= 0.5 ? 'true' : 'false', p: Math.max(yes, 1 - yes), confidence: 0.9, yes })
+    const at = (yes: number, threshold = 0.6) => planFill(box, { f8: ans(yes) }, lookup, threshold)
+    expect(at(0.021).left).toEqual([{ index: 8, reason: 'leave-empty' }]) // the live run's newsletter box: p(no) 0.979
+    expect(at(0.4).left).toEqual([{ index: 8, reason: 'leave-empty' }]) // exactly 1 − threshold
+    expect(at(0.45).left).toEqual([{ index: 8, reason: 'low-confidence' }])
+    expect(at(0.59).left).toEqual([{ index: 8, reason: 'low-confidence' }])
+    expect(at(0.6).fills).toEqual([{ index: 8, kind: 'checkbox', key: 'tick', value: 'tick', p: 0.6 }])
+    expect(at(0.15, 0.8).left).toEqual([{ index: 8, reason: 'leave-empty' }]) // the threshold moves both edges
+    expect(at(0.25, 0.8).left).toEqual([{ index: 8, reason: 'low-confidence' }])
   })
 })

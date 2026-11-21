@@ -503,6 +503,28 @@ describe('RequestPageControl — tells the decider a session was granted', () =>
     expect(sessionGranted).toHaveBeenCalledTimes(1)
   })
 
+  const ASSIST_NOTE =
+    'Assist mode is on: for a form, call AutofillForm with `values` (the details from the user\'s request) and omit `fields` — the decision model maps the fields from the user\'s saved profile in one step.'
+
+  it('tells the model about the Assist path on the grant — in Assist mode only', async () => {
+    stubTabsQuery(FG_TAB)
+    const assist = await within((requestTools(true, stubHooks({ mode: () => 'assist' })).RequestPageControl as any).execute({ plan: 'p' }, {} as any))
+    expect(assist).toMatchObject({ started: true, note: ASSIST_NOTE })
+
+    for (const decider of [stubHooks({ mode: () => 'shadow' }), stubHooks({ mode: () => 'off' }), undefined]) {
+      stubTabsQuery(FG_TAB)
+      const result = await within((requestTools(true, decider as DeciderHooks).RequestPageControl as any).execute({ plan: 'p' }, {} as any))
+      expect(result).toMatchObject({ started: true })
+      expect(result).not.toHaveProperty('note')
+    }
+
+    stubTabsQuery(FG_TAB)
+    const broken = stubHooks({ mode: () => { throw new Error('decider bug') } })
+    const survives = await within((requestTools(true, broken).RequestPageControl as any).execute({ plan: 'p' }, {} as any))
+    expect(survives).toMatchObject({ started: true })
+    expect(survives).not.toHaveProperty('note')
+  })
+
   it('does not call it when the user denies the session, and survives it throwing', async () => {
     stubTabsQuery(FG_TAB)
     const denied = vi.fn()

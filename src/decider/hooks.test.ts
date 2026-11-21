@@ -214,10 +214,10 @@ describe('observeStep', () => {
     expect(requests).toHaveLength(1)
   })
 
-  it('builds the request from the goal, plan, page and the last six journal summaries', async () => {
+  it('builds the request from the goal, plan, page and the last ten previous actions', async () => {
     const { engine, requests } = fakeEngine(answering('click [2]', 0.7))
     const hooks = hooksWith({ engine, goal: 'Send the contact form' })
-    const entries = journal(['a1', 'a2', 'a3', 'a4', 'a5', 'a6', 'a7', 'a8'])
+    const entries = journal(['a1', 'a2', 'a3', 'a4', 'a5', 'a6', 'a7', 'a8', 'a9', 'a10', 'a11', 'a12'])
     hooks.observeStep({ tabId: 7, snap: snapOf(FORM), spec: { action: 'click', index: 2 }, session: session({ journal: entries }) })
     await recordsAfter(1)
 
@@ -228,7 +228,7 @@ describe('observeStep', () => {
       plan: 'Fill in the contact form and stop before sending.',
       url: 'https://example.com/form',
       title: 'Contact form',
-      previous_actions: ['a3', 'a4', 'a5', 'a6', 'a7', 'a8'],
+      previous_actions: ['a3', 'a4', 'a5', 'a6', 'a7', 'a8', 'a9', 'a10', 'a11', 'a12'],
       page_text: 'Contact us. Full name, Topic, Email.',
     })
     const criteria = (requests[0].questions.next as { criteria: Record<string, unknown> }).criteria
@@ -858,7 +858,7 @@ describe('form filling', () => {
           { index: 1, reason: 'leave-empty' },
           { index: 2, reason: 'low-confidence' },
           { index: 3, reason: 'low-confidence' },
-          { index: 4, reason: 'low-confidence' },
+          { index: 4, reason: 'leave-empty' }, // p(no) 0.9: a confident "leave it unticked"
         ],
       })
       const [r] = await recordsAfter(1)
