@@ -19,3 +19,4 @@ export type DeciderWorkerReply =
   | { type: 'boot-failed'; message: string }
   | { type: 'result'; id: string; result: DecisionResult }
   | { type: 'failed'; id: string; message: string }
+  | { type: 'disposed' }

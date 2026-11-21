@@ -3,11 +3,12 @@
 // design: rendering, packing, readout and table math all live in tested pure modules.
 
 import * as ort from 'onnxruntime-web/webgpu'
+import { DECIDER_MAX_TOKENS } from './config'
 import { createEncoder } from './tokenizer'
 import { parseManifest, type DeciderManifest } from './manifest'
 import { renderRequest } from './prompt'
 import { packPass } from './pack'
-import { codeProbabilities, toAnswer, type Answer } from './readout'
+import { CODE_ROWS_WIDTH, codeProbabilities, toAnswer, type Answer } from './readout'
 import { TableReader } from './tables'
 import type { DeciderWorkerReply, DeciderWorkerRequest } from './protocol'
 import type { DecisionRequest } from './request'
@@ -67,13 +68,21 @@ async function open(modelId: string, wasmUrl: string): Promise<{ boot: Boot; boo
   try {
     const openTable = async (file: string): Promise<SyncHandle> => {
       const fh = (await dir.getFileHandle(file)) as FileSystemFileHandle & {
-        createSyncAccessHandle(): Promise<SyncHandle>
+        createSyncAccessHandle(opts?: { mode: 'read-only' }): Promise<SyncHandle>
       }
-      const h = await fh.createSyncAccessHandle()
+      const h = await fh.createSyncAccessHandle({ mode: 'read-only' })
       handles.push(h)
       return h
     }
     const { blockSize, embed, ple } = manifest.tables
+    if (embed.blocks * blockSize !== manifest.hidden) {
+      throw new Error(`manifest: embed table is ${embed.blocks * blockSize} wide, expected hidden=${manifest.hidden}`)
+    }
+    if (ple.blocks * blockSize !== manifest.layers * manifest.pleDim) {
+      throw new Error(
+        `manifest: ple table is ${ple.blocks * blockSize} wide, expected layers*pleDim=${manifest.layers * manifest.pleDim}`,
+      )
+    }
     const embedReader = new TableReader(await openTable(embed.file), embed.blocks, blockSize)
     const pleReader = new TableReader(await openTable(ple.file), ple.blocks, blockSize)
 
@@ -88,12 +97,23 @@ async function open(modelId: string, wasmUrl: string): Promise<{ boot: Boot; boo
     ort.env.wasm.wasmPaths = { wasm: wasmUrl }
     // Extension pages are not cross-origin isolated, so there is no SharedArrayBuffer to thread on.
     ort.env.wasm.numThreads = 1
-    const backend: 'webgpu' | 'wasm' = (await hasWebGpu()) ? 'webgpu' : 'wasm'
-    const session = await ort.InferenceSession.create(torsoUrl, {
-      executionProviders: [backend],
-      graphOptimizationLevel: 'all',
-      externalData: [{ path: 'torso.onnx.data', data: dataUrl }],
-    })
+    const wanted: 'webgpu' | 'wasm' = (await hasWebGpu()) ? 'webgpu' : 'wasm'
+    const create = (ep: 'webgpu' | 'wasm') =>
+      ort.InferenceSession.create(torsoUrl, {
+        executionProviders: [ep],
+        graphOptimizationLevel: 'all',
+        externalData: [{ path: 'torso.onnx.data', data: dataUrl }],
+      })
+    let backend = wanted
+    let session: ort.InferenceSession
+    try {
+      session = await create(wanted)
+    } catch (err) {
+      if (wanted !== 'webgpu') throw err
+      // An adapter exists but the session would not build on it: fall back once.
+      backend = 'wasm'
+      session = await create('wasm')
+    }
     return {
       boot: { manifest, encode, session, embed: embedReader, ple: pleReader, handles, urls, backend },
       bootMs: Math.round(performance.now() - t0),
@@ -111,7 +131,8 @@ async function decide(b: Boot, request: DecisionRequest) {
   const rendered = renderRequest(request, b.encode, manifest.controlTokenIds)
   const packed = packPass(rendered.stateIds, rendered.questions.map((q) => q.ids))
   const T = packed.ids.length
-  if (T > manifest.maxLength) throw new Error(`too-long: ${T} tokens exceeds ${manifest.maxLength}`)
+  const cap = Math.min(manifest.maxLength, DECIDER_MAX_TOKENS)
+  if (T > cap) throw new Error(`too-long: ${T} tokens exceeds ${cap}`)
 
   const embeds = new Float32Array(T * manifest.hidden)
   const ple = new Float32Array(T * manifest.layers * manifest.pleDim)
@@ -127,6 +148,9 @@ async function decide(b: Boot, request: DecisionRequest) {
   }
   const out = await b.session.run(feeds, ['logits'])
   const logits = (await out.logits.getData()) as Float32Array
+  if (logits.length !== rendered.questions.length * CODE_ROWS_WIDTH) {
+    throw new Error(`logits: got ${logits.length} values, expected ${rendered.questions.length}x${CODE_ROWS_WIDTH}`)
+  }
   const answers: Record<string, Answer> = {}
   rendered.questions.forEach((q, row) => {
     const probs = codeProbabilities(logits, row, q.options.length, manifest.softcap, manifest.temperature)
@@ -181,5 +205,8 @@ self.onmessage = async (e: MessageEvent<DeciderWorkerRequest>) => {
     return
   }
 
-  if (msg.type === 'dispose') await release()
+  if (msg.type === 'dispose') {
+    await release()
+    post({ type: 'disposed' })
+  }
 }

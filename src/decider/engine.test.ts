@@ -17,7 +17,8 @@ class FakeWorker implements WorkerLike {
   addEventListener(t: 'message', l: (e: MessageEvent<DeciderWorkerReply>) => void) { if (t === 'message') this.listeners.push(l) }
   emit(data: DeciderWorkerReply) { for (const l of this.listeners) l({ data } as MessageEvent<DeciderWorkerReply>) }
   postMessage(m: DeciderWorkerRequest) {
-    if (m.type === 'init') this.emit({ type: 'ready', backend: 'wasm', bootMs: 1 })
+    if (m.type === 'dispose') this.emit({ type: 'disposed' })
+    else if (m.type === 'init') this.emit({ type: 'ready', backend: 'wasm', bootMs: 1 })
     else if (m.type === 'decide') {
       this.decides.push({ id: m.id, request: m.request })
       if (!this.held) this.emit({ type: 'result', id: m.id, result: resultFor(1) })
@@ -124,9 +125,54 @@ it('a worker-reported failure rejects just that call', async () => {
   expect(workers[0].terminated).toBe(false)
 })
 
-it('dispose terminates the worker', async () => {
+it('dispose waits for the worker to release, then terminates', async () => {
   const e = make()
   await e.decide(req())
-  e.dispose()
+  await e.dispose()
   expect(workers[0].terminated).toBe(true)
+})
+
+it('dispose terminates after 2s when the worker never replies', async () => {
+  const e = make()
+  await e.decide(req())
+  workers[0].postMessage = () => {}
+  const d = e.dispose()
+  await vi.advanceTimersByTimeAsync(1900)
+  expect(workers[0].terminated).toBe(false)
+  await vi.advanceTimersByTimeAsync(200)
+  await d
+  expect(workers[0].terminated).toBe(true)
+})
+
+it('two concurrent decides before boot share one boot', async () => {
+  const e = make()
+  const [a, b] = await Promise.all([e.decide(req('a')), e.decide(req('b'))])
+  expect(a?.tokens).toBe(1)
+  expect(b?.tokens).toBe(1)
+  expect(workers).toHaveLength(1)
+})
+
+it('dispose during boot settles the waiting call, and a later boot is not killed by the stale timer', async () => {
+  let first = true
+  const e = new DeciderEngine({
+    bootTimeoutMs: 1000,
+    spawn: () => {
+      const w = new FakeWorker()
+      if (first) {
+        first = false
+        w.postMessage = (m) => { if (m.type === 'dispose') w.emit({ type: 'disposed' }) }
+      }
+      return w
+    },
+  })
+  const a = e.decide(req('a'))
+  const aRejected = expect(a).rejects.toThrow(/disposed/)
+  await vi.advanceTimersByTimeAsync(0)
+  await e.dispose()
+  await aRejected
+  await e.warm()
+  expect(workers).toHaveLength(2)
+  await vi.advanceTimersByTimeAsync(2000)
+  expect(workers[1].terminated).toBe(false)
+  expect((await e.decide(req('b')))?.tokens).toBe(1)
 })

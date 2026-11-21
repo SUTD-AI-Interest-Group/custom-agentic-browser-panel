@@ -19,3 +19,6 @@ export function normalizeDecider(raw: unknown): DeciderSettings | undefined {
   if (typeof t === 'number' && Number.isFinite(t) && t >= 0.4 && t <= 0.95) out.actThreshold = t
   return out
 }
+
+/** Hard cap on a packed pass: at the model's 32768 the worker would allocate ~1.4 GB. */
+export const DECIDER_MAX_TOKENS = 8192

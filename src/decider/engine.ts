@@ -8,6 +8,8 @@ import { MODEL_ID } from './config'
 import type { DeciderWorkerReply, DeciderWorkerRequest, DecisionResult } from './protocol'
 import type { DecisionRequest } from './request'
 
+const DISPOSE_TIMEOUT_MS = 2000
+
 export interface WorkerLike {
   postMessage(m: DeciderWorkerRequest): void
   addEventListener(t: 'message', l: (e: MessageEvent<DeciderWorkerReply>) => void): void
@@ -80,11 +82,15 @@ export class DeciderEngine {
     })
   }
 
-  dispose(): void {
+  /**
+   * Drops queued calls (they resolve null), fails the in-flight one, and asks the worker to close
+   * its file handles before terminating it, so a caller can safely delete or re-import the model.
+   */
+  dispose(): Promise<void> {
     clearTimeout(this.idleTimer)
     for (const j of this.queue) j.resolve(null)
     this.queue = []
-    this.destroy(new Error('the decider engine was disposed'))
+    return this.destroy(new Error('the decider engine was disposed'), true)
   }
 
   private async pump(): Promise<void> {
@@ -130,6 +136,7 @@ export class DeciderEngine {
       this.onReady = null
       return
     }
+    if (msg.type === 'disposed') return
     const f = this.inFlight
     if (!f || f.id !== msg.id) return
     this.inFlight = null
@@ -139,13 +146,16 @@ export class DeciderEngine {
   }
 
   private async boot(): Promise<void> {
+    let worker: WorkerLike | null = null
     try {
-      const worker = this.spawn()
+      worker = this.spawn()
       worker.addEventListener('message', this.listener)
       // A worker that fails to parse fires `error`, never `message`.
+      const spawned = worker
+      const w = worker
       const target = worker as unknown as { addEventListener(t: 'error', l: (e: ErrorEvent) => void): void }
       target.addEventListener('error', (e) => {
-        if (this.worker !== worker) return
+        if (this.worker !== spawned) return
         const error = new Error(e.message || 'the decider worker crashed')
         this.onReady?.(error)
         this.destroy(error)
@@ -158,10 +168,11 @@ export class DeciderEngine {
           if (err) reject(err)
           else resolve()
         }
-        worker.postMessage({ type: 'init', modelId: MODEL_ID, wasmUrl })
+        w.postMessage({ type: 'init', modelId: MODEL_ID, wasmUrl })
       })
     } catch (err) {
-      this.destroy()
+      // Only tear down our own worker: a dispose during boot may already have replaced it.
+      if (this.worker === worker) this.destroy()
       throw err
     }
   }
@@ -182,26 +193,47 @@ export class DeciderEngine {
     })
   }
 
-  private destroy(reason?: Error) {
+  private destroy(reason?: Error, graceful = false): Promise<void> {
     clearTimeout(this.idleTimer)
     const worker = this.worker
     this.worker = null
     this.ready = null
+    // Settle an in-progress boot so nothing waits on a worker that no longer exists.
+    const pending = this.onReady
     this.onReady = null
-    if (worker) {
-      try {
-        worker.postMessage({ type: 'dispose' })
-      } catch {
-        /* already dead */
-      }
-      worker.terminate()
-    }
+    pending?.(reason ?? new Error('the decider was torn down'))
     const f = this.inFlight
     this.inFlight = null
     if (f) {
       clearTimeout(f.timer)
       f.reject(reason ?? new Error('the decider was torn down'))
     }
+    if (!worker) return Promise.resolve()
+    if (!graceful) {
+      try {
+        worker.postMessage({ type: 'dispose' })
+      } catch {
+        /* already dead */
+      }
+      worker.terminate()
+      return Promise.resolve()
+    }
+    return new Promise<void>((resolve) => {
+      const done = () => {
+        clearTimeout(t)
+        worker.terminate()
+        resolve()
+      }
+      const t = setTimeout(done, DISPOSE_TIMEOUT_MS)
+      worker.addEventListener('message', (e) => {
+        if (e.data?.type === 'disposed') done()
+      })
+      try {
+        worker.postMessage({ type: 'dispose' })
+      } catch {
+        done()
+      }
+    })
   }
 }
 
