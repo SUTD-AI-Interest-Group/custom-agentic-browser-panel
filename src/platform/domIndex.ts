@@ -12,6 +12,12 @@ export interface IndexedElement {
   name: string
   type?: string
   value?: string
+  /**
+   * Live checked state of an `input[type=checkbox|radio]`; absent for every
+   * other element. Replaces `value` for these inputs: their value attribute is
+   * a constant submit token (`"on"` by default) that says nothing about state.
+   */
+  checked?: boolean
   /** Viewport rect in CSS pixels. */
   rect: { x: number; y: number; width: number; height: number }
   /** Password/payment-like field — forces an approval card even in a session. */
@@ -394,6 +400,7 @@ function buildInteractiveIndex(attr: string, maxElements: number) {
     name: string
     type?: string
     value?: string
+    checked?: boolean
     rect: { x: number; y: number; width: number; height: number }
     sensitive: boolean
     href?: string
@@ -469,6 +476,7 @@ function buildInteractiveIndex(attr: string, maxElements: number) {
     // overload the way a direct el.closest('form') call would — same object
     // shape at runtime either way, just needs the cast spelled out.
     const form = closestAcrossShadow(el, 'form') as HTMLFormElement | null
+    const isCheckable = el.tagName === 'INPUT' && (type === 'checkbox' || type === 'radio')
     el.setAttribute(attr, String(index))
     out.push({
       index,
@@ -476,7 +484,10 @@ function buildInteractiveIndex(attr: string, maxElements: number) {
       role: el.getAttribute('role') ?? undefined,
       name: accessible,
       type,
-      value: input.value ? String(input.value).slice(0, 80) : undefined,
+      // A checkbox/radio's value attribute is a constant submit token ("on"),
+      // not state — report `checked` instead and omit the misleading value.
+      value: isCheckable ? undefined : input.value ? String(input.value).slice(0, 80) : undefined,
+      checked: isCheckable ? input.checked : undefined,
       rect: { x: r.left, y: r.top, width: r.width, height: r.height },
       sensitive,
       href: el.tagName === 'A' ? (el as HTMLAnchorElement).href : undefined,
@@ -539,7 +550,8 @@ export function serializeRegistry(elements: IndexedElement[]): string {
       const attrs = [
         e.type && e.type !== 'text' ? e.type : '',
         e.name ? `"${e.name}"` : '',
-        e.value ? `= "${e.value}"` : '',
+        e.checked === undefined && e.value ? `= "${e.value}"` : '',
+        e.checked === undefined ? '' : e.checked ? '(checked)' : '(unchecked)',
         e.sensitive ? '(sensitive)' : '',
       ]
         .filter(Boolean)

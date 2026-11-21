@@ -1,5 +1,6 @@
 import { describe, it, expect, afterEach, vi } from 'vitest'
 import { readFileSync } from 'node:fs'
+import { serializeRegistry } from './domIndex'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import { createRequire } from 'node:module'
@@ -884,5 +885,36 @@ describe('domIndex — bounded walk does not materialize the whole document (fol
     // assertion is what pins the early-stop down structurally.
     expect(spy.mock.calls.length).toBeLessThan(30)
     spy.mockRestore()
+  })
+})
+
+describe('domIndex — checkbox/radio report checked state, not the value attribute', () => {
+  const base = { tag: 'input', rect: { x: 0, y: 0, width: 1, height: 1 }, sensitive: false }
+
+  it('serializeRegistry renders (unchecked) / (checked) and no = "on"', () => {
+    const el = { ...base, index: 8, type: 'checkbox', name: 'I agree', value: 'on' }
+    expect(serializeRegistry([{ ...el, checked: false }])).toBe('[8]<input> checkbox "I agree" (unchecked)')
+    expect(serializeRegistry([{ ...el, checked: true }])).toBe('[8]<input> checkbox "I agree" (checked)')
+  })
+
+  it('the walker yields checked:false and no value for an unticked checkbox with value="on"', () => {
+    document.body.innerHTML = '<input type="checkbox" value="on" aria-label="I agree">'
+    const box = document.querySelector('input') as HTMLInputElement
+    stubLayoutFor(box)
+    const buildInteractiveIndex = extractInjected('buildInteractiveIndex')
+    const entry = buildInteractiveIndex('data-agent-idx', 200).elements[0]
+    expect(entry.checked).toBe(false)
+    expect(entry.value).toBeUndefined()
+    box.checked = true
+    document.querySelectorAll('[data-agent-idx]').forEach((n) => n.removeAttribute('data-agent-idx'))
+    expect(buildInteractiveIndex('data-agent-idx', 200).elements[0].checked).toBe(true)
+  })
+
+  it('a checked radio reports checked and no value', () => {
+    document.body.innerHTML = '<input type="radio" value="a" aria-label="A" checked>'
+    stubLayoutFor(document.querySelector('input')!)
+    const r = extractInjected('buildInteractiveIndex')('data-agent-idx', 200).elements[0]
+    expect(r.checked).toBe(true)
+    expect(r.value).toBeUndefined()
   })
 })
