@@ -23,6 +23,11 @@ describe('nextActionRequest', () => {
     expect(r.actions.slice(-2)).toEqual([{ op: 'scroll' }, { op: 'done' }])
     const q = r.request.questions.next as { criteria: Record<string, string> }
     expect(q.criteria['type into [4]']).toBe('<input> email "Email address"')
+    expect(r.request.questions.next.instructions).toBe(
+      'What is the single next browser action that makes progress toward the goal?',
+    )
+    expect(q.criteria['scroll down']).toBe('reveal more of the page')
+    expect(q.criteria.done).toBe('the goal is complete, or the answer is now visible on the page')
   })
   it('slices previous_actions and adds page_text only when given', () => {
     const prev = Array.from({ length: 9 }, (_, i) => `a${i}`)
@@ -59,6 +64,21 @@ describe('form fill', () => {
     expect(Object.keys((request.questions.f6 as { criteria: object }).criteria)).toEqual(['Billing', 'Sales'])
     expect(request.questions.f8.type).toBe('noul')
     expect(questions).toHaveLength(7)
+    expect(Object.keys(request.state as object)).toEqual(['goal', 'page', 'info'])
+  })
+  it('skips selects with fewer than 2 options', () => {
+    expect(formFields(CONTACT_FORM, { 6: ['Only'] }).some((f) => f.index === 6)).toBe(false)
+    expect(formFields(CONTACT_FORM, {}).some((f) => f.index === 6)).toBe(false)
+  })
+  it('planFill edge cases', () => {
+    const { questions } = fillRequest({ goal: 'g', url: 'u', title: 't', lookup, fields })
+    const a: Answer = { kind: 'choice', options: [], probs: [], top: 'profile.nope', p: 0.9, confidence: 0.9 }
+    const p1 = planFill(questions.filter((q) => q.name === 'f3'), { f3: a }, lookup, 0.6)
+    expect(p1.left).toEqual([{ index: 3, reason: 'low-confidence' }])
+    const p2 = planFill(questions.filter((q) => q.name === 'f3'), { f3: { ...a, top: 'profile.constructor' } }, lookup, 0.6)
+    expect(p2.fills).toEqual([])
+    const chk = fillRequest({ goal: 'g', url: 'u', title: 't', lookup, fields: [{ ...fields[5], checked: true }] })
+    expect(planFill(chk.questions, {}, lookup, 0.6).left).toEqual([{ index: 8, reason: 'already-set' }])
   })
   it('planFill', () => {
     const { questions } = fillRequest({ goal: 'g', url: 'u', title: 't', lookup, fields })

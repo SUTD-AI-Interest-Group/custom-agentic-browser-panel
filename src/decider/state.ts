@@ -102,7 +102,10 @@ export function formFields(elements: IndexedElement[], selectOptions: Record<num
     if (e.sensitive) continue
     const t = (e.type ?? '').toLowerCase()
     if (e.tag === 'select') {
-      out.push({ index: e.index, kind: 'select', label: line(e), options: selectOptions[e.index] ?? [] })
+      // A choice question needs at least 2 options (and at most 255); a select with
+      // fewer has nothing to decide, so it produces no field.
+      const options = selectOptions[e.index] ?? []
+      if (options.length >= 2) out.push({ index: e.index, kind: 'select', label: line(e), options })
     } else if (e.tag === 'input' && t === 'checkbox') {
       out.push({ index: e.index, kind: 'checkbox', label: line(e), checked: e.checked === true })
     } else if (isTypeable(e)) {

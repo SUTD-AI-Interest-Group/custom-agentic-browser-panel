@@ -16,14 +16,17 @@ export function planFill(
   for (const q of questions) {
     const a = answers[q.name]
     const index = q.field.index
+    if (q.field.kind === 'checkbox' && q.field.checked) {
+      plan.left.push({ index, reason: 'already-set' })
+      continue
+    }
     if (!a) {
       plan.left.push({ index, reason: 'low-confidence' })
       continue
     }
     if (q.field.kind === 'checkbox') {
       const yes = a.yes ?? 0
-      if (q.field.checked) plan.left.push({ index, reason: 'already-set' })
-      else if (yes >= threshold) plan.fills.push({ index, kind: 'checkbox', key: 'tick', value: 'tick', p: yes })
+      if (yes >= threshold) plan.fills.push({ index, kind: 'checkbox', key: 'tick', value: 'tick', p: yes })
       else plan.left.push({ index, reason: 'low-confidence' })
       continue
     }
@@ -41,7 +44,8 @@ export function planFill(
     }
     const [group, ...rest] = a.top.split('.')
     const k = rest.join('.')
-    const value = group === 'profile' ? lookup.profile[k] : group === 'request' ? lookup.request[k] : undefined
+    const table = group === 'profile' ? lookup.profile : group === 'request' ? lookup.request : undefined
+    const value = table && Object.hasOwn(table, k) ? table[k] : undefined
     if (value === undefined) plan.left.push({ index, reason: 'low-confidence' })
     else plan.fills.push({ index, kind: 'text', key: a.top, value, p: a.p })
   }
