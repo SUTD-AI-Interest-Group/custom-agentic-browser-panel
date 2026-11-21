@@ -15,6 +15,7 @@ import { buildMcpTools } from '../mcp/tools'
 import type { QueuedImage } from '../agent/agent'
 import type { ToolSet } from 'ai'
 import { unmountPresence } from '../platform/presence'
+import { forwardDeciderHooks } from '../decider/relay'
 
 const executing = new Map<string, AbortController>()
 const sessions = new Map<string, ControlSession>()
@@ -180,7 +181,10 @@ async function execute(job: ChatRun, requestId: string, signal: AbortSignal) {
           return pane === 'partner' ? splitPartnerOf(tab) : tab
         },
         park: () => { runtime.parked = true },
-      })
+      },
+      // Shadow decider: the engine is panel-resident, so steps are forwarded there
+      // (fire-and-forget; nothing is sent unless the user turned it on).
+      forwardDeciderHooks({ conversationId: job.conversationId, settings: () => settings.decider }))
       signal.throwIfAborted()
       toolsets.set(job.id, runtime); state = runtime
     }

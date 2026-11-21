@@ -45,6 +45,7 @@ import { budgetOutcome, escapeHtml, RUN_MEMORY_BYTES, RUN_TIMEOUT_MS } from '../
 import { saveArtifact, updateArtifactContent } from '../data/artifacts'
 import { createProposeResearchTool } from './research'
 import { buildCatalog, searchCatalog, partitionToolNames, type CatalogEntry } from './toolDiscovery'
+import type { DeciderHooks } from '../decider/hooks'
 import {
   hasElementChanged,
   isPointOfNoReturn,
@@ -283,6 +284,13 @@ export function createAgentTools(
   extraTools?: ToolSet,
   /** Which tab this turn acts on, and what to do when it isn't in front. */
   pageTarget?: PageTarget,
+  /**
+   * The on-device decision model's hooks (src/decider/hooks.ts), built once per
+   * continuation chain. Additive only: every call below is synchronous,
+   * fire-and-forget and guarded, so no tool's result or timing depends on it.
+   * Absent (research, the background tool host, tests) means no decider at all.
+   */
+  decider?: DeciderHooks,
 ): ToolSet {
   const resolveTab: (pane?: PaneTarget) => Promise<chrome.tabs.Tab | undefined> =
     pageTarget?.resolveTab ??
@@ -1464,6 +1472,13 @@ export function createAgentTools(
         })()
         const granted = await pageControl.requestSession({ plan, host, origin, tabId: tab.id })
         if (!granted) return DENIED
+        // Let the decision model start loading while the model reads the page —
+        // never awaited, and guarded so not even a synchronous throw reaches the grant.
+        try {
+          decider?.sessionGranted()
+        } catch {
+          /* additive only */
+        }
         // Load the control cluster so the model can act without a second GetTool
         // round-trip once a session is open. GetScreenshot joins it so the model can
         // check its own work — confirm a click landed, catch a modal the element
@@ -1569,6 +1584,16 @@ export function createAgentTools(
           snap = await snapshotPage(tab.id)
         } catch (err) {
           return { error: `Cannot read this page (${err instanceof Error ? err.message : String(err)}).` }
+        }
+        // Shadow decider: records what the on-device model would have done with
+        // the page the LLM chose from. Fire-and-forget — nothing on this step's
+        // path waits for it — and guarded, so this step's result cannot depend on
+        // it in any way. Before the point-of-no-return card, so a slow human
+        // approval never shifts the page out from under the comparison.
+        try {
+          decider?.observeStep({ tabId: tab.id, snap, spec, session })
+        } catch {
+          /* additive only */
         }
         const el = spec.index !== undefined ? snap.elements[spec.index] : undefined
         const por = isPointOfNoReturn(spec, el, session.origin)

@@ -10,6 +10,8 @@ import {
 } from '../../decider/config'
 import { getDeciderEngine } from '../../decider/engine'
 import type { DecisionRequest } from '../../decider/request'
+import { clearShadow, listShadow } from '../../decider/shadowStore'
+import { summarize, type DeciderStats } from '../../decider/stats'
 import { deleteModel, getModelStatus, importModel, type ImportSource, type ModelStatus } from '../../decider/storage'
 import { Section, Select } from './primitives'
 
@@ -96,6 +98,140 @@ async function runSelfTest(onRow: (i: number, n: number) => void): Promise<SelfT
 }
 
 const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e))
+
+const pct = (x: number) => `${Math.round(x * 100)}%`
+
+interface ShadowView {
+  stats: DeciderStats
+  /** Decisions with a verdict: summarize()'s agreement rates leave `agree: null` out. */
+  judged: number
+}
+
+async function loadShadowView(threshold: number): Promise<ShadowView> {
+  const records = await listShadow()
+  return {
+    stats: summarize(records, threshold),
+    judged: records.filter((r) => !r.skipped && r.agree !== null).length,
+  }
+}
+
+const cell = { padding: '2px 8px 2px 0', textAlign: 'left' as const }
+
+/**
+ * The shadow log, summarized: how often the decision model would have done what the chat model
+ * did, how well its confidence predicts that, how much it would take over at the current
+ * threshold, and what it costs in time. The records are op names, indices and timings only
+ * (shadowStore.ts), so nothing here can show page content or what was typed.
+ */
+function ShadowStats({ threshold }: { threshold: number }) {
+  const [view, setView] = useState<ShadowView | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const [armed, setArmed] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const [nonce, setNonce] = useState(0)
+
+  useEffect(() => {
+    let live = true
+    loadShadowView(threshold)
+      .then((v) => {
+        if (!live) return
+        setView(v)
+        setError(null)
+      })
+      .catch((e) => live && setError(`Could not read the shadow log: ${errorText(e)}`))
+    return () => {
+      live = false
+    }
+  }, [threshold, nonce])
+
+  useEffect(() => {
+    if (!armed) return
+    const t = setTimeout(() => setArmed(false), 4000)
+    return () => clearTimeout(t)
+  }, [armed])
+
+  async function doClear() {
+    setArmed(false)
+    setBusy(true)
+    try {
+      await clearShadow()
+    } catch (e) {
+      setError(`Could not clear the shadow log: ${errorText(e)}`)
+    } finally {
+      setBusy(false)
+      setNonce((n) => n + 1)
+    }
+  }
+
+  const s = view?.stats
+  const empty = !!s && s.n === 0 && s.skipped === 0
+  const kind = (k: 'next' | 'fill') => (s && s.byKind[k].n ? `${pct(s.byKind[k].agreement)} of ${s.byKind[k].n}` : '—')
+  const buckets = s?.calibration.filter((b) => b.n > 0) ?? []
+
+  return (
+    <Section
+      title="Shadow log"
+      hint="What the decision model would have done at each page-control step, next to what the chat model did. Kept on this device: actions, indices and timings — never page content or anything typed."
+    >
+      {!view && !error && <p className="hint">Loading…</p>}
+      {empty && <p className="hint">Nothing recorded yet. Set Mode to Shadow, then let the agent control a page.</p>}
+      {s && !empty && (
+        <>
+          <p className="hint" role="status" data-testid="decider-stats">
+            {s.n} decision{s.n === 1 ? '' : 's'} · {s.skipped} skipped
+            <br />
+            Agreement {view.judged ? `${pct(s.agreement)} of ${view.judged} judged` : '—'} · next steps {kind('next')} · form
+            fills {kind('fill')}
+            <br />
+            Would act at {threshold}: {pct(s.coverage)} of decisions
+            <br />
+            Latency p50 {s.p50} ms · p95 {s.p95} ms · cold p50 {s.coldP50 === null ? '—' : `${s.coldP50} ms`}
+          </p>
+          {buckets.length > 0 && (
+            <table className="hint" style={{ borderCollapse: 'collapse', fontVariantNumeric: 'tabular-nums' }}>
+              <thead>
+                <tr>
+                  <th style={cell}>Confidence</th>
+                  <th style={cell}>Decisions</th>
+                  <th style={cell}>Agreement</th>
+                </tr>
+              </thead>
+              <tbody>
+                {buckets.map((b) => (
+                  <tr key={b.lo}>
+                    <td style={cell}>
+                      {b.lo.toFixed(1)}–{b.hi.toFixed(1)}
+                    </td>
+                    <td style={cell}>{b.n}</td>
+                    <td style={cell}>{pct(b.agreement)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+          <p className="hint">Agreement counts only steps the decision model has an option for (clicks, typing, selects, scrolling down).</p>
+        </>
+      )}
+      <div className="field-row">
+        <button className="btn small ghost" disabled={busy} onClick={() => setNonce((n) => n + 1)}>
+          Refresh
+        </button>
+        <button
+          className={`btn small ${armed ? 'danger-solid' : 'ghost'}`}
+          disabled={busy || empty || !view}
+          onClick={() => (armed ? void doClear() : setArmed(true))}
+        >
+          {armed ? 'Sure?' : 'Clear'}
+        </button>
+      </div>
+      {error && (
+        <p className="hint" role="alert">
+          {error}
+        </p>
+      )}
+    </Section>
+  )
+}
 
 function statusLine(s: ModelStatus | null): string {
   if (!s) return 'Checking…'
@@ -369,6 +505,7 @@ export default function ExperimentalTab({
           </p>
         )}
       </Section>
+      <ShadowStats threshold={threshold} />
     </div>
   )
 }

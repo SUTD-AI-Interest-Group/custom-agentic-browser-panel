@@ -50,6 +50,7 @@ import { snapshotPage } from '../platform/domIndex'
 import { runControlStep, type ControlSession } from './pageControl'
 import type { IndexedElement, PageSnapshot } from '../platform/domIndex'
 import type { TabFacts } from './tabPolicy'
+import { createDeciderHooks, type DeciderHooks } from '../decider/hooks'
 
 const fact = (over: Partial<TabFacts> & { tabId: number }): TabFacts & { url: string } => ({
   windowId: 1,
@@ -331,6 +332,183 @@ describe('AutofillForm — re-checks isForeground per field, not only at tool en
     expect(result.parked).toBe(true)
     expect(parked).toHaveLength(1)
     expect(runControlStep).not.toHaveBeenCalled()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// The shadow decider (src/decider/hooks.ts) is additive: ControlPage's result
+// must not depend on it in any way — not its latency, not its failure, not a
+// decision that never settles (Review Focus 2: the WASM fallback takes seconds).
+// ---------------------------------------------------------------------------
+
+function buildDeciderTools(opts: { session: ControlSession; decider?: DeciderHooks; requestApproval?: ApprovalGate }) {
+  const pageControl: PageControlGate = {
+    requestSession: async () => true,
+    session: () => opts.session,
+    endSession: () => {
+      opts.session.active = false
+    },
+  }
+  return createAgentTools(
+    opts.requestApproval ?? (async () => true),
+    'all-tabs',
+    new Set(),
+    pageControl,
+    null,
+    false,
+    [],
+    () => 'always',
+    'conv-1',
+    new Set(),
+    undefined,
+    undefined,
+    { resolveTab: async () => FG_TAB, park: () => {} },
+    opts.decider,
+  )
+}
+
+function stubHooks(over: Partial<DeciderHooks> = {}): DeciderHooks {
+  return {
+    mode: () => 'shadow',
+    threshold: () => 0.6,
+    sessionGranted: vi.fn(),
+    observeStep: vi.fn(),
+    observeFill: vi.fn(),
+    mapForm: vi.fn(async () => ({ error: 'unused' })),
+    ...over,
+  }
+}
+
+/** Resolves with the value, or rejects after `ms` — so a hang fails fast instead of timing out the file. */
+function within<T>(p: Promise<T>, ms = 1000): Promise<T> {
+  return Promise.race([p, new Promise<T>((_, reject) => setTimeout(() => reject(new Error(`still pending after ${ms} ms`)), ms))])
+}
+
+describe('ControlPage — the shadow decider never changes or delays a step', () => {
+  beforeEach(() => {
+    vi.mocked(snapshotPage).mockReset()
+    vi.mocked(runControlStep).mockReset()
+    vi.mocked(snapshotPage).mockResolvedValue(snap([el({ index: 0, name: 'Name', tag: 'input' }), el({ index: 1, name: 'Next' })]))
+    vi.mocked(runControlStep).mockResolvedValue({ ok: true, message: 'clicked', registry: 'fresh', origin: 'https://example.com' })
+  })
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  const NORMAL = { ok: true, message: 'clicked', urlChanged: false, elements: 'fresh' }
+
+  it('returns its normal result while observeStep holds a promise that never settles', async () => {
+    stubTabsQuery(FG_TAB)
+    // Typed void, but an implementation that started awaiting it would hang right here.
+    const observeStep = vi.fn(() => new Promise<never>(() => {})) as unknown as DeciderHooks['observeStep']
+    const tools = buildDeciderTools({ session: buildSession(), decider: stubHooks({ observeStep }) })
+    const result = await within((tools.ControlPage as any).execute({ action: 'click', index: 1 }, {} as any))
+    expect(result).toEqual(NORMAL)
+    expect(runControlStep).toHaveBeenCalledTimes(1)
+    expect(observeStep).toHaveBeenCalledTimes(1)
+  })
+
+  it('returns its normal result with the real hooks while the engine never answers', async () => {
+    vi.stubGlobal('chrome', {
+      tabs: { query: vi.fn(async () => [FG_TAB]) },
+      // readViewportText's injection: answers, so the hooks reach engine.decide.
+      scripting: { executeScript: vi.fn(async () => [{ result: 'page text' }]) },
+    })
+    const decide = vi.fn(() => new Promise<never>(() => {}))
+    const decider = createDeciderHooks({
+      settings: () => ({ mode: 'shadow' }),
+      conversationId: 'conv-1',
+      currentGoal: () => 'click next',
+      chatModel: () => null,
+      engine: { decide, warm: vi.fn(async () => {}) },
+      modelReady: async () => true,
+    })
+    decider.sessionGranted() // resolves readiness, as RequestPageControl would have
+    await new Promise((r) => setTimeout(r, 10))
+    const tools = buildDeciderTools({ session: buildSession(), decider })
+    const result = await within((tools.ControlPage as any).execute({ action: 'click', index: 1 }, {} as any))
+    expect(result).toEqual(NORMAL)
+    await vi.waitFor(() => expect(decide).toHaveBeenCalledTimes(1)) // it really was in flight
+  })
+
+  it('returns its normal result when observeStep throws synchronously', async () => {
+    stubTabsQuery(FG_TAB)
+    const observeStep = vi.fn(() => {
+      throw new Error('decider bug')
+    })
+    const tools = buildDeciderTools({ session: buildSession(), decider: stubHooks({ observeStep }) })
+    const result = await within((tools.ControlPage as any).execute({ action: 'click', index: 1 }, {} as any))
+    expect(result).toEqual(NORMAL)
+  })
+
+  it('observes the step it was handed, before the point-of-no-return card', async () => {
+    stubTabsQuery(FG_TAB, FG_TAB)
+    const order: string[] = []
+    const observeStep = vi.fn(() => {
+      order.push('observe')
+    })
+    const requestApproval: ApprovalGate = vi.fn(async () => {
+      order.push('approval')
+      return true
+    })
+    const session = buildSession()
+    const tools = buildDeciderTools({ session, decider: stubHooks({ observeStep }), requestApproval })
+    const spec = { action: 'click', index: 1, sensitive: true }
+    await within((tools.ControlPage as any).execute(spec, {} as any))
+    expect(order).toEqual(['observe', 'approval'])
+    expect(observeStep).toHaveBeenCalledWith({
+      tabId: 1,
+      snap: expect.objectContaining({ url: 'https://example.com/', elements: expect.any(Array) }),
+      spec,
+      session,
+    })
+  })
+
+  it('without a decider, behaves exactly as before', async () => {
+    stubTabsQuery(FG_TAB)
+    const tools = buildDeciderTools({ session: buildSession() })
+    const result = await within((tools.ControlPage as any).execute({ action: 'click', index: 1 }, {} as any))
+    expect(result).toEqual(NORMAL)
+  })
+})
+
+describe('RequestPageControl — tells the decider a session was granted', () => {
+  beforeEach(() => {
+    vi.mocked(snapshotPage).mockReset()
+    vi.mocked(snapshotPage).mockResolvedValue(snap([el({ index: 0 })]))
+  })
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  function requestTools(granted: boolean, decider: DeciderHooks) {
+    const pageControl: PageControlGate = { requestSession: async () => granted, session: () => null, endSession: () => {} }
+    return createAgentTools(
+      async () => true, 'all-tabs', new Set(), pageControl, null, false, [], () => 'always', 'conv-1', new Set(),
+      undefined, undefined, { resolveTab: async () => FG_TAB, park: () => {} }, decider,
+    )
+  }
+
+  it('calls sessionGranted after the grant, and never awaits it', async () => {
+    stubTabsQuery(FG_TAB)
+    const sessionGranted = vi.fn(() => new Promise<never>(() => {})) as unknown as DeciderHooks['sessionGranted']
+    const result = await within((requestTools(true, stubHooks({ sessionGranted })).RequestPageControl as any).execute({ plan: 'p' }, {} as any))
+    expect(result).toMatchObject({ started: true })
+    expect(sessionGranted).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not call it when the user denies the session, and survives it throwing', async () => {
+    stubTabsQuery(FG_TAB)
+    const denied = vi.fn()
+    await within((requestTools(false, stubHooks({ sessionGranted: denied })).RequestPageControl as any).execute({ plan: 'p' }, {} as any))
+    expect(denied).not.toHaveBeenCalled()
+
+    stubTabsQuery(FG_TAB)
+    const throws = vi.fn(() => {
+      throw new Error('decider bug')
+    })
+    const result = await within((requestTools(true, stubHooks({ sessionGranted: throws })).RequestPageControl as any).execute({ plan: 'p' }, {} as any))
+    expect(result).toMatchObject({ started: true })
   })
 })
 

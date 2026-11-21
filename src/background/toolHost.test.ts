@@ -1,13 +1,24 @@
 import 'fake-indexeddb/auto'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { getChatRun, listChatRuns, removeChatRuns, updateChatRun, type ChatRun } from '../data/chatRuns'
-const fixture = vi.hoisted(() => ({ policy: 'ask', mutations: 0, disconnect: vi.fn() }))
+const fixture = vi.hoisted(() => ({ policy: 'ask', mutations: 0, disconnect: vi.fn(), decider: undefined as { mode: string } | undefined, send: (() => {}) as (msg: unknown) => unknown }))
 vi.mock('../data/settings', () => ({
-  loadSettings: async () => ({ providers: [], tabAccess: 'all-tabs', toolPolicies: { Execute: fixture.policy } }),
+  loadSettings: async () => ({ providers: [], tabAccess: 'all-tabs', toolPolicies: { Execute: fixture.policy }, decider: fixture.decider }),
   toolPolicy: () => fixture.policy,
 }))
-vi.mock('../tools/tools', () => ({ createAgentTools: (approve: (r: unknown) => Promise<boolean>, _access: unknown, _capabilities: unknown, control: any) => ({
+vi.mock('../tools/tools', () => ({ createAgentTools: (approve: (r: unknown) => Promise<boolean>, _access: unknown, _capabilities: unknown, control: any, ...rest: any[]) => ({
   Control: { execute: async () => ({ allowed: await control.requestSession({ plan: 'Fixture', host: 'example.com', origin: 'https://example.com', tabId: 7 }) }) },
+  // Stands in for ControlPage: hands its step to the decider argument (createAgentTools' last).
+  Observe: { execute: async () => {
+    rest[9]?.observeStep({
+      tabId: 7,
+      snap: { url: 'https://example.com/', title: 'Fixture', origin: 'https://example.com', dpr: 1, text: '', truncated: false,
+        elements: [{ index: 0, tag: 'input', type: 'password', name: 'Password', value: 'hunter2', sensitive: true, rect: { x: 0, y: 0, width: 1, height: 1 } }] },
+      spec: { action: 'type', index: 0, text: 'hunter2' },
+      session: { tabId: 7, origin: 'https://example.com', plan: 'Fixture', active: true },
+    })
+    return { observed: true }
+  } },
   Execute: { execute: async (input: { once?: boolean }) => {
     const allowed = await approve({ toolName: 'Execute', summary: 'Make a change', reason: 'Fixture', once: input.once })
     if (allowed) fixture.mutations++
@@ -37,8 +48,8 @@ function job(once = false): ChatRun {
 }
 beforeEach(async () => {
   fixture.disconnect.mockClear()
-  await removeChatRuns(); fixture.mutations = 0; fixture.policy = 'ask'
-  vi.stubGlobal('chrome', { runtime: { id: 'fixture', getURL: url, onMessage: { addListener: (fn: typeof listener) => { listener = fn } } }, notifications: { create: vi.fn(async () => 'notice') } })
+  await removeChatRuns(); fixture.mutations = 0; fixture.policy = 'ask'; fixture.decider = undefined; fixture.send = () => {}
+  vi.stubGlobal('chrome', { runtime: { id: 'fixture', getURL: url, sendMessage: (msg: unknown) => fixture.send(msg), onMessage: { addListener: (fn: typeof listener) => { listener = fn } } }, notifications: { create: vi.fn(async () => 'notice') } })
   installToolHost()
 })
 afterEach(async () => {
@@ -101,6 +112,32 @@ describe('background tool permissions', () => {
     fixture.policy = 'never'; const run = job(); run.allowedTools = ['Execute']
     await updateChatRun('chat', () => run); await poll(run); await finished()
     expect(fixture.mutations).toBe(0)
+  })
+  it('forwards a page step to the panel decider for this conversation, without the typed value', async () => {
+    fixture.policy = 'always'; fixture.decider = { mode: 'shadow' }
+    const sent: any[] = []
+    fixture.send = (msg) => { sent.push(msg); return Promise.resolve() }
+    const run = job(); run.toolRequests[0].name = 'Observe'
+    await updateChatRun('chat', () => run); await poll(run); await finished()
+    expect((await getChatRun('chat'))?.toolRequests[0].output).toEqual({ observed: true })
+    expect(sent).toHaveLength(1)
+    expect(sent[0]).toMatchObject({ type: 'decider.step', conversationId: 'chat', step: { tabId: 7, spec: { action: 'type', index: 0 } } })
+    expect(JSON.stringify(sent)).not.toContain('hunter2')
+  })
+  it('a missing panel (or the decider off) never changes the tool result', async () => {
+    fixture.policy = 'always'; fixture.decider = { mode: 'shadow' }
+    fixture.send = () => Promise.reject(new Error('Could not establish connection. Receiving end does not exist.'))
+    const run = job(); run.toolRequests[0].name = 'Observe'
+    await updateChatRun('chat', () => run); await poll(run); await finished()
+    expect((await getChatRun('chat'))?.toolRequests[0]).toMatchObject({ output: { observed: true }, error: undefined })
+
+    releaseChatTools('chat', run.id)
+    fixture.decider = { mode: 'off' }
+    const sent: unknown[] = []
+    fixture.send = (msg) => { sent.push(msg) }
+    const off = job(); off.toolRequests[0].name = 'Observe'
+    await updateChatRun('chat', () => off); await poll(off); await finished()
+    expect(sent).toEqual([])
   })
   it('does not replay a call left executing by a lost worker', async () => {
     const run = job(); run.toolRequests[0].state = 'executing'

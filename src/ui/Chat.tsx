@@ -16,6 +16,7 @@ import { isContextOverflow } from '../agent/resilience'
 import { summarizeSpan } from '../agent/summarizeSpan'
 import { sumUsage } from '../agent/usage'
 import { ensureVisionCapability } from '../agent/vision'
+import { createDeciderHooks, latestUserText } from '../decider/hooks'
 import {
   dehydrateHistory,
   hydrateHistory,
@@ -3213,6 +3214,26 @@ export default function Chat({
     // next cycle's first prepareStep pick up what the last one left behind. The
     // same instance is handed to createAgentTools + runAgentTurn every cycle below.
     const imageQueue: QueuedImage[] = []
+    // The on-device decision model's hooks (src/decider/hooks.ts). Chain-scoped
+    // like imageQueue and handed to createAgentTools every cycle, so its step
+    // counter spans every auto-continue and steer of this turn and the model's
+    // readiness is probed once per chain. Inert unless Settings → Experimental
+    // turns it on AND the model is imported; even then it only records — it
+    // never changes, gates or delays a step. Every getter reads a ref, so a
+    // mid-chain settings change and a steer (spliced into historyRef) are seen
+    // on the very next step.
+    const decider = createDeciderHooks({
+      settings: () => settingsRef.current.decider,
+      conversationId,
+      currentGoal: () => latestUserText(historyRef.current),
+      chatModel: () => {
+        try {
+          return createModel(model.provider, model.modelId)
+        } catch {
+          return null
+        }
+      },
+    })
     // Raised by a page tool that needs this chat's tab in front (see PageTarget
     // in tools.ts). Chain-scoped like imageQueue, but CLEARED at the top of each
     // cycle: a park ends one cycle, and the cycle that resumes when the user
@@ -3319,6 +3340,17 @@ export default function Chat({
       return true
     }
 
+    // Under durable chat the tools EXECUTE in the service worker (toolHost.ts),
+    // whose forwarding hooks post each page-control step here, where the engine
+    // lives. Registered for exactly the life of this chain — removed in the
+    // finally below on every exit — so a step can only ever reach the hooks of
+    // the chain that took it; relay() also drops other conversations' steps and
+    // anything malformed. Returns nothing, so the sender never waits on it.
+    const deciderRelay = (msg: unknown, sender: chrome.runtime.MessageSender) => {
+      if (sender.id === chrome.runtime.id && sender.url === chrome.runtime.getURL('background.js')) decider.relay(msg)
+    }
+    chrome.runtime.onMessage.addListener(deciderRelay)
+
     try {
       while (true) {
         parked = null
@@ -3379,6 +3411,7 @@ export default function Chat({
                   },
               park: (reason) => { parked = reason },
             },
+            decider,
           ),
           abortSignal: controller.signal,
           onUpdate: patch(assistantId, base),
@@ -3587,6 +3620,9 @@ export default function Chat({
         trace?.end({ metadata: { error: message } })
       }
     } finally {
+      // This chain's decider stops listening on every exit (a parked chain's
+      // resume is a new chain with its own hooks and listener).
+      chrome.runtime.onMessage.removeListener(deciderRelay)
       // Deny anything still pending — front AND everything queued behind it —
       // so a chain that ends (any reason) never leaves an orphaned tool call
       // awaiting a card nobody will ever answer.
