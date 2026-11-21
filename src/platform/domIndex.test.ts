@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach, vi } from 'vitest'
 import { readFileSync } from 'node:fs'
-import { serializeRegistry } from './domIndex'
+import { readSelectOptions, serializeRegistry } from './domIndex'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import { createRequire } from 'node:module'
@@ -916,5 +916,55 @@ describe('domIndex — checkbox/radio report checked state, not the value attrib
     const r = extractInjected('buildInteractiveIndex')('data-agent-idx', 200).elements[0]
     expect(r.checked).toBe(true)
     expect(r.value).toBeUndefined()
+  })
+})
+
+describe('readSelectOptions — the option labels of indexed <select>s (assist form filling)', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  const FORM = `
+    <select data-agent-idx="3" aria-label="Topic">
+      <option value="">Choose a topic…</option>
+      <option>Billing</option>
+      <option value="tech">  Technical support  </option>
+      <option disabled>Retired</option>
+      <option>Billing</option>
+      <option value="other">Other</option>
+    </select>
+    <select data-agent-idx="5"><option>Only</option></select>
+    <input data-agent-idx="4" type="text">`
+
+  it("the injected reader is self-contained, and returns each select's choosable labels, trimmed and de-duplicated", () => {
+    document.body.innerHTML = FORM
+    // extractInjected runs the REAL source with no outer scope: a closure over module state would throw here.
+    const inj = extractInjected('injSelectOptions')
+    expect(inj('data-agent-idx', [3, 4, 5, 9])).toEqual({
+      // The empty-value placeholder and the disabled option are not choices; each label is what
+      // injSelect matches on (o.text.trim()), so a chosen label selects its option.
+      3: ['Billing', 'Technical support', 'Other'],
+      5: ['Only'],
+      // [4] is not a <select> and [9] is not on the page: absent, not empty.
+    })
+  })
+
+  it('injects into the tab with the indices it was asked about, issued before it returns', async () => {
+    const executeScript = vi.fn(async () => [{ result: { 3: ['Billing', 'Sales'] } }])
+    vi.stubGlobal('chrome', { scripting: { executeScript } })
+    const p = readSelectOptions(7, [3])
+    expect(executeScript).toHaveBeenCalledTimes(1) // synchronously: queued ahead of whatever the caller does next
+    expect(executeScript).toHaveBeenCalledWith(
+      expect.objectContaining({ target: { tabId: 7 }, args: ['data-agent-idx', [3]], func: expect.any(Function) }),
+    )
+    expect(await p).toEqual({ 3: ['Billing', 'Sales'] })
+  })
+
+  it('asks the page nothing for no selects, and reads a missing result as no options', async () => {
+    const executeScript = vi.fn(async () => [{ result: undefined }])
+    vi.stubGlobal('chrome', { scripting: { executeScript } })
+    expect(await readSelectOptions(7, [])).toEqual({})
+    expect(executeScript).not.toHaveBeenCalled()
+    expect(await readSelectOptions(7, [3])).toEqual({})
   })
 })

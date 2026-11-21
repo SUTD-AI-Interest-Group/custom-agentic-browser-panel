@@ -537,6 +537,29 @@ function buildInteractiveIndex(attr: string, maxElements: number) {
   }
 }
 
+// Runs inside the page. Fully self-contained (serialized by executeScript): the
+// choosable option labels of each indexed <select> among `indices`, keyed by
+// index. A label is `o.text.trim()` — exactly what pageActions.ts's injSelect
+// matches on — so a chosen label selects its option. Disabled options and the
+// empty-value placeholder ("Choose a topic…") are not choices; duplicates are
+// dropped. An index that is missing or not a <select> is absent from the result.
+function injSelectOptions(attr: string, indices: number[]) {
+  const out: Record<number, string[]> = {}
+  for (const i of indices) {
+    const el = document.querySelector(`[${attr}="${i}"]`)
+    if (!el || el.tagName.toUpperCase() !== 'SELECT') continue
+    const labels: string[] = []
+    for (const o of Array.from((el as HTMLSelectElement).options)) {
+      const label = o.text.trim()
+      if (o.disabled || o.value === '' || !label || labels.includes(label)) continue
+      labels.push(label)
+      if (labels.length >= 255) break
+    }
+    out[i] = labels
+  }
+  return out
+}
+
 // Runs inside the page: strip all stamps.
 function clearAgentIndex(attr: string) {
   document.querySelectorAll(`[${attr}]`).forEach((n) => n.removeAttribute(attr))
@@ -581,6 +604,18 @@ export async function snapshotPage(tabId: number): Promise<PageSnapshot> {
     text: serializeRegistry(elements) + (truncated ? '\n[element list truncated]' : ''),
     truncated,
   }
+}
+
+/**
+ * The option labels of the indexed <select>s among `indices` (see injSelectOptions). The
+ * injection is issued before this returns, so it is queued ahead of whatever the caller does
+ * next. No indices, no injection. A missing result reads as no options.
+ */
+export function readSelectOptions(tabId: number, indices: number[]): Promise<Record<number, string[]>> {
+  if (indices.length === 0) return Promise.resolve({})
+  return chrome.scripting
+    .executeScript({ target: { tabId }, func: injSelectOptions, args: [ATTR, indices] })
+    .then(([res]) => (res?.result as Record<number, string[]> | undefined) ?? {})
 }
 
 /** Remove all agent index stamps from the page. */

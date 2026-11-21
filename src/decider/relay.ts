@@ -7,9 +7,17 @@
 //
 // This module is bundled into the service worker: it must never import the engine, its worker,
 // OPFS storage (storage.ts — importModel/deleteModel/getDirectory), the shadow store, or the panel
-// hooks. Its only runtime imports are config.ts (constants) and platform/viewportText.ts (one
-// chrome.scripting injection); relay.test.ts walks the import closure to hold that line. Model
-// readiness is therefore an injected probe here — the panel passes storage.ts's isModelReady.
+// hooks. Its only runtime imports are config.ts (constants), platform/viewportText.ts and
+// platform/domIndex.ts (chrome.scripting injections); relay.test.ts walks the import closure to
+// hold that line. Model readiness is therefore an injected probe here — the panel passes
+// storage.ts's isModelReady.
+//
+// FORM FILLING (AutofillForm) crosses the same channel two ways. Shadowing a call that brought
+// its own fields is a post like a step (`decider.fill`). Assist — the decider maps the form — is a
+// REQUEST: the worker sends `decider.mapForm` and awaits the panel's `sendResponse` (bounded by
+// MAP_FORM_TIMEOUT_MS), so no pending-request state ever lives in an evictable worker. The plan
+// that comes back carries profile values to the worker: transient, in memory, and validated field
+// by field against the worker's own snapshot before AutofillForm's guarded loop types a thing.
 //
 // WHAT CROSSES THE CHANNEL is exactly what a decision needs and nothing more — `stepOf` below:
 // url/title, the plan, the last six journal summaries (already redacted, pageControlJournal.ts),
@@ -19,10 +27,11 @@
 // message with `parseDeciderRelay` and rebuilds it field by field, so nothing else rides along.
 // Nothing here is persisted: the ShadowRecord the panel writes is still numbers and enums.
 
-import type { IndexedElement, PageSnapshot } from '../platform/domIndex'
+import { readSelectOptions, type IndexedElement, type PageSnapshot } from '../platform/domIndex'
 import { readViewportText } from '../platform/viewportText'
 import type { ControlAction, ControlSession, ControlSpec } from '../tools/pageControl'
 import { DEFAULT_ACT_THRESHOLD, PAGE_TEXT_CAP, PREVIOUS_ACTIONS_WINDOW, type DeciderMode, type DeciderSettings } from './config'
+import type { FillPlan } from './fillPlan'
 import type { DeciderHooks } from './hooks'
 
 // ---------------------------------------------------------------------------
@@ -147,12 +156,80 @@ export function stepOf(i: { tabId: number; snap: PageSnapshot; spec: ControlSpec
 }
 
 // ---------------------------------------------------------------------------
+// The form, as a fill decision needs it
+// ---------------------------------------------------------------------------
+
+/** A snapshot reduced to what a fill decision reads (state.ts's formFields/fillRequest). */
+export interface FormSnap {
+  url: string
+  title: string
+  elements: DecisionElement[]
+}
+
+export function formSnapOf(snap: PageSnapshot): FormSnap {
+  return { url: snap.url, title: snap.title, elements: snap.elements.map(decisionElement) }
+}
+
+/** The selects whose options a fill decision needs: formFields never asks about a sensitive one. */
+export const selectIndicesOf = (elements: Pick<IndexedElement, 'index' | 'tag' | 'sensitive'>[]): number[] =>
+  elements.filter((e) => e.tag === 'select' && !e.sensitive).map((e) => e.index)
+
+/** A field the chat model filled itself, as the shadow may compare it: never a sensitive one. */
+export interface ObservedField {
+  index: number
+  value: string
+}
+
+/** One AutofillForm call that brought its own fields, as its shadow needs it. */
+export interface FillObservation {
+  tabId: number
+  snap: FormSnap
+  plan: string
+  /** Read where the call ran, before it typed anything. */
+  selectOptions: Record<number, string[]>
+  fields: ObservedField[]
+}
+
+/**
+ * The fields a shadow may see: not one the model flagged sensitive, not one on a sensitive
+ * element. formFields never asks about either, so dropping them loses nothing — and keeps a typed
+ * password off the runtime channel entirely.
+ */
+export function observedFields(fields: { index: number; value: string; sensitive?: boolean }[], elements: Pick<IndexedElement, 'index' | 'sensitive'>[]): ObservedField[] {
+  const sensitive = new Set(elements.filter((e) => e.sensitive).map((e) => e.index))
+  return fields.filter((f) => !f.sensitive && !sensitive.has(f.index)).map((f) => ({ index: f.index, value: f.value }))
+}
+
+/** The worker's assist request: map this form from the profile plus the request's own values. */
+export interface MapFormRequest {
+  type: 'decider.mapForm'
+  conversationId: string
+  requestId: string
+  tabId: number
+  snap: FormSnap
+  plan: string
+  selectOptions: Record<number, string[]>
+  values: Record<string, string>
+}
+
+/** The panel's answer, through sendResponse. */
+export type MapFormReply = { requestId: string; plan: FillPlan } | { requestId: string; error: string }
+
+/**
+ * How long the worker waits for a plan. The decision itself is a second or two, but on first use
+ * the panel must also structure the profile memories with one chat-model call — on a local model
+ * that has to load first, tens of seconds.
+ */
+export const MAP_FORM_TIMEOUT_MS = 90_000
+
+// ---------------------------------------------------------------------------
 // The message, and its validator (the panel trusts nothing it did not rebuild)
 // ---------------------------------------------------------------------------
 
 export type DeciderRelayMsg =
   | { type: 'decider.granted'; conversationId: string }
   | { type: 'decider.step'; conversationId: string; step: RelayedStep }
+  | { type: 'decider.fill'; conversationId: string; fill: FillObservation }
 
 const ACTIONS: ReadonlySet<string> = new Set<ControlAction>(['click', 'type', 'select', 'scroll', 'highlight', 'navigate', 'press', 'wait'])
 const DIRECTIONS: ReadonlySet<string> = new Set(['up', 'down', 'toElement'])
@@ -213,9 +290,108 @@ function parseStep(raw: unknown): RelayedStep | null {
 export function parseDeciderRelay(raw: unknown): DeciderRelayMsg | null {
   if (!isObj(raw) || !isStr(raw.conversationId) || raw.conversationId === '') return null
   if (raw.type === 'decider.granted') return { type: 'decider.granted', conversationId: raw.conversationId }
+  if (raw.type === 'decider.fill') {
+    const fill = parseFillObservation(raw.fill)
+    return fill ? { type: 'decider.fill', conversationId: raw.conversationId, fill } : null
+  }
   if (raw.type !== 'decider.step') return null
   const step = parseStep(raw.step)
   return step ? { type: 'decider.step', conversationId: raw.conversationId, step } : null
+}
+
+/** A select never offers more than the decider can answer (CODE_ROWS_WIDTH, readout.ts). */
+const MAX_OPTIONS = 255
+const MAX_VALUES = 50
+const MAX_KEY = 64
+
+function parseFormSnap(raw: unknown): FormSnap | null {
+  if (!isObj(raw) || !isStr(raw.url) || !isStr(raw.title)) return null
+  if (!Array.isArray(raw.elements) || raw.elements.length > MAX_RELAYED_ELEMENTS) return null
+  const elements: DecisionElement[] = []
+  for (const e of raw.elements) {
+    const parsed = parseElement(e)
+    if (!parsed) return null
+    elements.push(parsed)
+  }
+  return { url: raw.url, title: raw.title, elements }
+}
+
+function parseSelectOptions(raw: unknown): Record<number, string[]> | null {
+  if (!isObj(raw)) return null
+  const out: Record<number, string[]> = {}
+  for (const [k, v] of Object.entries(raw)) {
+    const index = Number(k)
+    if (!/^\d+$/.test(k) || !isIndex(index)) return null
+    if (!Array.isArray(v) || v.length > MAX_OPTIONS || !v.every(isStr)) return null
+    out[index] = [...(v as string[])]
+  }
+  return out
+}
+
+function parseValues(raw: unknown): Record<string, string> | null {
+  if (!isObj(raw)) return null
+  const entries = Object.entries(raw)
+  if (entries.length > MAX_VALUES) return null
+  const out: Record<string, string> = {}
+  for (const [k, v] of entries) {
+    if (k === '' || k.length > MAX_KEY || !isStr(v)) return null
+    out[k] = v
+  }
+  return out
+}
+
+function parseFillObservation(raw: unknown): FillObservation | null {
+  if (!isObj(raw) || !isIndex(raw.tabId) || !isStr(raw.plan)) return null
+  const snap = parseFormSnap(raw.snap)
+  const selectOptions = parseSelectOptions(raw.selectOptions)
+  if (!snap || !selectOptions) return null
+  if (!Array.isArray(raw.fields) || raw.fields.length > MAX_RELAYED_ELEMENTS) return null
+  const fields: ObservedField[] = []
+  for (const f of raw.fields) {
+    if (!isObj(f) || !isIndex(f.index) || !isStr(f.value)) return null
+    fields.push({ index: f.index, value: f.value })
+  }
+  return { tabId: raw.tabId, snap, plan: raw.plan, selectOptions, fields }
+}
+
+/** The worker's assist request, rebuilt field by field — or null. Pure. */
+export function parseMapFormRequest(raw: unknown): MapFormRequest | null {
+  if (!isObj(raw) || raw.type !== 'decider.mapForm') return null
+  if (!isStr(raw.conversationId) || raw.conversationId === '' || !isStr(raw.requestId) || raw.requestId === '') return null
+  if (!isIndex(raw.tabId) || !isStr(raw.plan)) return null
+  const snap = parseFormSnap(raw.snap)
+  const selectOptions = parseSelectOptions(raw.selectOptions)
+  const values = parseValues(raw.values)
+  if (!snap || !selectOptions || !values) return null
+  return { type: 'decider.mapForm', conversationId: raw.conversationId, requestId: raw.requestId, tabId: raw.tabId, snap, plan: raw.plan, selectOptions, values }
+}
+
+const FILL_KINDS: ReadonlySet<string> = new Set(['text', 'select', 'checkbox'])
+const LEFT_REASONS: ReadonlySet<string> = new Set(['low-confidence', 'leave-empty', 'already-set'])
+const isProb = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v) && v >= 0 && v <= 1
+
+/**
+ * The panel's plan, rebuilt field by field — or null. Every index must be on the page the worker
+ * snapshotted, and no field may be filled twice; AutofillForm's loop then re-checks each element
+ * against the live page before touching it.
+ */
+export function parseFillPlan(raw: unknown, onPage: ReadonlySet<number>): FillPlan | null {
+  if (!isObj(raw) || !Array.isArray(raw.fills) || !Array.isArray(raw.left)) return null
+  if (raw.fills.length > MAX_RELAYED_ELEMENTS || raw.left.length > MAX_RELAYED_ELEMENTS) return null
+  const seen = new Set<number>()
+  const fills: FillPlan['fills'] = []
+  for (const f of raw.fills) {
+    if (!isObj(f) || !isIndex(f.index) || !onPage.has(f.index) || seen.has(f.index)) return null
+    if (typeof f.kind !== 'string' || !FILL_KINDS.has(f.kind) || !isStr(f.key) || !isStr(f.value) || !isProb(f.p)) return null
+    seen.add(f.index)
+    fills.push({ index: f.index, kind: f.kind as FillPlan['fills'][number]['kind'], key: f.key, value: f.value, p: f.p })
+  }
+  const left: FillPlan['left'] = []
+  for (const l of raw.left) {
+    if (!isObj(l) || !isIndex(l.index) || typeof l.reason !== 'string' || !LEFT_REASONS.has(l.reason)) return null
+    left.push({ index: l.index, reason: l.reason as FillPlan['left'][number]['reason'] })
+  }
+  return { fills, left }
 }
 
 // ---------------------------------------------------------------------------
@@ -223,6 +399,40 @@ export function parseDeciderRelay(raw: unknown): DeciderRelayMsg | null {
 // ---------------------------------------------------------------------------
 
 const defaultSend = (msg: DeciderRelayMsg): unknown => chrome.runtime.sendMessage(msg)
+/** A request: resolves with the panel listener's sendResponse value. */
+const defaultRequest = (msg: MapFormRequest): Promise<unknown> => chrome.runtime.sendMessage(msg)
+
+/** Start the select-options read NOW (issued before this returns); never rejects — `{}` on failure. */
+function selectOptionsNow(tabId: number, elements: DecisionElement[]): Promise<Record<number, string[]>> {
+  try {
+    const indices = selectIndicesOf(elements)
+    return readSelectOptions(tabId, indices).then(
+      (o) => (o && typeof o === 'object' ? o : {}),
+      () => ({}),
+    )
+  } catch {
+    return Promise.resolve({})
+  }
+}
+
+const NO_PANEL = 'no Lychee panel is open to run the decision model'
+
+/** The request's own values, within what parseMapFormRequest accepts: anything else is dropped. */
+function requestValues(values: Record<string, string> | undefined): Record<string, string> {
+  const out: Record<string, string> = {}
+  for (const [k, v] of Object.entries(values ?? {})) {
+    if (Object.keys(out).length >= MAX_VALUES) break
+    if (k !== '' && k.length <= MAX_KEY && isStr(v)) out[k] = v
+  }
+  return out
+}
+
+/** Why a request failed, worded for the model ("Could not map fields automatically (<this>)…"). */
+function requestFailure(err: unknown): string {
+  const message = err instanceof Error ? err.message : String(err)
+  if (/Receiving end does not exist|Could not establish connection|message port closed/i.test(message)) return NO_PANEL
+  return message.slice(0, 200)
+}
 
 /** Start the viewport read NOW (its injection is issued before this returns); never rejects. */
 function pageTextNow(tabId: number): Promise<string | null> {
@@ -257,6 +467,10 @@ export function forwardDeciderHooks(deps: {
   conversationId: string
   settings: () => DeciderSettings | undefined
   send?: (msg: DeciderRelayMsg) => unknown
+  /** Assist's round trip; defaults to chrome.runtime.sendMessage with a response. */
+  request?: (msg: MapFormRequest) => Promise<unknown>
+  /** Defaults to MAP_FORM_TIMEOUT_MS. */
+  mapFormTimeoutMs?: number
   modelReady?: () => Promise<boolean>
 }): DeciderHooks {
   const resolver = deps.modelReady ? createModeResolver(deps.settings, deps.modelReady) : null
@@ -291,11 +505,67 @@ export function forwardDeciderHooks(deps: {
         /* additive only */
       }
     },
-    // TODO(Task 11): forward to the panel as well.
-    observeFill() {},
-    // TODO(Task 11): a request/response round trip to the panel, with a timeout on this side.
-    mapForm() {
-      return Promise.resolve({ error: 'assist mode is not implemented yet' })
+    // Like observeStep: the select options are read here, before the fill types anything, and
+    // the observation is posted when that read settles. Sensitive fields never leave the worker.
+    observeFill(i) {
+      try {
+        if (!on()) return
+        const snap = formSnapOf(i.snap)
+        const fields = observedFields(i.fields, snap.elements)
+        if (fields.length === 0) return
+        const plan = i.session.plan
+        void selectOptionsNow(i.tabId, snap.elements).then((selectOptions) =>
+          post({ type: 'decider.fill', conversationId: deps.conversationId, fill: { tabId: i.tabId, snap, plan, selectOptions, fields } }),
+        )
+      } catch {
+        /* additive only */
+      }
+    },
+
+    // Assist: ask the panel for a plan and wait for it — this one IS awaited, by an AutofillForm
+    // call that brought no fields of its own. Every failure resolves `{ error }` (never rejects),
+    // and the plan is rebuilt against this worker's own snapshot before anything acts on it.
+    async mapForm(i) {
+      try {
+        if (settingsModeOf(deps.settings) !== 'assist') return { error: 'the decision model is not in Assist mode' }
+        const snap = formSnapOf(i.snap)
+        const selectOptions = await selectOptionsNow(i.tabId, snap.elements)
+        const requestId = crypto.randomUUID()
+        const built: MapFormRequest = {
+          type: 'decider.mapForm',
+          conversationId: deps.conversationId,
+          requestId,
+          tabId: i.tabId,
+          snap,
+          plan: i.session.plan,
+          selectOptions,
+          values: requestValues(i.values),
+        }
+        // The panel ignores what its validator rejects, so never send what it would reject: that
+        // would cost the whole timeout to learn nothing. (A JSON round trip, as the channel makes.)
+        const msg = parseMapFormRequest(JSON.parse(JSON.stringify(built)))
+        if (!msg) return { error: 'the form is too large to send to the decision model' }
+        let timer: ReturnType<typeof setTimeout> | undefined
+        const timeout = new Promise<'timeout'>((resolve) => {
+          timer = setTimeout(() => resolve('timeout'), deps.mapFormTimeoutMs ?? MAP_FORM_TIMEOUT_MS)
+        })
+        let reply: unknown
+        try {
+          reply = await Promise.race([Promise.resolve().then(() => (deps.request ?? defaultRequest)(msg)), timeout])
+        } catch (err) {
+          return { error: requestFailure(err) }
+        } finally {
+          clearTimeout(timer)
+        }
+        if (reply === 'timeout') return { error: 'the decision model did not answer in time' }
+        if (reply === undefined || reply === null) return { error: NO_PANEL }
+        if (!isObj(reply) || reply.requestId !== requestId) return { error: 'the panel sent a malformed reply' }
+        if (typeof reply.error === 'string') return { error: reply.error.slice(0, 300) }
+        const plan = parseFillPlan(reply.plan, new Set(snap.elements.map((e) => e.index)))
+        return plan ?? { error: 'the panel sent a malformed plan' }
+      } catch (err) {
+        return { error: requestFailure(err) }
+      }
     },
   }
 }

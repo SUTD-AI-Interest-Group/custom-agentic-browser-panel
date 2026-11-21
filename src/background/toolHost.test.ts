@@ -19,6 +19,14 @@ vi.mock('../tools/tools', () => ({ createAgentTools: (approve: (r: unknown) => P
     })
     return { observed: true }
   } },
+  // Stands in for AutofillForm without fields: awaits the decider's assist plan.
+  MapForm: { execute: async () => rest[9]?.mapForm({
+    tabId: 7,
+    snap: { url: 'https://example.com/', title: 'Fixture', origin: 'https://example.com', dpr: 1, text: '', truncated: false,
+      elements: [{ index: 0, tag: 'input', type: 'text', name: 'Full name', sensitive: false, rect: { x: 0, y: 0, width: 1, height: 1 } }] },
+    session: { tabId: 7, origin: 'https://example.com', plan: 'Fixture', active: true },
+    values: { message: 'hi' },
+  }) },
   Execute: { execute: async (input: { once?: boolean }) => {
     const allowed = await approve({ toolName: 'Execute', summary: 'Make a change', reason: 'Fixture', once: input.once })
     if (allowed) fixture.mutations++
@@ -132,6 +140,17 @@ describe('background tool permissions', () => {
       step: { tabId: 7, spec: { action: 'type', index: 0 }, pageText: 'Fixture page text' },
     })
     expect(JSON.stringify(sent)).not.toContain('hunter2')
+  })
+  it('asks the panel for an assist plan through chrome.runtime.sendMessage, and returns its answer', async () => {
+    fixture.policy = 'always'; fixture.decider = { mode: 'assist' }
+    const plan = { fills: [{ index: 0, kind: 'text', key: 'profile.full_name', value: 'Ada Lovelace', p: 0.9 }], left: [] }
+    const sent: any[] = []
+    fixture.send = (msg: any) => { sent.push(msg); return Promise.resolve({ requestId: msg.requestId, plan }) }
+    const run = job(); run.toolRequests[0].name = 'MapForm'
+    await updateChatRun('chat', () => run); await poll(run); await finished()
+    expect((await getChatRun('chat'))?.toolRequests[0].output).toEqual(plan)
+    expect(sent).toHaveLength(1)
+    expect(sent[0]).toMatchObject({ type: 'decider.mapForm', conversationId: 'chat', tabId: 7, values: { message: 'hi' }, requestId: expect.any(String) })
   })
   it('a missing panel (or the decider off) never changes the tool result', async () => {
     fixture.policy = 'always'; fixture.decider = { mode: 'shadow' }

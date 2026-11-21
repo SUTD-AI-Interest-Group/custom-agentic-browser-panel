@@ -1,11 +1,26 @@
 import 'fake-indexeddb/auto'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { ModelMessage } from 'ai'
+import type { LanguageModel, ModelMessage } from 'ai'
 
 // The one page touch the shadow path makes besides the snapshot it is handed.
 vi.mock('../platform/viewportText', () => ({ readViewportText: vi.fn() }))
+// The fill path's page touch (select options), its memory read, and its one chat-model call.
+vi.mock('../platform/domIndex', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../platform/domIndex')>()),
+  readSelectOptions: vi.fn(async () => ({})),
+}))
+vi.mock('../data/memory', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../data/memory')>()),
+  getProfileMemories: vi.fn(async () => []),
+}))
+vi.mock('./profileLookup', () => ({ profileLookup: vi.fn() }))
 
 import { readViewportText } from '../platform/viewportText'
+import { readSelectOptions } from '../platform/domIndex'
+import { getProfileMemories, type MemoryRecord } from '../data/memory'
+import { profileLookup } from './profileLookup'
+import type { FillPlan } from './fillPlan'
+import type { Answer } from './readout'
 import type { IndexedElement, PageSnapshot } from '../platform/domIndex'
 import type { ControlSession, ControlSpec } from '../tools/pageControl'
 import type { ControlJournalEntry } from '../tools/pageControlJournal'
@@ -690,15 +705,371 @@ describe('sessionGranted()', () => {
   })
 })
 
-describe('Task 11 stubs', () => {
-  it('observeFill is a no-op and mapForm reports assist as unavailable', async () => {
-    const { engine } = fakeEngine(answering('done', 1))
-    const hooks = hooksWith({ engine })
-    expect(hooks.observeFill({ tabId: 7, snap: snapOf(FORM), session: session(), fields: [{ index: 0, value: 'Ada' }] })).toBeUndefined()
-    expect(await hooks.mapForm({ tabId: 7, snap: snapOf(FORM), session: session(), values: {} })).toEqual({
-      error: 'assist mode is not implemented yet',
+// ---------------------------------------------------------------------------
+// Form filling: mapForm (assist) and observeFill (shadowing the chat model's own mapping)
+// ---------------------------------------------------------------------------
+
+const FILL_FORM = [
+  el({ index: 0, tag: 'input', type: 'text', name: 'Full name' }),
+  el({ index: 1, tag: 'input', type: 'email', name: 'Email address' }),
+  el({ index: 2, tag: 'select', name: 'Topic' }),
+  el({ index: 3, tag: 'textarea', name: 'How can we help?' }),
+  el({ index: 4, tag: 'input', type: 'checkbox', name: 'I agree to be contacted', checked: false }),
+  el({ index: 5, tag: 'input', type: 'password', name: 'Password', value: 'hunter2', sensitive: true }),
+  el({ index: 6, tag: 'button', type: 'submit', name: 'Send message' }),
+]
+const TOPICS = { 2: ['Billing', 'Technical support', 'Sales'] }
+const PROFILE = { full_name: 'Ada Lovelace', email: 'ada@example.com', work_email: 'ada@analytical-engines.co.uk' }
+const VALUES = { message: 'My last invoice was charged twice.' }
+const MEMORIES: MemoryRecord[] = ["The user's full name is Ada Lovelace.", "The user's email address is ada@example.com."].map((content, k) => ({
+  id: `m${k}`, kind: 'profile', content, tags: [], createdAt: 1, updatedAt: 1, lastRecalledAt: null, recallCount: 0, source: 'user',
+}))
+/** Everything a fill record must never contain: values typed or chosen, option labels, field names, the host. */
+const FILL_SECRETS = ['Ada', 'Lovelace', 'ada@', 'analytical', 'invoice', 'Billing', 'Sales', 'hunter2', 'Full name', 'Topic', 'example.com', 'Password']
+
+/** An engine that answers every fill question: `picks[name] = [top, p]` (the rest share 1 − p). */
+function fillEngine(picks: Record<string, [string, number]>, extra: Partial<DecisionResult> = {}) {
+  const requests: DecisionRequest[] = []
+  const engine = {
+    warm: vi.fn(async () => {}),
+    decide: vi.fn(async (req: DecisionRequest, _opts?: { dropIfBusy?: boolean }): Promise<DecisionResult | null> => {
+      requests.push(req)
+      const answers: Record<string, Answer> = {}
+      for (const [name, q] of Object.entries(req.questions)) {
+        const options = q.type === 'noul' ? ['false', 'true'] : Object.keys(q.criteria as Record<string, unknown>)
+        const [top, p] = picks[name] ?? [options[0], 1 / options.length]
+        if (!options.includes(top)) throw new Error(`fixture: "${top}" is not an option of ${name} (${options.join(', ')})`)
+        const probs = options.map((o) => (o === top ? p : (1 - p) / (options.length - 1)))
+        const a: Answer = { kind: q.type === 'noul' ? 'noul' : 'choice', options, probs, top, p, confidence: 0.5 }
+        if (q.type === 'noul') a.yes = probs[options.indexOf('true')]
+        answers[name] = a
+      }
+      return { answers, ms: 55, tokens: 640, backend: 'webgpu', cold: false, ...extra }
+    }),
+  }
+  return { engine, requests }
+}
+
+const ASSIST_PICKS: Record<string, [string, number]> = {
+  f0: ['profile.full_name', 0.9],
+  f1: ['profile.email', 0.85],
+  f2: ['Billing', 0.95],
+  f3: ['request.message', 0.8],
+  f4: ['true', 0.9],
+}
+
+const CHAT_MODEL = { modelId: 'chat' } as unknown as LanguageModel
+
+function fillHooks(o: { engine: ReturnType<typeof fillEngine>['engine']; mode?: DeciderSettings['mode']; ready?: boolean; chatModel?: LanguageModel | null }) {
+  return createDeciderHooks({
+    settings: () => ({ mode: o.mode ?? 'assist' }),
+    conversationId: 'conv-1',
+    currentGoal: () => 'Fill in the contact form with my details and tick the consent box',
+    chatModel: () => ('chatModel' in o ? (o.chatModel ?? null) : CHAT_MODEL),
+    engine: o.engine,
+    modelReady: async () => o.ready ?? true,
+  })
+}
+
+describe('form filling', () => {
+  beforeEach(() => {
+    vi.mocked(readSelectOptions).mockReset()
+    vi.mocked(readSelectOptions).mockResolvedValue(TOPICS)
+    vi.mocked(getProfileMemories).mockReset()
+    vi.mocked(getProfileMemories).mockResolvedValue(MEMORIES)
+    vi.mocked(profileLookup).mockReset()
+    vi.mocked(profileLookup).mockResolvedValue({ ...PROFILE })
+  })
+
+  describe('mapForm (assist)', () => {
+    it('plans the fill from the profile and the request values, and records key names only', async () => {
+      const { engine, requests } = fillEngine(ASSIST_PICKS)
+      const plan = await fillHooks({ engine }).mapForm({ tabId: 7, snap: snapOf(FILL_FORM), session: session(), values: VALUES })
+
+      expect(plan).toEqual<FillPlan>({
+        fills: [
+          { index: 0, kind: 'text', key: 'profile.full_name', value: 'Ada Lovelace', p: 0.9 },
+          { index: 1, kind: 'text', key: 'profile.email', value: 'ada@example.com', p: 0.85 },
+          { index: 2, kind: 'select', key: 'Billing', value: 'Billing', p: 0.95 },
+          { index: 3, kind: 'text', key: 'request.message', value: VALUES.message, p: 0.8 },
+          { index: 4, kind: 'checkbox', key: 'tick', value: 'tick', p: expect.closeTo(0.9, 6) },
+        ],
+        left: [],
+      })
+      // The select options were read for the select, the profile structured by the chat model…
+      expect(readSelectOptions).toHaveBeenCalledWith(7, [2])
+      expect(profileLookup).toHaveBeenCalledWith(CHAT_MODEL, MEMORIES)
+      // …and the decision was queued, NOT dropIfBusy: this one is being waited on.
+      expect(engine.decide).toHaveBeenCalledTimes(1)
+      expect(engine.decide.mock.calls[0][1]?.dropIfBusy).toBeFalsy()
+      const state = requests[0].state as Record<string, unknown>
+      expect(state.goal).toBe('Fill in the contact form with my details and tick the consent box')
+      expect(state.info).toEqual({ profile: PROFILE, request: VALUES })
+      // The password field and the submit button are never fill questions.
+      expect(Object.keys(requests[0].questions).sort()).toEqual(['f0', 'f1', 'f2', 'f3', 'f4'])
+
+      const [r] = await recordsAfter(1)
+      expect(r).toMatchObject({
+        conversationId: 'conv-1', seq: 0, kind: 'fill', modelId: MODEL_ID, tokens: 640, ms: 55, backend: 'webgpu', cold: false,
+        llm: null, agree: null, wouldAct: true,
+      })
+      expect(r.fill).toEqual([
+        { index: 0, key: 'profile.full_name', p: 0.9, llmAgrees: null },
+        { index: 1, key: 'profile.email', p: 0.85, llmAgrees: null },
+        { index: 2, key: 'option.0', p: 0.95, llmAgrees: null }, // an option's position, never its label
+        { index: 3, key: 'request.message', p: 0.8, llmAgrees: null },
+        { index: 4, key: 'tick', p: 0.9, llmAgrees: null },
+      ])
+      // top3 = the weakest fields: the record's confidence is its least sure field.
+      expect(r.top3).toEqual([
+        { op: 'fill', index: 3, p: 0.8 },
+        { op: 'fill', index: 1, p: 0.85 },
+        { op: 'fill', index: 0, p: 0.9 },
+      ])
+      const stored = JSON.stringify(r)
+      for (const needle of FILL_SECRETS) expect(stored, needle).not.toContain(needle)
     })
-    await settle()
-    expect(engine.decide).not.toHaveBeenCalled()
+
+    it('leaves fields under the threshold, and wouldAct is false when nothing would be filled', async () => {
+      const { engine } = fillEngine({ f0: ['profile.full_name', 0.4], f1: ['leave_empty', 0.9], f2: ['Billing', 0.3], f3: ['request.message', 0.5], f4: ['false', 0.9] })
+      const plan = await fillHooks({ engine }).mapForm({ tabId: 7, snap: snapOf(FILL_FORM), session: session(), values: VALUES })
+      expect(plan).toEqual({
+        fills: [],
+        left: [
+          { index: 0, reason: 'low-confidence' },
+          { index: 1, reason: 'leave-empty' },
+          { index: 2, reason: 'low-confidence' },
+          { index: 3, reason: 'low-confidence' },
+          { index: 4, reason: 'low-confidence' },
+        ],
+      })
+      const [r] = await recordsAfter(1)
+      expect(r.wouldAct).toBe(false)
+      expect(r.fill?.find((f) => f.index === 4)?.key).toBe('leave')
+    })
+
+    it.each([
+      ['shadow mode', { mode: 'shadow' as const }, 'not in Assist mode'],
+      ['off', { mode: 'off' as const }, 'not in Assist mode'],
+      ['a model that is not ready', { ready: false }, 'not ready'],
+    ])('answers an error for %s, deciding nothing', async (_label, over, reason) => {
+      const { engine } = fillEngine(ASSIST_PICKS)
+      const out = await fillHooks({ engine, ...over }).mapForm({ tabId: 7, snap: snapOf(FILL_FORM), session: session(), values: VALUES })
+      expect(out).toEqual({ error: expect.stringContaining(reason) })
+      expect(engine.decide).not.toHaveBeenCalled()
+      expect(profileLookup).not.toHaveBeenCalled()
+    })
+
+    it('zero profile memories and no values: an error, with no model call at all', async () => {
+      vi.mocked(getProfileMemories).mockResolvedValue([])
+      const { engine } = fillEngine(ASSIST_PICKS)
+      const out = await fillHooks({ engine }).mapForm({ tabId: 7, snap: snapOf(FILL_FORM), session: session(), values: {} })
+      expect(out).toEqual({ error: 'no saved profile details and no values to fill from' })
+      expect(profileLookup).not.toHaveBeenCalled()
+      expect(engine.decide).not.toHaveBeenCalled()
+    })
+
+    it('zero profile memories but some values: fills from the values alone', async () => {
+      vi.mocked(getProfileMemories).mockResolvedValue([])
+      const { engine, requests } = fillEngine({ f3: ['request.message', 0.9] })
+      const out = (await fillHooks({ engine }).mapForm({ tabId: 7, snap: snapOf(FILL_FORM), session: session(), values: VALUES })) as FillPlan
+      expect(profileLookup).not.toHaveBeenCalled()
+      expect((requests[0].state as { info: unknown }).info).toEqual({ profile: {}, request: VALUES })
+      expect(out.fills).toContainEqual({ index: 3, kind: 'text', key: 'request.message', value: VALUES.message, p: 0.9 })
+    })
+
+    it('a profile lookup that throws becomes the error reason', async () => {
+      vi.mocked(profileLookup).mockRejectedValue(new Error('HTTP 500'))
+      const { engine } = fillEngine(ASSIST_PICKS)
+      const out = await fillHooks({ engine }).mapForm({ tabId: 7, snap: snapOf(FILL_FORM), session: session(), values: VALUES })
+      expect(out).toEqual({ error: 'could not read the profile: HTTP 500' })
+      expect(engine.decide).not.toHaveBeenCalled()
+    })
+
+    it('no chat model to read the profile with is an error', async () => {
+      const { engine } = fillEngine(ASSIST_PICKS)
+      const out = await fillHooks({ engine, chatModel: null }).mapForm({ tabId: 7, snap: snapOf(FILL_FORM), session: session(), values: VALUES })
+      expect(out).toEqual({ error: expect.stringContaining('chat model') })
+      expect(engine.decide).not.toHaveBeenCalled()
+    })
+
+    it('a page with nothing to fill is an error', async () => {
+      const { engine } = fillEngine(ASSIST_PICKS)
+      const out = await fillHooks({ engine }).mapForm({ tabId: 7, snap: snapOf([FILL_FORM[5], FILL_FORM[6]]), session: session(), values: VALUES })
+      expect(out).toEqual({ error: 'no fillable fields on this page' })
+      expect(engine.decide).not.toHaveBeenCalled()
+    })
+
+    it('a failed decision is an error, and a skipped record', async () => {
+      const engine = { warm: vi.fn(async () => {}), decide: vi.fn(async () => { throw new Error('too-long: 9100 tokens exceeds 8192') }) }
+      const out = await fillHooks({ engine } as never).mapForm({ tabId: 7, snap: snapOf(FILL_FORM), session: session(), values: VALUES })
+      expect(out).toEqual({ error: expect.stringContaining('too long') })
+      const [r] = await recordsAfter(1)
+      expect(r).toMatchObject({ kind: 'fill', skipped: 'too-long', tokens: 9100, llm: null })
+    })
+  })
+
+  describe('observeFill (shadow)', () => {
+    const LLM_FIELDS = [
+      { index: 0, value: 'Ada Lovelace' }, // = the decider's profile.full_name → agrees
+      { index: 1, value: 'ada@analytical-engines.co.uk' }, // the decider chose profile.email → disagrees
+      { index: 2, value: 'billing' }, // the decider chose Billing → agrees (case-insensitive)
+      { index: 3, value: 'My last invoice was charged twice.' }, // not a value the decider could choose → unjudged
+      { index: 4, value: 'true' }, // ticked, as the decider would → agrees
+      { index: 5, value: 'hunter2', sensitive: true }, // never compared, never stored
+    ]
+    const SHADOW_PICKS: Record<string, [string, number]> = { ...ASSIST_PICKS, f3: ['leave_empty', 0.7] }
+
+    it('returns at once and records, per field, whether the decider would have typed the same value', async () => {
+      const { engine, requests } = fillEngine(SHADOW_PICKS)
+      const hooks = fillHooks({ engine, mode: 'shadow' })
+      expect(hooks.observeFill({ tabId: 7, snap: snapOf(FILL_FORM), session: session(), fields: LLM_FIELDS })).toBeUndefined()
+      const [r] = await recordsAfter(1)
+      expect(r).toMatchObject({ kind: 'fill', seq: 0, llm: { op: 'fill' }, agree: false, wouldAct: true })
+      expect(r.fill).toEqual([
+        { index: 0, key: 'profile.full_name', p: 0.9, llmAgrees: true },
+        { index: 1, key: 'profile.email', p: 0.85, llmAgrees: false },
+        { index: 2, key: 'option.0', p: 0.95, llmAgrees: true },
+        { index: 3, key: 'leave_empty', p: 0.7, llmAgrees: null },
+        { index: 4, key: 'tick', p: 0.9, llmAgrees: true },
+      ])
+      // The shadow decides from the profile alone: what the model typed is never offered back to it.
+      expect((requests[0].state as { info: unknown }).info).toEqual({ profile: PROFILE, request: {} })
+      expect(JSON.stringify(requests[0])).not.toContain('hunter2')
+      const stored = JSON.stringify(r)
+      for (const needle of FILL_SECRETS) expect(stored, needle).not.toContain(needle)
+    })
+
+    it('agrees overall when every judged field agrees', async () => {
+      const { engine } = fillEngine(SHADOW_PICKS)
+      fillHooks({ engine, mode: 'assist' }).observeFill({ tabId: 7, snap: snapOf(FILL_FORM), session: session(), fields: [LLM_FIELDS[0], LLM_FIELDS[2]] })
+      const [r] = await recordsAfter(1)
+      expect(r.agree).toBe(true)
+      expect(r.fill?.filter((f) => f.llmAgrees !== null).map((f) => f.index)).toEqual([0, 2])
+    })
+
+    it('records nothing, and asks no model, when the decider is off, not ready, or there is no profile', async () => {
+      for (const over of [{ mode: 'off' as const }, { ready: false }]) {
+        const { engine } = fillEngine(SHADOW_PICKS)
+        fillHooks({ engine, mode: 'shadow', ...over }).observeFill({ tabId: 7, snap: snapOf(FILL_FORM), session: session(), fields: LLM_FIELDS })
+        await settle()
+        expect(engine.decide).not.toHaveBeenCalled()
+      }
+      vi.mocked(getProfileMemories).mockResolvedValue([])
+      const { engine } = fillEngine(SHADOW_PICKS)
+      fillHooks({ engine, mode: 'shadow' }).observeFill({ tabId: 7, snap: snapOf(FILL_FORM), session: session(), fields: LLM_FIELDS })
+      await settle()
+      expect(engine.decide).not.toHaveBeenCalled()
+      expect(profileLookup).not.toHaveBeenCalled()
+      expect(await listShadow()).toEqual([])
+    })
+
+    it('never throws into the caller, whatever its inputs do', async () => {
+      vi.mocked(profileLookup).mockRejectedValue(new Error('HTTP 500'))
+      const { engine } = fillEngine(SHADOW_PICKS)
+      const hooks = fillHooks({ engine, mode: 'shadow' })
+      expect(() => hooks.observeFill({ tabId: 7, snap: snapOf(FILL_FORM), session: session(), fields: LLM_FIELDS })).not.toThrow()
+      expect(() => hooks.observeFill(null as never)).not.toThrow()
+      await settle() // an unhandled rejection here fails the run
+      expect(engine.decide).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('across the channel', () => {
+    const elements = FILL_FORM.map(({ index, tag, type, name, checked, sensitive }) => ({
+      index, tag, name, sensitive, ...(type ? { type } : {}), ...(checked !== undefined ? { checked } : {}),
+    }))
+    const mapFormMsg = (over: Record<string, unknown> = {}) => ({
+      type: 'decider.mapForm', conversationId: 'conv-1', requestId: 'req-1', tabId: 7,
+      snap: { url: 'https://example.com/form', title: 'Contact form', elements },
+      plan: 'Fill the form', selectOptions: TOPICS, values: VALUES, ...over,
+    })
+
+    it('answer(): replies the plan for its own conversation, from the options the worker read', async () => {
+      const { engine } = fillEngine(ASSIST_PICKS)
+      const reply = await fillHooks({ engine }).answer(mapFormMsg())
+      expect(reply).toMatchObject({ requestId: 'req-1', plan: { fills: expect.any(Array), left: [] } })
+      expect((reply as { plan: FillPlan }).plan.fills.map((f) => f.index)).toEqual([0, 1, 2, 3, 4])
+      expect(readSelectOptions).not.toHaveBeenCalled() // the worker already read them, before anything changed
+      await recordsAfter(1)
+    })
+
+    it('answer(): replies the error with its requestId', async () => {
+      const { engine } = fillEngine(ASSIST_PICKS)
+      expect(await fillHooks({ engine, mode: 'shadow' }).answer(mapFormMsg())).toEqual({ requestId: 'req-1', error: expect.stringContaining('Assist') })
+    })
+
+    it('answer(): ignores another conversation and anything malformed', async () => {
+      const { engine } = fillEngine(ASSIST_PICKS)
+      const hooks = fillHooks({ engine })
+      for (const msg of [
+        mapFormMsg({ conversationId: 'someone-else' }),
+        mapFormMsg({ requestId: '' }),
+        mapFormMsg({ tabId: 'seven' }),
+        mapFormMsg({ values: { message: 42 } }),
+        mapFormMsg({ selectOptions: { 2: 'Billing' } }),
+        { type: 'decider.step', conversationId: 'conv-1' },
+        null,
+      ]) {
+        expect(hooks.answer(msg)).toBeUndefined()
+      }
+      await settle()
+      expect(engine.decide).not.toHaveBeenCalled()
+    })
+
+    it('relay(): a forwarded fill observation is shadowed with the options the worker read', async () => {
+      const { engine } = fillEngine(SHADOW_PICKS_FOR_RELAY)
+      const hooks = fillHooks({ engine, mode: 'shadow' })
+      hooks.relay({
+        type: 'decider.fill', conversationId: 'conv-1',
+        fill: { tabId: 7, snap: { url: 'https://example.com/form', title: 'Contact form', elements }, plan: 'Fill', selectOptions: TOPICS, fields: [{ index: 0, value: 'Ada Lovelace' }] },
+      })
+      const [r] = await recordsAfter(1)
+      expect(r).toMatchObject({ kind: 'fill', llm: { op: 'fill' }, agree: true })
+      expect(readSelectOptions).not.toHaveBeenCalled()
+    })
+
+    describe('deciderRelayListener', () => {
+      const EXT = 'lychee-ext-id'
+      const at = (path: string) => `chrome-extension://${EXT}/${path}`
+      beforeEach(() => {
+        vi.stubGlobal('chrome', { runtime: { id: EXT, getURL: at } })
+      })
+      afterEach(() => {
+        vi.unstubAllGlobals()
+      })
+
+      it('holds the channel open for a mapForm request from our worker and answers through sendResponse', async () => {
+        const { engine } = fillEngine(ASSIST_PICKS)
+        const sendResponse = vi.fn()
+        const listener = deciderRelayListener(fillHooks({ engine }), 'conv-1')
+        expect(listener(mapFormMsg(), { id: EXT, url: at('background.js') }, sendResponse)).toBe(true)
+        await vi.waitFor(() => expect(sendResponse).toHaveBeenCalledTimes(1))
+        expect(sendResponse.mock.calls[0][0]).toMatchObject({ requestId: 'req-1', plan: { fills: expect.any(Array) } })
+      })
+
+      it.each([
+        ['another of our pages', { id: EXT, url: at('sidepanel.html') }],
+        ['a foreign extension', { id: 'other', url: at('background.js') }],
+        ['a content script', { id: EXT, url: 'https://example.com/form', tab: { id: 7 } }],
+      ])('ignores a mapForm request from %s, without holding the channel', async (_label, sender) => {
+        const { engine } = fillEngine(ASSIST_PICKS)
+        const sendResponse = vi.fn()
+        expect(deciderRelayListener(fillHooks({ engine }), 'conv-1')(mapFormMsg(), sender as chrome.runtime.MessageSender, sendResponse)).toBeUndefined()
+        await settle()
+        expect(sendResponse).not.toHaveBeenCalled()
+        expect(engine.decide).not.toHaveBeenCalled()
+      })
+
+      it("ignores another conversation's request, so that conversation's own chain can answer it", () => {
+        const { engine } = fillEngine(ASSIST_PICKS)
+        const sendResponse = vi.fn()
+        const listener = deciderRelayListener(fillHooks({ engine }), 'conv-1')
+        expect(listener(mapFormMsg({ conversationId: 'conv-2' }), { id: EXT, url: at('background.js') }, sendResponse)).toBeUndefined()
+        expect(sendResponse).not.toHaveBeenCalled()
+      })
+    })
   })
 })
+
+const SHADOW_PICKS_FOR_RELAY: Record<string, [string, number]> = { f0: ['profile.full_name', 0.9] }

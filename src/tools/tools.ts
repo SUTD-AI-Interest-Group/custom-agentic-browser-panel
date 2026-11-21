@@ -22,7 +22,7 @@ import { applyGrouping, ungroupTabs } from '../platform/tabGroups'
 import { planClosure, planGrouping, TAB_GROUP_COLORS } from './tabPolicy'
 import { getBrowsingHistory, getBookmarks, getTopSites, getDownloads } from '../platform/browsingData'
 import type { BrowsingCapability } from '../platform/permissions'
-import { snapshotPage, type PageSnapshot } from '../platform/domIndex'
+import { snapshotPage, type IndexedElement, type PageSnapshot } from '../platform/domIndex'
 import { snapshotRegions } from '../platform/regionIndex'
 import { capture, tileShot, ShotError, planShotDelivery } from '../platform/screenshot'
 import { looksLikePdfUrl, parsePageRange, searchPages, assemblePagesText } from '../platform/pdfText'
@@ -46,6 +46,7 @@ import { saveArtifact, updateArtifactContent } from '../data/artifacts'
 import { createProposeResearchTool } from './research'
 import { buildCatalog, searchCatalog, partitionToolNames, type CatalogEntry } from './toolDiscovery'
 import type { DeciderHooks } from '../decider/hooks'
+import type { FillPlan } from '../decider/fillPlan'
 import {
   hasElementChanged,
   isPointOfNoReturn,
@@ -53,6 +54,31 @@ import {
   type ControlSession,
   type ControlSpec,
 } from './pageControl'
+
+// ---------------------------------------------------------------------------
+// AutofillForm's Assist path: a decider plan, as the steps its loop runs
+// ---------------------------------------------------------------------------
+
+type PlannedFill = FillPlan['fills'][number]
+
+/** text → type (replacing what is there), select → select, checkbox → click. Never a submit. */
+function fillSpecOf(f: PlannedFill): ControlSpec {
+  if (f.kind === 'select') return { action: 'select', index: f.index, value: f.value }
+  if (f.kind === 'checkbox') return { action: 'click', index: f.index }
+  return { action: 'type', index: f.index, text: f.value, clear: true }
+}
+
+/** Input types a "text" fill can never mean. */
+const NOT_TEXT_INPUT = new Set(['checkbox', 'radio', 'submit', 'button', 'image', 'reset', 'file', 'hidden', 'range', 'color'])
+
+/** Is `el` (as the page stands now) the kind of field this fill was planned for? */
+function fitsFill(kind: PlannedFill['kind'], el: IndexedElement | undefined): boolean {
+  if (!el) return false
+  const type = (el.type ?? '').toLowerCase()
+  if (kind === 'checkbox') return el.tag === 'input' && type === 'checkbox'
+  if (kind === 'select') return el.tag === 'select'
+  return el.tag === 'textarea' || (el.tag === 'input' && !NOT_TEXT_INPUT.has(type))
+}
 
 // ---------------------------------------------------------------------------
 // Human-in-the-loop approval gate
@@ -1680,18 +1706,39 @@ export function createAgentTools(
       },
     }),
 
-    /** Fills mapped, non-sensitive fields from saved profile memories inside an already-open page-control session; sensitive fields still raise a one-shot point-of-no-return card, and submit is never part of this tool. */
+    /**
+     * Fills mapped, non-sensitive fields from saved profile memories inside an already-open
+     * page-control session; sensitive fields still raise a one-shot point-of-no-return card, and
+     * submit is never part of this tool. Two ways in, ONE loop: the model passes `fields` (its own
+     * mapping, shadowed by the decider when it is on), or — in Assist mode — omits them and the
+     * decider maps the form (hooks.mapForm), its plan becoming the steps this same loop runs with
+     * every guard intact: session, foreground per field, origin drift, the one-shot card.
+     */
     AutofillForm: tool({
       description:
-        'Fill the form on the active tab from the user\'s saved profile memories, within an open page-control session. Maps profile details (name, email, address…) to the indexed fields you pass. Sensitive fields (passwords, payment) and any submit still ask each time. Never invents secrets.',
+        'Fill the form on the active tab from the user\'s saved profile memories, within an open page-control session. Maps profile details (name, email, address…) to the indexed fields you pass. Sensitive fields (passwords, payment) and any submit still ask each time. Never invents secrets. With the decision model in Assist mode you may omit fields and pass the request-specific values; the decider maps the fields.',
       inputSchema: z.object({
         fields: z.array(z.object({
           index: z.number().describe('Target field [index] from ReadPage (mode "elements").'),
           value: z.string().describe('The value to enter (you map this from profile memories).'),
           sensitive: z.boolean().optional().describe('True for passwords/payment; forces a confirm and is skipped if not user-provided.'),
-        })).describe('The fields to fill and the values to enter.'),
+        })).optional().describe('The fields to fill and the values to enter. Required unless the decision model is in Assist mode.'),
+        values: z.record(z.string(), z.string()).optional().describe(
+          'Assist mode, without fields: the values this request needs that are not in the profile, by a short snake_case name — e.g. {"message": "…", "topic": "Billing"}.',
+        ),
       }),
-      execute: async ({ fields }) => {
+      execute: async ({ fields, values }) => {
+        // Without fields there is nothing to type unless the decider maps the form — checked
+        // before anything else, since it touches nothing.
+        let assist = false
+        if (!fields) {
+          try {
+            assist = decider?.mode() === 'assist'
+          } catch {
+            assist = false
+          }
+          if (!assist) return { error: 'fields is required unless the decision model is in Assist mode and ready.' }
+        }
         const session = pageControl.session()
         if (!session || !session.active) return { error: 'No page-control session is open. Call RequestPageControl first.' }
         const tab = await resolveTab()
@@ -1699,10 +1746,41 @@ export function createAgentTools(
         // Typing into a page the user cannot see is the least watchable thing
         // this agent does — park it like any other control step.
         if (!(await isForeground(tab))) return parkFor(tab, 'fill in this form')
-        const profile = await getProfileMemories()
+        const DRIFTED = 'The page is now on a different site; autofill stopped and page control ended for safety.'
+
+        // The steps the loop below runs. With fields: the model's mapping, typed as before. In
+        // Assist: the decider's plan, made from one snapshot — so each step remembers the element
+        // and the kind of field it was planned for, and acts only if that is still what it finds.
+        type FillStep = { index: number; spec: ControlSpec; planned?: { el: IndexedElement | undefined; kind: FillPlan['fills'][number]['kind'] } }
+        let steps: FillStep[]
+        let plan: FillPlan | null = null
+        let profileCount = 0
+        if (fields) {
+          profileCount = (await getProfileMemories()).length
+          steps = fields.map((f) => ({ index: f.index, spec: { action: 'type', index: f.index, text: f.value, clear: true, sensitive: f.sensitive } }))
+        } else {
+          let planSnap
+          try { planSnap = await snapshotPage(tab.id) } catch { return { filled: [], error: 'Cannot read this page.' } }
+          if (planSnap.origin !== session.origin) {
+            pageControl.endSession()
+            return { filled: [], error: DRIFTED }
+          }
+          let mapped: FillPlan | { error: string }
+          try {
+            mapped = await decider!.mapForm({ tabId: tab.id, snap: planSnap, session, values: values ?? {} })
+          } catch (err) {
+            mapped = { error: err instanceof Error ? err.message : String(err) }
+          }
+          if ('error' in mapped) return { error: `Could not map fields automatically (${mapped.error}); pass fields explicitly.` }
+          plan = mapped
+          steps = mapped.fills.map((f) => ({ index: f.index, spec: fillSpecOf(f), planned: { el: planSnap.elements[f.index], kind: f.kind } }))
+        }
+
         const filled: number[] = []
         const staleSkipped: number[] = []
-        for (const f of fields) {
+        const left: FillPlan['left'] = plan ? [...plan.left] : []
+        let observed = false
+        for (const step of steps) {
           // Re-checked every field, not just at entry: this loop can run
           // long enough for the user to tab away partway through, and the
           // remaining fields would otherwise keep typing into a page nobody
@@ -1714,12 +1792,39 @@ export function createAgentTools(
           try { snap = await snapshotPage(tab.id) } catch { return { filled, error: 'Cannot read this page.' } }
           if (snap.origin !== session.origin) {
             pageControl.endSession()
-            return { filled, error: 'The page is now on a different site; autofill stopped and page control ended for safety.' }
+            return { filled, error: DRIFTED }
           }
-          const el = snap.elements[f.index]
-          const spec: ControlSpec = { action: 'type', index: f.index, text: f.value, clear: true, sensitive: f.sensitive }
+          // Shadow decider: what would the on-device model have typed into each field, given the
+          // page as it stood before this call typed anything? Fire-and-forget and guarded, like
+          // ControlPage's observeStep — this fill's result cannot depend on it in any way.
+          if (fields && !observed) {
+            observed = true
+            try {
+              decider?.observeFill({ tabId: tab.id, snap, session, fields })
+            } catch {
+              /* additive only */
+            }
+          }
+          const el = snap.elements[step.index]
+          const spec = step.spec
+          if (step.planned) {
+            // Only the element the plan was made for, only as the kind of field it was planned as:
+            // a click is only ever an unticked checkbox, so a submit can never be pressed from here.
+            if (hasElementChanged(step.planned.el, el) || !fitsFill(step.planned.kind, el)) {
+              staleSkipped.push(step.index)
+              continue
+            }
+            if (step.planned.kind === 'checkbox' && el?.checked) {
+              left.push({ index: step.index, reason: 'already-set' }) // a click would untick it
+              continue
+            }
+          }
           if (isPointOfNoReturn(spec, el, session.origin)) {
-            const approved = await requestApproval({ toolName: 'AutofillForm', summary: `Fill a sensitive field (${el?.name ?? f.index})`, reason: 'This field is sensitive.', once: true })
+            const card =
+              spec.action === 'click'
+                ? { summary: `Tick the box "${el?.name ?? step.index}"`, reason: 'Ticking this box may commit you to something.' }
+                : { summary: `Fill a sensitive field (${el?.name ?? step.index})`, reason: 'This field is sensitive.' }
+            const approved = await requestApproval({ toolName: 'AutofillForm', ...card, once: true })
             if (!approved) continue
             // The user may have switched tabs while this card was on screen.
             // Typing a sensitive value into a page they can't see is the
@@ -1733,15 +1838,24 @@ export function createAgentTools(
               const freshSnap = await snapshotPage(tab.id)
               if (freshSnap.origin !== session.origin) {
                 pageControl.endSession()
-                return { filled, error: 'The page is now on a different site; autofill stopped and page control ended for safety.' }
+                return { filled, error: DRIFTED }
               }
-              if (hasElementChanged(el, freshSnap.elements[f.index])) {
-                staleSkipped.push(f.index)
+              if (hasElementChanged(el, freshSnap.elements[step.index])) {
+                staleSkipped.push(step.index)
                 continue
               }
               snap = freshSnap
             } catch {
-              staleSkipped.push(f.index)
+              staleSkipped.push(step.index)
+              continue
+            }
+          }
+          // Defensive, whatever produced the step: this tool never submits. The only click it
+          // makes is ticking a checkbox, so a click on anything else is refused outright.
+          if (spec.action === 'click') {
+            const target = snap.elements[step.index]
+            if (target?.tag !== 'input' || target.type !== 'checkbox' || target.checked) {
+              staleSkipped.push(step.index)
               continue
             }
           }
@@ -1754,12 +1868,27 @@ export function createAgentTools(
             beforeAct: (i) => (i === undefined ? Promise.resolve() : focusOn(tab.id!, i, undefined)),
             afterAct: () => pulse(tab.id!),
           })
-          filled.push(f.index)
+          filled.push(step.index)
+        }
+        if (plan) {
+          return {
+            filled,
+            left,
+            // Key names only (`profile.email`, a select's option label, `tick`): the values went
+            // into the page, and need not go into the model's history as well.
+            mapped: plan.fills.map((f) => ({ index: f.index, key: f.key })),
+            note:
+              `The decision model mapped ${plan.fills.length} field(s); filled ${filled.length}. Submit is a separate, confirmed step.` +
+              (left.length ? ` Left ${left.length} field(s) unfilled (see left) — fill those with ControlPage if the task needs them.` : '') +
+              (staleSkipped.length
+                ? ` Skipped field(s) ${staleSkipped.join(', ')} — the page changed after the fields were mapped; re-read the page and fill those with ControlPage.`
+                : ''),
+          }
         }
         return {
           filled,
           note:
-            `Filled ${filled.length} field(s) from profile. Profile memories available: ${profile.length}. Submit is a separate, confirmed step.` +
+            `Filled ${filled.length} field(s) from profile. Profile memories available: ${profileCount}. Submit is a separate, confirmed step.` +
             (staleSkipped.length
               ? ` Skipped field(s) ${staleSkipped.join(', ')} — the page changed while waiting for approval; re-read the page and try again for those.`
               : ''),

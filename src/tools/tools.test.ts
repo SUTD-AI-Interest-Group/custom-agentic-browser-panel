@@ -42,6 +42,9 @@ vi.mock('../data/memory', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../data/memory')>()
   return { ...actual, getProfileMemories: vi.fn(async () => []) }
 })
+// The assist path's one chat-model call (src/decider/profileLookup.ts), driven through the REAL
+// panel hooks in the "Review Focus 4" tests below.
+vi.mock('../decider/profileLookup', () => ({ profileLookup: vi.fn() }))
 
 import { createAgentTools, type ApprovalGate, type PageControlGate, type PageTarget } from './tools'
 import { closeTabs } from '../platform/tabs'
@@ -51,6 +54,9 @@ import { runControlStep, type ControlSession } from './pageControl'
 import type { IndexedElement, PageSnapshot } from '../platform/domIndex'
 import type { TabFacts } from './tabPolicy'
 import { createDeciderHooks, type DeciderHooks } from '../decider/hooks'
+import type { FillPlan } from '../decider/fillPlan'
+import { profileLookup } from '../decider/profileLookup'
+import { getProfileMemories, type MemoryRecord } from '../data/memory'
 
 const fact = (over: Partial<TabFacts> & { tabId: number }): TabFacts & { url: string } => ({
   windowId: 1,
@@ -509,6 +515,315 @@ describe('RequestPageControl — tells the decider a session was granted', () =>
     })
     const result = await within((requestTools(true, stubHooks({ sessionGranted: throws })).RequestPageControl as any).execute({ plan: 'p' }, {} as any))
     expect(result).toMatchObject({ started: true })
+  })
+})
+
+// ---------------------------------------------------------------------------
+// AutofillForm — assist mode: without `fields`, the decision model maps the form
+// (hooks.mapForm) and the SAME per-field loop executes the plan, every guard intact.
+// ---------------------------------------------------------------------------
+
+const ASSIST_FORM = [
+  el({ index: 0, tag: 'input', type: 'text', name: 'Full name' }),
+  el({ index: 1, tag: 'select', name: 'Topic' }),
+  el({ index: 2, tag: 'input', type: 'checkbox', name: 'I agree to be contacted', checked: false }),
+  el({ index: 3, tag: 'input', type: 'text', name: 'Phone number' }),
+  el({ index: 4, tag: 'button', type: 'submit', name: 'Send message' }),
+]
+
+const ASSIST_PLAN: FillPlan = {
+  fills: [
+    { index: 0, kind: 'text', key: 'profile.full_name', value: 'Ada Lovelace', p: 0.9 },
+    { index: 1, kind: 'select', key: 'Billing', value: 'Billing', p: 0.95 },
+    { index: 2, kind: 'checkbox', key: 'tick', value: 'tick', p: 0.8 },
+  ],
+  left: [{ index: 3, reason: 'low-confidence' }], // the decider's p was 0.4, under the 0.6 threshold
+}
+
+const FIELDS_REQUIRED = { error: 'fields is required unless the decision model is in Assist mode and ready.' }
+
+/** Every tab query answers "still in front": these tests are about the plan, not parking. */
+function stubForeground() {
+  vi.stubGlobal('chrome', { tabs: { query: vi.fn(async () => [FG_TAB]) } })
+}
+
+/** No runControlStep call may ever click a submit control — the property, checked after every test. */
+function assertNoSubmitClicked() {
+  for (const [deps] of vi.mocked(runControlStep).mock.calls) {
+    if (deps.spec.action !== 'click' || deps.spec.index === undefined) continue
+    const target = deps.snapshot.elements.find((e) => e.index === deps.spec.index)
+    expect(target?.type, `clicked [${deps.spec.index}]`).not.toBe('submit')
+    // Stronger still: the decider path only ever clicks an (unchecked) checkbox.
+    expect(target?.type, `clicked [${deps.spec.index}]`).toBe('checkbox')
+  }
+}
+
+describe('AutofillForm — assist mode, without fields', () => {
+  beforeEach(() => {
+    vi.mocked(snapshotPage).mockReset()
+    vi.mocked(runControlStep).mockReset()
+    vi.mocked(snapshotPage).mockResolvedValue(snap(ASSIST_FORM))
+    vi.mocked(runControlStep).mockResolvedValue({ ok: true, message: 'done', registry: 'fresh', origin: 'https://example.com' })
+    stubForeground()
+  })
+  afterEach(() => {
+    assertNoSubmitClicked()
+    vi.unstubAllGlobals()
+  })
+
+  it.each(['shadow', 'off'] as const)("does not run the decider path in %s mode: without fields it is an error", async (mode) => {
+    const mapForm = vi.fn(async () => ASSIST_PLAN)
+    const tools = buildDeciderTools({ session: buildSession(), decider: stubHooks({ mode: () => mode, mapForm }) })
+    expect(await within((tools.AutofillForm as any).execute({ values: { message: 'hi' } }, {} as any))).toEqual(FIELDS_REQUIRED)
+    expect(mapForm).not.toHaveBeenCalled()
+    expect(runControlStep).not.toHaveBeenCalled()
+  })
+
+  it('without a decider at all, omitting fields is the same error', async () => {
+    const tools = buildDeciderTools({ session: buildSession() })
+    expect(await within((tools.AutofillForm as any).execute({}, {} as any))).toEqual(FIELDS_REQUIRED)
+    expect(runControlStep).not.toHaveBeenCalled()
+  })
+
+  it('fills the plan with the per-field loop (text → type+clear, select → select, checkbox → click) and returns what it left', async () => {
+    const mapForm = vi.fn(async () => ASSIST_PLAN)
+    const session = buildSession()
+    const tools = buildDeciderTools({ session, decider: stubHooks({ mode: () => 'assist', mapForm }) })
+    const values = { message: 'My last invoice was charged twice.' }
+    const result = await within((tools.AutofillForm as any).execute({ values }, {} as any))
+
+    expect(mapForm).toHaveBeenCalledTimes(1)
+    expect(mapForm).toHaveBeenCalledWith({ tabId: 1, snap: expect.objectContaining({ elements: ASSIST_FORM }), session, values })
+    expect(runControlStep).toHaveBeenCalledTimes(3)
+    expect(vi.mocked(runControlStep).mock.calls.map(([d]) => d.spec)).toEqual([
+      { action: 'type', index: 0, text: 'Ada Lovelace', clear: true },
+      { action: 'select', index: 1, value: 'Billing' },
+      { action: 'click', index: 2 },
+    ])
+    expect(result).toMatchObject({
+      filled: [0, 1, 2],
+      left: [{ index: 3, reason: 'low-confidence' }],
+      mapped: [
+        { index: 0, key: 'profile.full_name' },
+        { index: 1, key: 'Billing' },
+        { index: 2, key: 'tick' },
+      ],
+    })
+    // Values never echo back into the model's history through `mapped`.
+    expect(JSON.stringify((result as { mapped: unknown }).mapped)).not.toContain('Ada Lovelace')
+  })
+
+  it('passes no values as an empty record', async () => {
+    const mapForm = vi.fn(async () => ({ fills: [], left: [] }))
+    const tools = buildDeciderTools({ session: buildSession(), decider: stubHooks({ mode: () => 'assist', mapForm }) })
+    await within((tools.AutofillForm as any).execute({}, {} as any))
+    expect(mapForm).toHaveBeenCalledWith(expect.objectContaining({ values: {} }))
+  })
+
+  it('still raises the one-shot card for a plan fill on a sensitive element, and skips it when denied', async () => {
+    const form = [el({ index: 0, tag: 'input', type: 'text', name: 'Full name' }), el({ index: 1, tag: 'input', type: 'text', name: 'Card number', sensitive: true })]
+    vi.mocked(snapshotPage).mockResolvedValue(snap(form))
+    const plan: FillPlan = {
+      fills: [
+        { index: 1, kind: 'text', key: 'request.card', value: '4111 1111 1111 1111', p: 0.99 },
+        { index: 0, kind: 'text', key: 'profile.full_name', value: 'Ada Lovelace', p: 0.9 },
+      ],
+      left: [],
+    }
+    const requestApproval = vi.fn(async () => false)
+    const tools = buildDeciderTools({ session: buildSession(), decider: stubHooks({ mode: () => 'assist', mapForm: async () => plan }), requestApproval })
+    const result = await within((tools.AutofillForm as any).execute({}, {} as any))
+    expect(requestApproval).toHaveBeenCalledTimes(1)
+    expect(requestApproval).toHaveBeenCalledWith(expect.objectContaining({ toolName: 'AutofillForm', once: true }))
+    expect(runControlStep).toHaveBeenCalledTimes(1)
+    expect(vi.mocked(runControlStep).mock.calls[0][0].spec).toMatchObject({ action: 'type', index: 0 })
+    expect(result).toMatchObject({ filled: [0] })
+  })
+
+  it('never clicks a submit control, even when a plan says to — nor anything but an unchecked checkbox', async () => {
+    const plan: FillPlan = {
+      fills: [
+        { index: 4, kind: 'checkbox', key: 'tick', value: 'tick', p: 0.99 }, // [4] is the submit button
+        { index: 2, kind: 'checkbox', key: 'tick', value: 'tick', p: 0.9 },
+      ],
+      left: [],
+    }
+    const tools = buildDeciderTools({ session: buildSession(), decider: stubHooks({ mode: () => 'assist', mapForm: async () => plan }) })
+    const result = await within((tools.AutofillForm as any).execute({}, {} as any))
+    expect(runControlStep).toHaveBeenCalledTimes(1)
+    expect(vi.mocked(runControlStep).mock.calls[0][0].spec).toEqual({ action: 'click', index: 2 })
+    expect(result).toMatchObject({ filled: [2] })
+  })
+
+  it('does not click a checkbox that is already ticked when its turn comes (a click would untick it)', async () => {
+    vi.mocked(snapshotPage)
+      .mockResolvedValueOnce(snap(ASSIST_FORM)) // what the plan was made from
+      .mockResolvedValue(snap(ASSIST_FORM.map((e) => (e.index === 2 ? { ...e, checked: true } : e))))
+    const plan: FillPlan = { fills: [{ index: 2, kind: 'checkbox', key: 'tick', value: 'tick', p: 0.9 }], left: [] }
+    const tools = buildDeciderTools({ session: buildSession(), decider: stubHooks({ mode: () => 'assist', mapForm: async () => plan }) })
+    const result = await within((tools.AutofillForm as any).execute({}, {} as any))
+    expect(runControlStep).not.toHaveBeenCalled()
+    expect(result).toMatchObject({ filled: [], left: [{ index: 2, reason: 'already-set' }] })
+  })
+
+  it('ends the session when the origin changes between fields, as the fields path does', async () => {
+    vi.mocked(snapshotPage)
+      .mockResolvedValueOnce(snap(ASSIST_FORM)) // the plan's snapshot
+      .mockResolvedValueOnce(snap(ASSIST_FORM)) // field [0]
+      .mockResolvedValue(snap(ASSIST_FORM, 'https://evil.example')) // field [1]: the page moved
+    const session = buildSession()
+    const tools = buildDeciderTools({ session, decider: stubHooks({ mode: () => 'assist', mapForm: async () => ASSIST_PLAN }) })
+    const result = await within((tools.AutofillForm as any).execute({}, {} as any))
+    expect(result).toEqual({
+      filled: [0],
+      error: 'The page is now on a different site; autofill stopped and page control ended for safety.',
+    })
+    expect(session.active).toBe(false)
+    expect(runControlStep).toHaveBeenCalledTimes(1)
+  })
+
+  it('ends the session without deciding when the page already moved before the plan was made', async () => {
+    vi.mocked(snapshotPage).mockResolvedValue(snap(ASSIST_FORM, 'https://evil.example'))
+    const mapForm = vi.fn(async () => ASSIST_PLAN)
+    const session = buildSession()
+    const tools = buildDeciderTools({ session, decider: stubHooks({ mode: () => 'assist', mapForm }) })
+    const result = await within((tools.AutofillForm as any).execute({}, {} as any))
+    expect(result).toMatchObject({ filled: [], error: expect.stringContaining('different site') })
+    expect(session.active).toBe(false)
+    expect(mapForm).not.toHaveBeenCalled()
+  })
+
+  it('needs an open session first, like every page-control tool', async () => {
+    const mapForm = vi.fn(async () => ASSIST_PLAN)
+    const tools = buildDeciderTools({ session: buildSession({ active: false }), decider: stubHooks({ mode: () => 'assist', mapForm }) })
+    expect(await within((tools.AutofillForm as any).execute({}, {} as any))).toEqual({
+      error: 'No page-control session is open. Call RequestPageControl first.',
+    })
+    expect(mapForm).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    ['an error reply', async () => ({ error: 'the decision model is not ready' }), 'the decision model is not ready'],
+    ['a rejection', async () => { throw new Error('channel closed') }, 'channel closed'],
+  ])('turns %s from mapForm into the explicit-fields error, touching nothing', async (_label, mapForm, reason) => {
+    const tools = buildDeciderTools({ session: buildSession(), decider: stubHooks({ mode: () => 'assist', mapForm: mapForm as DeciderHooks['mapForm'] }) })
+    expect(await within((tools.AutofillForm as any).execute({}, {} as any))).toEqual({
+      error: `Could not map fields automatically (${reason}); pass fields explicitly.`,
+    })
+    expect(runControlStep).not.toHaveBeenCalled()
+  })
+})
+
+describe('AutofillForm — assist failures through the real panel hooks (Review Focus 4)', () => {
+  const memory = (content: string): MemoryRecord => ({
+    id: content, kind: 'profile', content, tags: [], createdAt: 1, updatedAt: 1, lastRecalledAt: null, recallCount: 0, source: 'user',
+  })
+
+  beforeEach(() => {
+    vi.mocked(snapshotPage).mockReset()
+    vi.mocked(runControlStep).mockReset()
+    vi.mocked(profileLookup).mockReset()
+    vi.mocked(snapshotPage).mockResolvedValue(snap(ASSIST_FORM))
+    vi.stubGlobal('chrome', {
+      tabs: { query: vi.fn(async () => [FG_TAB]) },
+      scripting: { executeScript: vi.fn(async () => [{ result: { 1: ['Billing', 'Sales'] } }]) }, // readSelectOptions
+    })
+  })
+  afterEach(() => {
+    vi.mocked(getProfileMemories).mockReset()
+    vi.mocked(getProfileMemories).mockImplementation(async () => [])
+    vi.unstubAllGlobals()
+  })
+
+  async function assistHooks() {
+    const decide = vi.fn()
+    const decider = createDeciderHooks({
+      settings: () => ({ mode: 'assist' }),
+      conversationId: 'conv-1',
+      currentGoal: () => 'fill in the contact form with my details',
+      chatModel: () => ({ modelId: 'chat' }) as never,
+      engine: { decide, warm: vi.fn(async () => {}) },
+      modelReady: async () => true,
+    })
+    decider.sessionGranted() // RequestPageControl's grant resolves readiness
+    await vi.waitFor(() => expect(decider.mode()).toBe('assist'))
+    return { decider, decide }
+  }
+
+  it('profileLookup throws: the reason comes back in the explicit-fields error, with no fills', async () => {
+    vi.mocked(getProfileMemories).mockResolvedValue([memory("The user's full name is Ada Lovelace.")])
+    vi.mocked(profileLookup).mockRejectedValue(new Error('HTTP 500 from the chat model'))
+    const { decider, decide } = await assistHooks()
+    const tools = buildDeciderTools({ session: buildSession(), decider })
+    const result = (await within((tools.AutofillForm as any).execute({}, {} as any))) as { error: string }
+    expect(result.error).toMatch(/^Could not map fields automatically \(.*HTTP 500 from the chat model.*\); pass fields explicitly\.$/)
+    expect(runControlStep).not.toHaveBeenCalled()
+    expect(decide).not.toHaveBeenCalled()
+  })
+
+  it('zero profile memories and no values: an explicit-fields error, with no model call and no fills', async () => {
+    vi.mocked(getProfileMemories).mockResolvedValue([])
+    const { decider, decide } = await assistHooks()
+    const tools = buildDeciderTools({ session: buildSession(), decider })
+    const result = (await within((tools.AutofillForm as any).execute({}, {} as any))) as { error: string }
+    expect(result.error).toMatch(/^Could not map fields automatically \(.+\); pass fields explicitly\.$/)
+    expect(profileLookup).not.toHaveBeenCalled()
+    expect(decide).not.toHaveBeenCalled()
+    expect(runControlStep).not.toHaveBeenCalled()
+  })
+})
+
+describe('AutofillForm — with fields, behaves as before and shadows the call', () => {
+  beforeEach(() => {
+    vi.mocked(snapshotPage).mockReset()
+    vi.mocked(runControlStep).mockReset()
+    vi.mocked(snapshotPage).mockResolvedValue(snap(ASSIST_FORM))
+    vi.mocked(runControlStep).mockResolvedValue({ ok: true, message: 'typed', registry: 'fresh', origin: 'https://example.com' })
+    stubForeground()
+  })
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  const FIELDS = [{ index: 0, value: 'Ada Lovelace' }, { index: 3, value: '+44 20 7946 0958' }]
+
+  it.each(['shadow', 'assist'] as const)('in %s mode: hands the call to observeFill once, never waits for it, and fills as before', async (mode) => {
+    const observeFill = vi.fn(() => new Promise<never>(() => {})) as unknown as DeciderHooks['observeFill']
+    const mapForm = vi.fn(async () => ASSIST_PLAN)
+    const session = buildSession()
+    const tools = buildDeciderTools({ session, decider: stubHooks({ mode: () => mode, observeFill, mapForm }) })
+    const result = await within((tools.AutofillForm as any).execute({ fields: FIELDS }, {} as any))
+    expect(result).toMatchObject({ filled: [0, 3] })
+    expect(observeFill).toHaveBeenCalledTimes(1)
+    expect(observeFill).toHaveBeenCalledWith({ tabId: 1, snap: expect.objectContaining({ elements: ASSIST_FORM }), session, fields: FIELDS })
+    expect(mapForm).not.toHaveBeenCalled() // the model brought its own mapping
+    expect(vi.mocked(runControlStep).mock.calls.map(([d]) => d.spec)).toEqual([
+      { action: 'type', index: 0, text: 'Ada Lovelace', clear: true, sensitive: undefined },
+      { action: 'type', index: 3, text: '+44 20 7946 0958', clear: true, sensitive: undefined },
+    ])
+  })
+
+  it('fills as before when observeFill throws', async () => {
+    const observeFill = vi.fn(() => {
+      throw new Error('decider bug')
+    })
+    const tools = buildDeciderTools({ session: buildSession(), decider: stubHooks({ observeFill }) })
+    const result = await within((tools.AutofillForm as any).execute({ fields: FIELDS }, {} as any))
+    expect(result).toMatchObject({ filled: [0, 3] })
+    expect(runControlStep).toHaveBeenCalledTimes(2)
+  })
+})
+
+describe('AutofillForm — its schema and description', () => {
+  it('makes fields optional, adds values, and tells the model when it may omit fields', () => {
+    const t = buildDeciderTools({ session: buildSession() }).AutofillForm as any
+    expect(t.description).toContain(
+      'With the decision model in Assist mode you may omit fields and pass the request-specific values; the decider maps the fields.',
+    )
+    expect(t.inputSchema.safeParse({}).success).toBe(true)
+    expect(t.inputSchema.safeParse({ values: { message: 'hello', topic: 'Billing' } }).success).toBe(true)
+    expect(t.inputSchema.safeParse({ values: { count: 3 } }).success).toBe(false)
+    expect(t.inputSchema.safeParse({ fields: [{ index: 0, value: 'Ada' }] }).success).toBe(true)
   })
 })
 

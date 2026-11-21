@@ -3,19 +3,37 @@ import { basename, dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-// The SW-side page-text read. Mocked so each test controls when (and whether) it settles.
+// The SW-side page reads (viewport text, select options). Mocked so each test controls when (and whether) they settle.
 vi.mock('../platform/viewportText', () => ({ readViewportText: vi.fn() }))
+vi.mock('../platform/domIndex', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../platform/domIndex')>()),
+  readSelectOptions: vi.fn(),
+}))
 
 import { readViewportText } from '../platform/viewportText'
-import type { IndexedElement, PageSnapshot } from '../platform/domIndex'
+import { readSelectOptions, type IndexedElement, type PageSnapshot } from '../platform/domIndex'
 import type { ControlSession, ControlSpec } from '../tools/pageControl'
 import type { ControlJournalEntry } from '../tools/pageControlJournal'
 import type { DeciderSettings } from './config'
-import { forwardDeciderHooks, parseDeciderRelay, SENSITIVE_VALUE_MASK, stepOf, type DeciderRelayMsg, type DecisionStep, type RelayedStep } from './relay'
+import type { FillPlan } from './fillPlan'
+import {
+  forwardDeciderHooks,
+  MAP_FORM_TIMEOUT_MS,
+  parseDeciderRelay,
+  parseMapFormRequest,
+  SENSITIVE_VALUE_MASK,
+  stepOf,
+  type DeciderRelayMsg,
+  type DecisionStep,
+  type MapFormRequest,
+  type RelayedStep,
+} from './relay'
 
 beforeEach(() => {
   vi.mocked(readViewportText).mockReset()
   vi.mocked(readViewportText).mockResolvedValue('Checkout. Pay now.')
+  vi.mocked(readSelectOptions).mockReset()
+  vi.mocked(readSelectOptions).mockResolvedValue({ 1: ['Billing', 'Sales'] })
 })
 
 // ---------------------------------------------------------------------------
@@ -288,14 +306,12 @@ describe('forwardDeciderHooks (the service-worker side)', () => {
     await new Promise((r) => setTimeout(r, 10)) // an unhandled rejection here fails the run
   })
 
-  it("with an injected probe, mode() is 'off' until the model is ready; mapForm is Task 11's stub", async () => {
+  it("with an injected probe, mode() is 'off' until the model is ready", async () => {
     const hooks = forwardDeciderHooks({ conversationId: 'c', settings: () => ({ mode: 'assist', actThreshold: 0.7 }), send: vi.fn(), modelReady: async () => true })
     expect(hooks.mode()).toBe('off')
     await new Promise((r) => setTimeout(r, 10))
     expect(hooks.mode()).toBe('assist')
     expect(hooks.threshold()).toBe(0.7)
-    const i = input()
-    expect(await hooks.mapForm({ tabId: 7, snap: i.snap, session: i.session, values: {} })).toEqual({ error: 'assist mode is not implemented yet' })
   })
 
   it('without a probe, mode() is the settings mode alone — readiness is the panel’s to check', () => {
@@ -306,5 +322,254 @@ describe('forwardDeciderHooks (the service-worker side)', () => {
     expect(hooks.mode()).toBe('off')
     settings = undefined
     expect(hooks.mode()).toBe('off')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Form filling across the channel: mapForm is a request/response round trip, observeFill a post
+// ---------------------------------------------------------------------------
+
+const FORM_ELEMENTS = [
+  el({ index: 0, tag: 'input', type: 'text', name: 'Full name' }),
+  el({ index: 1, tag: 'select', name: 'Topic' }),
+  el({ index: 2, tag: 'input', type: 'password', name: 'Password', value: 'hunter2', sensitive: true }),
+  el({ index: 3, tag: 'select', name: 'Card type', sensitive: true }),
+  el({ index: 4, tag: 'input', type: 'checkbox', name: 'I agree', checked: false }),
+]
+const formInput = () => ({ tabId: 7, snap: snap(FORM_ELEMENTS), session: session({ plan: 'Fill the contact form' }) })
+
+const PLAN: FillPlan = {
+  fills: [
+    { index: 0, kind: 'text', key: 'profile.full_name', value: 'Ada Lovelace', p: 0.9 },
+    { index: 1, kind: 'select', key: 'Billing', value: 'Billing', p: 0.95 },
+    { index: 4, kind: 'checkbox', key: 'tick', value: 'tick', p: 0.8 },
+  ],
+  left: [{ index: 3, reason: 'low-confidence' }],
+}
+
+describe('forwardDeciderHooks.mapForm (the service-worker side of assist)', () => {
+  const answering = (reply: (msg: MapFormRequest) => unknown) => vi.fn(async (msg: MapFormRequest) => reply(msg))
+
+  it('reads the select options here, asks the panel once, and returns the plan it validated', async () => {
+    const request = answering((msg) => ({ requestId: msg.requestId, plan: PLAN }))
+    const send = vi.fn()
+    const hooks = forwardDeciderHooks({ conversationId: 'conv-1', settings: () => ({ mode: 'assist' }), send, request })
+    const out = await hooks.mapForm({ ...formInput(), values: { message: 'Charged twice.' } })
+
+    expect(out).toEqual(PLAN)
+    // Only the non-sensitive select is read: a sensitive one is never a fill question.
+    expect(readSelectOptions).toHaveBeenCalledWith(7, [1])
+    expect(request).toHaveBeenCalledTimes(1)
+    const msg = request.mock.calls[0][0]
+    expect(msg).toEqual({
+      type: 'decider.mapForm',
+      conversationId: 'conv-1',
+      requestId: expect.any(String),
+      tabId: 7,
+      snap: {
+        url: 'https://shop.test/checkout',
+        title: 'Checkout',
+        elements: [
+          { index: 0, tag: 'input', type: 'text', name: 'Full name', sensitive: false },
+          { index: 1, tag: 'select', name: 'Topic', sensitive: false },
+          { index: 2, tag: 'input', type: 'password', name: 'Password', value: SENSITIVE_VALUE_MASK, sensitive: true },
+          { index: 3, tag: 'select', name: 'Card type', sensitive: true },
+          { index: 4, tag: 'input', type: 'checkbox', name: 'I agree', checked: false, sensitive: false },
+        ],
+      },
+      plan: 'Fill the contact form',
+      selectOptions: { 1: ['Billing', 'Sales'] },
+      values: { message: 'Charged twice.' },
+    })
+    expect(msg.requestId).not.toBe('')
+    expect(JSON.stringify(msg)).not.toContain('hunter2')
+    // What the panel parses is exactly what was sent, after the JSON round trip.
+    expect(parseMapFormRequest(JSON.parse(JSON.stringify(msg)))).toEqual(msg)
+    // The fire-and-forget step channel is not used for a request.
+    expect(send).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    ['shadow', { mode: 'shadow' }],
+    ['off', { mode: 'off' }],
+    ['no settings', undefined],
+  ] as [string, DeciderSettings | undefined][])('answers an error without asking anything in %s', async (_label, settings) => {
+    const request = vi.fn()
+    const out = await forwardDeciderHooks({ conversationId: 'c', settings: () => settings, request }).mapForm({ ...formInput(), values: {} })
+    expect(out).toEqual({ error: expect.stringContaining('Assist') })
+    expect(request).not.toHaveBeenCalled()
+    expect(readSelectOptions).not.toHaveBeenCalled()
+  })
+
+  it('still asks, with no options, when the select read fails', async () => {
+    vi.mocked(readSelectOptions).mockRejectedValue(new Error('Cannot access contents of the page'))
+    const request = answering((msg) => ({ requestId: msg.requestId, plan: PLAN }))
+    const out = await forwardDeciderHooks({ conversationId: 'c', settings: () => ({ mode: 'assist' }), request }).mapForm({ ...formInput(), values: {} })
+    expect(out).toEqual(PLAN)
+    expect(request.mock.calls[0][0].selectOptions).toEqual({})
+  })
+
+  it('gives up after its timeout — 90 s by default, since the panel may first need one chat-model call', async () => {
+    expect(MAP_FORM_TIMEOUT_MS).toBe(90_000)
+    const request = vi.fn(() => new Promise<never>(() => {}))
+    const out = await forwardDeciderHooks({ conversationId: 'c', settings: () => ({ mode: 'assist' }), request, mapFormTimeoutMs: 20 }).mapForm({ ...formInput(), values: {} })
+    expect(out).toEqual({ error: expect.stringContaining('did not answer') })
+  })
+
+  it.each([
+    ['the send rejects: no panel is open', () => Promise.reject(new Error('Could not establish connection. Receiving end does not exist.')), 'no Lychee panel'],
+    ['the port closes unanswered', () => Promise.reject(new Error('The message port closed before a response was received.')), 'no Lychee panel'],
+    ['nobody answers', async () => undefined, 'no Lychee panel'],
+    ['the send throws synchronously', () => { throw new Error('Extension context invalidated.') }, 'Extension context invalidated'],
+  ])('answers an error when %s', async (_label, request, reason) => {
+    const out = await forwardDeciderHooks({ conversationId: 'c', settings: () => ({ mode: 'assist' }), request: request as never }).mapForm({ ...formInput(), values: {} })
+    expect(out).toEqual({ error: expect.stringContaining(reason) })
+  })
+
+  it("passes the panel's own error through", async () => {
+    const request = answering((msg) => ({ requestId: msg.requestId, error: 'the decision model is not ready' }))
+    expect(await forwardDeciderHooks({ conversationId: 'c', settings: () => ({ mode: 'assist' }), request }).mapForm({ ...formInput(), values: {} })).toEqual({
+      error: 'the decision model is not ready',
+    })
+  })
+
+  it.each([
+    ['another request’s answer', (id: string) => ({ requestId: `${id}-other`, plan: PLAN })],
+    ['a fill for an index not on the page', (id: string) => ({ requestId: id, plan: { ...PLAN, fills: [{ ...PLAN.fills[0], index: 99 }] } })],
+    ['a fill of an unknown kind', (id: string) => ({ requestId: id, plan: { ...PLAN, fills: [{ ...PLAN.fills[0], kind: 'submit' }] } })],
+    ['two fills for one field', (id: string) => ({ requestId: id, plan: { ...PLAN, fills: [PLAN.fills[0], PLAN.fills[0]] } })],
+    ['a value that is not a string', (id: string) => ({ requestId: id, plan: { ...PLAN, fills: [{ ...PLAN.fills[0], value: 7 }] } })],
+    ['a probability outside [0, 1]', (id: string) => ({ requestId: id, plan: { ...PLAN, fills: [{ ...PLAN.fills[0], p: Number.NaN }] } })],
+    ['an unknown left reason', (id: string) => ({ requestId: id, plan: { ...PLAN, left: [{ index: 3, reason: 'bored' }] } })],
+    ['no plan at all', (id: string) => ({ requestId: id })],
+  ])('rejects %s as a malformed reply', async (_label, reply) => {
+    const request = answering((msg) => reply(msg.requestId))
+    const out = await forwardDeciderHooks({ conversationId: 'c', settings: () => ({ mode: 'assist' }), request }).mapForm({ ...formInput(), values: {} })
+    expect(out).toEqual({ error: expect.stringContaining('malformed') })
+  })
+
+  it('never sends a request the panel would reject: values are trimmed to what it accepts, an oversized page is refused here', async () => {
+    const request = answering((msg) => ({ requestId: msg.requestId, plan: PLAN }))
+    const hooks = forwardDeciderHooks({ conversationId: 'c', settings: () => ({ mode: 'assist' }), request })
+    const many = Object.fromEntries(Array.from({ length: 60 }, (_, k) => [`v${k}`, 'x']))
+    await hooks.mapForm({ ...formInput(), values: { ...many, ['k'.repeat(65)]: 'long key', '': 'empty key' } })
+    const sent = request.mock.calls[0][0]
+    expect(Object.keys(sent.values)).toHaveLength(50)
+    expect(Object.keys(sent.values).every((k) => k.startsWith('v'))).toBe(true)
+    expect(parseMapFormRequest(sent)).toEqual(sent)
+
+    const huge = { ...formInput(), snap: { ...snap(FORM_ELEMENTS), url: `https://shop.test/?q=${'x'.repeat(20_001)}` } }
+    expect(await hooks.mapForm({ ...huge, values: {} })).toEqual({ error: 'the form is too large to send to the decision model' })
+    expect(request).toHaveBeenCalledTimes(1) // not again: nothing the panel would silently drop
+  })
+
+  it('rebuilds the plan field by field: anything extra is dropped', async () => {
+    const request = answering((msg) => ({
+      requestId: msg.requestId,
+      extra: 1,
+      plan: { fills: [{ ...PLAN.fills[0], note: 'x' }], left: [{ index: 3, reason: 'leave-empty', why: 'y' }], debug: true },
+    }))
+    const out = await forwardDeciderHooks({ conversationId: 'c', settings: () => ({ mode: 'assist' }), request }).mapForm({ ...formInput(), values: {} })
+    expect(out).toEqual({ fills: [PLAN.fills[0]], left: [{ index: 3, reason: 'leave-empty' }] })
+  })
+})
+
+describe('parseMapFormRequest', () => {
+  const REQ: MapFormRequest = {
+    type: 'decider.mapForm', conversationId: 'c', requestId: 'r1', tabId: 7,
+    snap: { url: 'https://shop.test/', title: 'Shop', elements: [{ index: 0, tag: 'input', type: 'password', name: 'Pin', value: SENSITIVE_VALUE_MASK, sensitive: true }] },
+    plan: 'p', selectOptions: { 1: ['A', 'B'] }, values: { message: 'm' },
+  }
+
+  it('accepts a well-formed request and re-masks a sensitive value', () => {
+    expect(parseMapFormRequest(REQ)).toEqual(REQ)
+    const raw = { ...REQ, snap: { ...REQ.snap, elements: [{ ...REQ.snap.elements[0], value: '1234' }] } }
+    expect(parseMapFormRequest(raw)).toEqual(REQ)
+  })
+
+  it.each([
+    ['another type', { ...REQ, type: 'decider.step' }],
+    ['an empty requestId', { ...REQ, requestId: '' }],
+    ['a value that is not a string', { ...REQ, values: { n: 3 } }],
+    ['options that are not a list', { ...REQ, selectOptions: { 1: 'A' } }],
+    ['an option key that is not an index', { ...REQ, selectOptions: { x: ['A'] } }],
+    ['no snap', { ...REQ, snap: undefined }],
+  ])('rejects %s', (_label, raw) => {
+    expect(parseMapFormRequest(raw)).toBeNull()
+  })
+})
+
+describe('forwardDeciderHooks.observeFill (shadowing a call that brought its own fields)', () => {
+  const FIELDS = [
+    { index: 0, value: 'Ada Lovelace' },
+    { index: 2, value: 'hunter2' }, // a sensitive element: never sent
+    { index: 4, value: 'true', sensitive: true }, // flagged sensitive by the model: never sent
+    { index: 1, value: 'Billing' },
+  ]
+
+  it('reads the select options here, then posts the observation with the non-sensitive fields only', async () => {
+    let settle: (o: Record<number, string[]>) => void = () => {}
+    vi.mocked(readSelectOptions).mockReturnValue(new Promise((r) => (settle = r)))
+    const send = vi.fn()
+    const hooks = forwardDeciderHooks({ conversationId: 'conv-1', settings: () => ({ mode: 'shadow' }), send })
+    expect(hooks.observeFill({ ...formInput(), fields: FIELDS })).toBeUndefined()
+    expect(readSelectOptions).toHaveBeenCalledWith(7, [1]) // issued before observeFill returned
+    await new Promise((r) => setTimeout(r, 10))
+    expect(send).not.toHaveBeenCalled()
+    settle({ 1: ['Billing', 'Sales'] })
+    await vi.waitFor(() => expect(send).toHaveBeenCalledTimes(1))
+    const msg = send.mock.calls[0][0] as DeciderRelayMsg
+    expect(msg).toMatchObject({
+      type: 'decider.fill',
+      conversationId: 'conv-1',
+      fill: { tabId: 7, plan: 'Fill the contact form', selectOptions: { 1: ['Billing', 'Sales'] }, fields: [{ index: 0, value: 'Ada Lovelace' }, { index: 1, value: 'Billing' }] },
+    })
+    expect(JSON.stringify(msg)).not.toContain('hunter2')
+    expect(parseDeciderRelay(JSON.parse(JSON.stringify(msg)))).toEqual(msg)
+  })
+
+  it('sends nothing when the decider is off, or every field is sensitive', async () => {
+    const send = vi.fn()
+    forwardDeciderHooks({ conversationId: 'c', settings: () => ({ mode: 'off' }), send }).observeFill({ ...formInput(), fields: FIELDS })
+    forwardDeciderHooks({ conversationId: 'c', settings: () => ({ mode: 'shadow' }), send }).observeFill({ ...formInput(), fields: [FIELDS[1], FIELDS[2]] })
+    await new Promise((r) => setTimeout(r, 10))
+    expect(send).not.toHaveBeenCalled()
+    expect(readSelectOptions).not.toHaveBeenCalled()
+  })
+
+  it('never throws: a failed read posts no options, a failed send is swallowed', async () => {
+    vi.mocked(readSelectOptions).mockImplementation(() => {
+      throw new Error('chrome.scripting is undefined')
+    })
+    const send = vi.fn(() => Promise.reject(new Error('Receiving end does not exist.')))
+    const hooks = forwardDeciderHooks({ conversationId: 'c', settings: () => ({ mode: 'assist' }), send })
+    expect(() => hooks.observeFill({ ...formInput(), fields: FIELDS })).not.toThrow()
+    expect(() => hooks.observeFill(null as never)).not.toThrow()
+    await vi.waitFor(() => expect(send).toHaveBeenCalledTimes(1))
+    expect((send.mock.calls[0] as unknown as [{ fill: { selectOptions: unknown } }])[0].fill.selectOptions).toEqual({})
+    await new Promise((r) => setTimeout(r, 10)) // an unhandled rejection here fails the run
+  })
+})
+
+describe('parseDeciderRelay — decider.fill', () => {
+  const FILL = {
+    tabId: 7,
+    snap: { url: 'https://shop.test/', title: 'Shop', elements: [{ index: 0, tag: 'input', name: 'Name', sensitive: false }] },
+    plan: 'p',
+    selectOptions: {},
+    fields: [{ index: 0, value: 'Ada' }],
+  }
+
+  it('accepts and rebuilds a fill observation', () => {
+    expect(parseDeciderRelay({ type: 'decider.fill', conversationId: 'c', fill: { ...FILL, extra: 1 } })).toEqual({ type: 'decider.fill', conversationId: 'c', fill: FILL })
+  })
+
+  it.each([
+    ['fields not a list', { ...FILL, fields: {} }],
+    ['a field value that is not a string', { ...FILL, fields: [{ index: 0, value: 1 }] }],
+    ['a field index that is not an index', { ...FILL, fields: [{ index: -1, value: 'a' }] }],
+    ['no snap', { ...FILL, snap: null }],
+  ])('rejects %s', (_label, fill) => {
+    expect(parseDeciderRelay({ type: 'decider.fill', conversationId: 'c', fill })).toBeNull()
   })
 })
