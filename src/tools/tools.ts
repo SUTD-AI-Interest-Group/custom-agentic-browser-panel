@@ -47,7 +47,7 @@ import { createProposeResearchTool } from './research'
 import { buildCatalog, searchCatalog, partitionToolNames, type CatalogEntry } from './toolDiscovery'
 import type { DeciderHooks } from '../decider/hooks'
 import type { FillPlan } from '../decider/fillPlan'
-import { assistsForms, PAGE_TEXT_CAP } from '../decider/config'
+import { assistsForms, PAGE_TEXT_CAP, type DeciderMode } from '../decider/config'
 import { DRIVER_MAX_STEPS, runDriverLoop, type DriverResult } from '../decider/driverLoop'
 import { readViewportText } from '../platform/viewportText'
 import {
@@ -71,14 +71,23 @@ const FORM_GUIDANCE =
 /** RequestPageControl's grant, in Assist mode: the one place the model learns the path exists. */
 const ASSIST_GRANT_NOTE = `Assist mode is on: ${FORM_GUIDANCE}`
 
+/** RequestPageControl's grant, in Driver mode — the FastSteps half alone (AutofillForm set to Never). */
+const DRIVER_NOTE =
+  'Driver mode is on: for a run of routine steps toward ONE short sub-goal (search, open a result, tick a box, add to cart), call FastSteps with that sub-goal and any text to type in `values` — the on-device decision model takes the steps and hands back when done or unsure; then check the page and continue.'
+
 /** RequestPageControl's grant, in Driver mode (which includes Assist). */
-const DRIVER_GRANT_NOTE =
-  'Driver mode is on: for a run of routine steps toward ONE short sub-goal (search, open a result, tick a box, add to cart), call FastSteps with that sub-goal and any text to type in `values` — the on-device decision model takes the steps and hands back when done or unsure; then check the page and continue. ' +
-  `And ${FORM_GUIDANCE}`
+const DRIVER_GRANT_NOTE = `${DRIVER_NOTE} And ${FORM_GUIDANCE}`
 
 /** FastSteps' description, verbatim from the plan (Task 16). */
 const FAST_STEPS_DESCRIPTION =
   "Run up to 12 quick page steps toward ONE short sub-goal (e.g. 'search for wireless headphones and open the cheapest result under $100') using the on-device decision model, inside an open page-control session. Pass any values to type in `values`. It hands back when done, unsure, blocked, or after 12 steps; risky steps still ask the user."
+
+/**
+ * ControlPage's and AutofillForm's answer while a FastSteps run holds the session (M1). The SDK runs
+ * one model step's tool calls concurrently, so a ControlPage beside a FastSteps would act on a page
+ * the decider is changing under it — and the decider on a page ControlPage is changing.
+ */
+const DRIVING_ERROR = 'A FastSteps run is still taking steps on this page; wait for its result, then continue.'
 
 /** How long FastSteps waits for a tab that is still loading before it reads the page. */
 const LOADING_WAIT_MS = 8000
@@ -570,6 +579,35 @@ export function createAgentTools(
       }
     }
   }
+
+  // The decision model's mode as this ToolSet is built: the settings' mode AND a ready model. Both
+  // callers await decider.resolveMode() first (Chat.tsx for the schemas the model sees, toolHost.ts
+  // for the tools that execute), so this is exact and the two realms agree. Off, missing, failed or
+  // unreadable reads 'off' — and then FastSteps is absent and AutofillForm, its schema, its
+  // description and the grant's result are exactly what they were before the decider existed.
+  let deciderMode: DeciderMode = 'off'
+  try {
+    deciderMode = decider?.mode() ?? 'off'
+  } catch {
+    deciderMode = 'off'
+  }
+  const assistOn = assistsForms(deciderMode)
+  const fillFields = z.array(z.object({
+    index: z.number().describe('Target field [index] from ReadPage (mode "elements").'),
+    value: z.string().describe('The value to enter (you map this from profile memories).'),
+    sensitive: z.boolean().optional().describe('True for passwords/payment; forces a confirm and is skipped if not user-provided.'),
+  }))
+  const assistFillSchema = z.object({
+    fields: fillFields.optional().describe('The fields to fill and the values to enter. Required unless the decision model is in Assist mode.'),
+    values: z.record(z.string(), z.string()).optional().describe(
+      'Assist mode, without fields: the values this request needs that are not in the profile, by a short snake_case name — e.g. {"message": "…", "topic": "Billing"}.',
+    ),
+  })
+  // Without Assist: the original tool, byte for byte. (Typed as the Assist shape, which only widens
+  // it — `fields` optional, `values` allowed — so execute() below reads both shapes the same way.)
+  const fillSchema = assistOn
+    ? assistFillSchema
+    : (z.object({ fields: fillFields.describe('The fields to fill and the values to enter.') }) as unknown as typeof assistFillSchema)
 
   const tools: ToolSet = {
     DiscoverWebMcp: tool({
@@ -1552,7 +1590,8 @@ export function createAgentTools(
         activeNames.add('AutofillForm')
         activeNames.add('GetScreenshot')
         // Driver mode: FastSteps joins the cluster — only when it is in this ToolSet at all (Driver
-        // mode, and not set to Never), so the grant never names a tool the model cannot call.
+        // mode with a ready model, and neither it nor ControlPage set to Never), so the grant never
+        // names a tool the model cannot call.
         const fastSteps = 'FastSteps' in tools
         if (fastSteps) activeNames.add('FastSteps')
         await mountPresence(tab.id)
@@ -1560,15 +1599,10 @@ export function createAgentTools(
         // frame only). The spotlight/cursor come alive on the first ControlPage.
         await setTint(tab.id, true)
         // Assist is only useful if the model knows the path exists: say so where it matters, on
-        // the grant, and only when the settings say Assist or Driver (in the worker, decider.mode()
-        // IS the settings mode — the panel checks the model's readiness when it is asked to map).
-        let assistOn = false
-        try {
-          assistOn = assistsForms(decider?.mode())
-        } catch {
-          /* additive only */
-        }
-        const note = fastSteps ? DRIVER_GRANT_NOTE : assistOn ? ASSIST_GRANT_NOTE : undefined
+        // the grant — decided from the same build-time mode as AutofillForm's schema, so the note
+        // never offers a field-less call the schema would refuse, nor a tool set to Never.
+        const formsOn = assistOn && 'AutofillForm' in tools
+        const note = fastSteps ? (formsOn ? DRIVER_GRANT_NOTE : DRIVER_NOTE) : formsOn ? ASSIST_GRANT_NOTE : undefined
         try {
           const snap = await snapshotPage(tab.id)
           return await lookResult(tab, snap, { started: true, ...(note ? { note } : {}) }, selected, visionCapable, imageQueue)
@@ -1599,6 +1633,7 @@ export function createAgentTools(
         const session = pageControl.session()
         if (!session || !session.active)
           return { error: 'No page-control session is open. Call RequestPageControl first.' }
+        if (session.driving) return { error: DRIVING_ERROR }
         const tab = await resolveTab()
         if (tab?.id === undefined || tab.id !== session.tabId)
           return { error: 'The controlled tab is no longer active.' }
@@ -1767,25 +1802,18 @@ export function createAgentTools(
      */
     AutofillForm: tool({
       description:
-        'Fill the form on the active tab from the user\'s saved profile memories, within an open page-control session. Maps profile details (name, email, address…) to the indexed fields you pass. Sensitive fields (passwords, payment) and any submit still ask each time. Never invents secrets. With the decision model in Assist mode you may omit fields and pass the request-specific values; the decider maps the fields.',
-      inputSchema: z.object({
-        fields: z.array(z.object({
-          index: z.number().describe('Target field [index] from ReadPage (mode "elements").'),
-          value: z.string().describe('The value to enter (you map this from profile memories).'),
-          sensitive: z.boolean().optional().describe('True for passwords/payment; forces a confirm and is skipped if not user-provided.'),
-        })).optional().describe('The fields to fill and the values to enter. Required unless the decision model is in Assist mode.'),
-        values: z.record(z.string(), z.string()).optional().describe(
-          'Assist mode, without fields: the values this request needs that are not in the profile, by a short snake_case name — e.g. {"message": "…", "topic": "Billing"}.',
-        ),
-      }),
+        'Fill the form on the active tab from the user\'s saved profile memories, within an open page-control session. Maps profile details (name, email, address…) to the indexed fields you pass. Sensitive fields (passwords, payment) and any submit still ask each time. Never invents secrets.' +
+        (assistOn ? ' With the decision model in Assist mode you may omit fields and pass the request-specific values; the decider maps the fields.' : ''),
+      inputSchema: fillSchema,
       execute: async ({ fields, values }, options) => {
         const abortSignal = options?.abortSignal
         // Without fields there is nothing to type unless the decider maps the form — checked
-        // before anything else, since it touches nothing.
+        // before anything else, since it touches nothing. Only when this ToolSet was built with
+        // Assist on (its schema allows omitting fields) AND the decider still says so now.
         let assist = false
         if (!fields) {
           try {
-            assist = assistsForms(decider?.mode())
+            assist = assistOn && assistsForms(decider?.mode())
           } catch {
             assist = false
           }
@@ -1793,6 +1821,7 @@ export function createAgentTools(
         }
         const session = pageControl.session()
         if (!session || !session.active) return { error: 'No page-control session is open. Call RequestPageControl first.' }
+        if (session.driving) return { error: DRIVING_ERROR }
         const tab = await resolveTab()
         if (tab?.id === undefined || tab.id !== session.tabId) return { error: 'The controlled tab is no longer active.' }
         // Typing into a page the user cannot see is the least watchable thing
@@ -1983,7 +2012,9 @@ export function createAgentTools(
      * check, foreground parking, origin drift, the one-shot card for every point of no return with
      * the stale-element re-check after it, runControlStep with the presence hooks — and adds the
      * loop's own stop rules (src/decider/driverLoop.ts, pure and unit-tested). Present ONLY in
-     * Driver mode (deleted below otherwise), so the repair hook can never resurrect it.
+     * Driver mode with the model ready, and never when ControlPage is set to Never (deleted below
+     * otherwise), so the repair hook can never resurrect it. While it runs it holds the session
+     * (`session.driving`): ControlPage and AutofillForm refuse until it hands back.
      */
     FastSteps: tool({
       description: FAST_STEPS_DESCRIPTION,
@@ -2077,13 +2108,14 @@ export function createAgentTools(
                 })
                 // ControlPage's post-action origin rule: an approved crossing re-fences; an
                 // unapproved one does not (the next ControlPage asks the user). Both hand back.
+                // Either way the flag is cleared: a `true` left over from an earlier approved step
+                // that never crossed would otherwise let the next drift check re-fence THIS
+                // unapproved move silently, with no card (final review C1).
                 let moved: string | undefined
                 if (r.origin && r.origin !== session.origin) {
                   moved = hostLabel(r.origin)
-                  if (approved) {
-                    session.origin = r.origin
-                    session.crossingAuthorized = false
-                  }
+                  if (approved) session.origin = r.origin
+                  session.crossingAuthorized = false
                 } else {
                   session.crossingAuthorized = approved
                 }
@@ -2095,11 +2127,13 @@ export function createAgentTools(
             return { error: `FastSteps failed (${err instanceof Error ? err.message : String(err)}); continue with ControlPage.` }
           }
           // What this call did, from the session's own (redacted) journal.
+          // Never the typed values (M4): like Assist's `mapped`, the model gets what was done
+          // where, and each typed step's lookup key NAME rides on its `steps` entry — the values
+          // went into the page and need not go into the model's history as well.
           const actions = (session.journal ?? []).slice(journalStart).map((e) => ({
             action: e.action,
             ...(e.index !== undefined ? { index: e.index } : {}),
             summary: e.summary,
-            ...(e.redactedValue !== undefined ? { value: e.redactedValue } : {}),
           }))
           const { elements, ...rest } = result
           return {
@@ -2512,17 +2546,13 @@ export function createAgentTools(
   // ungranted source.
   if (grantedSources.length === 0) delete tools.QueryBrowserData
 
-  // Driver mode's FastSteps exists only when the SETTINGS say Driver — decided from the settings'
-  // mode in both realms (the panel builds the schemas the model sees, the worker the tools that
-  // execute), so the two always agree. Absent from the ToolSet otherwise, so neither ToolSearch
-  // nor the repair hook can ever surface it. Readiness is the panel's to check, per decision.
-  let driverOn = false
-  try {
-    driverOn = decider?.settingsMode() === 'driver'
-  } catch {
-    driverOn = false
-  }
-  if (!driverOn) delete tools.FastSteps
+  // Driver mode's FastSteps exists only in Driver mode with a ready model (deciderMode above, decided
+  // the same way in both realms — the panel builds the schemas the model sees, the worker the tools
+  // that execute — so the two agree), and only where ControlPage itself may run: it takes the same
+  // kind of page steps, so a user who set ControlPage to Never has said no to it too (its own
+  // policy is honoured by the loop below). Absent from the ToolSet otherwise, so neither ToolSearch
+  // nor the repair hook can ever surface it.
+  if (deciderMode !== 'driver' || policyFor('ControlPage') === 'never') delete tools.FastSteps
 
   // The MCP resource tools exist only when the user has configured at least one
   // MCP server — same principle as QueryBrowserData: a capability the user

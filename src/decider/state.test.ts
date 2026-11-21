@@ -128,6 +128,14 @@ describe('form fill', () => {
     expect(at(0.9).left).toEqual([{ index: 8, reason: 'already-set' }])
     expect(planFill(box, {}, lookup, 0.6).left).toEqual([{ index: 8, reason: 'already-set' }])
   })
+  it('planFill: a NaN probability fills nothing — text, select, tick or untick (M2)', () => {
+    const { questions } = fillRequest({ goal: 'g', url: 'u', title: 't', lookup, fields })
+    const nan = (top: string): Answer => ({ kind: 'choice', options: [], probs: [], top, p: Number.NaN, confidence: Number.NaN, yes: Number.NaN })
+    const plan = planFill(questions, { f3: nan('profile.full_name'), f6: nan('Billing'), f7: nan('request.message'), f8: nan('true') }, lookup, 0.6)
+    expect(plan.fills).toEqual([])
+    const ticked = fillRequest({ goal: 'g', url: 'u', title: 't', lookup, fields: [{ ...fields[5], checked: true }] }).questions
+    expect(planFill(ticked, { f8: nan('false') }, lookup, 0.6).fills).toEqual([])
+  })
   it('planFill: an unticked checkbox is leave-empty on a confident no, low-confidence only in between', () => {
     const box = fillRequest({ goal: 'g', url: 'u', title: 't', lookup, fields: [fields[5]] }).questions
     const ans = (yes: number): Answer => ({ kind: 'noul', options: ['false', 'true'], probs: [1 - yes, yes], top: yes >= 0.5 ? 'true' : 'false', p: Math.max(yes, 1 - yes), confidence: 0.9, yes })

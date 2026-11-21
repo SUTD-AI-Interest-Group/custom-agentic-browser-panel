@@ -136,14 +136,35 @@ const RAW_CLEARERS: Record<StoreKey, () => Promise<void>> = {
 }
 
 /**
- * Erase everything: all eight stores plus the whole chrome.storage.local
- * namespace — settings, API keys, the vision-probe cache, the lot. The caller
- * sends the user back to onboarding afterwards; with the settings key gone,
- * `loadSettings()` returns an un-onboarded config and `App.tsx` renders the
- * wizard on its own.
+ * The on-device decision model's data, which no StoreKey covers (Settings →
+ * Experimental manages it): the imported model in OPFS (`decider/`, ~4.6 GB)
+ * and the shadow log in its own IndexedDB (`lychee-decider`). Loaded on demand
+ * so that the OPFS code reaches no chunk but the ones that already carry it —
+ * this module is panel-only (DataTab), never the service worker. The engine is
+ * disposed first: a booted worker holds the model files open, and OPFS refuses
+ * to remove a file with a live sync access handle.
+ */
+async function eraseDecider(): Promise<void> {
+  const [{ getDeciderEngine }, { deleteModel }, { clearShadow }] = await Promise.all([
+    import('../decider/engine'),
+    import('../decider/storage'),
+    import('../decider/shadowStore'),
+  ])
+  await getDeciderEngine().dispose()
+  await Promise.all([deleteModel(), clearShadow()])
+}
+
+/**
+ * Erase everything: all eight stores, the decision model and its shadow log,
+ * plus the whole chrome.storage.local namespace — settings, API keys, the
+ * vision-probe cache, the lot. The decider goes BEFORE the storage clear:
+ * deleteModel writes its `absent` status there, which the clear then removes.
+ * The caller sends the user back to onboarding afterwards; with the settings
+ * key gone, `loadSettings()` returns an un-onboarded config and `App.tsx`
+ * renders the wizard on its own.
  */
 export async function eraseAllData(): Promise<void> {
-  await Promise.all(Object.values(RAW_CLEARERS).map((clear) => clear()))
+  await Promise.all([...Object.values(RAW_CLEARERS).map((clear) => clear()), eraseDecider()])
   await chrome.storage.local.clear()
   await resetVault()
 }

@@ -4,6 +4,7 @@
 
 import { MODEL_ID, MODEL_STATUS_KEY } from './config'
 import { parseManifest, type DeciderManifest } from './manifest'
+import { readModelReady } from './modelStatus'
 
 export type ModelStatus =
   | { state: 'absent' }
@@ -15,6 +16,44 @@ export type ImportSource = { kind: 'files'; files: File[] } | { kind: 'url'; bas
 
 const ROOT_DIR = 'decider'
 const PROGRESS_INTERVAL_MS = 250
+
+/**
+ * Every file the worker reads (worker.ts) plus the self-test's reference rows: a manifest that does
+ * not list them all is refused before a byte is written, so `ready` can never be written over a
+ * bundle the engine would fail to boot from (final review M9). manifest.json itself is written last.
+ */
+export const REQUIRED_MODEL_FILES = [
+  'manifest.json',
+  'torso.onnx',
+  'torso.onnx.data',
+  'embed.bin',
+  'ple.bin',
+  'tokenizer.json',
+  'tokenizer_config.json',
+  'selftest.json',
+] as const
+
+const LOOPBACK_HOST = /^(?:localhost|127(?:\.\d{1,3}){3}|\[::1\])$/i
+
+/**
+ * Why a "Download from URL…" address is refused, or null when it is fine: https anywhere, plain
+ * http only to this machine (the eval harness and `scripts/decider-export` serve from loopback). A
+ * 4.6 GB model fetched in the clear from a remote host is checksummed against a manifest fetched
+ * the same way — so neither proves anything about where it came from.
+ */
+export function importUrlProblem(baseUrl: string): string | null {
+  let u: URL
+  try {
+    u = new URL(baseUrl)
+  } catch {
+    return 'Enter the address of the folder that holds manifest.json.'
+  }
+  if (u.protocol === 'https:') return null
+  if (u.protocol === 'http:' && LOOPBACK_HOST.test(u.hostname)) return null
+  return u.protocol === 'http:'
+    ? 'Plain http is only allowed from this computer (localhost / 127.0.0.1); use an https address.'
+    : 'Only https addresses (or http from this computer) can be imported.'
+}
 
 // An import running in THIS JS context. A stored `importing` status with no such import is a
 // leftover from a closed/crashed page, so it must never read as live (or as ready). A flag
@@ -50,20 +89,39 @@ export async function getModelStatus(): Promise<ModelStatus> {
   return s
 }
 
-export async function isModelReady(): Promise<boolean> {
-  const s = await getModelStatus()
-  return s.state === 'ready' && s.modelId === MODEL_ID
+/** The same probe the service worker uses (modelStatus.ts), so both realms agree on "ready". */
+export function isModelReady(): Promise<boolean> {
+  return readModelReady()
 }
 
+/**
+ * Removes every model this extension ever imported — the whole `decider/` directory, not just this
+ * build's model id: a bundle for another id (an older build's, or one whose status record was lost)
+ * would otherwise sit in OPFS with nothing able to delete it.
+ */
 export async function deleteModel(): Promise<void> {
   const root = await getRoot()
   try {
-    const dir = await root.getDirectoryHandle(ROOT_DIR)
-    await dir.removeEntry(MODEL_ID, { recursive: true })
+    await root.removeEntry(ROOT_DIR, { recursive: true })
   } catch (e) {
     if (!(e instanceof Error && e.name === 'NotFoundError')) throw e
   }
   await setStatus({ state: 'absent' })
+}
+
+/**
+ * Whether anything is stored under `decider/` in OPFS — whatever the status record says. The
+ * record can be gone (Erase all data before it removed the files, a cleared chrome.storage) or name
+ * another model, and the files are still gigabytes the user must be able to delete. Never rejects.
+ */
+export async function hasModelFiles(): Promise<boolean> {
+  try {
+    const dir = (await (await getRoot()).getDirectoryHandle(ROOT_DIR)) as FileSystemDirectoryHandle & { keys(): AsyncIterable<string> }
+    for await (const _ of dir.keys()) return true
+    return false
+  } catch {
+    return false
+  }
 }
 
 const hex = (buf: ArrayBuffer): string =>
@@ -175,11 +233,18 @@ export async function importModel(
     // Claim the status before any byte moves, so a crash mid-import reads as interrupted.
     await setStatus({ state: 'importing', done: 0, total: 0 })
     void Promise.resolve(navigator.storage?.persist?.()).catch(() => {})
+    if (src.kind === 'url') {
+      const problem = importUrlProblem(src.baseUrl)
+      if (problem) throw new Error(problem)
+    }
     const text = await readManifestText(src)
     const manifest = parseManifest(JSON.parse(text))
     if (manifest.modelId !== MODEL_ID) {
       throw new Error(`manifest is for ${manifest.modelId}, expected ${MODEL_ID}`)
     }
+    const listed = new Set(manifest.files.map((f) => f.name))
+    const missing = REQUIRED_MODEL_FILES.filter((n) => n !== 'manifest.json' && !listed.has(n))
+    if (missing.length) throw new Error(`manifest does not list ${missing.join(', ')}`)
     const total = manifest.files.reduce((n, f) => n + f.bytes, 0)
     await setStatus({ state: 'importing', done: 0, total })
 

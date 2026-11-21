@@ -38,7 +38,8 @@ export function planFill(
       else plan.left.push({ index, reason: 'low-confidence' })
       continue
     }
-    if (a.p < threshold) {
+    // "Fill only if p >= threshold", never "skip if p < threshold": a NaN fails both, and must not fill.
+    if (!(a.p >= threshold)) {
       plan.left.push({ index, reason: 'low-confidence' })
       continue
     }

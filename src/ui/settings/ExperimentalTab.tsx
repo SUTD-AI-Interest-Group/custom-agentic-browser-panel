@@ -12,7 +12,15 @@ import { getDeciderEngine } from '../../decider/engine'
 import type { DecisionRequest } from '../../decider/request'
 import { clearShadow, listShadow, type ShadowRecord } from '../../decider/shadowStore'
 import { summarize } from '../../decider/stats'
-import { deleteModel, getModelStatus, importModel, type ImportSource, type ModelStatus } from '../../decider/storage'
+import {
+  deleteModel,
+  getModelStatus,
+  hasModelFiles,
+  importModel,
+  importUrlProblem,
+  type ImportSource,
+  type ModelStatus,
+} from '../../decider/storage'
 import { Section, Select } from './primitives'
 
 /** The self-test bar the exporter's own verify run is held to. */
@@ -313,6 +321,9 @@ export default function ExperimentalTab({
   const threshold = draft.decider?.actThreshold ?? DEFAULT_ACT_THRESHOLD
   const [thresholdText, setThresholdText] = useState(String(threshold))
   const [status, setStatus] = useState<ModelStatus | null>(null)
+  // Model files in OPFS, whatever the status record says: it can be gone (cleared storage) or name
+  // another model while gigabytes still sit on disk — Delete must reach them either way.
+  const [filesPresent, setFilesPresent] = useState(false)
   const [progress, setProgress] = useState<{ done: number; total: number } | null>(null)
   const [busy, setBusy] = useState<'import' | 'delete' | 'selftest' | null>(null)
   const [armed, setArmed] = useState(false)
@@ -328,7 +339,10 @@ export default function ExperimentalTab({
   // it; re-reading on every change keeps the line live even after this tab remounts mid-import.
   useEffect(() => {
     let live = true
-    const refresh = () => void getModelStatus().then((s) => live && setStatus(s)).catch(() => {})
+    const refresh = () => {
+      void getModelStatus().then((s) => live && setStatus(s)).catch(() => {})
+      void hasModelFiles().then((has) => live && setFilesPresent(has))
+    }
     refresh()
     const onChanged = (changes: Record<string, chrome.storage.StorageChange>, area: string) => {
       if (area === 'local' && MODEL_STATUS_KEY in changes) refresh()
@@ -349,7 +363,12 @@ export default function ExperimentalTab({
 
   function setMode(next: string) {
     const decider = normalizeDecider({ ...draft.decider, mode: next })
-    if (decider) commit({ ...draft, decider })
+    if (!decider) return
+    commit({ ...draft, decider })
+    // Off releases the model (its GPU memory and file handles) now rather than at the idle
+    // teardown; any other change lets an engine that gave up booting (M5) try again.
+    if (decider.mode === 'off') void getDeciderEngine().dispose().catch(() => {})
+    else getDeciderEngine().resetFailures()
   }
 
   function onThresholdChange(text: string) {
@@ -367,6 +386,7 @@ export default function ExperimentalTab({
 
   async function refreshStatus() {
     setStatus(await getModelStatus())
+    setFilesPresent(await hasModelFiles())
   }
 
   async function runImport(src: ImportSource) {
@@ -378,7 +398,7 @@ export default function ExperimentalTab({
       // A booted worker holds the model files open; they must be released before being replaced.
       await getDeciderEngine().dispose()
       await importModel(src, (done, total) => setProgress({ done, total }))
-      setStatus(await getModelStatus())
+      await refreshStatus()
     } catch (e) {
       setError(errorText(e))
     } finally {
@@ -388,18 +408,12 @@ export default function ExperimentalTab({
   }
 
   function importFromUrl() {
-    let parsed: URL
-    try {
-      parsed = new URL(url.trim())
-    } catch {
-      setError('Enter the address of the folder that holds manifest.json.')
+    const problem = importUrlProblem(url.trim())
+    if (problem) {
+      setError(problem)
       return
     }
-    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-      setError('Only http and https addresses can be imported.')
-      return
-    }
-    void runImport({ kind: 'url', baseUrl: parsed.href })
+    void runImport({ kind: 'url', baseUrl: new URL(url.trim()).href })
   }
 
   function importFromFolder(list: FileList | null) {
@@ -430,6 +444,8 @@ export default function ExperimentalTab({
     setSelfTest(null)
     setSelfTestRow('Loading the model…')
     try {
+      // An explicit request to load the model: it may try again even after the engine gave up.
+      getDeciderEngine().resetFailures()
       setSelfTest(await runSelfTest((i, n) => setSelfTestRow(`Row ${i + 1} of ${n}…`)))
     } catch (e) {
       setError(`Self-test failed: ${errorText(e)}`)
@@ -449,7 +465,7 @@ export default function ExperimentalTab({
     <div className="settings-tabpane">
       <Section
         title="Decision model"
-        hint="A small on-device model that watches page steps, in Assist fills forms, and in Driver takes routine page steps itself (risky steps still ask you)."
+        hint="A small on-device model that watches page steps, in Assist fills forms, and in Driver takes routine page steps itself (risky steps still ask you). To fill forms it needs your saved profile details as named fields, so once per panel session (if you have any) it sends them to your chat model to structure — in Shadow on the first form autofill, in Assist and Driver when page control is first granted — and again only after your profile memories change."
       >
         <div className="field-row">
           <Select label="Mode" value={mode} onChange={setMode}>
@@ -505,7 +521,7 @@ export default function ExperimentalTab({
           </button>
           <button
             className={`btn small ${armed ? 'danger-solid' : 'ghost'}`}
-            disabled={busy !== null || importing || status?.state === 'absent'}
+            disabled={busy !== null || importing || (status?.state === 'absent' && !filesPresent)}
             onClick={() => (armed ? void doDelete() : setArmed(true))}
           >
             {armed ? 'Sure?' : 'Delete'}

@@ -36,6 +36,11 @@ const int = (o: Record<string, unknown>, k: string, path = k): number => {
   const n = num(o, k, path)
   return Number.isInteger(n) && n >= 0 ? n : fail(path, 'must be a non-negative integer')
 }
+/** A chunk size of 0 would loop forever slicing nothing off the import stream (final review M9). */
+const positive = (o: Record<string, unknown>, k: string, path = k): number => {
+  const n = int(o, k, path)
+  return n > 0 ? n : fail(path, 'must be a positive integer')
+}
 const obj = (o: Record<string, unknown>, k: string, path = k): Record<string, unknown> => {
   const v = o[k]
   return isObj(v) ? v : fail(path, 'must be an object')
@@ -79,7 +84,7 @@ export function parseManifest(raw: unknown): DeciderManifest {
       embed: table(tables, 'embed'),
       ple: table(tables, 'ple'),
     },
-    chunkBytes: int(raw, 'chunkBytes'),
+    chunkBytes: positive(raw, 'chunkBytes'),
     files: (files as unknown[]).map((f, i) => {
       if (!isObj(f)) return fail(`files[${i}]`, 'must be an object')
       const sha = f.sha256

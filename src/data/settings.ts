@@ -144,6 +144,9 @@ export const TOOL_CATALOG: ToolCatalogEntry[] = [
   { name: 'RequestPageControl', group: 'control', label: 'Start a page-control session' },
   { name: 'ControlPage', group: 'control', label: 'Perform a page-control action' },
   { name: 'AutofillForm', group: 'control', label: 'Fill a form from your profile' },
+  // Exists only in Settings → Experimental's Driver mode with the model imported, and never when
+  // ControlPage is set to Never (createAgentTools); listed so it can be set to Never on its own.
+  { name: 'FastSteps', group: 'control', label: 'Take quick page steps with the on-device model (Driver mode)' },
   { name: 'NavigateTab', group: 'navigation', label: 'Switch / open / navigate tabs' },
   { name: 'SaveMemory', group: 'memory', label: 'Save a long-term memory' },
   { name: 'SearchMemory', group: 'memory', label: 'Search long-term memory' },

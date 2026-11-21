@@ -8,6 +8,43 @@ form-filling (C). **Driver mode (B) is deferred.** Whether to build it is decide
 mode has produced numbers on real browsing (§9, go/no-go). §7.3 stays in this doc as the
 direction, not as work for this build.
 
+> **As built (2026-11-22).** The §9 go/no-go passed (all four bars; numbers in
+> `docs/superpowers/research/2026-11-21-decider-harness-results.md`), so driver mode was built
+> too: a `driver` mode in `settings.decider` and the `FastSteps` tool. Accepted deviations from
+> the text below:
+> - **Tools execute in the service worker, not the panel.** Under durable chat,
+>   `src/background/toolHost.ts` builds its own `createAgentTools`; the panel's ToolSet only
+>   supplies schemas. The engine stays panel-resident (§4), so the worker holds forwarding hooks
+>   (`src/decider/relay.ts`): observations are fire-and-forget posts, and Assist's `mapForm` and
+>   each FastSteps step (`next`) are bounded, cancellable, abort-aware SW→panel requests whose
+>   replies the worker re-validates against its own snapshot. Readiness in the worker is a
+>   `chrome.storage` read of `deciderModel` (`modelStatus.ts`); both realms settle it before
+>   building a ToolSet, so FastSteps is absent and AutofillForm is the pre-decider tool unless the
+>   mode needs them **and** the model is ready (FastSteps also goes when ControlPage is Never).
+> - `previous_actions` is windowed to **10** entries, not 6 (§6), and each line carries the
+>   journal's already-redacted typed value (`typed "…" into “Name”`, `ticked`/`unticked`) —
+>   without the value the decider re-picked filled fields (agreement 1/6 → 6/6, diag 2026-11-22).
+> - `page_text` joins separate block boxes with ` | ` (inline siblings stay joined).
+> - Next-action options say `tick [i]` / `untick [i]` for a checkbox and `choose [i]` for an
+>   unchosen radio, instead of `click [i]` (the model never unticked a box it could only "click").
+> - §7.3 step 4 (a whole-form lookup pass inside the loop) is replaced by the single-field
+>   question: a `type` or `select` at the top gets its value from one fill question for that field
+>   (profile + `values`, or the select's own options), or hands back `needs value`.
+> - Repeat rule: an immediate repeat is excluded (and asked once more) when it is the same
+>   (op, index) **on the same page** at an element that has not changed; a target-less scroll only
+>   when the last one changed nothing. The same index on another page is a different target.
+> - Stop after **3** no-change steps in a row (§7.3 step 10 said two; §3's October port says 3).
+> - The stale-element re-check right before acting also compares a checkbox's checked state.
+> - Driver steps write `kind: 'drive'` shadow records (`llm` and `agree` null).
+> - The screenshot variant (§2 non-goal, measured on request) was **rejected**: no accuracy gain,
+>   measurable harm, ~2.9× the latency (numbers in the results doc).
+> - Hardening from the final review: Erase all data deletes the OPFS model and the shadow log;
+>   Delete removes the whole `decider/` directory and is offered whenever files are there; the
+>   import refuses `chunkBytes ≤ 0`, a manifest missing any required file, and plain http from
+>   anywhere but loopback; the engine stops booting after two failed boots in a row (until the
+>   model or settings change); ControlPage/AutofillForm refuse while a FastSteps run holds the
+>   session; FastSteps' result names lookup keys, never typed values.
+
 ## 1. Intent
 
 Page control today spends one chat-model step on every page action. On the local test model

@@ -381,3 +381,30 @@ test('redaction preserves the key so the trace still shows call structure', () =
   expect(Object.keys(out)).toContain('password')
   expect(out.password).not.toBe('hunter2')
 })
+
+// --- the decision model's `values` record (AutofillForm Assist, FastSteps) ---
+
+test('AutofillForm and FastSteps: every `values` entry is redacted, the names stay — low-entropy text included (M3)', () => {
+  // Ordinary words: neither the key-name net ("message", "query") nor the shape net would catch them.
+  const values = { message: 'please call me back about my overdue bill', query: 'wireless headphones', topic: 'Billing' }
+  for (const tool of ['AutofillForm', 'FastSteps']) {
+    const out = redactSecrets({ goal: 'search for headphones', values }, tool) as any
+    expect(Object.keys(out.values)).toEqual(['message', 'query', 'topic'])
+    for (const v of Object.values(out.values)) expect(v).toBe(REDACTED)
+    expect(JSON.stringify(out.values)).not.toMatch(/overdue|headphones|Billing/)
+  }
+  // FastSteps keeps its goal (the model's own sub-goal, debug-useful); AutofillForm keeps its fields' indices.
+  expect((redactSecrets({ goal: 'open the cart', values: { q: 'x' } }, 'FastSteps') as any).goal).toBe('open the cart')
+  const both = redactSecrets({ fields: [{ index: 3, value: 'Ada' }], values: { message: 'hi there' } }, 'AutofillForm') as any
+  expect(both.fields[0]).toEqual({ index: 3, value: REDACTED })
+  expect(both.values.message).toBe(REDACTED)
+})
+
+test('a malformed `values` (not a plain record) is replaced whole rather than guessed at', () => {
+  for (const values of ['raw text the model typed', ['a', 'b']]) {
+    expect((redactSecrets({ goal: 'g', values }, 'FastSteps') as any).values).toBe(REDACTED)
+  }
+  expect(redactSecrets({ goal: 'g' }, 'FastSteps')).toEqual({ goal: 'g' })
+  // Another tool's `values` keeps only the generic nets.
+  expect((redactSecrets({ values: { note: 'plain words' } }, 'ControlPage') as any).values.note).toBe('plain words')
+})

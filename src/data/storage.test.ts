@@ -21,6 +21,11 @@ vi.mock('./researchTasks', () => ({ clearTasks: vi.fn(async () => {}), tasksUsag
 vi.mock('./traces', () => ({ clearTraces: vi.fn(async () => {}), tracesUsage: vi.fn() }))
 vi.mock('./builtinSkills', () => ({ seedBuiltinSkills: vi.fn(async () => {}) }))
 vi.mock('./vault', () => ({ resetVault: vi.fn(async () => {}) }))
+// The decision model's data (I3): reached through dynamic imports, which vi.mock intercepts too.
+const decider = vi.hoisted(() => ({ order: [] as string[] }))
+vi.mock('../decider/engine', () => ({ getDeciderEngine: () => ({ dispose: vi.fn(async () => void decider.order.push('dispose')) }) }))
+vi.mock('../decider/storage', () => ({ deleteModel: vi.fn(async () => void decider.order.push('deleteModel')) }))
+vi.mock('../decider/shadowStore', () => ({ clearShadow: vi.fn(async () => void decider.order.push('clearShadow')) }))
 
 import { clearMcpTasks } from '../mcp/tasks'
 import { clearConversations } from './conversations'
@@ -35,6 +40,8 @@ import { clearTraces } from './traces'
 import { seedBuiltinSkills } from './builtinSkills'
 import { resetVault } from './vault'
 import { clearStore, eraseAllData } from './storage'
+import { deleteModel } from '../decider/storage'
+import { clearShadow } from '../decider/shadowStore'
 import type { StoreKey } from './usage'
 
 const ALL_STORE_KEYS: StoreKey[] = [
@@ -52,9 +59,10 @@ const ALL_STORE_KEYS: StoreKey[] = [
 
 beforeEach(() => {
   vi.clearAllMocks()
+  decider.order = []
   // eraseAllData additionally wipes the whole chrome.storage.local namespace
   // (settings, API keys, ...) beyond the 8 per-store clears under test here.
-  vi.stubGlobal('chrome', { storage: { local: { clear: vi.fn(async () => {}) } } })
+  vi.stubGlobal('chrome', { storage: { local: { clear: vi.fn(async () => void decider.order.push('storage.clear')) } } })
 })
 
 describe('clearStore', () => {
@@ -98,6 +106,21 @@ describe('eraseAllData', () => {
     expect(clearTraces).toHaveBeenCalledTimes(1)
     expect(clearMcpTasks).toHaveBeenCalledTimes(1)
     expect(resetVault).toHaveBeenCalledTimes(1)
+  })
+
+  it('also deletes the decision model from OPFS and clears its shadow log — the engine released first, chrome.storage last (I3)', async () => {
+    await eraseAllData()
+    expect(deleteModel).toHaveBeenCalledTimes(1)
+    expect(clearShadow).toHaveBeenCalledTimes(1)
+    expect(decider.order[0]).toBe('dispose')
+    // deleteModel writes `absent` into chrome.storage.local: the clear must come after it.
+    expect(decider.order.at(-1)).toBe('storage.clear')
+    expect(decider.order.slice(1, 3).sort()).toEqual(['clearShadow', 'deleteModel'])
+  })
+
+  it('fails loudly when the model cannot be deleted, rather than reporting an erase that left 4.6 GB behind', async () => {
+    vi.mocked(deleteModel).mockRejectedValueOnce(new Error('NoModificationAllowedError'))
+    await expect(eraseAllData()).rejects.toThrow('NoModificationAllowedError')
   })
 
   it('does not reseed built-in skills as a side effect (unlike clearStore(\'skills\'))', async () => {

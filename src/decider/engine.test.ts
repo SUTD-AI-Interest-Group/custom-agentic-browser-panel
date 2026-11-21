@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
-import { DeciderEngine, type WorkerLike } from './engine'
+import { BOOT_BLOCKED, DeciderEngine, MAX_BOOT_FAILURES, type WorkerLike } from './engine'
 import type { DeciderWorkerReply, DeciderWorkerRequest, DecisionResult } from './protocol'
 import type { DecisionRequest } from './request'
 
@@ -110,6 +110,83 @@ it('rejects a boot failure and recovers on the next call', async () => {
       return w
     },
   })
+  await expect(e.decide(req())).rejects.toThrow('no model')
+  expect((await e.decide(req()))?.tokens).toBe(1)
+})
+
+/** An engine whose first `failing` boots fail (boot-failed), the rest succeed. */
+function failingBoots(failing: number) {
+  let n = 0
+  return new DeciderEngine({
+    spawn: () => {
+      const w = new FakeWorker()
+      if (n++ < failing) w.postMessage = (m) => { if (m.type === 'init') w.emit({ type: 'boot-failed', message: 'no model' }) }
+      return w
+    },
+  })
+}
+
+it(`after ${MAX_BOOT_FAILURES} boot failures in a row it stops booting: decide and warm reject at once, no new worker (M5)`, async () => {
+  const e = failingBoots(Infinity)
+  await expect(e.decide(req())).rejects.toThrow('no model')
+  await expect(e.decide(req())).rejects.toThrow('no model')
+  expect(workers).toHaveLength(MAX_BOOT_FAILURES)
+  await expect(e.decide(req())).rejects.toThrow(BOOT_BLOCKED)
+  await expect(e.decide(req(), { dropIfBusy: true })).rejects.toThrow(BOOT_BLOCKED)
+  await expect(e.warm()).rejects.toThrow(BOOT_BLOCKED)
+  expect(workers).toHaveLength(MAX_BOOT_FAILURES) // nothing spawned while blocked
+})
+
+it('resetFailures() and dispose() let it try again; a successful boot clears the count', async () => {
+  const e = failingBoots(MAX_BOOT_FAILURES)
+  for (let k = 0; k < MAX_BOOT_FAILURES; k++) await expect(e.decide(req())).rejects.toThrow('no model')
+  await expect(e.decide(req())).rejects.toThrow(BOOT_BLOCKED)
+  e.resetFailures()
+  expect((await e.decide(req()))?.tokens).toBe(1)
+
+  const d = failingBoots(MAX_BOOT_FAILURES)
+  for (let k = 0; k < MAX_BOOT_FAILURES; k++) await expect(d.decide(req())).rejects.toThrow('no model')
+  await d.dispose()
+  expect((await d.decide(req()))?.tokens).toBe(1)
+
+  // fail, succeed, fail, fail: the success in between clears the count, so boot 4 is still tried.
+  let n = 0
+  const before = workers.length
+  const g = new DeciderEngine({
+    spawn: () => {
+      const w = new FakeWorker()
+      if (n++ !== 1) w.postMessage = (m) => { if (m.type === 'init') w.emit({ type: 'boot-failed', message: 'no model' }) }
+      return w
+    },
+    idleMs: 10,
+  })
+  await expect(g.decide(req())).rejects.toThrow('no model')
+  await g.warm() // boot 2 succeeds: the count is back to zero
+  await vi.advanceTimersByTimeAsync(20) // idle teardown
+  await expect(g.decide(req())).rejects.toThrow('no model') // boot 3 fails: one in a row
+  await expect(g.decide(req())).rejects.toThrow('no model') // boot 4 is still attempted
+  expect(workers.length - before).toBe(4)
+})
+
+it('a dispose during boot does not count as the model failing to start', async () => {
+  // Boot 1 is disposed mid-boot (the user re-imported); boot 2 genuinely fails; boot 3 must still
+  // be tried — only ONE real failure is in a row. Were the disposed boot counted, boot 3 would be
+  // refused as the second.
+  let n = 0
+  const e = new DeciderEngine({
+    spawn: () => {
+      const w = new FakeWorker()
+      const k = n++
+      if (k === 0) w.postMessage = (m) => { if (m.type === 'dispose') w.emit({ type: 'disposed' }) } // never ready
+      else if (k === 1) w.postMessage = (m) => { if (m.type === 'init') w.emit({ type: 'boot-failed', message: 'no model' }) }
+      return w
+    },
+  })
+  const p = e.decide(req())
+  const settled = expect(p).rejects.toThrow()
+  await vi.advanceTimersByTimeAsync(0)
+  await e.dispose()
+  await settled
   await expect(e.decide(req())).rejects.toThrow('no model')
   expect((await e.decide(req()))?.tokens).toBe(1)
 })

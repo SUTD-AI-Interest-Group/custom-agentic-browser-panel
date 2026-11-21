@@ -9,8 +9,8 @@
 // OPFS storage (storage.ts — importModel/deleteModel/getDirectory), the shadow store, or the panel
 // hooks. Its only runtime imports are config.ts (constants), platform/viewportText.ts and
 // platform/domIndex.ts (chrome.scripting injections); relay.test.ts walks the import closure to
-// hold that line. Model readiness is therefore an injected probe here — the panel passes
-// storage.ts's isModelReady.
+// hold that line. Model readiness is therefore an injected probe here: toolHost.ts passes
+// modelStatus.ts's readModelReady (a chrome.storage read, no OPFS).
 //
 // FORM FILLING (AutofillForm) crosses the same channel two ways. Shadowing a call that brought
 // its own fields is a post like a step (`decider.fill`). Assist — the decider maps the form — is a
@@ -647,8 +647,9 @@ async function askPanel(o: {
  * DeciderHooks for the realm that executes the tools (toolHost.ts). Every hook is synchronous and
  * fire-and-forget: nothing is ever awaited on the ControlPage path, and every failure — no panel
  * open ("Receiving end does not exist"), a closed channel, a throw — is swallowed. Nothing is read
- * or sent unless the user turned the decider on, so page structure never rides the runtime
- * channel for anyone who has not opted in.
+ * or sent unless the user turned the decider on AND (with a probe) the model is ready, so page
+ * structure never rides the runtime channel for anyone who has not opted in — or whose model is
+ * missing.
  *
  * The viewport text is read HERE, not in the panel: observeStep runs before the action, and the
  * read's injection is issued synchronously, so it is queued ahead of the action's own injections —
@@ -656,9 +657,9 @@ async function askPanel(o: {
  * clicking. The step is posted when that read settles (`pageText: null` if it failed).
  *
  * `mode()`: with an injected `modelReady` probe, the settings' mode once the model is proven ready
- * (createModeResolver); without one, the settings' mode alone — the panel owns the engine and
- * checks readiness before every decision. The default build injects no probe: storage.ts carries
- * OPFS code this service-worker bundle must not pull in.
+ * (createModeResolver) — toolHost.ts injects modelStatus.ts's readModelReady and awaits
+ * `resolveMode()` before building its ToolSet; without one (tests), the settings' mode alone. The
+ * panel re-checks readiness before every decision either way.
  */
 export function forwardDeciderHooks(deps: {
   conversationId: string
@@ -675,7 +676,9 @@ export function forwardDeciderHooks(deps: {
   modelReady?: () => Promise<boolean>
 }): DeciderHooks {
   const resolver = deps.modelReady ? createModeResolver(deps.settings, deps.modelReady) : null
-  const on = () => isDeciderOn(settingsModeOf(deps.settings))
+  /** The settings' mode, 'off' while (with a probe) the model is not proven ready. Never throws. */
+  const effective = (): DeciderMode => (resolver ? resolver.mode() : settingsModeOf(deps.settings))
+  const on = () => isDeciderOn(effective())
   const post = (msg: DeciderRelayMsg) => {
     try {
       void Promise.resolve((deps.send ?? defaultSend)(msg)).catch(() => {})
@@ -684,7 +687,8 @@ export function forwardDeciderHooks(deps: {
     }
   }
   return {
-    mode: () => (resolver ? resolver.mode() : settingsModeOf(deps.settings)),
+    mode: effective,
+    resolveMode: () => (resolver ? resolver.resolveReady().then(effective, effective) : Promise.resolve(effective())),
     settingsMode: () => settingsModeOf(deps.settings),
     threshold: () => {
       try {
@@ -730,7 +734,7 @@ export function forwardDeciderHooks(deps: {
     // The wait ends early when `i.signal` aborts (Stop); see askPanel for the cancel.
     async mapForm(i) {
       try {
-        if (!assistsForms(settingsModeOf(deps.settings))) return { error: 'the decision model is not in Assist mode' }
+        if (!assistsForms(effective())) return { error: 'the decision model is not in Assist mode' }
         if (i.signal?.aborted) return { error: STOPPED }
         const snap = formSnapOf(i.snap)
         const selectOptions = await selectOptionsNow(i.tabId, snap.elements)
@@ -772,7 +776,7 @@ export function forwardDeciderHooks(deps: {
     // against this worker's own snapshot: an option naming an element not on it is refused.
     async next(i) {
       try {
-        if (settingsModeOf(deps.settings) !== 'driver') return { error: 'the decision model is not in Driver mode' }
+        if (effective() !== 'driver') return { error: 'the decision model is not in Driver mode' }
         if (i.signal?.aborted) return { error: STOPPED }
         const snap = formSnapOf(i.snap)
         // What a `select` could choose, read here (before the step), as assist's mapForm does.

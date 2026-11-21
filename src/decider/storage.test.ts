@@ -6,8 +6,11 @@ import {
   chunkRanges,
   deleteModel,
   getModelStatus,
+  hasModelFiles,
   importModel,
+  importUrlProblem,
   isModelReady,
+  REQUIRED_MODEL_FILES,
 } from './storage'
 
 // ---- in-memory OPFS fake (only the surface storage.ts uses) ----
@@ -57,6 +60,10 @@ class FakeDir {
       throw Object.assign(new Error('nf'), { name: 'NotFoundError' })
     }
   }
+  async *keys() {
+    yield* this.dirs.keys()
+    yield* this.files.keys()
+  }
 }
 
 function stubChrome(): Record<string, unknown> {
@@ -78,10 +85,14 @@ async function sha(b: Uint8Array): Promise<string> {
 }
 
 const CHUNK = 4
-async function bundle(corrupt = false) {
+/** The rest of the required set (storage.ts's REQUIRED_MODEL_FILES), one tiny chunk each. */
+const OTHERS = REQUIRED_MODEL_FILES.filter((n) => n !== 'manifest.json')
+async function bundle(corrupt = false, over: Record<string, unknown> = {}) {
   const body = new TextEncoder().encode('0123456789') // 3 chunks: 4,4,2
   const hashes = [await sha(body.slice(0, 4)), await sha(body.slice(4, 8)), await sha(body.slice(8))]
   if (corrupt) hashes[1] = '0'.repeat(64)
+  const tiny = new TextEncoder().encode('ok')
+  const tinyHash = await sha(tiny)
   const manifest = {
     format: 1,
     modelId: MODEL_ID,
@@ -97,11 +108,13 @@ async function bundle(corrupt = false) {
     codeTokenIds: [],
     tables: { blockSize: 1, embed: { file: 'w.bin', blocks: 1 }, ple: { file: 'w.bin', blocks: 1 } },
     chunkBytes: CHUNK,
-    files: [{ name: 'w.bin', bytes: body.length, sha256: hashes }],
+    files: [{ name: 'w.bin', bytes: body.length, sha256: hashes }, ...OTHERS.map((name) => ({ name, bytes: tiny.length, sha256: [tinyHash] }))],
+    ...over,
   }
   const files = [
     new NodeFile([JSON.stringify(manifest)], 'manifest.json'),
     new NodeFile([body], 'w.bin'),
+    ...OTHERS.map((name) => new NodeFile([tiny], name)),
   ] as unknown as File[]
   return { manifest, files }
 }
@@ -131,11 +144,12 @@ describe('importModel', () => {
     const statuses: unknown[] = []
     root.onWrite = () => statuses.push(structuredClone(store[MODEL_STATUS_KEY]))
     const progress: number[] = []
+    const total = 10 + 2 * OTHERS.length
     await importModel({ kind: 'files', files }, (d) => progress.push(d))
-    expect(statuses[0]).toMatchObject({ state: 'importing', done: 0, total: 10 })
-    expect(progress.at(-1)).toBe(10)
+    expect(statuses[0]).toMatchObject({ state: 'importing', done: 0, total })
+    expect(progress.at(-1)).toBe(total)
     const s = await getModelStatus()
-    expect(s).toMatchObject({ state: 'ready', modelId: MODEL_ID, bytes: 10 })
+    expect(s).toMatchObject({ state: 'ready', modelId: MODEL_ID, bytes: total })
     expect(await isModelReady()).toBe(true)
     const dir = root.dirs.get('decider')!.dirs.get(MODEL_ID)!
     expect(new TextDecoder().decode(dir.files.get('w.bin')!.data)).toBe('0123456789')
@@ -187,7 +201,7 @@ describe('importModel edge cases', () => {
     const { files } = await bundle()
     vi.stubGlobal('fetch', urlFetch(files))
     await importModel({ kind: 'url', baseUrl: 'https://x.test/m' })
-    expect(await getModelStatus()).toMatchObject({ state: 'ready', bytes: 10 })
+    expect(await getModelStatus()).toMatchObject({ state: 'ready', bytes: 10 + 2 * OTHERS.length })
     const dir = root.dirs.get('decider')!.dirs.get(MODEL_ID)!
     expect(new TextDecoder().decode(dir.files.get('w.bin')!.data)).toBe('0123456789')
   })
@@ -243,13 +257,64 @@ describe('deleteModel', () => {
   it('removes the directory and sets absent', async () => {
     const { files } = await bundle()
     await importModel({ kind: 'files', files })
+    expect(await hasModelFiles()).toBe(true)
     await deleteModel()
-    expect(root.dirs.get('decider')!.dirs.has(MODEL_ID)).toBe(false)
+    expect(root.dirs.has('decider')).toBe(false)
+    expect(await hasModelFiles()).toBe(false)
     expect(await getModelStatus()).toEqual({ state: 'absent' })
+  })
+
+  it("removes another model id's files too, and hasModelFiles sees them whatever the status says (I3)", async () => {
+    const stray = await (await root.getDirectoryHandle('decider', { create: true })).getDirectoryHandle('an-older-model', { create: true })
+    await stray.getFileHandle('torso.onnx.data', { create: true })
+    expect(await getModelStatus()).toEqual({ state: 'absent' }) // the record says nothing is there…
+    expect(await hasModelFiles()).toBe(true) // …the files say otherwise
+    await deleteModel()
+    expect(root.dirs.has('decider')).toBe(false)
+    expect(await hasModelFiles()).toBe(false)
   })
 
   it('is fine when nothing was imported', async () => {
     await deleteModel()
     expect(await getModelStatus()).toEqual({ state: 'absent' })
+  })
+})
+
+describe('import hardening (final review M9)', () => {
+  it('refuses a manifest whose chunkBytes is 0 or negative, before writing anything', async () => {
+    for (const chunkBytes of [0, -4]) {
+      const { files } = await bundle(false, { chunkBytes })
+      await importModel({ kind: 'files', files })
+      const s = await getModelStatus()
+      expect(s.state).toBe('failed')
+      expect((s as { message: string }).message).toContain('chunkBytes')
+      expect(root.dirs.get('decider')?.dirs.has(MODEL_ID) ?? false).toBe(false)
+    }
+  })
+
+  it('refuses a manifest that does not list the whole required file set — never ready on a partial bundle', async () => {
+    for (const drop of ['torso.onnx', 'ple.bin', 'tokenizer_config.json', 'selftest.json']) {
+      const { manifest } = await bundle()
+      const { files } = await bundle(false, { files: manifest.files.filter((f) => f.name !== drop) })
+      await importModel({ kind: 'files', files })
+      const s = await getModelStatus()
+      expect(s.state, drop).toBe('failed')
+      expect((s as { message: string }).message).toContain(drop)
+      expect(await isModelReady()).toBe(false)
+    }
+  })
+
+  it('a URL import allows https anywhere, plain http only from this machine', async () => {
+    for (const ok of ['https://huggingface.co/me/model/resolve/main', 'http://127.0.0.1:8790', 'http://localhost:8790/m/', 'http://[::1]:8790', 'http://127.4.5.6/x']) {
+      expect(importUrlProblem(ok), ok).toBeNull()
+    }
+    for (const bad of ['http://example.com/model', 'http://192.168.1.20:8790', 'http://localhost.evil.test/', 'ftp://127.0.0.1/', 'file:///Users/me/model', 'not a url']) {
+      expect(importUrlProblem(bad), bad).toEqual(expect.any(String))
+    }
+    const fetch = vi.fn()
+    vi.stubGlobal('fetch', fetch)
+    await importModel({ kind: 'url', baseUrl: 'http://example.com/model' })
+    expect(await getModelStatus()).toMatchObject({ state: 'failed', message: expect.stringContaining('https') })
+    expect(fetch).not.toHaveBeenCalled()
   })
 })

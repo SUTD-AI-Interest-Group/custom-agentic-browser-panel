@@ -10,6 +10,18 @@ import type { DecisionRequest } from './request'
 
 const DISPOSE_TIMEOUT_MS = 2000
 
+/**
+ * The boot circuit breaker (final review M5): after this many boots in a row have failed in this
+ * panel, the engine stops booting — every decide/warm rejects at once with BOOT_BLOCKED — until
+ * `resetFailures()` (Settings → Experimental calls it when the mode or the model changes, and
+ * before a self-test) or `dispose()`, or the panel reloads. A model that cannot start (a corrupt
+ * import, no WebGPU and a WASM that runs out of memory) would otherwise be re-spawned on every
+ * page step, each attempt costing seconds of CPU and up to a 2 GB allocation before failing again.
+ * Shadow mode still writes its record for each step, as `skipped: 'error'`, at no cost.
+ */
+export const MAX_BOOT_FAILURES = 2
+export const BOOT_BLOCKED = `the decision model failed to start ${MAX_BOOT_FAILURES} times in a row; it stays off until the model or its settings change, or the panel is reopened`
+
 export interface WorkerLike {
   postMessage(m: DeciderWorkerRequest): void
   addEventListener(t: 'message', l: (e: MessageEvent<DeciderWorkerReply>) => void): void
@@ -44,6 +56,10 @@ export class DeciderEngine {
   private queue: Job[] = []
   private running = false
   private idleTimer: ReturnType<typeof setTimeout> | undefined
+  /** Boots that failed in a row (the circuit breaker above). */
+  private bootFailures = 0
+  /** Bumped by resetFailures(): a boot that settles after it counts toward nothing. */
+  private generation = 0
 
   constructor(opts: { spawn?: () => WorkerLike; bootTimeoutMs?: number; decideTimeoutMs?: number; idleMs?: number } = {}) {
     this.spawn =
@@ -89,12 +105,20 @@ export class DeciderEngine {
   /**
    * Drops queued calls (they resolve null), fails the in-flight one, and asks the worker to close
    * its file handles before terminating it, so a caller can safely delete or re-import the model.
+   * Also closes the boot circuit breaker: whatever comes next is a new start.
    */
   dispose(): Promise<void> {
     clearTimeout(this.idleTimer)
     for (const j of this.queue) j.resolve(null)
     this.queue = []
+    this.resetFailures()
     return this.destroy(new Error('the decider engine was disposed'), true)
+  }
+
+  /** Lets a blocked engine try to boot again (the model or the settings changed, or a self-test). */
+  resetFailures(): void {
+    this.bootFailures = 0
+    this.generation++
   }
 
   private async pump(): Promise<void> {
@@ -123,7 +147,10 @@ export class DeciderEngine {
 
   private ensure(): Promise<void> {
     clearTimeout(this.idleTimer)
-    if (!this.ready) this.ready = this.boot()
+    if (!this.ready) {
+      if (this.bootFailures >= MAX_BOOT_FAILURES) return Promise.reject(new Error(BOOT_BLOCKED))
+      this.ready = this.boot()
+    }
     return this.ready
   }
 
@@ -151,6 +178,7 @@ export class DeciderEngine {
 
   private async boot(): Promise<void> {
     let worker: WorkerLike | null = null
+    const generation = this.generation
     try {
       worker = this.spawn()
       worker.addEventListener('message', this.listener)
@@ -174,7 +202,11 @@ export class DeciderEngine {
         }
         w.postMessage({ type: 'init', modelId: MODEL_ID, wasmUrl })
       })
+      if (generation === this.generation) this.bootFailures = 0
     } catch (err) {
+      // A dispose (or reset) while booting is not the model failing to start: only count a boot
+      // that failed on its own.
+      if (generation === this.generation) this.bootFailures++
       // Only tear down our own worker: a dispose during boot may already have replaced it.
       if (this.worker === worker) this.destroy()
       throw err

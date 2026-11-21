@@ -16,6 +16,7 @@ import type { QueuedImage } from '../agent/agent'
 import type { ToolSet } from 'ai'
 import { unmountPresence } from '../platform/presence'
 import { forwardDeciderHooks } from '../decider/relay'
+import { readModelReady } from '../decider/modelStatus'
 
 const executing = new Map<string, AbortController>()
 const sessions = new Map<string, ControlSession>()
@@ -166,6 +167,13 @@ async function execute(job: ChatRun, requestId: string, signal: AbortSignal) {
       await manager.refresh(settings)
       await manager.ready(signal)
       const mcp = buildMcpTools({ manager, settings, requestApproval: approve, imageQueue: images, conversationId: job.conversationId, visionCapable: job.visionCapable ?? false })
+      // The decision model: the engine is panel-resident, so steps are forwarded there (fire-and-
+      // forget; nothing is read or sent unless the user turned it on AND the model is imported —
+      // readModelReady is a chrome.storage read, no OPFS). Its mode is settled BEFORE the ToolSet
+      // is built, as the panel does for the schemas: FastSteps' presence and AutofillForm's schema
+      // are decided from it, so a missing model is off here too.
+      const decider = forwardDeciderHooks({ conversationId: job.conversationId, settings: () => settings.decider, modelReady: readModelReady })
+      await decider.resolveMode()
       runtime.tools = createAgentTools(approve, settings.tabAccess, await grantedCapabilities(), {
         session: () => sessions.get(chainId) ?? null,
         endSession: () => endSession(chainId, job.conversationId),
@@ -182,9 +190,7 @@ async function execute(job: ChatRun, requestId: string, signal: AbortSignal) {
         },
         park: () => { runtime.parked = true },
       },
-      // Shadow decider: the engine is panel-resident, so steps are forwarded there
-      // (fire-and-forget; nothing is sent unless the user turned it on).
-      forwardDeciderHooks({ conversationId: job.conversationId, settings: () => settings.decider }))
+      decider)
       signal.throwIfAborted()
       toolsets.set(job.id, runtime); state = runtime
     }

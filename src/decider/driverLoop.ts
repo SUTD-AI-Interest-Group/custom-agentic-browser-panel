@@ -117,6 +117,8 @@ export interface DriverStepRecord extends OpRef {
   p: number
   ms: number
   ok: boolean
+  /** A `type`/`select`: the lookup key NAME the value came from (`profile.email`, `option.2`) — never the value. */
+  key?: string
 }
 
 export interface DriverResult extends DriverStop {
@@ -244,15 +246,16 @@ export async function runDriverLoop(deps: DriverDeps): Promise<DriverResult> {
       const best = out.top3[0]
       if (!best) return end({ status: 'handback', reason: 'decider error', message: 'The decision model returned no options.' })
 
-      // 5. The gate.
+      // 5. The gate. Every comparison is written as "act only if p >= x", so a NaN (or any
+      // non-number) never clears a bar: `NaN < x` is false, `NaN >= x` is false too.
       if (best.op === 'done') {
         if (best.p >= deps.threshold) return end({ status: 'done', reason: 'done' }, true)
         return end({ status: 'handback', reason: 'unsure', message: `Possibly done (p=${best.p.toFixed(2)}); check the page.` }, true)
       }
-      if (best.p < DRIVER_TRY_THRESHOLD)
+      if (!(best.p >= DRIVER_TRY_THRESHOLD))
         return end({ status: 'handback', reason: 'unsure', message: `Unsure of the next step (p=${best.p.toFixed(2)}).` }, true)
       por = deps.isPointOfNoReturn(specOf(best), findEl(snap, best.index))
-      if (best.p < deps.threshold && por)
+      if (!(best.p >= deps.threshold) && por)
         return end({ status: 'handback', reason: 'unsure', message: `Not sure enough (p=${best.p.toFixed(2)}) for a risky step: ${target(best)}.` }, true)
       // (Re-classified on the live element right before acting — step 8.)
 
@@ -302,7 +305,7 @@ export async function runDriverLoop(deps: DriverDeps): Promise<DriverResult> {
     let carded = false
     for (;;) {
       if (por && !carded) {
-        if (top.p < deps.threshold)
+        if (!(top.p >= deps.threshold))
           return end({ status: 'handback', reason: 'unsure', message: `Not sure enough (p=${top.p.toFixed(2)}) for a risky step: ${target(top)}.` }, true)
         let approved: boolean
         try {
@@ -325,7 +328,11 @@ export async function runDriverLoop(deps: DriverDeps): Promise<DriverResult> {
       if (now) return end(now)
       if (deps.aborted()) return end(STOPPED)
       const fresh = findEl(actSnap, top.index)
-      if (top.index !== undefined && deps.hasElementChanged(el, fresh))
+      // A click on a checkbox/radio is a tick or an untick (state.ts words it so): a box that
+      // flipped since the decision would make the same click do the opposite, so its checked
+      // state counts as a change here — though not for the repeat rule above, where re-clicking
+      // the box just ticked must still read as the repeat it is.
+      if (top.index !== undefined && (deps.hasElementChanged(el, fresh) || (top.op === 'click' && el?.checked !== fresh?.checked)))
         return end({
           status: 'handback',
           reason: 'page changed',
@@ -343,7 +350,7 @@ export async function runDriverLoop(deps: DriverDeps): Promise<DriverResult> {
     const settle = por || (top.op === 'click' && !!el?.href) ? 'full' : 'quick'
     const r = await deps.act(spec, actSnap, { settle, approved: por })
     elements = r.registry
-    steps.push({ ...refOf(top), p: round(top.p), ms: decision.ms, ok: r.ok })
+    steps.push({ ...refOf(top), p: round(top.p), ms: decision.ms, ok: r.ok, ...(decision.value ? { key: decision.value.key } : {}) })
     if (!r.ok) {
       refused.push(refOf(top))
       prev = null

@@ -1,7 +1,7 @@
 import 'fake-indexeddb/auto'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { getChatRun, listChatRuns, removeChatRuns, updateChatRun, type ChatRun } from '../data/chatRuns'
-const fixture = vi.hoisted(() => ({ policy: 'ask', mutations: 0, disconnect: vi.fn(), decider: undefined as { mode: string } | undefined, send: (() => {}) as (msg: unknown) => unknown }))
+const fixture = vi.hoisted(() => ({ policy: 'ask', mutations: 0, disconnect: vi.fn(), decider: undefined as { mode: string } | undefined, send: (() => {}) as (msg: unknown) => unknown, model: undefined as unknown }))
 vi.mock('../data/settings', () => ({
   loadSettings: async () => ({ providers: [], tabAccess: 'all-tabs', toolPolicies: { Execute: fixture.policy }, decider: fixture.decider }),
   toolPolicy: () => fixture.policy,
@@ -39,6 +39,9 @@ vi.mock('../platform/presence', () => ({ unmountPresence: async () => {} }))
 vi.mock('../mcp/manager', () => ({ getMcpManager: () => ({ refresh: async () => {}, ready: async () => {}, disconnectAll: fixture.disconnect }) }))
 vi.mock('../mcp/tools', () => ({ buildMcpTools: () => ({}) }))
 import { installToolHost, releaseChatTools, releaseDetachedSessions } from './toolHost'
+import { MODEL_ID, MODEL_STATUS_KEY } from '../decider/config'
+/** The imported model's status record, as storage.ts writes it on a successful import. */
+const READY = { state: 'ready', modelId: MODEL_ID, bytes: 1, importedAt: 1 }
 let listener: (msg: unknown, sender: unknown, reply: (r: unknown) => void) => unknown
 const url = (path: string) => `chrome-extension://fixture/${path}`
 const message = (msg: unknown, page = 'offscreen.html') => new Promise(resolve => {
@@ -56,8 +59,10 @@ function job(once = false): ChatRun {
 }
 beforeEach(async () => {
   fixture.disconnect.mockClear()
-  await removeChatRuns(); fixture.mutations = 0; fixture.policy = 'ask'; fixture.decider = undefined; fixture.send = () => {}
+  await removeChatRuns(); fixture.mutations = 0; fixture.policy = 'ask'; fixture.decider = undefined; fixture.send = () => {}; fixture.model = READY
   vi.stubGlobal('chrome', {
+    // The worker's readiness probe (decider/modelStatus.ts) reads only this key — never OPFS.
+    storage: { local: { get: vi.fn(async (key: string) => (key === MODEL_STATUS_KEY && fixture.model ? { [key]: fixture.model } : {})) } },
     runtime: { id: 'fixture', getURL: url, sendMessage: (msg: unknown) => fixture.send(msg), onMessage: { addListener: (fn: typeof listener) => { listener = fn } } },
     notifications: { create: vi.fn(async () => 'notice') },
     // The forwarder's pre-action viewport read (platform/viewportText.ts).
@@ -166,6 +171,21 @@ describe('background tool permissions', () => {
     const off = job(); off.toolRequests[0].name = 'Observe'
     await updateChatRun('chat', () => off); await poll(off); await finished()
     expect(sent).toEqual([])
+  })
+  it('with the model missing, the decider is off in the worker: no page read, nothing sent, no assist request', async () => {
+    fixture.policy = 'always'; fixture.model = undefined
+    const sent: unknown[] = []
+    fixture.send = (msg) => { sent.push(msg); return Promise.resolve() }
+    fixture.decider = { mode: 'driver' }
+    const observe = job(); observe.toolRequests[0].name = 'Observe'
+    await updateChatRun('chat', () => observe); await poll(observe); await finished()
+    releaseChatTools('chat', observe.id)
+    const map = job(); map.toolRequests[0].name = 'MapForm'
+    await updateChatRun('chat', () => map); await poll(map); await finished()
+    expect((await getChatRun('chat'))?.toolRequests[0].output).toEqual({ error: 'the decision model is not in Assist mode' })
+    await new Promise((r) => setTimeout(r, 20))
+    expect(sent).toEqual([])
+    expect(vi.mocked(chrome.scripting.executeScript)).not.toHaveBeenCalled()
   })
   it('does not replay a call left executing by a lost worker', async () => {
     const run = job(); run.toolRequests[0].state = 'executing'

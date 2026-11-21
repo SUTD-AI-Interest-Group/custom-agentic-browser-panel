@@ -14,7 +14,8 @@ import { readViewportText } from '../platform/viewportText'
 import { readSelectOptions, type IndexedElement, type PageSnapshot } from '../platform/domIndex'
 import type { ControlSession, ControlSpec } from '../tools/pageControl'
 import type { ControlJournalEntry } from '../tools/pageControlJournal'
-import { PREVIOUS_ACTIONS_WINDOW, type DeciderSettings } from './config'
+import { MODEL_ID, MODEL_STATUS_KEY, PREVIOUS_ACTIONS_WINDOW, type DeciderSettings } from './config'
+import { isReadyStatus, readModelReady } from './modelStatus'
 import type { FillPlan } from './fillPlan'
 import {
   deciderActionLine,
@@ -100,12 +101,97 @@ describe('relay.ts stays service-worker safe', () => {
     expect(code('const d = navigator.storage.getDirectory() // note')).toMatch(/getDirectory/)
   })
 
+  it('modelStatus.ts — the worker’s readiness probe — is in that closure only through toolHost, and touches no OPFS either', () => {
+    const probe = closureOf(resolve(dirname(fileURLToPath(import.meta.url)), 'modelStatus.ts'))
+    expect([...probe.keys()].map((f) => basename(f)).sort()).toEqual(['config.ts', 'modelStatus.ts'])
+  })
+
   it('the guard itself sees through type-only imports and catches a real one', () => {
     expect(
       runtimeImports(
         `import type { A } from './storage'\nimport { type B } from './engine'\nimport { C, type D } from './hooks'\nimport x from './worker'\nimport './tables'\nexport { y } from './tokenizer'\nexport const z = 1 // comes from 'nowhere'`,
       ).sort(),
     ).toEqual(['./hooks', './tables', './tokenizer', './worker'])
+  })
+})
+
+// ---------------------------------------------------------------------------
+// The whole service worker (final review M13). relay.ts's own closure is not enough: any module the
+// worker imports could pull the engine in beside it. So walk EVERYTHING reachable from
+// src/background.ts — static imports, re-exports, side-effect imports and dynamic import()s (a lazy
+// chunk is still loadable by the worker) — and hold the panel-only decider modules out of it.
+// ---------------------------------------------------------------------------
+
+const SRC = resolve(dirname(fileURLToPath(import.meta.url)), '..')
+
+/** Relative specifiers a module loads at runtime, dynamic import() included (comments ignored). */
+function loadedSpecifiers(source: string): string[] {
+  const code = source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:\\])\/\/.*$/gm, '$1')
+  return [...runtimeImports(code), ...[...code.matchAll(/\bimport\(\s*['"]([^'"]+)['"]\s*\)/g)].map((m) => m[1])]
+}
+
+function resolveModule(from: string, spec: string): string | null {
+  const base = resolve(dirname(from), spec.replace(/\?.*$/, ''))
+  for (const candidate of [base, `${base}.ts`, `${base}.tsx`, `${base}/index.ts`, `${base}/index.tsx`]) {
+    try {
+      if (/\.(?:ts|tsx|json)$/.test(candidate) && readFileSync(candidate)) return candidate
+    } catch {
+      /* try the next one */
+    }
+  }
+  return null
+}
+
+function serviceWorkerClosure(): { files: Set<string>; packages: Set<string>; unresolved: string[] } {
+  const files = new Set<string>()
+  const packages = new Set<string>()
+  const unresolved: string[] = []
+  const visit = (file: string) => {
+    if (files.has(file)) return
+    files.add(file)
+    if (file.endsWith('.json')) return
+    for (const spec of loadedSpecifiers(readFileSync(file, 'utf8'))) {
+      if (!spec.startsWith('.')) {
+        packages.add(spec)
+        continue
+      }
+      const target = resolveModule(file, spec)
+      if (target) visit(target)
+      else unresolved.push(`${file.slice(SRC.length + 1)} → ${spec}`)
+    }
+  }
+  visit(resolve(SRC, 'background.ts'))
+  return { files, packages, unresolved }
+}
+
+describe('the service worker (src/background.ts) never reaches the panel-only decider', () => {
+  const sw = serviceWorkerClosure()
+  const rel = [...sw.files].map((f) => f.slice(SRC.length + 1))
+
+  it('walks the real closure (it resolves every import, and does reach the decider modules it may)', () => {
+    expect(sw.unresolved).toEqual([])
+    // Sanity: the walk got where the tools execute, and to the SW-safe decider pieces they use.
+    for (const reached of ['background/toolHost.ts', 'tools/tools.ts', 'decider/relay.ts', 'decider/driverLoop.ts', 'decider/modelStatus.ts', 'decider/config.ts']) {
+      expect(rel, reached).toContain(reached)
+    }
+  })
+
+  it('contains no engine, worker, OPFS storage, shadow store, panel hooks, tables or tokenizer', () => {
+    for (const banned of ['engine.ts', 'worker.ts', 'storage.ts', 'shadowStore.ts', 'hooks.ts', 'tables.ts', 'tokenizer.ts', 'profileLookup.ts', 'stats.ts']) {
+      expect(rel, `decider/${banned}`).not.toContain(`decider/${banned}`)
+    }
+    for (const pkg of sw.packages) expect(pkg, pkg).not.toMatch(/^onnxruntime-web|^@huggingface\/tokenizers/)
+  })
+
+  it('no reachable decider module touches OPFS or spawns a Worker', () => {
+    const code = (src: string) => src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/.*$/gm, '$1')
+    for (const f of rel.filter((r) => r.startsWith('decider/'))) {
+      expect(code(readFileSync(resolve(SRC, f), 'utf8')), f).not.toMatch(/getDirectory|createSyncAccessHandle|new Worker/)
+    }
+  })
+
+  it('the walker follows dynamic import() and index files — it would see a lazy engine', () => {
+    expect(loadedSpecifiers(`const e = await import('../decider/engine')\n// import('./commented-out')\nimport type { T } from './t'`)).toEqual(['../decider/engine'])
   })
 })
 
@@ -393,6 +479,37 @@ describe('forwardDeciderHooks (the service-worker side)', () => {
     await new Promise((r) => setTimeout(r, 10))
     expect(hooks.mode()).toBe('assist')
     expect(hooks.threshold()).toBe(0.7)
+  })
+
+  it('resolveMode() settles the probe: after it, mode() is exact from the first call', async () => {
+    for (const [ready, want] of [[true, 'driver'], [false, 'off']] as const) {
+      const hooks = forwardDeciderHooks({ conversationId: 'c', settings: () => ({ mode: 'driver' }), send: vi.fn(), modelReady: async () => ready })
+      expect(await hooks.resolveMode()).toBe(want)
+      expect(hooks.mode()).toBe(want)
+    }
+    const throws = forwardDeciderHooks({ conversationId: 'c', settings: () => ({ mode: 'driver' }), send: vi.fn(), modelReady: async () => { throw new Error('storage gone') } })
+    expect(await throws.resolveMode()).toBe('off')
+  })
+
+  it('with the model missing (probe false), nothing is read, posted or requested — "off" is off in the worker (I1)', async () => {
+    const send = vi.fn()
+    const request = vi.fn()
+    const requestNext = vi.fn()
+    const hooks = forwardDeciderHooks({ conversationId: 'c', settings: () => ({ mode: 'driver' }), send, request, requestNext, modelReady: async () => false })
+    await hooks.resolveMode()
+    hooks.observeStep(input())
+    hooks.sessionGranted()
+    hooks.observeFill({ tabId: 7, snap: snap(FORM_ELEMENTS), session: session(), fields: [{ index: 0, value: 'Ada' }] })
+    expect(await hooks.mapForm({ ...formInput(), values: {} })).toEqual({ error: 'the decision model is not in Assist mode' })
+    expect(
+      await hooks.next({ tabId: 7, snap: snap(FORM_ELEMENTS), session: session(), goal: 'g', values: {}, pageText: null, exclude: [] }),
+    ).toEqual({ error: 'the decision model is not in Driver mode' })
+    await new Promise((r) => setTimeout(r, 10))
+    expect(send).not.toHaveBeenCalled()
+    expect(request).not.toHaveBeenCalled()
+    expect(requestNext).not.toHaveBeenCalled()
+    expect(readViewportText).not.toHaveBeenCalled()
+    expect(readSelectOptions).not.toHaveBeenCalled()
   })
 
   it('without a probe, mode() is the settings mode alone — readiness is the panel’s to check', () => {
@@ -911,5 +1028,32 @@ describe('parseNextRequest', () => {
   it('a driver cancel is a relay message like assist’s', () => {
     expect(parseDeciderRelay({ type: 'decider.next.cancel', conversationId: 'c', requestId: 'r1', x: 1 })).toEqual({ type: 'decider.next.cancel', conversationId: 'c', requestId: 'r1' })
     expect(parseDeciderRelay({ type: 'decider.next.cancel', conversationId: 'c', requestId: '' })).toBeNull()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// modelStatus.ts — the worker-safe readiness probe (I1)
+// ---------------------------------------------------------------------------
+
+describe('modelStatus: ready means the status record says ready, for this build’s model', () => {
+  it('isReadyStatus', () => {
+    expect(isReadyStatus({ state: 'ready', modelId: MODEL_ID, bytes: 1, importedAt: 1 })).toBe(true)
+    for (const raw of [undefined, null, 'ready', {}, { state: 'ready' }, { state: 'ready', modelId: 'another-model' }, { state: 'importing', done: 1, total: 2 }, { state: 'failed', message: 'x' }, { state: 'absent' }]) {
+      expect(isReadyStatus(raw), JSON.stringify(raw)).toBe(false)
+    }
+  })
+
+  it('readModelReady reads only the status key, and is false (never a rejection) when storage fails', async () => {
+    const get = vi.fn(async (key: string) => ({ [key]: { state: 'ready', modelId: MODEL_ID, bytes: 1, importedAt: 1 } }))
+    vi.stubGlobal('chrome', { storage: { local: { get } } })
+    expect(await readModelReady()).toBe(true)
+    expect(get).toHaveBeenCalledWith(MODEL_STATUS_KEY)
+    vi.stubGlobal('chrome', { storage: { local: { get: vi.fn(async () => ({})) } } })
+    expect(await readModelReady()).toBe(false)
+    vi.stubGlobal('chrome', { storage: { local: { get: vi.fn(async () => { throw new Error('gone') }) } } })
+    expect(await readModelReady()).toBe(false)
+    vi.stubGlobal('chrome', undefined)
+    expect(await readModelReady()).toBe(false)
+    vi.unstubAllGlobals()
   })
 })

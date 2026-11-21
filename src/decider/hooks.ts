@@ -77,12 +77,20 @@ import { isModelReady } from './storage'
 export type NextStep = Omit<NextRequest, 'type' | 'conversationId' | 'requestId'>
 
 export interface DeciderHooks {
-  /** 'off' unless the settings say shadow/assist/driver AND the imported model is ready. */
+  /**
+   * 'off' unless the settings say shadow/assist/driver AND the imported model is ready (readiness is
+   * probed lazily: 'off' until the probe settles — await `resolveMode()` first where it matters).
+   */
   mode(): DeciderMode
   /**
-   * The settings' mode alone, readiness not consulted. Whether FastSteps exists at all is decided
-   * from this in both realms, so the panel's schemas and the worker's tools always agree.
+   * Settles once readiness is known — one chrome.storage read, cached for the hooks' life — with
+   * `mode()`. Never rejects. Both realms await it before building a ToolSet, so the things decided
+   * from `mode()` at build time — FastSteps' presence, AutofillForm's schema and description, the
+   * grant notes — agree between the panel's schemas and the worker's tools, and a missing model
+   * reads as off everywhere.
    */
+  resolveMode(): Promise<DeciderMode>
+  /** The settings' mode alone, readiness not consulted. */
   settingsMode(): DeciderMode
   threshold(): number
   /** A page-control session was granted: warm the engine (never awaited; errors swallowed). */
@@ -640,7 +648,7 @@ export function createDeciderHooks(deps: DeciderHookDeps): DeciderPanelHooks {
       const key = fillKey(q, a, Object.keys(lookup.request))
       const entry = { index: field.index, key, p: a.p, llmAgrees: null }
       const text = op === 'select' ? a.top : a.top === 'leave_empty' ? undefined : lookupValue(lookup, a.top)
-      if (a.p < resolver.threshold() || text === undefined) return { ms: result.ms, entry }
+      if (!(a.p >= resolver.threshold()) || text === undefined) return { ms: result.ms, entry }
       return { ms: result.ms, entry, value: { key: op === 'select' ? key : a.top, text, p: a.p } }
     } catch {
       return { ms: 0 }
@@ -753,6 +761,7 @@ export function createDeciderHooks(deps: DeciderHookDeps): DeciderPanelHooks {
 
   return {
     mode: resolver.mode,
+    resolveMode: () => resolver.resolveReady().then(() => resolver.mode(), (): DeciderMode => 'off'),
     settingsMode: resolver.settingsMode,
     threshold: resolver.threshold,
     sessionGranted,

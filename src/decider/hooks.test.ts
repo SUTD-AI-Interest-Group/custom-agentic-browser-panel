@@ -1,4 +1,7 @@
 import 'fake-indexeddb/auto'
+import { readFileSync } from 'node:fs'
+import { dirname, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { LanguageModel, ModelMessage } from 'ai'
 
@@ -603,6 +606,17 @@ describe('deciderRelayListener', () => {
     expect(await listShadow()).toEqual([])
   })
 
+  it('expects exactly the service worker manifest.json declares — renaming it there cannot silently mute the relay (M12)', async () => {
+    const manifest = JSON.parse(readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), '../../public/manifest.json'), 'utf8'))
+    const worker: unknown = manifest.background?.service_worker
+    expect(typeof worker).toBe('string')
+    const { engine } = fakeEngine(answering('click [2]', 0.9))
+    const hooks = hooksWith({ engine })
+    const relay = vi.spyOn(hooks, 'relay')
+    deciderRelayListener(hooks, 'conv-1')(msg(), { id: EXT, url: at(worker as string) })
+    expect(relay).toHaveBeenCalledTimes(1)
+  })
+
   it("ignores another conversation's step, even from the right sender", async () => {
     const { engine } = fakeEngine(answering('click [2]', 0.9))
     const hooks = hooksWith({ engine })
@@ -665,6 +679,25 @@ describe('mode()', () => {
     settings = undefined
     expect(hooks.mode()).toBe('off')
     expect(modelReady).toHaveBeenCalledTimes(1)
+  })
+
+  it('resolveMode() settles readiness once and answers the effective mode — what a ToolSet is built from', async () => {
+    for (const [ready, want] of [[true, 'driver'], [false, 'off']] as const) {
+      const modelReady = vi.fn(async () => ready)
+      const hooks = createDeciderHooks({
+        settings: () => ({ mode: 'driver' }), conversationId: 'c', currentGoal: () => 'g', chatModel: () => null,
+        engine: fakeEngine(answering('done', 1)).engine, modelReady,
+      })
+      expect(await hooks.resolveMode()).toBe(want)
+      expect(hooks.mode()).toBe(want) // exact right away: no 'off' while a probe is still in flight
+      await hooks.resolveMode()
+      expect(modelReady).toHaveBeenCalledTimes(1)
+    }
+    const off = createDeciderHooks({
+      settings: () => undefined, conversationId: 'c', currentGoal: () => 'g', chatModel: () => null,
+      engine: fakeEngine(answering('done', 1)).engine, modelReady: async () => true,
+    })
+    expect(await off.resolveMode()).toBe('off')
   })
 
   it('treats a readiness probe that throws as not ready', async () => {

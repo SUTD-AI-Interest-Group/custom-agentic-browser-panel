@@ -229,20 +229,39 @@ function walk(v: unknown, seen: WeakSet<object>, forceRedact: boolean): unknown 
  * free (no new plumbing needed). Not done here: tools.ts is owned by
  * another workstream.
  */
+/**
+ * The decision model's `values` record — AutofillForm's Assist path and FastSteps both take one:
+ * `{ "message": "…", "query": "…" }`, text the model wants typed into the page, by a name the model
+ * chose. Every VALUE is the same class of content as `fields[].value`, so each is replaced
+ * outright; the names stay (they say which values were passed, as `fields[].index` does). Anything
+ * that is not a plain record is replaced whole rather than guessed at.
+ */
+function redactValuesRecord(obj: Record<string, unknown>): Record<string, unknown> {
+  if (!('values' in obj) || obj.values === undefined) return obj
+  const values = obj.values
+  if (!values || typeof values !== 'object' || Array.isArray(values)) return { ...obj, values: REDACTED }
+  return {
+    ...obj,
+    values: Object.fromEntries(Object.entries(values as Record<string, unknown>).map(([k, v]) => [k, v === undefined ? undefined : REDACTED])),
+  }
+}
+
 function redactKnownRiskyToolInput(toolName: string | undefined, redacted: unknown): unknown {
   if (!redacted || typeof redacted !== 'object') return redacted
   const obj = redacted as Record<string, unknown>
   if (toolName === 'AutofillForm') {
-    if (!Array.isArray(obj.fields)) return redacted
+    const withValues = redactValuesRecord(obj)
+    if (!Array.isArray(withValues.fields)) return withValues
     return {
-      ...obj,
-      fields: obj.fields.map((f) => {
+      ...withValues,
+      fields: withValues.fields.map((f) => {
         if (!f || typeof f !== 'object' || !('value' in (f as Record<string, unknown>))) return f
         const field = f as Record<string, unknown>
         return { ...field, value: field.value === undefined ? undefined : REDACTED }
       }),
     }
   }
+  if (toolName === 'FastSteps') return redactValuesRecord(obj)
   if (toolName === 'ControlPage') {
     // Only the `type` action's `text` is freeform typed/profile content. A
     // `wait` action's `text` is a CSS selector the MODEL authored itself
@@ -264,7 +283,7 @@ function redactKnownRiskyToolInput(toolName: string | undefined, redacted: unkno
  * risking the raw value passing through.
  *
  * `toolName`, when supplied, additionally opts a small, fixed set of
- * known-risky tool shapes (AutofillForm, ControlPage — see
+ * known-risky tool shapes (AutofillForm, ControlPage, FastSteps — see
  * redactKnownRiskyToolInput above) into unconditional redaction of their
  * user-text field(s). Omit it — as observer.ts's generic `content()` does,
  * since it redacts trace/generation/event content that was never a tool

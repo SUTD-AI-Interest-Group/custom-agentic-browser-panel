@@ -406,8 +406,9 @@ function buildDeciderTools(opts: { session: ControlSession; decider?: DeciderHoo
 }
 
 function stubHooks(over: Partial<DeciderHooks> = {}): DeciderHooks {
-  return {
+  const hooks: DeciderHooks = {
     mode: () => 'shadow',
+    resolveMode: async () => hooks.mode(),
     settingsMode: () => 'shadow',
     threshold: () => 0.6,
     sessionGranted: vi.fn(),
@@ -417,6 +418,7 @@ function stubHooks(over: Partial<DeciderHooks> = {}): DeciderHooks {
     next: vi.fn(async () => ({ error: 'unused' })),
     ...over,
   }
+  return hooks
 }
 
 /** Resolves with the value, or rejects after `ms` — so a hang fails fast instead of timing out the file. */
@@ -1016,15 +1018,52 @@ describe('AutofillForm — with fields, behaves as before and shadows the call',
 })
 
 describe('AutofillForm — its schema and description', () => {
-  it('makes fields optional, adds values, and tells the model when it may omit fields', () => {
-    const t = buildDeciderTools({ session: buildSession() }).AutofillForm as any
-    expect(t.description).toContain(
-      'With the decision model in Assist mode you may omit fields and pass the request-specific values; the decider maps the fields.',
-    )
-    expect(t.inputSchema.safeParse({}).success).toBe(true)
-    expect(t.inputSchema.safeParse({ values: { message: 'hello', topic: 'Billing' } }).success).toBe(true)
-    expect(t.inputSchema.safeParse({ values: { count: 3 } }).success).toBe(false)
-    expect(t.inputSchema.safeParse({ fields: [{ index: 0, value: 'Ada' }] }).success).toBe(true)
+  /** The tool exactly as it was before the decider branch: fields required, no values, no Assist sentence. */
+  const ORIGINAL_DESCRIPTION =
+    "Fill the form on the active tab from the user's saved profile memories, within an open page-control session. Maps profile details (name, email, address…) to the indexed fields you pass. Sensitive fields (passwords, payment) and any submit still ask each time. Never invents secrets."
+
+  it('in Assist with a ready model: makes fields optional, adds values, and tells the model when it may omit fields', () => {
+    for (const mode of ['assist', 'driver'] as const) {
+      const t = buildDeciderTools({ session: buildSession(), decider: stubHooks({ mode: () => mode, settingsMode: () => mode }) }).AutofillForm as any
+      expect(t.description).toBe(
+        `${ORIGINAL_DESCRIPTION} With the decision model in Assist mode you may omit fields and pass the request-specific values; the decider maps the fields.`,
+      )
+      expect(t.inputSchema.safeParse({}).success).toBe(true)
+      expect(t.inputSchema.safeParse({ values: { message: 'hello', topic: 'Billing' } }).success).toBe(true)
+      expect(t.inputSchema.safeParse({ values: { count: 3 } }).success).toBe(false)
+      expect(t.inputSchema.safeParse({ fields: [{ index: 0, value: 'Ada' }] }).success).toBe(true)
+    }
+  })
+
+  it('otherwise — no decider, off, shadow, or Assist/Driver with the model missing — it is the original tool, schema and description', async () => {
+    const offs: (DeciderHooks | undefined)[] = [
+      undefined,
+      stubHooks({ mode: () => 'off', settingsMode: () => 'off' }),
+      stubHooks({ mode: () => 'shadow', settingsMode: () => 'shadow' }),
+      // Settings say Assist/Driver, but the model was never imported: mode() is 'off'.
+      stubHooks({ mode: () => 'off', settingsMode: () => 'assist' }),
+      stubHooks({ mode: () => 'off', settingsMode: () => 'driver' }),
+      stubHooks({ mode: () => { throw new Error('decider bug') } }),
+    ]
+    for (const decider of offs) {
+      const t = buildDeciderTools({ session: buildSession(), decider }).AutofillForm as any
+      expect(t.description).toBe(ORIGINAL_DESCRIPTION)
+      const schema = (await asSchema(t.inputSchema).jsonSchema) as { properties: Record<string, { description?: string }>; required?: string[] }
+      expect(Object.keys(schema.properties)).toEqual(['fields'])
+      expect(schema.required).toEqual(['fields'])
+      expect(schema.properties.fields.description).toBe('The fields to fill and the values to enter.')
+      expect(t.inputSchema.safeParse({}).success).toBe(false)
+      expect(t.inputSchema.safeParse({ fields: [{ index: 0, value: 'Ada' }] }).success).toBe(true)
+    }
+  })
+
+  it('through the REAL worker hooks: settings say Assist but the probe says not ready → the original tool', async () => {
+    for (const [ready, optional] of [[false, false], [true, true]] as const) {
+      const decider = forwardDeciderHooks({ conversationId: 'conv-1', settings: () => ({ mode: 'assist' }), send: vi.fn(), modelReady: async () => ready })
+      await decider.resolveMode()
+      const t = buildDeciderTools({ session: buildSession(), decider }).AutofillForm as any
+      expect(t.inputSchema.safeParse({}).success).toBe(optional)
+    }
   })
 })
 
@@ -1123,6 +1162,7 @@ function buildDriverTools(opts: {
   policy?: (name: string) => 'always' | 'ask' | 'never'
   activeNames?: Set<string>
   decider?: DeciderHooks
+  resolveTab?: () => Promise<chrome.tabs.Tab>
 }) {
   const pageControl: PageControlGate = {
     requestSession: async () => true,
@@ -1131,7 +1171,8 @@ function buildDriverTools(opts: {
       opts.session.active = false
     },
   }
-  const decider = opts.decider ?? stubHooks({ mode: () => 'driver', settingsMode: opts.mode ?? (() => 'driver'), next: opts.next ?? scriptedNext({ error: 'unused' }) })
+  const mode = opts.mode ?? (() => 'driver')
+  const decider = opts.decider ?? stubHooks({ mode, settingsMode: mode, next: opts.next ?? scriptedNext({ error: 'unused' }) })
   return createAgentTools(
     opts.requestApproval ?? (async () => true),
     'all-tabs',
@@ -1145,7 +1186,7 @@ function buildDriverTools(opts: {
     opts.activeNames ?? new Set(),
     undefined,
     undefined,
-    { resolveTab: async () => FG_TAB, park: () => {} },
+    { resolveTab: opts.resolveTab ?? (async () => FG_TAB), park: () => {} },
     decider,
   )
 }
@@ -1181,12 +1222,38 @@ describe('FastSteps — present only in Driver mode', () => {
     expect(buildDriverTools({ session: buildSession(), policy: (n) => (n === 'FastSteps' ? 'never' : 'always') })).not.toHaveProperty('FastSteps')
   })
 
-  it('in the worker realm, the settings alone decide it — no readiness probe there', () => {
-    const tools = (settings: unknown) =>
-      buildDriverTools({ session: buildSession(), decider: forwardDeciderHooks({ conversationId: 'conv-1', settings: () => settings as never, send: vi.fn() }) })
-    expect(tools({ mode: 'driver' })).toHaveProperty('FastSteps')
-    expect(tools({ mode: 'assist' })).not.toHaveProperty('FastSteps')
-    expect(tools(undefined)).not.toHaveProperty('FastSteps')
+  it('ControlPage set to Never removes it too — it takes the same page steps (I2)', () => {
+    const tools = buildDriverTools({ session: buildSession(), policy: (n) => (n === 'ControlPage' ? 'never' : 'always') })
+    expect(tools).not.toHaveProperty('ControlPage')
+    expect(tools).not.toHaveProperty('FastSteps')
+    // …and only Never: Ask/Always leave it to its own policy.
+    expect(buildDriverTools({ session: buildSession(), policy: (n) => (n === 'ControlPage' ? 'ask' : 'always') })).toHaveProperty('FastSteps')
+  })
+
+  it('settings say Driver but the model is not ready: absent, and the grant names neither FastSteps nor Assist', async () => {
+    vi.mocked(snapshotPage).mockReset()
+    vi.mocked(snapshotPage).mockResolvedValue(snap([el({ index: 0 })]))
+    stubTabsQuery(FG_TAB)
+    const names = new Set<string>()
+    const tools = buildDriverTools({ session: buildSession(), activeNames: names, decider: stubHooks({ mode: () => 'off', settingsMode: () => 'driver' }) })
+    expect(tools).not.toHaveProperty('FastSteps')
+    const granted: any = await within((tools.RequestPageControl as any).execute({ plan: 'p' }, {} as any))
+    expect(granted).toMatchObject({ started: true })
+    expect(granted).not.toHaveProperty('note')
+    expect(names.has('FastSteps')).toBe(false)
+    vi.unstubAllGlobals()
+  })
+
+  it('in the worker realm, the settings AND the readiness probe decide it', async () => {
+    const tools = async (settings: unknown, ready: boolean) => {
+      const decider = forwardDeciderHooks({ conversationId: 'conv-1', settings: () => settings as never, send: vi.fn(), modelReady: async () => ready })
+      await decider.resolveMode()
+      return buildDriverTools({ session: buildSession(), decider })
+    }
+    expect(await tools({ mode: 'driver' }, true)).toHaveProperty('FastSteps')
+    expect(await tools({ mode: 'driver' }, false)).not.toHaveProperty('FastSteps')
+    expect(await tools({ mode: 'assist' }, true)).not.toHaveProperty('FastSteps')
+    expect(await tools(undefined, true)).not.toHaveProperty('FastSteps')
   })
 })
 
@@ -1285,12 +1352,16 @@ describe('FastSteps — the decider drives, every ControlPage guard intact', () 
         { op: 'click', index: 1, p: 0.81, ok: true },
       ],
       actions: [
-        { action: 'type', index: 0, value: 'wireless headphones' },
+        { action: 'type', index: 0 },
         { action: 'click', index: 1 },
       ],
       decisions: 3,
       deciderMs: 360,
     })
+    // Never the typed value back to the model (M4): the key NAME it came from, as Assist reports.
+    expect(result.steps[0].key).toBe('request.query')
+    for (const a of result.actions) expect(a).not.toHaveProperty('value')
+    expect(JSON.stringify(result)).not.toContain('wireless headphones')
     // Two reads per step — the one decided on, and the one re-read right before acting — so the
     // third step's decision read is the fifth.
     expect(result.elements).toBe('registry 4')
@@ -1423,6 +1494,24 @@ describe('FastSteps — fix round 1', () => {
     expect(session.driving).toBe(false)
   })
 
+  it('ControlPage and AutofillForm refuse while a FastSteps run holds the session, and work again after (M1)', async () => {
+    let release: (v: unknown) => void = () => {}
+    let calls = 0
+    const next = vi.fn(() => (++calls === 1 ? new Promise((r) => (release = r)) : Promise.resolve(decided(top('done', undefined, 0.9))))) as unknown as NextFn
+    const session = buildSession()
+    const tools = buildDriverTools({ session, next })
+    const running = (tools.FastSteps as any).execute({ goal: 'g' }, {} as any)
+    await vi.waitFor(() => expect(next).toHaveBeenCalledTimes(1))
+    const refused = { error: 'A FastSteps run is still taking steps on this page; wait for its result, then continue.' }
+    expect(await within((tools.ControlPage as any).execute({ action: 'click', index: 1 }, {} as any))).toEqual(refused)
+    expect(await within((tools.AutofillForm as any).execute({ fields: [{ index: 0, value: 'headphones' }] }, {} as any))).toEqual(refused)
+    expect(runControlStep).not.toHaveBeenCalled()
+    release(decided(top('done', undefined, 0.9)))
+    expect(await within(running)).toMatchObject({ status: 'done' })
+    expect(await within((tools.ControlPage as any).execute({ action: 'click', index: 1 }, {} as any))).toMatchObject({ ok: true })
+    expect(runControlStep).toHaveBeenCalledTimes(1)
+  })
+
   it('the Driver grant note carries the Assist form guidance word for word', async () => {
     vi.mocked(snapshotPage).mockResolvedValue(snap([el({ index: 0 })]))
     stubTabsQuery(FG_TAB)
@@ -1434,5 +1523,109 @@ describe('FastSteps — fix round 1', () => {
     const guidance = assist.note.replace('Assist mode is on: ', '')
     expect(guidance).toMatch(/^for a form, call AutofillForm/)
     expect(driver.note.endsWith(guidance)).toBe(true)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// FastSteps — the real origin wiring (final review I4, C1). The pure loop is unit-tested in
+// driverLoop.test.ts; these drive FastSteps' own guard/act closures in tools.ts, and then the next
+// ControlPage, which is where a wrongly re-fenced origin would skip the user's card.
+// ---------------------------------------------------------------------------
+
+describe('FastSteps — origin fencing through the real tool', () => {
+  const LINKED = [...DRIVE_FORM, el({ index: 3, tag: 'a', name: 'Partner store', href: 'https://other.test/' })]
+  const KEEP_CONTROLLING = expect.objectContaining({ toolName: 'ControlPage', summary: expect.stringContaining('Keep controlling the page now that it moved to') })
+  let url = 'https://example.com/'
+  const resolveTab = async () => ({ ...FG_TAB, url }) as chrome.tabs.Tab
+
+  beforeEach(() => {
+    url = 'https://example.com/'
+    vi.mocked(snapshotPage).mockReset()
+    vi.mocked(runControlStep).mockReset()
+    let reads = 0
+    // Each read differs, so no step looks like a no-change step.
+    vi.mocked(snapshotPage).mockImplementation(async () => ({ ...snap(LINKED), text: `registry ${reads++}` }))
+    stubForeground()
+  })
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('(a) an unapproved drift seen by the guard hands back WITHOUT re-fencing — the next ControlPage asks the user', async () => {
+    const session = buildSession()
+    const requestApproval = vi.fn<ApprovalGate>(async () => true)
+    const next = scriptedNext(decided(top('click', 1, 0.9)))
+    const tools = buildDriverTools({ session, next, requestApproval, resolveTab })
+    url = 'https://other.test/landing' // the page went to another site on its own, between calls
+    const result = await within((tools.FastSteps as any).execute({ goal: 'g' }, {} as any))
+    expect(result).toMatchObject({ status: 'handback', reason: 'page moved' })
+    expect(session.origin).toBe('https://example.com')
+    expect(session.crossingAuthorized).toBeFalsy()
+    expect(next).not.toHaveBeenCalled()
+    expect(runControlStep).not.toHaveBeenCalled()
+    expect(requestApproval).not.toHaveBeenCalled()
+    await within((tools.ControlPage as any).execute({ action: 'click', index: 1 }, {} as any))
+    expect(requestApproval).toHaveBeenCalledWith(KEEP_CONTROLLING)
+  })
+
+  it('(b) an unapproved move inside a step clears a stale authorization — the next ControlPage still asks (C1)', async () => {
+    const session = buildSession()
+    const requestApproval = vi.fn<ApprovalGate>(async () => true)
+    // Step 1: the approved point of no return ("Search", a submit) that stayed on this site — it
+    // leaves crossingAuthorized true. Step 2: a plain click whose page script took it elsewhere.
+    const next = scriptedNext(decided(top('click', 2, 0.9)), decided(top('click', 1, 0.9)))
+    let steps = 0
+    vi.mocked(runControlStep).mockImplementation(async () => ({ ok: true, message: 'done', registry: 'after', origin: ++steps === 1 ? 'https://example.com' : 'https://other.test' }))
+    const tools = buildDriverTools({ session, next, requestApproval, resolveTab })
+    const result = await within((tools.FastSteps as any).execute({ goal: 'g' }, {} as any))
+    expect(result).toMatchObject({ status: 'handback', reason: 'page moved' })
+    expect(runControlStep).toHaveBeenCalledTimes(2)
+    expect(requestApproval).toHaveBeenCalledTimes(1) // the "Search" card, nothing else
+    expect(session.origin).toBe('https://example.com') // not re-fenced: nobody approved this crossing
+    expect(session.crossingAuthorized).toBe(false)
+    url = 'https://other.test/'
+    const after = await within((tools.ControlPage as any).execute({ action: 'click', index: 1 }, {} as any))
+    expect(requestApproval).toHaveBeenCalledTimes(2)
+    expect(requestApproval).toHaveBeenLastCalledWith(KEEP_CONTROLLING)
+    expect(after).toMatchObject({ ok: true, urlChanged: true })
+  })
+
+  it('(c) an approved crossing re-fences at once when the step lands on the new site — no second card', async () => {
+    const session = buildSession()
+    const requestApproval = vi.fn<ApprovalGate>(async () => true)
+    const next = scriptedNext(decided(top('click', 3, 0.9)))
+    vi.mocked(runControlStep).mockImplementation(async () => {
+      url = 'https://other.test/'
+      return { ok: true, message: 'done', registry: 'after', origin: 'https://other.test' }
+    })
+    const tools = buildDriverTools({ session, next, requestApproval, resolveTab })
+    const result = await within((tools.FastSteps as any).execute({ goal: 'g' }, {} as any))
+    expect(result).toMatchObject({ status: 'handback', reason: 'page moved' })
+    expect(requestApproval).toHaveBeenCalledTimes(1)
+    expect(requestApproval).toHaveBeenCalledWith(expect.objectContaining({ toolName: 'FastSteps', once: true }))
+    expect(session.origin).toBe('https://other.test')
+    expect(session.crossingAuthorized).toBe(false)
+    await within((tools.ControlPage as any).execute({ action: 'click', index: 1 }, {} as any))
+    expect(requestApproval).toHaveBeenCalledTimes(1) // the user already said yes to this crossing
+  })
+
+  it('(c) …and when the new page commits only after the step, the next guard re-fences silently', async () => {
+    const session = buildSession()
+    const requestApproval = vi.fn<ApprovalGate>(async () => true)
+    const next = scriptedNext(decided(top('click', 3, 0.9)), decided(top('done', undefined, 0.9)))
+    vi.mocked(runControlStep).mockImplementation(async () => {
+      url = 'https://other.test/' // the load commits after the post-action snapshot was taken
+      return { ok: true, message: 'done', registry: 'after', origin: 'https://example.com' }
+    })
+    const tools = buildDriverTools({ session, next, requestApproval, resolveTab })
+    const result = await within((tools.FastSteps as any).execute({ goal: 'g' }, {} as any))
+    expect(result).toMatchObject({ status: 'handback', reason: 'page moved' })
+    expect(next).toHaveBeenCalledTimes(1) // handed back at the guard, before deciding on the new site
+    expect(requestApproval).toHaveBeenCalledTimes(1)
+    expect(session.origin).toBe('https://other.test')
+    expect(session.crossingAuthorized).toBe(false)
+    vi.mocked(runControlStep).mockResolvedValue({ ok: true, message: 'done', registry: 'after', origin: 'https://other.test' })
+    await within((tools.ControlPage as any).execute({ action: 'click', index: 1 }, {} as any))
+    expect(requestApproval).toHaveBeenCalledTimes(1)
   })
 })

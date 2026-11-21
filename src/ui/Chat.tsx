@@ -3237,6 +3237,16 @@ export default function Chat({
       // each step's decision reply and it stops at that step boundary (see steerPending below).
       steerPending: () => steerQueueRef.current.length > 0,
     })
+    // Settle the decider's mode (settings AND a ready model — one chrome.storage read) before the
+    // first ToolSet is built: FastSteps' presence and AutofillForm's schema are decided from it,
+    // the same way the service worker's tool host decides them, so the schemas the model sees and
+    // the tools that execute agree. Never rejects.
+    await decider.resolveMode()
+    // A chain that opens on a session already granted (seeded with the control cluster above):
+    // in Driver mode with the model ready, FastSteps is part of that cluster too, as the grant
+    // would have made it. Only a name — prepareStep intersects activeNames with the real ToolSet,
+    // so a FastSteps that policy removed is never offered.
+    if (openSession && openSession.active && decider.mode() === 'driver') activeNames.add('FastSteps')
     // Raised by a page tool that needs this chat's tab in front (see PageTarget
     // in tools.ts). Chain-scoped like imageQueue, but CLEARED at the top of each
     // cycle: a park ends one cycle, and the cycle that resumes when the user

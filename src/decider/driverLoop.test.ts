@@ -157,6 +157,16 @@ describe('the confidence gate', () => {
     const h2 = harness({ threshold: 0.8, decisions: [decision(opt('done', undefined, 0.75))] })
     expect(await runDriverLoop(h2.deps)).toMatchObject({ status: 'handback', reason: 'unsure' })
   })
+
+  it('a NaN confidence clears no bar: never acts, never carded, never done (M2)', async () => {
+    // A non-risky click, a risky click and a done — each with p = NaN.
+    for (const top of [opt('click', 3, Number.NaN), opt('click', 1, Number.NaN), opt('done', undefined, Number.NaN)]) {
+      const h = harness({ decisions: [decision(top)] })
+      expect(await runDriverLoop(h.deps)).toMatchObject({ status: 'handback', reason: 'unsure' })
+      expect(h.deps.act).not.toHaveBeenCalled()
+      expect(h.deps.approve).not.toHaveBeenCalled()
+    }
+  })
 })
 
 // ---------------------------------------------------------------------------
@@ -187,8 +197,12 @@ describe('what the decider cannot answer', () => {
     const h = harness({
       decisions: [decision(opt('type', 0, 0.9), { value: { key: 'request.query', text: 'wireless headphones', p: 0.8 } }), decision(opt('done', undefined, 0.9))],
     })
-    expect(await runDriverLoop(h.deps)).toMatchObject({ status: 'done' })
+    const r = await runDriverLoop(h.deps)
+    expect(r).toMatchObject({ status: 'done' })
     expect(h.acts[0].spec).toEqual({ action: 'type', index: 0, text: 'wireless headphones', clear: true })
+    // The step names the key the value came from, never the value itself (M4).
+    expect(r.steps).toEqual([{ op: 'type', index: 0, p: 0.9, ms: 150, ok: true, key: 'request.query' }])
+    expect(JSON.stringify(r)).not.toContain('wireless headphones')
   })
 
   it('a select without a confident option hands back "needs value"', async () => {
@@ -263,6 +277,25 @@ describe('a point of no return', () => {
     expect(h.deps.act).not.toHaveBeenCalled()
     expect(h.deps.approve).not.toHaveBeenCalled()
     expect(h.deps.hasElementChanged).toHaveBeenCalledWith(SEARCH[3], { ...SEARCH[3], name: 'Buy now' })
+  })
+
+  it('a box that flipped between the decision and the act is handed back: the click would do the opposite', async () => {
+    const BOX = [...SEARCH, el({ index: 5, tag: 'input', type: 'checkbox', name: 'Gift wrap', checked: false })]
+    const h = harness({ decisions: [decision(opt('click', 5, 0.95))] })
+    let reads = 0
+    // Decided "tick [5]" on an unticked box; by the act, the page had ticked it itself.
+    h.deps.snapshot = vi.fn(async () => pageOf(`p${reads}`, reads++ === 0 ? BOX : BOX.map((e) => (e.index === 5 ? { ...e, checked: true } : e))))
+    expect(await runDriverLoop(h.deps)).toMatchObject({ status: 'handback', reason: 'page changed' })
+    expect(h.deps.act).not.toHaveBeenCalled()
+  })
+
+  it('an unchanged box is still clicked (the checked re-check is not a blanket refusal)', async () => {
+    const BOX = [...SEARCH, el({ index: 5, tag: 'input', type: 'checkbox', name: 'Gift wrap', checked: false })]
+    const h = harness({ decisions: [decision(opt('click', 5, 0.95)), decision(opt('done', undefined, 0.9))] })
+    let reads = 0
+    h.deps.snapshot = vi.fn(async () => pageOf(`p${reads++}`, BOX))
+    expect(await runDriverLoop(h.deps)).toMatchObject({ status: 'done' })
+    expect(h.acts.map((a) => a.spec)).toEqual([{ action: 'click', index: 5 }])
   })
 
   it('every step acts on the snapshot re-read right before it, not the one it was decided on', async () => {
