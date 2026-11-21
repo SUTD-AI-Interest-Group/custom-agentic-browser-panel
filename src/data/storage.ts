@@ -162,9 +162,22 @@ async function eraseDecider(): Promise<void> {
  * The caller sends the user back to onboarding afterwards; with the settings
  * key gone, `loadSettings()` returns an un-onboarded config and `App.tsx`
  * renders the wizard on its own.
+ *
+ * A store or the decider failing must not keep the settings and API keys: every
+ * clear is settled first, then chrome.storage and the vault are wiped
+ * REGARDLESS, and only then is the first failure rethrown so the caller still
+ * reports an erase that did not finish. (The likeliest one is OPFS refusing to
+ * delete model files another window's panel holds open; those stay deletable
+ * from Settings → Experimental, which offers Delete whenever files are there.)
  */
 export async function eraseAllData(): Promise<void> {
-  await Promise.all([...Object.values(RAW_CLEARERS).map((clear) => clear()), eraseDecider()])
+  const [decider, ...stores] = await Promise.allSettled([eraseDecider(), ...Object.values(RAW_CLEARERS).map((clear) => clear())])
   await chrome.storage.local.clear()
   await resetVault()
+  const storeFailure = stores.find((r): r is PromiseRejectedResult => r.status === 'rejected')
+  if (storeFailure) throw storeFailure.reason
+  if (decider.status === 'rejected') {
+    const reason = decider.reason instanceof Error ? decider.reason.message : String(decider.reason)
+    throw new Error(`Everything else was erased, but the decision model could not be deleted (${reason}); delete it from Settings → Experimental.`)
+  }
 }

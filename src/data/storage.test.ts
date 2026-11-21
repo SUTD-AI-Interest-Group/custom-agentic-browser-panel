@@ -118,9 +118,24 @@ describe('eraseAllData', () => {
     expect(decider.order.slice(1, 3).sort()).toEqual(['clearShadow', 'deleteModel'])
   })
 
-  it('fails loudly when the model cannot be deleted, rather than reporting an erase that left 4.6 GB behind', async () => {
+  it('a model that cannot be deleted still leaves settings, API keys and the vault erased — then reports the decider error', async () => {
+    // e.g. another window's panel still holds read-only OPFS sync handles on the model files.
     vi.mocked(deleteModel).mockRejectedValueOnce(new Error('NoModificationAllowedError'))
-    await expect(eraseAllData()).rejects.toThrow('NoModificationAllowedError')
+    const erased = eraseAllData()
+    await expect(erased).rejects.toThrow('NoModificationAllowedError')
+    await expect(erased).rejects.toThrow('Settings → Experimental')
+    expect(chrome.storage.local.clear).toHaveBeenCalledTimes(1)
+    expect(resetVault).toHaveBeenCalledTimes(1)
+    expect(clearShadow).toHaveBeenCalledTimes(1) // its sibling still ran
+    for (const clear of [clearConversations, clearMemory, clearTraces]) expect(clear).toHaveBeenCalledTimes(1)
+  })
+
+  it('a store that fails to clear does not keep the settings either, and its error is the one reported', async () => {
+    vi.mocked(clearMemory).mockRejectedValueOnce(new Error('memory store blocked'))
+    await expect(eraseAllData()).rejects.toThrow('memory store blocked')
+    expect(chrome.storage.local.clear).toHaveBeenCalledTimes(1)
+    expect(resetVault).toHaveBeenCalledTimes(1)
+    expect(deleteModel).toHaveBeenCalledTimes(1)
   })
 
   it('does not reseed built-in skills as a side effect (unlike clearStore(\'skills\'))', async () => {
