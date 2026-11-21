@@ -10,7 +10,7 @@ import type { IndexedElement, PageSnapshot } from '../platform/domIndex'
 import type { ControlSession, ControlSpec } from '../tools/pageControl'
 import type { ControlJournalEntry } from '../tools/pageControlJournal'
 import { MODEL_ID, type DeciderSettings } from './config'
-import { createDeciderHooks, latestUserText, type DeciderPanelHooks } from './hooks'
+import { createDeciderHooks, deciderRelayListener, latestUserText, type DeciderPanelHooks } from './hooks'
 import type { DecisionResult } from './protocol'
 import { forwardDeciderHooks, type DecisionStep } from './relay'
 import type { DecisionRequest } from './request'
@@ -464,6 +464,7 @@ describe('relay()', () => {
     tabId: 7, url: 'https://example.com/form', title: 'Contact form', plan: 'Fill it', previousActions: [],
     elements: FORM.map(({ index, tag, type, name, sensitive }) => ({ index, tag, type, name, sensitive })),
     spec: { action: 'click', index: 2 },
+    pageText: 'Read by the worker before the click.',
     ...over,
   })
 
@@ -477,7 +478,26 @@ describe('relay()', () => {
     expect(rs.find((r) => r.seq === 0)).toMatchObject({ llm: { op: 'click', index: 2 }, agree: true })
     expect(rs.find((r) => r.seq === 1)).toMatchObject({ llm: { op: 'type', index: 0 }, agree: false })
     expect((requests[0].state as Record<string, unknown>).goal).toBe('Send it')
-    expect(readViewportText).toHaveBeenCalledWith(7, 1200)
+  })
+
+  it('decides on the page text the worker read before the action — the panel never re-reads it', async () => {
+    const { engine, requests } = fakeEngine(answering('click [2]', 0.9))
+    const hooks = hooksWith({ engine })
+    hooks.relay({ type: 'decider.step', conversationId: 'conv-1', step: step() })
+    await recordsAfter(1)
+    expect((requests[0].state as Record<string, unknown>).page_text).toBe('Read by the worker before the click.')
+    // A panel-side read would land after the worker had already moved on to the action.
+    expect(readViewportText).not.toHaveBeenCalled()
+  })
+
+  it('records a worker-side page-text failure as skipped: error, without deciding or re-reading', async () => {
+    const { engine } = fakeEngine(answering('click [2]', 0.9))
+    const hooks = hooksWith({ engine })
+    hooks.relay({ type: 'decider.step', conversationId: 'conv-1', step: step({ pageText: null }) })
+    const [r] = await recordsAfter(1)
+    expect(r).toMatchObject({ skipped: 'error', seq: 0, llm: { op: 'click', index: 2 } })
+    expect(engine.decide).not.toHaveBeenCalled()
+    expect(readViewportText).not.toHaveBeenCalled()
   })
 
   it('ignores other conversations and anything malformed, without throwing', async () => {
@@ -509,6 +529,78 @@ describe('relay()', () => {
     expect(engine.warm).not.toHaveBeenCalled()
     hooks.relay({ type: 'decider.granted', conversationId: 'conv-1' })
     await vi.waitFor(() => expect(engine.warm).toHaveBeenCalledTimes(1))
+  })
+})
+
+// ---------------------------------------------------------------------------
+// deciderRelayListener — what runTurnChain registers on chrome.runtime.onMessage
+// ---------------------------------------------------------------------------
+
+describe('deciderRelayListener', () => {
+  const EXT = 'lychee-ext-id'
+  const at = (path: string) => `chrome-extension://${EXT}/${path}`
+  const msg = (conversationId = 'conv-1') => ({
+    type: 'decider.step',
+    conversationId,
+    step: {
+      tabId: 7, url: 'https://example.com/form', title: 'Contact form', plan: 'Fill it', previousActions: [],
+      elements: [{ index: 2, tag: 'button', name: 'Send', sensitive: false }],
+      spec: { action: 'click', index: 2 },
+      pageText: 'text',
+    },
+  })
+
+  beforeEach(() => {
+    vi.stubGlobal('chrome', { runtime: { id: EXT, getURL: at } })
+  })
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('hands a step from this extension’s service worker, for this conversation, to the hooks', async () => {
+    const { engine } = fakeEngine(answering('click [2]', 0.9))
+    const listener = deciderRelayListener(hooksWith({ engine }), 'conv-1')
+    expect(listener(msg(), { id: EXT, url: at('background.js') })).toBeUndefined() // never holds the channel open
+    const [r] = await recordsAfter(1)
+    expect(r).toMatchObject({ conversationId: 'conv-1', llm: { op: 'click', index: 2 }, agree: true })
+  })
+
+  it.each([
+    ['another extension page (the panel, offscreen, a tab)', { id: EXT, url: at('sidepanel.html') }],
+    ['the offscreen document', { id: EXT, url: at('offscreen.html') }],
+    ['a foreign extension', { id: 'some-other-extension', url: 'chrome-extension://some-other-extension/background.js' }],
+    ['a foreign extension claiming our worker URL', { id: 'some-other-extension', url: at('background.js') }],
+    ['a content script', { id: EXT, url: 'https://example.com/form', tab: { id: 7 } }],
+    ['no sender details', {}],
+  ])('rejects a step sent by %s', async (_label, sender) => {
+    const { engine } = fakeEngine(answering('click [2]', 0.9))
+    const hooks = hooksWith({ engine })
+    const relay = vi.spyOn(hooks, 'relay')
+    deciderRelayListener(hooks, 'conv-1')(msg(), sender as chrome.runtime.MessageSender)
+    await settle()
+    expect(relay).not.toHaveBeenCalled()
+    expect(engine.decide).not.toHaveBeenCalled()
+    expect(await listShadow()).toEqual([])
+  })
+
+  it("ignores another conversation's step, even from the right sender", async () => {
+    const { engine } = fakeEngine(answering('click [2]', 0.9))
+    const hooks = hooksWith({ engine })
+    const relay = vi.spyOn(hooks, 'relay')
+    deciderRelayListener(hooks, 'conv-1')(msg('conv-2'), { id: EXT, url: at('background.js') })
+    await settle()
+    expect(relay).not.toHaveBeenCalled()
+    expect(engine.decide).not.toHaveBeenCalled()
+  })
+
+  it('never throws, whatever arrives', () => {
+    const listener = deciderRelayListener(hooksWith({ engine: fakeEngine(answering('done', 1)).engine }), 'conv-1')
+    for (const m of [null, undefined, 'x', 42, { type: 'decider.step' }, { conversationId: 'conv-1' }]) {
+      expect(() => listener(m, { id: EXT, url: at('background.js') })).not.toThrow()
+    }
+    vi.unstubAllGlobals()
+    vi.stubGlobal('chrome', undefined)
+    expect(() => listener(msg(), { id: EXT, url: at('background.js') })).not.toThrow()
   })
 })
 

@@ -76,3 +76,76 @@ describe('summarize', () => {
     expect(e.agreement).toBe(0)
   })
 })
+
+// A version-less `indexedDB.open('lychee-decider')` (a harness reader, a devtools snippet) on a
+// profile that has never written a record CREATES an empty v1 database. Under DB_VERSION 1 the
+// store's own open then never upgraded, and every put/list failed for the life of the profile.
+describe('shadow store heals a database it did not create', () => {
+  const raw = (version?: number, onUpgrade?: (db: IDBDatabase) => void) =>
+    new Promise<IDBDatabase>((resolve, reject) => {
+      const req = version === undefined ? indexedDB.open('lychee-decider') : indexedDB.open('lychee-decider', version)
+      req.onupgradeneeded = () => onUpgrade?.(req.result)
+      req.onsuccess = () => resolve(req.result)
+      req.onerror = () => reject(req.error)
+    })
+  const drop = () =>
+    new Promise<void>((resolve, reject) => {
+      // The store's own connection closes itself on versionchange, so this never blocks.
+      const req = indexedDB.deleteDatabase('lychee-decider')
+      req.onsuccess = () => resolve()
+      req.onerror = () => reject(req.error)
+    })
+  const putRaw = (db: IDBDatabase, r: ShadowRecord) =>
+    new Promise<void>((resolve, reject) => {
+      const tx = db.transaction('shadow', 'readwrite')
+      tx.objectStore('shadow').put(r)
+      tx.oncomplete = () => resolve()
+      tx.onerror = () => reject(tx.error)
+    })
+
+  it('an empty v1 database (no shadow store) is healed on the first put', async () => {
+    await drop()
+    const empty = await raw() // version-less: creates v1 with no stores
+    expect(empty.version).toBe(1)
+    expect(empty.objectStoreNames.contains('shadow')).toBe(false)
+    empty.close()
+
+    const r = rec({ id: 'healed', at: 1 })
+    await putShadow(r)
+    expect(await listShadow()).toEqual([r])
+  })
+
+  it('an empty v1 database is healed on the first list, too', async () => {
+    await drop()
+    ;(await raw()).close()
+    expect(await listShadow()).toEqual([])
+    await putShadow(rec({ id: 'after', at: 2 }))
+    expect((await listShadow()).map((x) => x.id)).toEqual(['after'])
+  })
+
+  it('a v1 store missing its `at` index gets one, and its records survive', async () => {
+    await drop()
+    const v1 = await raw(1, (db) => {
+      db.createObjectStore('shadow', { keyPath: 'id' }) // no index
+    })
+    await putRaw(v1, rec({ id: 'old', at: 5 }))
+    v1.close()
+
+    await putShadow(rec({ id: 'new', at: 9 }))
+    expect((await listShadow()).map((x) => x.id)).toEqual(['old', 'new'])
+  })
+
+  it('a healthy v1 database keeps its records across the upgrade', async () => {
+    await drop()
+    const v1 = await raw(1, (db) => {
+      db.createObjectStore('shadow', { keyPath: 'id' }).createIndex('at', 'at')
+    })
+    await putRaw(v1, rec({ id: 'kept', at: 3 }))
+    v1.close()
+
+    expect((await listShadow()).map((x) => x.id)).toEqual(['kept'])
+    const now = await raw()
+    expect(now.version).toBe(2)
+    now.close()
+  })
+})

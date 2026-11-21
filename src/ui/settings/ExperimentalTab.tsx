@@ -10,8 +10,8 @@ import {
 } from '../../decider/config'
 import { getDeciderEngine } from '../../decider/engine'
 import type { DecisionRequest } from '../../decider/request'
-import { clearShadow, listShadow } from '../../decider/shadowStore'
-import { summarize, type DeciderStats } from '../../decider/stats'
+import { clearShadow, listShadow, type ShadowRecord } from '../../decider/shadowStore'
+import { summarize } from '../../decider/stats'
 import { deleteModel, getModelStatus, importModel, type ImportSource, type ModelStatus } from '../../decider/storage'
 import { Section, Select } from './primitives'
 
@@ -101,18 +101,58 @@ const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e))
 
 const pct = (x: number) => `${Math.round(x * 100)}%`
 
-interface ShadowView {
-  stats: DeciderStats
-  /** Decisions with a verdict: summarize()'s agreement rates leave `agree: null` out. */
-  judged: number
+/**
+ * What the Shadow log section shows. Every agreement figure is a rate over JUDGED decisions only
+ * (summarize() leaves `agree: null` out — an action the decider had no option for), so each one is
+ * shown with that judged count as its denominator, and as "—" when there is none: "0%" over zero
+ * judged decisions would read as "always wrong" when it means "never asked".
+ */
+export interface ShadowSummary {
+  decisions: number
+  skipped: number
+  agreement: string
+  next: string
+  fill: string
+  coverage: string
+  latency: { p50: number; p95: number; coldP50: number | null }
+  calibration: { range: string; decisions: number; judged: number; agreement: string }[]
 }
 
-async function loadShadowView(threshold: number): Promise<ShadowView> {
-  const records = await listShadow()
+/** Pure: the records → the strings the Shadow log renders. */
+export function shadowSummary(records: ShadowRecord[], threshold: number): ShadowSummary {
+  const all = summarize(records, threshold)
+  // The same bucketing and per-kind split, over judged decisions alone: their `n`s are the
+  // denominators of `all`'s agreement rates.
+  const judged = summarize(
+    records.filter((r) => r.agree !== null),
+    threshold,
+  )
+  const rate = (agreement: number, n: number) => (n ? `${pct(agreement)} of ${n}` : '—')
   return {
-    stats: summarize(records, threshold),
-    judged: records.filter((r) => !r.skipped && r.agree !== null).length,
+    decisions: all.n,
+    skipped: all.skipped,
+    agreement: judged.n ? `${pct(all.agreement)} of ${judged.n} judged` : '—',
+    next: rate(all.byKind.next.agreement, judged.byKind.next.n),
+    fill: rate(all.byKind.fill.agreement, judged.byKind.fill.n),
+    coverage: pct(all.coverage),
+    latency: { p50: all.p50, p95: all.p95, coldP50: all.coldP50 },
+    calibration: all.calibration.flatMap((b, i) =>
+      b.n === 0
+        ? []
+        : [
+            {
+              range: `${b.lo.toFixed(1)}–${b.hi.toFixed(1)}`,
+              decisions: b.n,
+              judged: judged.calibration[i].n,
+              agreement: judged.calibration[i].n ? pct(b.agreement) : '—',
+            },
+          ],
+    ),
   }
+}
+
+async function loadShadowView(threshold: number): Promise<ShadowSummary> {
+  return shadowSummary(await listShadow(), threshold)
 }
 
 const cell = { padding: '2px 8px 2px 0', textAlign: 'left' as const }
@@ -124,7 +164,7 @@ const cell = { padding: '2px 8px 2px 0', textAlign: 'left' as const }
  * (shadowStore.ts), so nothing here can show page content or what was typed.
  */
 function ShadowStats({ threshold }: { threshold: number }) {
-  const [view, setView] = useState<ShadowView | null>(null)
+  const [view, setView] = useState<ShadowSummary | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [armed, setArmed] = useState(false)
   const [busy, setBusy] = useState(false)
@@ -163,10 +203,8 @@ function ShadowStats({ threshold }: { threshold: number }) {
     }
   }
 
-  const s = view?.stats
-  const empty = !!s && s.n === 0 && s.skipped === 0
-  const kind = (k: 'next' | 'fill') => (s && s.byKind[k].n ? `${pct(s.byKind[k].agreement)} of ${s.byKind[k].n}` : '—')
-  const buckets = s?.calibration.filter((b) => b.n > 0) ?? []
+  const s = view
+  const empty = !!s && s.decisions === 0 && s.skipped === 0
 
   return (
     <Section
@@ -178,32 +216,32 @@ function ShadowStats({ threshold }: { threshold: number }) {
       {s && !empty && (
         <>
           <p className="hint" role="status" data-testid="decider-stats">
-            {s.n} decision{s.n === 1 ? '' : 's'} · {s.skipped} skipped
+            {s.decisions} decision{s.decisions === 1 ? '' : 's'} · {s.skipped} skipped
             <br />
-            Agreement {view.judged ? `${pct(s.agreement)} of ${view.judged} judged` : '—'} · next steps {kind('next')} · form
-            fills {kind('fill')}
+            Agreement {s.agreement} · next steps {s.next} · form fills {s.fill}
             <br />
-            Would act at {threshold}: {pct(s.coverage)} of decisions
+            Would act at {threshold}: {s.coverage} of decisions
             <br />
-            Latency p50 {s.p50} ms · p95 {s.p95} ms · cold p50 {s.coldP50 === null ? '—' : `${s.coldP50} ms`}
+            Latency p50 {s.latency.p50} ms · p95 {s.latency.p95} ms · cold p50{' '}
+            {s.latency.coldP50 === null ? '—' : `${s.latency.coldP50} ms`}
           </p>
-          {buckets.length > 0 && (
+          {s.calibration.length > 0 && (
             <table className="hint" style={{ borderCollapse: 'collapse', fontVariantNumeric: 'tabular-nums' }}>
               <thead>
                 <tr>
                   <th style={cell}>Confidence</th>
                   <th style={cell}>Decisions</th>
+                  <th style={cell}>Judged</th>
                   <th style={cell}>Agreement</th>
                 </tr>
               </thead>
               <tbody>
-                {buckets.map((b) => (
-                  <tr key={b.lo}>
-                    <td style={cell}>
-                      {b.lo.toFixed(1)}–{b.hi.toFixed(1)}
-                    </td>
-                    <td style={cell}>{b.n}</td>
-                    <td style={cell}>{pct(b.agreement)}</td>
+                {s.calibration.map((b) => (
+                  <tr key={b.range}>
+                    <td style={cell}>{b.range}</td>
+                    <td style={cell}>{b.decisions}</td>
+                    <td style={cell}>{b.judged}</td>
+                    <td style={cell}>{b.agreement}</td>
                   </tr>
                 ))}
               </tbody>

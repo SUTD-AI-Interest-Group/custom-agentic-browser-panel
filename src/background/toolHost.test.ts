@@ -49,7 +49,12 @@ function job(once = false): ChatRun {
 beforeEach(async () => {
   fixture.disconnect.mockClear()
   await removeChatRuns(); fixture.mutations = 0; fixture.policy = 'ask'; fixture.decider = undefined; fixture.send = () => {}
-  vi.stubGlobal('chrome', { runtime: { id: 'fixture', getURL: url, sendMessage: (msg: unknown) => fixture.send(msg), onMessage: { addListener: (fn: typeof listener) => { listener = fn } } }, notifications: { create: vi.fn(async () => 'notice') } })
+  vi.stubGlobal('chrome', {
+    runtime: { id: 'fixture', getURL: url, sendMessage: (msg: unknown) => fixture.send(msg), onMessage: { addListener: (fn: typeof listener) => { listener = fn } } },
+    notifications: { create: vi.fn(async () => 'notice') },
+    // The forwarder's pre-action viewport read (platform/viewportText.ts).
+    scripting: { executeScript: vi.fn(async () => [{ result: 'Fixture page text' }]) },
+  })
   installToolHost()
 })
 afterEach(async () => {
@@ -120,8 +125,12 @@ describe('background tool permissions', () => {
     const run = job(); run.toolRequests[0].name = 'Observe'
     await updateChatRun('chat', () => run); await poll(run); await finished()
     expect((await getChatRun('chat'))?.toolRequests[0].output).toEqual({ observed: true })
+    await until(async () => sent.length > 0)
     expect(sent).toHaveLength(1)
-    expect(sent[0]).toMatchObject({ type: 'decider.step', conversationId: 'chat', step: { tabId: 7, spec: { action: 'type', index: 0 } } })
+    expect(sent[0]).toMatchObject({
+      type: 'decider.step', conversationId: 'chat',
+      step: { tabId: 7, spec: { action: 'type', index: 0 }, pageText: 'Fixture page text' },
+    })
     expect(JSON.stringify(sent)).not.toContain('hunter2')
   })
   it('a missing panel (or the decider off) never changes the tool result', async () => {

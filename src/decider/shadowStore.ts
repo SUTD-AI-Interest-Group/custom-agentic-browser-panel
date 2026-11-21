@@ -29,8 +29,14 @@ export interface ShadowRecord {
 export const SHADOW_CAP = 5000
 
 const DB_NAME = 'lychee-decider'
-const DB_VERSION = 1
+// 2, not 1, and the upgrade below is idempotent: a version-less `indexedDB.open(DB_NAME)` made
+// anywhere before the first record (a harness reader, a devtools snippet) CREATES an empty v1
+// database, and at v1 this store's own open would never upgrade into it again — every put/list
+// would then fail for the life of the profile. Opening at 2 heals that (and a store missing its
+// index) while keeping any records a healthy v1 already holds.
+const DB_VERSION = 2
 const STORE = 'shadow'
+const AT_INDEX = 'at'
 
 let dbPromise: Promise<IDBDatabase> | null = null
 
@@ -40,10 +46,10 @@ function openDb(): Promise<IDBDatabase> {
       const req = indexedDB.open(DB_NAME, DB_VERSION)
       req.onupgradeneeded = () => {
         const db = req.result
-        if (!db.objectStoreNames.contains(STORE)) {
-          const s = db.createObjectStore(STORE, { keyPath: 'id' })
-          s.createIndex('at', 'at')
-        }
+        const s = db.objectStoreNames.contains(STORE)
+          ? req.transaction!.objectStore(STORE)
+          : db.createObjectStore(STORE, { keyPath: 'id' })
+        if (!s.indexNames.contains(AT_INDEX)) s.createIndex(AT_INDEX, 'at')
       }
       req.onsuccess = () => {
         req.result.onversionchange = () => {
@@ -80,7 +86,7 @@ export async function putShadow(r: ShadowRecord): Promise<void> {
     let excess = countReq.result - SHADOW_CAP
     if (excess <= 0) return
     // Walk the `at` index oldest-first, deleting only the excess.
-    const cur = store.index('at').openKeyCursor()
+    const cur = store.index(AT_INDEX).openKeyCursor()
     cur.onsuccess = () => {
       const c = cur.result
       if (!c || excess <= 0) return
@@ -96,7 +102,7 @@ export async function putShadow(r: ShadowRecord): Promise<void> {
 export async function listShadow(): Promise<ShadowRecord[]> {
   const db = await openDb()
   const tx = db.transaction(STORE, 'readonly')
-  const req = tx.objectStore(STORE).index('at').getAll()
+  const req = tx.objectStore(STORE).index(AT_INDEX).getAll()
   await done(tx)
   return req.result as ShadowRecord[]
 }

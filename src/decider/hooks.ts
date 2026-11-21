@@ -34,6 +34,7 @@ import type { DecisionResult } from './protocol'
 import { createModeResolver, isDeciderOn, parseDeciderRelay, stepOf, type DecisionStep } from './relay'
 import { putShadow, type ShadowRecord } from './shadowStore'
 import { nextActionRequest, type OptionAction } from './state'
+import { isModelReady } from './storage'
 
 export interface DeciderHooks {
   /** 'off' unless the settings say shadow/assist AND the imported model is ready. */
@@ -172,7 +173,7 @@ const asIndexed = (e: DecisionStep['elements'][number]): IndexedElement => ({ ..
 
 export function createDeciderHooks(deps: DeciderHookDeps): DeciderPanelHooks {
   const engine = (): DeciderEngineLike => deps.engine ?? getDeciderEngine()
-  const resolver = createModeResolver(deps.settings, deps.modelReady)
+  const resolver = createModeResolver(deps.settings, deps.modelReady ?? isModelReady)
   let seq = 0
   // A skipped record still needs a backend; the last one this chain saw is the honest guess
   // (summarize() leaves skipped records out of every latency figure regardless).
@@ -228,14 +229,22 @@ export function createDeciderHooks(deps: DeciderHookDeps): DeciderPanelHooks {
 
   async function decideAndRecord(n: number, goal: string, step: DecisionStep): Promise<void> {
     const at = Date.now()
-    // With readiness already known, start the viewport read before the first await: the action
-    // this step shadows is about to run, and the text should describe the page it was chosen on.
-    const textP = resolver.ready() === true ? readViewportText(step.tabId, PAGE_TEXT_CAP) : null
+    // A relayed step brings the text the worker read before its action ran; reading it again here
+    // would describe the page AFTER the action. Only a step taken in this realm is read here — and
+    // then, with readiness already known, before the first await, for the same reason.
+    const relayed = step.pageText !== undefined
+    const textP = !relayed && resolver.ready() === true ? readViewportText(step.tabId, PAGE_TEXT_CAP) : null
     if (!textP && !(await resolver.resolveReady())) return
     const llm: Llm = step.spec.index === undefined ? { op: step.spec.action } : { op: step.spec.action, index: step.spec.index }
     let record: ShadowRecord
     try {
-      const pageText = await (textP ?? readViewportText(step.tabId, PAGE_TEXT_CAP))
+      let pageText: string
+      if (relayed) {
+        if (step.pageText === null || step.pageText === undefined) throw new Error('the worker could not read the page')
+        pageText = step.pageText
+      } else {
+        pageText = await (textP ?? readViewportText(step.tabId, PAGE_TEXT_CAP))
+      }
       const { request, actions } = nextActionRequest({
         goal,
         plan: step.plan,
@@ -308,5 +317,31 @@ export function createDeciderHooks(deps: DeciderHookDeps): DeciderPanelHooks {
     mapForm() {
       return Promise.resolve({ error: 'assist mode is not implemented yet' })
     },
+  }
+}
+
+/** The service worker's script, as manifest.json's `background.service_worker` names it. */
+const SERVICE_WORKER_SCRIPT = 'background.js'
+
+/**
+ * The `chrome.runtime.onMessage` listener runTurnChain (src/ui/Chat.tsx) registers for the life of
+ * one chain, and removes in its outer `finally`. It hands a message to the chain's hooks only when
+ * it comes from THIS extension's service worker — not another extension, not a content script, not
+ * another of our own pages — and names this chain's conversation; relay() then validates the rest.
+ * Synchronous and returns nothing, so it never holds the sender's channel open. Never throws.
+ */
+export function deciderRelayListener(
+  decider: Pick<DeciderPanelHooks, 'relay'>,
+  conversationId: string,
+): (msg: unknown, sender: chrome.runtime.MessageSender) => void {
+  return (msg, sender) => {
+    try {
+      if (!sender || sender.id !== chrome.runtime.id || sender.tab) return
+      if (sender.url !== chrome.runtime.getURL(SERVICE_WORKER_SCRIPT)) return
+      if (typeof msg !== 'object' || msg === null || (msg as { conversationId?: unknown }).conversationId !== conversationId) return
+      decider.relay(msg)
+    } catch {
+      /* additive only */
+    }
   }
 }

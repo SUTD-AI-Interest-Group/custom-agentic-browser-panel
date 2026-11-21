@@ -16,7 +16,7 @@ import { isContextOverflow } from '../agent/resilience'
 import { summarizeSpan } from '../agent/summarizeSpan'
 import { sumUsage } from '../agent/usage'
 import { ensureVisionCapability } from '../agent/vision'
-import { createDeciderHooks, latestUserText } from '../decider/hooks'
+import { createDeciderHooks, deciderRelayListener, latestUserText } from '../decider/hooks'
 import {
   dehydrateHistory,
   hydrateHistory,
@@ -3344,11 +3344,9 @@ export default function Chat({
     // whose forwarding hooks post each page-control step here, where the engine
     // lives. Registered for exactly the life of this chain — removed in the
     // finally below on every exit — so a step can only ever reach the hooks of
-    // the chain that took it; relay() also drops other conversations' steps and
-    // anything malformed. Returns nothing, so the sender never waits on it.
-    const deciderRelay = (msg: unknown, sender: chrome.runtime.MessageSender) => {
-      if (sender.id === chrome.runtime.id && sender.url === chrome.runtime.getURL('background.js')) decider.relay(msg)
-    }
+    // the chain that took it. The listener (src/decider/hooks.ts) accepts only
+    // our own service worker and this conversation, and never holds the channel.
+    const deciderRelay = deciderRelayListener(decider, conversationId)
     chrome.runtime.onMessage.addListener(deciderRelay)
 
     try {
