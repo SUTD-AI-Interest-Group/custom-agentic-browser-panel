@@ -10,8 +10,9 @@ const PermissionsTab = lazy(() => import('./PermissionsTab'))
 const MemoryTab = lazy(() => import('./MemoryTab'))
 const SkillsTab = lazy(() => import('./SkillsTab'))
 const DataTab = lazy(() => import('./DataTab'))
+const ExperimentalTab = lazy(() => import('./ExperimentalTab'))
 
-type TabKey = 'connections' | 'general' | 'providers' | 'permissions' | 'memory' | 'skills' | 'data'
+type TabKey = 'connections' | 'general' | 'providers' | 'permissions' | 'memory' | 'skills' | 'data' | 'experimental'
 
 const TABS: Array<{ key: TabKey; label: string }> = [
   { key: 'general', label: 'General' },
@@ -21,6 +22,7 @@ const TABS: Array<{ key: TabKey; label: string }> = [
   { key: 'memory', label: 'Memory' },
   { key: 'skills', label: 'Skills' },
   { key: 'data', label: 'Data' },
+  { key: 'experimental', label: 'Experimental' },
 ]
 
 /**
@@ -129,6 +131,9 @@ export default function SettingsView({
         {tab === 'memory' && <MemoryTab draft={draft} commit={commit} />}
         {tab === 'skills' && <SkillsTab onOpenSkills={onOpenSkills} onSaved={flashSaved} />}
         {tab === 'data' && <DataTab draft={draft} commit={commit} onErased={onErased} />}
+        {tab === 'experimental' && (
+          <ExperimentalTab draft={draft} buffer={buffer} commit={commit} commitDraft={commitDraft} />
+        )}
         </Suspense>
       </div>
     </div>
