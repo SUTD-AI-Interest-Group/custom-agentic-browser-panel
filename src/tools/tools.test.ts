@@ -311,6 +311,18 @@ describe('AutofillForm — re-checks isForeground per field, not only at tool en
     expect(result.filled).toEqual([0, 1])
   })
 
+  it('a select flagged sensitive:true still raises the once:true card (the select swap keeps the flag)', async () => {
+    stubTabsQuery(FG_TAB, FG_TAB, FG_TAB, FG_TAB)
+    vi.mocked(snapshotPage).mockResolvedValue(snap([el({ index: 0, tag: 'select', type: 'select-one', name: 'Plan' })]))
+    vi.mocked(runControlStep).mockResolvedValue({ ok: true, message: 'ok', registry: 'fresh', origin: 'https://example.com' })
+    const requestApproval = vi.fn(async () => false)
+    const tools = buildControlTools({ session: buildSession(), requestApproval })
+    await (tools.AutofillForm as any).execute({ fields: [{ index: 0, value: 'Pro', sensitive: true }] }, {} as any)
+    expect(requestApproval).toHaveBeenCalledTimes(1)
+    expect(requestApproval).toHaveBeenCalledWith(expect.objectContaining({ toolName: 'AutofillForm', once: true }))
+    expect(runControlStep).not.toHaveBeenCalled()
+  })
+
   it('stops the batch when the tab backgrounds mid-fill, leaving later fields untouched', async () => {
     // entry check, top-of-loop for field 0 (still foreground), top-of-loop
     // for field 1 (user has since switched tabs)
@@ -723,6 +735,25 @@ describe('AutofillForm — assist mode, without fields', () => {
     const r1 = await within((tools.AutofillForm as any).execute({}, {} as any))
     expect(runControlStep).not.toHaveBeenCalled()
     expect(r1).toMatchObject({ filled: [], left: [{ index: 2, reason: 'already-set' }] })
+  })
+
+  it('refuses a tick plan against a ticked box and an untick plan against an unticked box, in both guards', async () => {
+    // Snapshot changes between planning and acting would be caught by hasElementChanged; here the
+    // plan itself disagrees with the page, so only the direction guards stand in the way.
+    const ticked = ASSIST_FORM.map((e) => (e.index === 2 ? { ...e, checked: true } : e))
+    const run = async (form: typeof ASSIST_FORM, value: 'tick' | 'untick') => {
+      vi.mocked(runControlStep).mockClear()
+      vi.mocked(snapshotPage).mockResolvedValue(snap(form))
+      const plan: FillPlan = { fills: [{ index: 2, kind: 'checkbox', key: value, value, p: 0.9 }], left: [] }
+      const tools = buildDeciderTools({ session: buildSession(), decider: stubHooks({ mode: () => 'assist', mapForm: async () => plan }) })
+      return within((tools.AutofillForm as any).execute({}, {} as any))
+    }
+    expect(await run(ticked, 'tick')).toMatchObject({ filled: [] })
+    expect(runControlStep).not.toHaveBeenCalled()
+    expect(await run(ASSIST_FORM, 'untick')).toMatchObject({ filled: [] })
+    expect(runControlStep).not.toHaveBeenCalled()
+    expect(await run(ASSIST_FORM, 'tick')).toMatchObject({ filled: [2] })
+    expect(await run(ticked, 'untick')).toMatchObject({ filled: [2] })
   })
 
   it('never clicks a submit control for an untick fill either', async () => {

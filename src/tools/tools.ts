@@ -1832,7 +1832,7 @@ export function createAgentTools(
           // The model's own mapping is typed by default; a <select> is chosen from instead (typing
           // into one fails). Decided here, from the field as it stands on the page right now.
           if (!step.planned && spec.action === 'type' && el?.tag === 'select') {
-            spec = { action: 'select', index: step.index, value: spec.text }
+            spec = { action: 'select', index: step.index, value: spec.text, sensitive: spec.sensitive }
           }
           if (step.planned) {
             // Only the element the plan was made for, only as the kind of field it was planned as:
