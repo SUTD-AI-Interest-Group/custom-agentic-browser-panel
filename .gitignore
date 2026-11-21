@@ -27,3 +27,6 @@ dist/
 
 # Local browser regression evidence
 test-results/
+
+# Decider export venv
+scripts/decider-export/.venv/

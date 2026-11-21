@@ -1,0 +1,9 @@
+# Versions the export was proven with (Python 3.12). The strands_decider wheel ships in the
+# checkpoint snapshot: pip install "$CKPT"/strands_decider-*.whl
+torch==2.15.0
+transformers==5.24.0
+onnx==1.23.2
+onnxscript==0.7.2
+onnxruntime==1.32.0
+safetensors==0.8.0
+numpy==2.5.5
