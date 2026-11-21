@@ -30,3 +30,4 @@ test-results/
 
 # Decider export venv
 scripts/decider-export/.venv/
+scripts/decider-export/__pycache__/
