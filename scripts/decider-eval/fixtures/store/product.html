@@ -1,0 +1,23 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Product — Northwind Store</title><style>body{font:14px/1.4 system-ui,sans-serif;margin:0;color:#222}header{display:flex;gap:16px;align-items:center;padding:10px 20px;border-bottom:1px solid #ddd}main{padding:16px 20px;max-width:640px}li{margin:8px 0}.price{font-weight:600}</style><script src="catalog.js"></script></head>
+<body><main><h1 id="name"></h1><p class="price" id="price"></p><p>In stock. Ships in 1–2 business days.</p>
+<label>Quantity <select id="qty" aria-label="Quantity"><option>1</option><option>2</option><option>3</option></select></label>
+<p><button id="add">Add to cart</button> <button id="wish">Save to wishlist</button></p><p id="msg"></p>
+<h2>Reviews</h2><p>4.4 out of 5 — 212 reviews</p></main>
+<script>
+const p = CATALOG.find(x => x.id === new URLSearchParams(location.search).get('id'))
+document.title = p.name + ' — Northwind Store'
+document.getElementById('name').textContent = p.name
+document.getElementById('price').textContent = '$' + p.price
+// Adds `Quantity` copies. The #added fragment makes "already added" visible in the URL, which is
+// what lets the eval's answer key tell the finished product page from the unfinished one.
+document.getElementById('add').onclick = () => {
+  const qty = Number(document.getElementById('qty').value) || 1
+  const c = cart()
+  for (let i = 0; i < qty; i++) c.push(p.name)
+  localStorage.setItem('cart', JSON.stringify(c))
+  window.__cart = c
+  document.getElementById('msg').textContent = qty > 1 ? `Added ${qty} to your cart.` : 'Added to your cart.'
+  history.replaceState(null, '', location.pathname + location.search + '#added')
+}
+document.getElementById('wish').onclick = () => { document.getElementById('msg').textContent = 'Saved to your wishlist.' }
+</script></body></html>

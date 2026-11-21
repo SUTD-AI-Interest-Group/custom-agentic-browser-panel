@@ -15,7 +15,8 @@
     "test:watch": "vitest",
     "test:webmcp:browser": "npm run build && node scripts/test-webmcp-browser.mjs",
     "test:surfaces:browser": "npm run build && node scripts/test-product-surfaces-browser.mjs",
-    "test:site:browser": "npm --prefix site run build && node scripts/test-site-browser.mjs"
+    "test:site:browser": "npm --prefix site run build && node scripts/test-site-browser.mjs",
+    "test:decider:eval": "npm run build && node scripts/decider-eval/run.mjs"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^4.0.16",

@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Newsletter — Northwind Store</title>
+<style>
+  body { font: 14px/1.4 system-ui, sans-serif; margin: 0; color: #222; }
+  nav { display: flex; gap: 16px; padding: 10px 20px; border-bottom: 1px solid #ddd; }
+  main { max-width: 520px; padding: 12px 20px; }
+  form { display: grid; gap: 8px; }
+  label { display: grid; gap: 2px; }
+  .row { display: flex; gap: 10px; }
+  .row > label { flex: 1; }
+  fieldset { border: 1px solid #ddd; border-radius: 6px; padding: 6px 10px; display: flex; gap: 18px; }
+  fieldset label { display: flex; gap: 6px; align-items: center; }
+  input[type=text], input[type=email] { font: inherit; padding: 4px 7px; }
+  #done { display: none; padding: 12px; background: #e8f5e9; border-radius: 6px; }
+</style>
+</head>
+<body>
+<nav>
+  <a href="store/index.html">Northwind Store</a>
+  <a href="#privacy">Privacy</a>
+</nav>
+<main>
+  <h1>Get the Northwind newsletter</h1>
+  <p>New arrivals and offers, once a week.</p>
+  <form id="signup" onsubmit="return go(event)">
+    <label>Email <input type="email" name="email" aria-label="Email address" required></label>
+    <div class="row">
+      <label>First name <input type="text" name="first" aria-label="First name"></label>
+      <label>Last name <input type="text" name="last" aria-label="Last name"></label>
+    </div>
+    <fieldset>
+      <legend>I'm interested in</legend>
+      <label><input type="checkbox" name="interests" value="audio" aria-label="Audio"> Audio</label>
+      <label><input type="checkbox" name="interests" value="kitchen" aria-label="Kitchen"> Kitchen</label>
+      <!-- Pre-ticked, as sign-up forms often are: "Audio only" means unticking it. -->
+      <label><input type="checkbox" name="interests" value="deals" aria-label="Deals" checked> Deals</label>
+    </fieldset>
+    <div><button type="submit">Subscribe</button></div>
+  </form>
+  <div id="done"></div>
+</main>
+<script>
+  window.__submitted = null
+  // {label: value | checked} per field, keyed by the aria-label the element registry shows.
+  window.__fields = () => {
+    const out = {}
+    for (const el of document.querySelectorAll('#signup input, #signup select, #signup textarea')) {
+      const label = el.getAttribute('aria-label')
+      if (label) out[label] = el.type === 'checkbox' || el.type === 'radio' ? el.checked : el.value
+    }
+    return out
+  }
+  function go(e) {
+    e.preventDefault()
+    const f = document.getElementById('signup')
+    const fd = new FormData(f)
+    const d = Object.fromEntries(fd.entries())
+    d.interests = fd.getAll('interests')
+    window.__submitted = d
+    f.style.display = 'none'
+    const t = document.getElementById('done')
+    t.textContent = `Thanks ${d.first || 'there'} — we'll write to ${d.email || '(no email)'}.`
+    t.style.display = 'block'
+    // Makes "already sent" visible in the URL for the eval's answer key.
+    history.replaceState(null, '', location.pathname + '#submitted')
+    return false
+  }
+</script>
+</body>
+</html>

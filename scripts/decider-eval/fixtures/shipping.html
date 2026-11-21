@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Shipping details — Northwind Checkout</title>
+<style>
+  body { font: 14px/1.4 system-ui, sans-serif; margin: 0; color: #222; }
+  nav { display: flex; gap: 16px; padding: 10px 20px; border-bottom: 1px solid #ddd; }
+  main { max-width: 560px; padding: 12px 20px; }
+  h1 { margin: 4px 0 10px; font-size: 20px; }
+  form { display: grid; gap: 8px; }
+  label { display: grid; gap: 2px; }
+  .row { display: flex; gap: 10px; }
+  .row > label { flex: 1; }
+  fieldset { border: 1px solid #ddd; border-radius: 6px; padding: 6px 10px; display: flex; gap: 18px; }
+  fieldset label, .check { display: flex; gap: 6px; align-items: center; }
+  input[type=text], select, textarea { font: inherit; padding: 4px 7px; }
+  #done { display: none; padding: 12px; background: #e8f5e9; border-radius: 6px; }
+</style>
+</head>
+<body>
+<nav>
+  <a href="#cart">Cart</a>
+  <a href="#help">Help</a>
+</nav>
+<main>
+  <h1>Shipping details</h1>
+  <form id="shipping" onsubmit="return go(event)">
+    <label>Full name <input type="text" name="full_name" aria-label="Full name" required></label>
+    <label>Street address <input type="text" name="street" aria-label="Street address" required></label>
+    <div class="row">
+      <label>City <input type="text" name="city" aria-label="City" required></label>
+      <label>Postcode <input type="text" name="postcode" aria-label="Postcode" required></label>
+    </div>
+    <label>Country
+      <select name="country" aria-label="Country" required>
+        <option value="">Choose a country…</option>
+        <option>France</option><option>Germany</option><option>Ireland</option><option>United Kingdom</option><option>United States</option>
+      </select>
+    </label>
+    <fieldset>
+      <legend>Delivery</legend>
+      <label><input type="radio" name="delivery" value="standard" aria-label="Standard delivery" checked> Standard (3–5 days, free)</label>
+      <label><input type="radio" name="delivery" value="express" aria-label="Express delivery"> Express (1–2 days, $12.99)</label>
+    </fieldset>
+    <label>Phone (optional) <input type="text" name="phone" aria-label="Phone (optional)"></label>
+    <label>Delivery notes <textarea name="notes" rows="2" aria-label="Delivery notes"></textarea></label>
+    <label class="check"><input type="checkbox" name="terms" aria-label="I accept the terms and conditions"> I accept the terms and conditions</label>
+    <div><button type="submit">Continue to payment</button></div>
+  </form>
+  <div id="done"></div>
+</main>
+<script>
+  window.__submitted = null
+  // {label: value | checked} per field, keyed by the aria-label the element registry shows.
+  window.__fields = () => {
+    const out = {}
+    for (const el of document.querySelectorAll('#shipping input, #shipping select, #shipping textarea')) {
+      const label = el.getAttribute('aria-label')
+      if (label) out[label] = el.type === 'checkbox' || el.type === 'radio' ? el.checked : el.value
+    }
+    return out
+  }
+  function go(e) {
+    e.preventDefault()
+    const f = document.getElementById('shipping')
+    const d = Object.fromEntries(new FormData(f).entries())
+    window.__submitted = d
+    f.style.display = 'none'
+    const t = document.getElementById('done')
+    t.textContent = `Shipping to ${d.full_name || '(no name)'}, ${d.city || '(no city)'} by ${d.delivery} delivery. Next: payment.`
+    t.style.display = 'block'
+    // Makes "already sent" visible in the URL for the eval's answer key.
+    history.replaceState(null, '', location.pathname + '#submitted')
+    return false
+  }
+</script>
+</body>
+</html>

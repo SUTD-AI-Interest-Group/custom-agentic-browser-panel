@@ -1,0 +1,16 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><title>All products — Northwind Store</title>
+<style>
+  body{font:12px/1.3 system-ui,sans-serif;margin:0;color:#222}
+  header{display:flex;gap:16px;align-items:center;padding:8px 20px;border-bottom:1px solid #ddd}
+  main{padding:8px 20px}
+  h1{font-size:16px;margin:4px 0 8px}
+  /* Dense on purpose: all 120 products fit one 1280x900 viewport, so the whole catalog lands in
+     the element registry at once (the registry is viewport-only) — the long-prompt case. */
+  ul{display:grid;grid-template-columns:repeat(3,1fr);gap:1px 16px;list-style:none;padding:0;margin:0}
+  .price{color:#555}
+</style><script src="catalog.js"></script></head>
+<body><main><h1>All products (120)</h1><ul id="all"></ul></main>
+<script>
+const items = [...CATALOG].sort((a, b) => a.name.localeCompare(b.name))
+document.getElementById('all').innerHTML = items.map(p => `<li><a href="product.html?id=${p.id}">${p.name}</a> <span class="price">$${p.price}</span></li>`).join('')
+</script></body></html>

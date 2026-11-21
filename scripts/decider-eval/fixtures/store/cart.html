@@ -1,0 +1,3 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Your cart — Northwind Store</title><style>body{font:14px/1.4 system-ui,sans-serif;margin:0;color:#222}header{display:flex;gap:16px;align-items:center;padding:10px 20px;border-bottom:1px solid #ddd}main{padding:16px 20px;max-width:640px}li{margin:8px 0}.price{font-weight:600}</style><script src="catalog.js"></script></head>
+<body><main><h1>Your cart</h1><ul id="items"></ul><button>Checkout</button></main>
+<script>document.getElementById('items').innerHTML = cart().map(n => '<li>' + n + '</li>').join('') || '<li>Your cart is empty.</li>'</script></body></html>

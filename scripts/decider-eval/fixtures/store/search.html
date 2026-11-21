@@ -1,0 +1,9 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Search results — Northwind Store</title><style>body{font:14px/1.4 system-ui,sans-serif;margin:0;color:#222}header{display:flex;gap:16px;align-items:center;padding:10px 20px;border-bottom:1px solid #ddd}main{padding:16px 20px;max-width:640px}li{margin:8px 0}.price{font-weight:600}</style><script src="catalog.js"></script></head>
+<body><main><h1 id="h"></h1><ul id="results"></ul></main>
+<script>
+const q = (new URLSearchParams(location.search).get('q') || '').toLowerCase().trim()
+const words = q.split(/\s+/).filter(Boolean)
+const hits = CATALOG.filter(p => words.length && words.every(w => p.name.toLowerCase().includes(w.replace(/s$/, '')) ))
+document.getElementById('h').textContent = hits.length ? `${hits.length} results for "${q}"` : `No results for "${q}"`
+document.getElementById('results').innerHTML = hits.map(p => `<li><a href="product.html?id=${p.id}">${p.name}</a> — <span class="price">$${p.price}</span></li>`).join('')
+</script></body></html>

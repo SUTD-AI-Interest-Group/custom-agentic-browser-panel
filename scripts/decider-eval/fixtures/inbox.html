@@ -1,0 +1,38 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Inbox (7) — Northwind Mail</title>
+<style>body{font:14px/1.4 system-ui,sans-serif;margin:0;color:#222;display:grid;grid-template-columns:180px 1fr}aside{border-right:1px solid #ddd;padding:12px}main{padding:12px 20px}table{border-collapse:collapse;width:100%}td{padding:6px 8px;border-bottom:1px solid #eee}tr.unread td{font-weight:600}#view{display:none}</style></head>
+<body><aside><button>Compose</button><nav><p><a href="#inbox">Inbox (7)</a></p><p><a href="#starred">Starred</a></p><p><a href="#sent">Sent</a></p><p><a href="#spam">Spam</a></p></nav></aside>
+<main><div id="list"><input type="search" aria-label="Search mail" placeholder="Search mail"><table id="mail"></table></div>
+<div id="view"><button id="back">Back to inbox</button><h2 id="subj"></h2><p id="from"></p><div id="body"></div><p><button>Reply</button> <button>Forward</button> <button>Archive</button></p></div></main>
+<script>
+const MAIL = [
+  // The look-alike: newest, from "Acme Energy Offers", with a dollar amount and "bill" in the subject.
+  { from: 'Acme Energy Offers', subj: 'Save $10 a month on your energy bill', body: 'Switch to our green tariff and save $10 a month.' },
+  { from: 'GitHub', subj: 'Your weekly digest', body: 'You have 3 new notifications.' },
+  { from: 'Acme Energy', subj: 'Your November statement is ready', body: 'Hi Ada, your November electricity bill is <b>$84.20</b>. Payment is due on <b>12 December 2026</b>. Pay online or set up autopay to avoid a late fee.' },
+  { from: 'Northwind Store', subj: 'Your order has shipped', body: 'Order #4471 is on its way. Expected delivery: 25 November.' },
+  { from: 'Acme Water', subj: 'Planned maintenance notice', body: 'Water supply in your area may be interrupted on 2 December between 9am and 1pm.' },
+  { from: 'Mum', subj: 'Dinner on Sunday?', body: 'Are you free for dinner on Sunday at 7?' },
+  { from: 'City Library', subj: 'Book due soon', body: 'Your book "The Analytical Engine" is due back on 28 November.' },
+]
+// The open email's subject, slugged into the fragment, is what lets the eval's answer key tell
+// which message is showing (the registry of the open view never names it).
+const slug = (s) => s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')
+window.__opened = []
+document.getElementById('mail').innerHTML = MAIL.map((m, i) => `<tr class="unread"><td>${m.from}</td><td><a href="#m${i}" data-i="${i}">${m.subj}</a></td><td>Nov ${21 - i}</td></tr>`).join('')
+document.querySelectorAll('#mail a').forEach(a => a.onclick = (e) => {
+  e.preventDefault()
+  const m = MAIL[a.dataset.i]
+  window.__opened.push(m.from)
+  document.getElementById('list').style.display = 'none'
+  document.getElementById('view').style.display = 'block'
+  document.getElementById('subj').textContent = m.subj
+  document.getElementById('from').textContent = 'From: ' + m.from
+  document.getElementById('body').innerHTML = m.body
+  history.replaceState(null, '', location.pathname + '#open=' + slug(m.subj))
+})
+document.getElementById('back').onclick = () => {
+  document.getElementById('view').style.display = 'none'
+  document.getElementById('list').style.display = 'block'
+  history.replaceState(null, '', location.pathname)
+}
+</script></body></html>
