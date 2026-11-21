@@ -140,19 +140,113 @@ export function urlAt(timeline, t) {
   return url
 }
 
+// Two scoring corrections (Task 13 found both; the results doc's section 5.1 explains them).
+//
+// 1. A stale registry after `AutofillForm`. A step's registry is the latest earlier tool output
+//    that carries `elements`, and AutofillForm's result carries none, so a step after a fill was
+//    keyed against the PRE-fill form. The fills an earlier-model-step AutofillForm reported are
+//    applied to that registry first. (The AI SDK finishes every tool of a step before the next
+//    step starts, so an earlier step's fills are on the page.)
+// 2. Parallel page-mutating calls. A ControlPage issued in the same model step as another
+//    page-mutating call (an AutofillForm, or another non-neutral ControlPage) runs concurrently
+//    with it on one page, so "the state before this action" has no single value. Such a call is
+//    flagged `raced`, left unkeyed for both models, and counted.
+
+/** What the decider's profile lookup writes into a form field, by the profile key's tail. */
+const PROFILE = [
+  [/first/, 'Ada'], [/last|surname|family/, 'Lovelace'], [/work/, 'ada@analytical-engines.co.uk'], [/mail/, 'ada@example.com'],
+  [/phone|tel|mobile/, '+44 20 7946 0958'], [/street|address_line|line1|^address$/, "12 St James's Square"], [/city|town/, 'London'],
+  [/post|zip/, 'SW1Y 4JH'], [/country/, 'United Kingdom'], [/name/, 'Ada Lovelace'],
+]
+const profileValue = (k) => PROFILE.find(([re]) => re.test(k.toLowerCase()))?.[1]
+
+/** Rewrites registry line `[idx]` to show a value, or a checked state for a checkbox/radio. */
+export function patchLine(registry, idx, { value, checked }) {
+  return registry
+    .split('\n')
+    .map((line) => {
+      if (!line.startsWith(`[${idx}]`)) return line
+      if (checked !== undefined) return line.replace(/\((un)?checked\)/, checked ? '(checked)' : '(unchecked)')
+      const base = line.replace(/ = ".*"(?=( \(sensitive\))?$)/, '')
+      return base.replace(/("[^"]*")(?=( \(sensitive\))?$)/, `$1 = "${value}"`)
+    })
+    .join('\n')
+}
+const isBox = (registry, idx) => new RegExp(`^\\[${idx}\\]<input> (checkbox|radio)`, 'm').test(registry)
+
+/** What one AutofillForm call wrote: `{ [index]: {value} | {checked} }` for each field it reports filled, or null. */
+export function fillsOf(t) {
+  const out = t.output && typeof t.output === 'object' ? t.output : {}
+  if (!Array.isArray(out.filled) || !out.filled.length) return null
+  const byIdx = {}
+  for (const f of t.input?.fields ?? []) byIdx[f.index] = { value: String(f.value) }
+  for (const m of out.mapped ?? []) {
+    if (m.key === 'tick') byIdx[m.index] = { checked: true }
+    else if (m.key.startsWith('profile.')) byIdx[m.index] = { value: profileValue(m.key.slice(8)) ?? `?${m.key}` }
+    else if (m.key.startsWith('request.')) byIdx[m.index] = { value: String(t.input?.values?.[m.key.slice(8)] ?? `?${m.key}`) }
+    else byIdx[m.index] = { value: m.key } // a select's chosen option text
+  }
+  const res = {}
+  for (const idx of out.filled) if (byIdx[idx]) res[idx] = byIdx[idx]
+  return res
+}
+
+/** `registry` with each fill applied (a checkbox/radio takes a checked state, anything else a value). */
+export function applyFills(registry, fills) {
+  let reg = registry
+  for (const [idx, v] of Object.entries(fills))
+    reg = patchLine(reg, idx, isBox(reg, idx) ? { checked: v.checked ?? (v.value !== 'false' && v.value !== '') } : v)
+  return reg
+}
+
+/** Model-step start time of every tool call, by aligning the k-th call of each name with the trace. */
+export function stepTimes(row) {
+  const byName = {}
+  for (const c of row.traceCalls ?? []) (byName[c.name] ??= []).push(c.at)
+  const seen = {}
+  return (row.tools ?? []).map((t) => {
+    const k = (seen[t.toolName] = (seen[t.toolName] ?? -1) + 1)
+    return byName[t.toolName]?.[k] ?? null
+  })
+}
+
 /**
  * The ControlPage calls with the state each one was made in: `registry` from the latest earlier
- * tool output carrying one, `url` from the URL timeline at the start of the model step that made
- * the call (trace order ↔ conversation order), else from the latest earlier output's `url`.
+ * tool output carrying one (with the fills of any earlier-step AutofillForm applied; `patched`
+ * says so), `url` from the URL timeline at the start of the model step that made the call (trace
+ * order <-> conversation order), else from the latest earlier output's `url`. `raced` marks a call
+ * issued in the same model step as another page-mutating call.
  */
 export function controlSteps(row) {
+  const tools = row.tools ?? []
+  const at = stepTimes(row)
+  const mutating = (t) => t.toolName === 'AutofillForm' || (t.toolName === 'ControlPage' && !NEUTRAL_OPS.has(t.input?.action))
+  const autofills = tools.map((t, i) => (t.toolName === 'AutofillForm' ? { at: at[i], fills: fillsOf(t) } : null)).filter((x) => x?.fills)
   const calls = []
   let registry = null
+  let regAt = -Infinity
   let outUrl = row.startUrl
-  for (const t of row.tools ?? []) {
-    if (t.toolName === 'ControlPage') calls.push({ input: t.input ?? {}, output: t.output, registry, outUrl })
+  for (const [i, t] of tools.entries()) {
+    if (t.toolName === 'ControlPage') {
+      const callAt = at[i]
+      const raced = callAt != null && mutating(t) && tools.some((o, j) => j !== i && at[j] === callAt && mutating(o))
+      let reg = registry
+      let patched = false
+      if (reg && callAt != null) {
+        // Fills from earlier steps that this registry predates (captured at or before the fill's step).
+        const due = autofills.filter((a) => a.at != null && a.at < callAt && a.at >= regAt)
+        if (due.length) {
+          reg = due.reduce((r, a) => applyFills(r, a.fills), reg)
+          patched = reg !== registry
+        }
+      }
+      calls.push({ input: t.input ?? {}, output: t.output, registry: reg, patched, raced, outUrl })
+    }
     const out = t.output && typeof t.output === 'object' ? t.output : null
-    if (hasRegistry(out)) registry = out.elements
+    if (hasRegistry(out)) {
+      registry = out.elements
+      regAt = at[i] ?? regAt
+    }
     if (out && typeof out.url === 'string') outUrl = out.url
   }
   const times = (row.traceCalls ?? []).filter((c) => c.name === 'ControlPage').map((c) => c.at)
@@ -206,7 +300,8 @@ export function scoreRow(row, threshold = DEFAULT_THRESHOLD) {
     // highlight / wait change nothing on the page: a highlight of the answer after the task is
     // done is presentation, not a wrong move. Such steps are left unkeyed for both models.
     const neutral = NEUTRAL_OPS.has(s.input.action)
-    const k = !neutral && s.registry && s.url ? answerKey(row.task, s.registry, s.url) : []
+    // A raced call has no single "state before": unkeyed for both models, counted separately.
+    const k = !neutral && !s.raced && s.registry && s.url ? answerKey(row.task, s.registry, s.url) : []
     const chat = { op: s.input.action, index: s.input.index }
     const top = rec && !rec.skipped && rec.top3?.length ? rec.top3[0] : null
     const chatOk = k.length ? matches(chat, k) : null
@@ -232,6 +327,8 @@ export function scoreRow(row, threshold = DEFAULT_THRESHOLD) {
     return {
       i,
       neutral,
+      raced: s.raced,
+      patched: s.patched,
       url: s.url ?? null,
       urlSource: s.urlSource,
       registry: s.registry,
@@ -256,6 +353,7 @@ export function scoreRow(row, threshold = DEFAULT_THRESHOLD) {
   const fields = fieldScores(row.task, row.fields)
   return {
     controlCalls: steps.length,
+    raced: steps.filter((s) => s.raced && !NEUTRAL_OPS.has(s.input.action)).length,
     keyed,
     chatCorrect: chatRight,
     decider: {
@@ -349,6 +447,7 @@ function aggregate(rows) {
     costHigh: +sum((r) => r.cost?.high).toFixed(4),
     costLow: +sum((r) => r.cost?.low).toFixed(4),
     controlCalls: sum((r) => r.score.controlCalls),
+    raced: sum((r) => r.score.raced),
     keyed,
     chatCorrect: sum((r) => r.score.chatCorrect),
     deciderKeyed: decKeyed,
@@ -412,11 +511,11 @@ export function renderMarkdown(results) {
   L.push(`- Decider model: ${meta.deciderModel ?? '—'}`, '')
 
   L.push('## Summary by arm', '')
-  L.push('| arm | runs | success | wall p50 s | chat steps | tokens in / out | cost (est.) | ControlPage | keyed | chat acc | decider acc | decider acc @thr | coverage @thr | agreement | decider ms p50 / p95 | unpaired calls / records |')
-  L.push('|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|')
+  L.push('| arm | runs | success | wall p50 s | chat steps | tokens in / out | cost (est.) | ControlPage | raced | keyed | chat acc | decider acc | decider acc @thr | coverage @thr | agreement | decider ms p50 / p95 | unpaired calls / records |')
+  L.push('|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|')
   for (const [arm, { overall: o }] of Object.entries(summary)) {
     L.push(
-      `| ${arm} | ${o.runs} | ${pct(o.success, o.runs)} | ${o.wallMsP50 === null ? '—' : Math.round(o.wallMsP50 / 1000)} | ${o.llmSteps} | ${o.inputTokens} / ${o.outputTokens} | ${usd(o.costLow)}–${usd(o.costHigh)} | ${o.controlCalls} | ${o.keyed} | ${pct(o.chatCorrect, o.keyed)} | ${pct(o.deciderCorrect, o.deciderKeyed)} | ${pct(o.deciderCorrectAtThreshold, o.deciderAtThreshold)} | ${frac(o.coverage)} | ${frac(o.agreement)} | ${num(o.msP50)} / ${num(o.msP95)} | ${o.unpairedCalls} / ${o.unpairedRecords} |`,
+      `| ${arm} | ${o.runs} | ${pct(o.success, o.runs)} | ${o.wallMsP50 === null ? '—' : Math.round(o.wallMsP50 / 1000)} | ${o.llmSteps} | ${o.inputTokens} / ${o.outputTokens} | ${usd(o.costLow)}–${usd(o.costHigh)} | ${o.controlCalls} | ${o.raced} | ${o.keyed} | ${pct(o.chatCorrect, o.keyed)} | ${pct(o.deciderCorrect, o.deciderKeyed)} | ${pct(o.deciderCorrectAtThreshold, o.deciderAtThreshold)} | ${frac(o.coverage)} | ${frac(o.agreement)} | ${num(o.msP50)} / ${num(o.msP95)} | ${o.unpairedCalls} / ${o.unpairedRecords} |`,
     )
   }
   L.push('')
@@ -441,14 +540,14 @@ export function renderMarkdown(results) {
   L.push('')
 
   L.push('## Per task', '')
-  L.push('| task | arm | rep | ok | ended | wall s | chat steps | tokens in / out | cost | ControlPage | keyed | chat ✓ | decider ✓ | both / chat / dec / neither | agreement | decisions | ms p50 / p95 | coverage | unpaired |')
-  L.push('|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|')
+  L.push('| task | arm | rep | ok | ended | wall s | chat steps | tokens in / out | cost | ControlPage | raced | keyed | chat ✓ | decider ✓ | both / chat / dec / neither | agreement | decisions | ms p50 / p95 | coverage | unpaired |')
+  L.push('|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|')
   for (const r of rows) {
     const s = r.score
     const d = s.decider
     const g = s.grid
     L.push(
-      `| ${r.task} | ${r.arm} | ${r.rep} | ${r.success ? '✓' : '✗'} | ${r.ended} | ${Math.round(r.wallMs / 1000)} | ${r.llmSteps} | ${r.inputTokens} / ${r.outputTokens} | ${usd(r.cost?.high)}${r.cost?.estimated === 'reserve' ? ' (reserve)' : ''} | ${s.controlCalls} | ${s.keyed} | ${s.chatCorrect} | ${d.correct}/${d.keyed} | ${g.both} / ${g.chatOnly} / ${g.deciderOnly} / ${g.neither} | ${frac(d.agreement)} | ${d.decisions}${Object.keys(d.skipped).length ? ` (skipped ${JSON.stringify(d.skipped)})` : ''} | ${num(d.msP50)} / ${num(d.msP95)} | ${frac(d.coverage)} | ${s.unpaired.calls} / ${s.unpaired.records} |`,
+      `| ${r.task} | ${r.arm} | ${r.rep} | ${r.success ? '✓' : '✗'} | ${r.ended} | ${Math.round(r.wallMs / 1000)} | ${r.llmSteps} | ${r.inputTokens} / ${r.outputTokens} | ${usd(r.cost?.high)}${r.cost?.estimated === 'reserve' ? ' (reserve)' : ''} | ${s.controlCalls} | ${s.raced} | ${s.keyed} | ${s.chatCorrect} | ${d.correct}/${d.keyed} | ${g.both} / ${g.chatOnly} / ${g.deciderOnly} / ${g.neither} | ${frac(d.agreement)} | ${d.decisions}${Object.keys(d.skipped).length ? ` (skipped ${JSON.stringify(d.skipped)})` : ''} | ${num(d.msP50)} / ${num(d.msP95)} | ${frac(d.coverage)} | ${s.unpaired.calls} / ${s.unpaired.records} |`,
     )
   }
   L.push('')

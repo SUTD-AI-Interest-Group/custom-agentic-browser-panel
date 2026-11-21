@@ -45,6 +45,12 @@ window.__cart = window.cart()
 function header() {
   return `<header><a href="index.html">Northwind Store</a>
   <form action="search.html" method="get" role="search"><input type="search" name="q" aria-label="Search products" placeholder="Search products"><button type="submit">Search</button></form>
-  <a href="cart.html">Cart (${window.cart().length})</a></header>`
+  <a href="cart.html" id="cart-link">Cart (${window.cart().length})</a></header>`
+}
+// Re-renders the header's cart count; the product page calls it after an add so the header
+// agrees with the page's own "Added to your cart" message instead of staying at "Cart (0)".
+window.refreshCartCount = () => {
+  const link = document.getElementById('cart-link')
+  if (link) link.textContent = `Cart (${window.cart().length})`
 }
 document.addEventListener('DOMContentLoaded', () => document.body.insertAdjacentHTML('afterbegin', header()))

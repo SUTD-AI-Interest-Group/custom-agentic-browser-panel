@@ -16,6 +16,7 @@ document.getElementById('add').onclick = () => {
   for (let i = 0; i < qty; i++) c.push(p.name)
   localStorage.setItem('cart', JSON.stringify(c))
   window.__cart = c
+  window.refreshCartCount()
   document.getElementById('msg').textContent = qty > 1 ? `Added ${qty} to your cart.` : 'Added to your cart.'
   history.replaceState(null, '', location.pathname + location.search + '#added')
 }

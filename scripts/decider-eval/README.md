@@ -7,6 +7,8 @@ built extension through 16 fixture tasks with a real chat model, once per **arm*
 - **`shadow`**: the decider records a decision on every `ControlPage` step.
 - **`assist`**: shadow, plus the decider maps form fields for `AutofillForm`. It runs only on
   the four ◆ form tasks.
+- **`driver`** (stub): seeds `decider.mode = 'driver'`. The mode lands in Task 16, and until then
+  `normalizeDecider` drops it, so the arm runs like `off`. Reporting is completed in Task 17.
 
 Every `ControlPage` step is then scored against an **answer key**: the set of correct next
 actions for the state the agent was in. The chat model's action and the decider's top option
@@ -186,6 +188,13 @@ a sent form from an unsent one.
   - `highlight` and `wait` steps are left unkeyed for both models. They change nothing on the
     page. Highlighting the answer after the task is done is presentation, not a wrong move.
   - `navigate` is scored, and is never in a key.
+  - A step after an `AutofillForm` is keyed against the registry **after** that fill (its reported
+    fills are applied to the last registry the harness saw), when the fill ran in an earlier
+    model step.
+  - A `ControlPage` call issued in the **same model step** as another page-mutating call
+    (`AutofillForm`, or another non-highlight/wait `ControlPage`) is `raced`. The SDK runs
+    them concurrently on one page, so "the state before" has no single value. It is left
+    unkeyed for both models and shown in the `raced` column.
 - **Per task and per arm**, the report shows:
   - success, wall time, chat steps, tokens and cost;
   - decider decisions, ms p50/p95, and coverage and accuracy at the threshold;

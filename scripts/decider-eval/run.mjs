@@ -58,7 +58,7 @@ const OUT = resolve(args.out ?? join(HERE, 'out'))
 const PORT = Number(args.port ?? 8770)
 const TIMEOUT = Number(args['timeout-min'] ?? 8) * 60_000
 
-for (const arm of ARMS) if (!['off', 'shadow', 'assist'].includes(arm)) throw new Error(`unknown arm "${arm}" (off, shadow, assist)`)
+for (const arm of ARMS) if (!['off', 'shadow', 'assist', 'driver'].includes(arm)) throw new Error(`unknown arm "${arm}" (off, shadow, assist, driver)`)
 if (!['lmstudio', 'anthropic'].includes(PROVIDER_KIND)) throw new Error(`unknown provider "${PROVIDER_KIND}" (lmstudio, anthropic)`)
 if (!(REPS >= 1)) throw new Error('--reps must be ≥ 1')
 if (!(CAP > 0)) throw new Error('--cap must be > 0')
@@ -459,7 +459,10 @@ async function runTask(ctx, extId, origin, task, arm, rep, progress = {}) {
     await composer.waitFor({ timeout: 20_000 })
     await sleep(2500)
     const live = await readSettings(panel)
-    if ((live?.decider?.mode ?? 'off') !== arm || live?.selected?.modelId !== MODEL)
+    // The `driver` arm is a stub until Task 16 adds the mode: normalizeDecider drops an unknown
+    // mode, so settings read back without it. Tolerated for that arm only.
+    const modeOk = (live?.decider?.mode ?? 'off') === arm || (arm === 'driver' && live?.decider?.mode === undefined)
+    if (!modeOk || live?.selected?.modelId !== MODEL)
       throw new Error(`settings did not take: decider ${JSON.stringify(live?.decider)}, model ${live?.selected?.modelId}`)
 
     if (DRY) {
