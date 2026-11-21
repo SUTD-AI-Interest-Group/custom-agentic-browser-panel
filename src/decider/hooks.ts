@@ -51,6 +51,7 @@ import {
   parseMapFormRequest,
   selectIndicesOf,
   stepOf,
+  STOPPED,
   type DecisionStep,
   type FillObservation,
   type FormSnap,
@@ -75,9 +76,11 @@ export interface DeciderHooks {
   observeFill(i: { tabId: number; snap: PageSnapshot; session: ControlSession; fields: { index: number; value: string; sensitive?: boolean }[] }): void
   /**
    * Assist: map the form's fields from the user's profile plus the request's own `values`. Awaited
-   * by AutofillForm; resolves a plan or `{ error }` (a short reason), never rejects.
+   * by AutofillForm; resolves a plan or `{ error }` (a short reason), never rejects. When `signal`
+   * aborts (Stop) the wait ends at once with `{ error }`, and a plan that lands later is dropped:
+   * neither returned nor recorded.
    */
-  mapForm(i: { tabId: number; snap: PageSnapshot; session: ControlSession; values: Record<string, string> }): Promise<FillPlan | { error: string }>
+  mapForm(i: { tabId: number; snap: PageSnapshot; session: ControlSession; values: Record<string, string>; signal?: AbortSignal }): Promise<FillPlan | { error: string }>
 }
 
 /** The panel's hooks: DeciderHooks plus the entry points for messages from the worker. */
@@ -208,13 +211,18 @@ const asIndexed = (e: DecisionStep['elements'][number]): IndexedElement => ({ ..
 // ---------------------------------------------------------------------------
 
 /**
- * The record's key for one field's answer: a lookup key NAME (`profile.email`, `request.message`,
- * `leave_empty`), a select option's POSITION (`option.0` — a label can be user data: a saved-address
- * dropdown lists the address), or `tick`/`leave`. Never a value.
+ * The record's key for one field's answer — never a value, never free text:
+ * - a profile key NAME (`profile.email`: snake_case, normalised by profileLookup), or `leave_empty`;
+ * - a request value's POSITION (`request.0`): its name is whatever the chat model chose to call it,
+ *   which can be anything at all (the plan itself keeps the real name, in memory, for the mapping);
+ * - a select option's POSITION (`option.0`): a label can be user data — a saved-address dropdown
+ *   lists the address;
+ * - `tick`/`leave` for a checkbox.
  */
-function fillKey(q: FillQuestion, a: Answer): string {
+function fillKey(q: FillQuestion, a: Answer, requestKeys: string[]): string {
   if (q.field.kind === 'select') return `option.${q.options.indexOf(a.top)}`
   if (q.field.kind === 'checkbox') return a.top === 'true' ? 'tick' : 'leave'
+  if (a.top.startsWith('request.')) return `request.${requestKeys.indexOf(a.top.slice('request.'.length))}`
   return a.top
 }
 
@@ -260,6 +268,16 @@ function decideFailure(err: unknown): string {
 class FillError extends Error {}
 
 const NOTHING_TO_FILL = 'no saved profile details and no values to fill from'
+/** The reply to a request its worker gave up on (decider.mapForm.cancel). */
+const CANCELLED = 'the request was cancelled'
+
+/** Resolves when `signal` aborts (never, without one). */
+const whenAborted = (signal: AbortSignal | undefined): Promise<void> =>
+  new Promise((resolve) => {
+    if (!signal) return
+    if (signal.aborted) return resolve()
+    signal.addEventListener('abort', () => resolve(), { once: true })
+  })
 
 // ---------------------------------------------------------------------------
 // The hooks
@@ -272,6 +290,9 @@ export function createDeciderHooks(deps: DeciderHookDeps): DeciderPanelHooks {
   // A skipped record still needs a backend; the last one this chain saw is the honest guess
   // (summarize() leaves skipped records out of every latency figure regardless).
   let lastBackend: ShadowRecord['backend'] = 'wasm'
+  // The worker's assist requests still being answered, by requestId: a `decider.mapForm.cancel`
+  // flips its flag, and planForm checks it before and after the decision.
+  const pending = new Map<string, { cancelled: boolean }>()
 
   const base = (n: number, at: number, llm: ShadowRecord['llm'], kind: ShadowRecord['kind'] = 'next') => ({
     id: crypto.randomUUID(),
@@ -395,10 +416,11 @@ export function createDeciderHooks(deps: DeciderHookDeps): DeciderPanelHooks {
     typed: Map<number, string> | null,
   ): ShadowRecord {
     const fill: NonNullable<ShadowRecord['fill']> = []
+    const requestKeys = Object.keys(lookup.request)
     for (const q of questions) {
       const a = result.answers[q.name]
       if (!a) continue
-      fill.push({ index: q.field.index, key: fillKey(q, a), p: a.p, llmAgrees: typed ? judgeFill(q, a, lookup, typed.get(q.field.index)) : null })
+      fill.push({ index: q.field.index, key: fillKey(q, a, requestKeys), p: a.p, llmAgrees: typed ? judgeFill(q, a, lookup, typed.get(q.field.index)) : null })
     }
     if (fill.length === 0) throw new Error('the decision answered none of the fields it was asked')
     lastBackend = result.backend
@@ -436,12 +458,16 @@ export function createDeciderHooks(deps: DeciderHookDeps): DeciderPanelHooks {
    * Assist, for both realms: formFields → profileLookup → fillRequest → decide (queued, NOT
    * dropIfBusy: a tool is waiting on this one) → planFill, then a fill record (key names only).
    * `options` is a thunk so that nothing touches the page unless the decider is really in Assist.
+   * `cancelled` is the caller giving up (the worker's cancel, or Stop): checked before the decision
+   * and again after it, so a plan nobody will apply is neither returned nor recorded — assist
+   * stats count only plans that were handed back.
    */
   async function planForm(
     n: number,
     form: { snap: FormSnap },
     options: () => Promise<Record<number, string[]>>,
     values: Record<string, string>,
+    cancelled: () => boolean,
   ): Promise<FillPlan | { error: string }> {
     try {
       if (resolver.settingsMode() !== 'assist') return { error: 'the decision model is not in Assist mode' }
@@ -449,17 +475,20 @@ export function createDeciderHooks(deps: DeciderHookDeps): DeciderPanelHooks {
       const fields = formFields(form.snap.elements.map(asIndexed), await options())
       if (fields.length === 0) return { error: 'no fillable fields on this page' }
       const lookup = await lookupFor(values)
+      if (cancelled()) return { error: CANCELLED }
       if (Object.keys(lookup.profile).length === 0 && Object.keys(lookup.request).length === 0) return { error: NOTHING_TO_FILL }
       const { request, questions } = fillRequest({ goal: deps.currentGoal(), url: form.snap.url, title: form.snap.title, lookup, fields })
       const at = Date.now()
-      let result: DecisionResult | null
+      let result: DecisionResult
       try {
-        result = await engine().decide(request)
-        if (!result) throw new Error('the decision was dropped')
+        // Not dropIfBusy, so the engine never answers null here (only a dropIfBusy call can be
+        // superseded); a null would fail planFill below and come back as an error, unrecorded.
+        result = (await engine().decide(request)) as DecisionResult
       } catch (err) {
-        void putShadow(skippedOf(n, at, null, err, 'fill')).catch(() => {})
-        return { error: decideFailure(err) }
+        if (!cancelled()) void putShadow(skippedOf(n, at, null, err, 'fill')).catch(() => {})
+        return { error: cancelled() ? CANCELLED : decideFailure(err) }
       }
+      if (cancelled()) return { error: CANCELLED }
       const plan = planFill(questions, result.answers, lookup, resolver.threshold())
       try {
         void putShadow(fillRecordOf(n, at, null, questions, result, lookup, plan, null)).catch(() => {})
@@ -490,8 +519,9 @@ export function createDeciderHooks(deps: DeciderHookDeps): DeciderPanelHooks {
     const llm = { op: 'fill' }
     let record: ShadowRecord
     try {
-      const result = await engine().decide(request)
-      if (result === null) return
+      // dropIfBusy, like a step: a shadow never queues behind newer work.
+      const result = await engine().decide(request, { dropIfBusy: true })
+      if (result === null) return // superseded by a newer decision: nothing to compare
       const plan = planFill(questions, result.answers, lookup, resolver.threshold())
       record = fillRecordOf(n, at, llm, questions, result, lookup, plan, new Map(obs.fields.map((f) => [f.index, f.value])))
     } catch (err) {
@@ -547,7 +577,10 @@ export function createDeciderHooks(deps: DeciderHookDeps): DeciderPanelHooks {
         if (!m || m.conversationId !== deps.conversationId) return
         if (m.type === 'decider.granted') sessionGranted()
         else if (m.type === 'decider.fill') shadowFill(() => ({ obs: m.fill, options: Promise.resolve(m.fill.selectOptions) }))
-        else shadow(() => m.step)
+        else if (m.type === 'decider.mapForm.cancel') {
+          const request = pending.get(m.requestId)
+          if (request) request.cancelled = true
+        } else shadow(() => m.step)
       } catch {
         /* additive only */
       }
@@ -568,8 +601,14 @@ export function createDeciderHooks(deps: DeciderHookDeps): DeciderPanelHooks {
     mapForm(i) {
       const n = seq++
       try {
+        if (i.signal?.aborted) return Promise.resolve({ error: STOPPED })
         const snap = formSnapOf(i.snap)
-        return planForm(n, { snap }, () => optionsNow(i.tabId, snap), { ...i.values })
+        const aborted = () => i.signal?.aborted === true
+        // Stop ends the wait at once; planForm, still running, sees the abort and drops its plan.
+        return Promise.race([
+          planForm(n, { snap }, () => optionsNow(i.tabId, snap), { ...i.values }, aborted).then((r) => (aborted() ? { error: STOPPED } : r)),
+          whenAborted(i.signal).then(() => ({ error: STOPPED })),
+        ])
       } catch (err) {
         return Promise.resolve({ error: `the decision model failed: ${err instanceof Error ? err.message : String(err)}`.slice(0, 200) })
       }
@@ -580,12 +619,19 @@ export function createDeciderHooks(deps: DeciderHookDeps): DeciderPanelHooks {
         const m = parseMapFormRequest(msg)
         if (!m || m.conversationId !== deps.conversationId) return undefined
         const n = seq++
+        const request = { cancelled: false }
+        pending.set(m.requestId, request)
         // The worker read the options before it asked; reading them again here could only see
         // a page that has moved on.
-        return planForm(n, { snap: m.snap }, () => Promise.resolve(m.selectOptions), m.values).then(
-          (r): MapFormReply => ('error' in r ? { requestId: m.requestId, error: r.error } : { requestId: m.requestId, plan: r }),
-          (err): MapFormReply => ({ requestId: m.requestId, error: err instanceof Error ? err.message : String(err) }),
-        )
+        return planForm(n, { snap: m.snap }, () => Promise.resolve(m.selectOptions), m.values, () => request.cancelled)
+          .then(
+            (r): MapFormReply =>
+              request.cancelled ? { requestId: m.requestId, error: CANCELLED } : 'error' in r ? { requestId: m.requestId, error: r.error } : { requestId: m.requestId, plan: r },
+            (err): MapFormReply => ({ requestId: m.requestId, error: err instanceof Error ? err.message : String(err) }),
+          )
+          .finally(() => {
+            if (pending.get(m.requestId) === request) pending.delete(m.requestId)
+          })
       } catch {
         return undefined
       }

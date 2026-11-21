@@ -115,6 +115,11 @@ async function recordsAfter(n: number): Promise<ShadowRecord[]> {
 /** Let any pending microtasks / fake-indexeddb ticks run without waiting on a condition. */
 const settle = () => new Promise((r) => setTimeout(r, 30))
 
+/** Resolves with the value, or rejects after `ms` — so a hang fails fast instead of timing out the file. */
+function within<T>(p: Promise<T>, ms = 1000): Promise<T> {
+  return Promise.race([p, new Promise<T>((_, reject) => setTimeout(() => reject(new Error(`still pending after ${ms} ms`)), ms))])
+}
+
 beforeEach(async () => {
   await clearShadow()
   vi.mocked(readViewportText).mockReset()
@@ -817,7 +822,7 @@ describe('form filling', () => {
         { index: 0, key: 'profile.full_name', p: 0.9, llmAgrees: null },
         { index: 1, key: 'profile.email', p: 0.85, llmAgrees: null },
         { index: 2, key: 'option.0', p: 0.95, llmAgrees: null }, // an option's position, never its label
-        { index: 3, key: 'request.message', p: 0.8, llmAgrees: null },
+        { index: 3, key: 'request.0', p: 0.8, llmAgrees: null }, // a request value's position: its name is the chat model's free text
         { index: 4, key: 'tick', p: 0.9, llmAgrees: null },
       ])
       // top3 = the weakest fields: the record's confidence is its least sure field.
@@ -828,6 +833,19 @@ describe('form filling', () => {
       ])
       const stored = JSON.stringify(r)
       for (const needle of FILL_SECRETS) expect(stored, needle).not.toContain(needle)
+    })
+
+    it('records a request value by its position: the name the chat model chose never reaches the store', async () => {
+      const values = { topic: 'Billing', 'note that my card is 4111 1111 1111 1111': 'My last invoice was charged twice.' }
+      const { engine } = fillEngine({ f3: ['request.note that my card is 4111 1111 1111 1111', 0.9] })
+      const plan = (await fillHooks({ engine }).mapForm({ tabId: 7, snap: snapOf(FILL_FORM), session: session(), values })) as FillPlan
+      // The plan keeps the real name — AutofillForm's `mapped` reports it back to the model that chose it…
+      expect(plan.fills).toContainEqual({ index: 3, kind: 'text', key: 'request.note that my card is 4111 1111 1111 1111', value: values['note that my card is 4111 1111 1111 1111'], p: 0.9 })
+      // …but the stored record holds only its position among the request's values.
+      const [r] = await recordsAfter(1)
+      expect(r.fill?.find((f) => f.index === 3)?.key).toBe('request.1')
+      expect(JSON.stringify(r)).not.toContain('4111')
+      expect(JSON.stringify(r)).not.toContain('note that')
     })
 
     it('leaves fields under the threshold, and wouldAct is false when nothing would be filled', async () => {
@@ -907,6 +925,20 @@ describe('form filling', () => {
       const [r] = await recordsAfter(1)
       expect(r).toMatchObject({ kind: 'fill', skipped: 'too-long', tokens: 9100, llm: null })
     })
+
+    it('an abort ends the wait at once, and a plan that arrives after it is neither returned nor recorded', async () => {
+      let answer: (r: DecisionResult) => void = () => {}
+      const { engine: picks } = fillEngine(ASSIST_PICKS)
+      const engine = { warm: vi.fn(async () => {}), decide: vi.fn((req: DecisionRequest) => new Promise<DecisionResult>((r) => { answer = r; void req })) }
+      const controller = new AbortController()
+      const out = fillHooks({ engine } as never).mapForm({ tabId: 7, snap: snapOf(FILL_FORM), session: session(), values: VALUES, signal: controller.signal })
+      await vi.waitFor(() => expect(engine.decide).toHaveBeenCalledTimes(1))
+      controller.abort()
+      expect(await within(out)).toEqual({ error: 'the turn was stopped' })
+      answer((await picks.decide(engine.decide.mock.calls[0][0]))!) // the decision lands afterwards
+      await settle()
+      expect(await listShadow()).toEqual([])
+    })
   })
 
   describe('observeFill (shadow)', () => {
@@ -938,6 +970,20 @@ describe('form filling', () => {
       expect(JSON.stringify(requests[0])).not.toContain('hunter2')
       const stored = JSON.stringify(r)
       for (const needle of FILL_SECRETS) expect(stored, needle).not.toContain(needle)
+    })
+
+    it('asks the engine with dropIfBusy, like a step, and records nothing when a newer decision supersedes it', async () => {
+      const { engine } = fillEngine(SHADOW_PICKS)
+      fillHooks({ engine, mode: 'shadow' }).observeFill({ tabId: 7, snap: snapOf(FILL_FORM), session: session(), fields: LLM_FIELDS })
+      await recordsAfter(1)
+      expect(engine.decide.mock.calls[0][1]).toEqual({ dropIfBusy: true })
+
+      await clearShadow()
+      const dropped = { warm: vi.fn(async () => {}), decide: vi.fn(async () => null) }
+      fillHooks({ engine: dropped as never, mode: 'shadow' }).observeFill({ tabId: 7, snap: snapOf(FILL_FORM), session: session(), fields: LLM_FIELDS })
+      await vi.waitFor(() => expect(dropped.decide).toHaveBeenCalledTimes(1))
+      await settle()
+      expect(await listShadow()).toEqual([])
     })
 
     it('agrees overall when every judged field agrees', async () => {
@@ -992,6 +1038,35 @@ describe('form filling', () => {
       expect((reply as { plan: FillPlan }).plan.fills.map((f) => f.index)).toEqual([0, 1, 2, 3, 4])
       expect(readSelectOptions).not.toHaveBeenCalled() // the worker already read them, before anything changed
       await recordsAfter(1)
+    })
+
+    it('a cancel from the worker (it gave up waiting) drops the pending plan: no plan in the reply, no fill record', async () => {
+      let answer: (r: DecisionResult) => void = () => {}
+      const { engine: picks } = fillEngine(ASSIST_PICKS)
+      const engine = { warm: vi.fn(async () => {}), decide: vi.fn((req: DecisionRequest) => new Promise<DecisionResult>((r) => { answer = r; void req })) }
+      const hooks = fillHooks({ engine } as never)
+      const reply = hooks.answer(mapFormMsg())!
+      await vi.waitFor(() => expect(engine.decide).toHaveBeenCalledTimes(1))
+      hooks.relay({ type: 'decider.mapForm.cancel', conversationId: 'someone-else', requestId: 'req-1' }) // not ours: ignored
+      hooks.relay({ type: 'decider.mapForm.cancel', conversationId: 'conv-1', requestId: 'req-other' }) // not this request
+      hooks.relay({ type: 'decider.mapForm.cancel', conversationId: 'conv-1', requestId: 'req-1' })
+      answer((await picks.decide(engine.decide.mock.calls[0][0]))!)
+      expect(await reply).toEqual({ requestId: 'req-1', error: 'the request was cancelled' })
+      await settle()
+      expect(await listShadow()).toEqual([]) // assist stats never count a plan that was never applied
+    })
+
+    it('a cancel that lands while the profile is still being read stops before deciding', async () => {
+      let lookedUp: (p: Record<string, string>) => void = () => {}
+      vi.mocked(profileLookup).mockReturnValue(new Promise((r) => (lookedUp = r)))
+      const { engine } = fillEngine(ASSIST_PICKS)
+      const hooks = fillHooks({ engine })
+      const reply = hooks.answer(mapFormMsg())!
+      await vi.waitFor(() => expect(profileLookup).toHaveBeenCalledTimes(1))
+      hooks.relay({ type: 'decider.mapForm.cancel', conversationId: 'conv-1', requestId: 'req-1' })
+      lookedUp({ ...PROFILE })
+      expect(await reply).toEqual({ requestId: 'req-1', error: 'the request was cancelled' })
+      expect(engine.decide).not.toHaveBeenCalled()
     })
 
     it('answer(): replies the error with its requestId', async () => {
@@ -1059,6 +1134,15 @@ describe('form filling', () => {
         await settle()
         expect(sendResponse).not.toHaveBeenCalled()
         expect(engine.decide).not.toHaveBeenCalled()
+      })
+
+      it('passes a cancel from our worker to the hooks without holding the channel', async () => {
+        const { engine } = fillEngine(ASSIST_PICKS)
+        const hooks = fillHooks({ engine })
+        const relay = vi.spyOn(hooks, 'relay')
+        const cancel = { type: 'decider.mapForm.cancel', conversationId: 'conv-1', requestId: 'req-1' }
+        expect(deciderRelayListener(hooks, 'conv-1')(cancel, { id: EXT, url: at('background.js') }, vi.fn())).toBeUndefined()
+        expect(relay).toHaveBeenCalledWith(cancel)
       })
 
       it("ignores another conversation's request, so that conversation's own chain can answer it", () => {

@@ -347,8 +347,8 @@ describe('AutofillForm — re-checks isForeground per field, not only at tool en
 // decision that never settles (Review Focus 2: the WASM fallback takes seconds).
 // ---------------------------------------------------------------------------
 
-function buildDeciderTools(opts: { session: ControlSession; decider?: DeciderHooks; requestApproval?: ApprovalGate }) {
-  const pageControl: PageControlGate = {
+function buildDeciderTools(opts: { session: ControlSession; decider?: DeciderHooks; requestApproval?: ApprovalGate; pageControl?: PageControlGate }) {
+  const pageControl: PageControlGate = opts.pageControl ?? {
     requestSession: async () => true,
     session: () => opts.session,
     endSession: () => {
@@ -702,6 +702,85 @@ describe('AutofillForm — assist mode, without fields', () => {
     expect(mapForm).not.toHaveBeenCalled()
   })
 
+  const MAPPING_ENDED = { filled: [], error: 'Page control ended while the form was being mapped; nothing more was filled.' }
+
+  it('fills nothing when page control ends while the form is being mapped (Stop during the wait)', async () => {
+    const session = buildSession()
+    const gate: PageControlGate = {
+      requestSession: async () => true,
+      session: () => (session.active ? session : null),
+      endSession: () => {
+        session.active = false
+      },
+    }
+    // The user pressed Stop while the panel was still mapping: the session ends, then the plan arrives.
+    const mapForm = vi.fn(async () => {
+      gate.endSession()
+      return ASSIST_PLAN
+    })
+    const tools = buildDeciderTools({ session, pageControl: gate, decider: stubHooks({ mode: () => 'assist', mapForm }) })
+    expect(await within((tools.AutofillForm as any).execute({}, {} as any))).toEqual(MAPPING_ENDED)
+    expect(runControlStep).not.toHaveBeenCalled()
+  })
+
+  it('fills nothing when a different session replaced this one during the wait', async () => {
+    const session = buildSession()
+    let current: ControlSession = session
+    const gate: PageControlGate = { requestSession: async () => true, session: () => current, endSession: () => {} }
+    const mapForm = vi.fn(async () => {
+      current = buildSession() // a fresh grant: same tab, same origin, but not the session this call was made in
+      return ASSIST_PLAN
+    })
+    const tools = buildDeciderTools({ session, pageControl: gate, decider: stubHooks({ mode: () => 'assist', mapForm }) })
+    expect(await within((tools.AutofillForm as any).execute({}, {} as any))).toEqual(MAPPING_ENDED)
+    expect(runControlStep).not.toHaveBeenCalled()
+  })
+
+  it('fills nothing when the call is aborted during the wait, and hands mapForm the signal so the wait can end early', async () => {
+    const controller = new AbortController()
+    const mapForm = vi.fn(async (i: { signal?: AbortSignal }) => {
+      expect(i.signal).toBe(controller.signal)
+      controller.abort()
+      return ASSIST_PLAN
+    })
+    const tools = buildDeciderTools({ session: buildSession(), decider: stubHooks({ mode: () => 'assist', mapForm: mapForm as DeciderHooks['mapForm'] }) })
+    expect(await within((tools.AutofillForm as any).execute({}, { abortSignal: controller.signal } as any))).toEqual(MAPPING_ENDED)
+    expect(mapForm).toHaveBeenCalledTimes(1)
+    expect(runControlStep).not.toHaveBeenCalled()
+  })
+
+  it('stops mid-batch when page control ends between fields', async () => {
+    const session = buildSession()
+    vi.mocked(runControlStep).mockImplementationOnce(async () => {
+      session.active = false // Stop, while the first field was being typed
+      return { ok: true, message: 'typed', registry: 'fresh', origin: 'https://example.com' }
+    })
+    const tools = buildDeciderTools({ session, decider: stubHooks({ mode: () => 'assist', mapForm: async () => ASSIST_PLAN }) })
+    expect(await within((tools.AutofillForm as any).execute({}, {} as any))).toEqual({
+      filled: [0],
+      error: 'Page control ended while the form was being filled; nothing more was filled.',
+    })
+    expect(runControlStep).toHaveBeenCalledTimes(1)
+  })
+
+  it('counts a field as filled only when its action succeeded; a failed one is left, reason "failed"', async () => {
+    vi.mocked(runControlStep)
+      .mockResolvedValueOnce({ ok: true, message: 'typed', registry: 'fresh', origin: 'https://example.com' })
+      .mockResolvedValueOnce({ ok: false, message: 'no option matching "Billing" in element 1', registry: 'fresh', origin: 'https://example.com' })
+      .mockRejectedValueOnce(new Error('Frame with ID 0 was removed.'))
+    const tools = buildDeciderTools({ session: buildSession(), decider: stubHooks({ mode: () => 'assist', mapForm: async () => ASSIST_PLAN }) })
+    const result = await within((tools.AutofillForm as any).execute({}, {} as any))
+    expect(result).toMatchObject({
+      filled: [0],
+      left: [
+        { index: 3, reason: 'low-confidence' },
+        { index: 1, reason: 'failed' },
+        { index: 2, reason: 'failed' },
+      ],
+    })
+    expect(runControlStep).toHaveBeenCalledTimes(3)
+  })
+
   it.each([
     ['an error reply', async () => ({ error: 'the decision model is not ready' }), 'the decision model is not ready'],
     ['a rejection', async () => { throw new Error('channel closed') }, 'channel closed'],
@@ -801,6 +880,27 @@ describe('AutofillForm — with fields, behaves as before and shadows the call',
       { action: 'type', index: 0, text: 'Ada Lovelace', clear: true, sensitive: undefined },
       { action: 'type', index: 3, text: '+44 20 7946 0958', clear: true, sensitive: undefined },
     ])
+  })
+
+  it('reports a field whose action failed as left, not filled', async () => {
+    vi.mocked(runControlStep)
+      .mockResolvedValueOnce({ ok: true, message: 'typed', registry: 'fresh', origin: 'https://example.com' })
+      .mockResolvedValueOnce({ ok: false, message: 'element 3 is no longer on the page', registry: 'fresh', origin: 'https://example.com' })
+    const tools = buildDeciderTools({ session: buildSession(), decider: stubHooks() })
+    const result = await within((tools.AutofillForm as any).execute({ fields: FIELDS }, {} as any))
+    expect(result).toMatchObject({ filled: [0], left: [{ index: 3, reason: 'failed' }] })
+  })
+
+  it('stops typing the rest once the call is aborted', async () => {
+    const controller = new AbortController()
+    vi.mocked(runControlStep).mockImplementationOnce(async () => {
+      controller.abort()
+      return { ok: true, message: 'typed', registry: 'fresh', origin: 'https://example.com' }
+    })
+    const tools = buildDeciderTools({ session: buildSession(), decider: stubHooks() })
+    const result = await within((tools.AutofillForm as any).execute({ fields: FIELDS }, { abortSignal: controller.signal } as any))
+    expect(result).toEqual({ filled: [0], error: 'Page control ended while the form was being filled; nothing more was filled.' })
+    expect(runControlStep).toHaveBeenCalledTimes(1)
   })
 
   it('fills as before when observeFill throws', async () => {

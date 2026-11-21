@@ -1727,7 +1727,8 @@ export function createAgentTools(
           'Assist mode, without fields: the values this request needs that are not in the profile, by a short snake_case name — e.g. {"message": "…", "topic": "Billing"}.',
         ),
       }),
-      execute: async ({ fields, values }) => {
+      execute: async ({ fields, values }, options) => {
+        const abortSignal = options?.abortSignal
         // Without fields there is nothing to type unless the decider maps the form — checked
         // before anything else, since it touches nothing.
         let assist = false
@@ -1747,6 +1748,12 @@ export function createAgentTools(
         // this agent does — park it like any other control step.
         if (!(await isForeground(tab))) return parkFor(tab, 'fill in this form')
         const DRIFTED = 'The page is now on a different site; autofill stopped and page control ended for safety.'
+        // Stop (the abort signal), a session ended by anything else, or a different session now
+        // open: this call's grant no longer stands, so nothing more may be typed. Checked after the
+        // mapping wait (up to 90 s) and again before every field — runControlStep itself never
+        // looks at the session, and a write after it ended would not even reach the undo journal.
+        const ended = () => abortSignal?.aborted === true || !session.active || pageControl.session() !== session
+        const ENDED_FILLING = 'Page control ended while the form was being filled; nothing more was filled.'
 
         // The steps the loop below runs. With fields: the model's mapping, typed as before. In
         // Assist: the decider's plan, made from one snapshot — so each step remembers the element
@@ -1767,10 +1774,11 @@ export function createAgentTools(
           }
           let mapped: FillPlan | { error: string }
           try {
-            mapped = await decider!.mapForm({ tabId: tab.id, snap: planSnap, session, values: values ?? {} })
+            mapped = await decider!.mapForm({ tabId: tab.id, snap: planSnap, session, values: values ?? {}, signal: abortSignal })
           } catch (err) {
             mapped = { error: err instanceof Error ? err.message : String(err) }
           }
+          if (ended()) return { filled: [], error: 'Page control ended while the form was being mapped; nothing more was filled.' }
           if ('error' in mapped) return { error: `Could not map fields automatically (${mapped.error}); pass fields explicitly.` }
           plan = mapped
           steps = mapped.fills.map((f) => ({ index: f.index, spec: fillSpecOf(f), planned: { el: planSnap.elements[f.index], kind: f.kind } }))
@@ -1781,6 +1789,7 @@ export function createAgentTools(
         const left: FillPlan['left'] = plan ? [...plan.left] : []
         let observed = false
         for (const step of steps) {
+          if (ended()) return { filled, error: ENDED_FILLING }
           // Re-checked every field, not just at entry: this loop can run
           // long enough for the user to tab away partway through, and the
           // remaining fields would otherwise keep typing into a page nobody
@@ -1859,16 +1868,28 @@ export function createAgentTools(
               continue
             }
           }
-          await runControlStep({
-            tabId: tab.id, spec, snapshot: snap,
-            // AutofillForm rides the same session, so its field writes join the
-            // same journal — a batch fill is exactly the case where "what did it
-            // just put in my form?" is hardest to answer from the transcript.
-            session: pageControl.session() ?? undefined,
-            beforeAct: (i) => (i === undefined ? Promise.resolve() : focusOn(tab.id!, i, undefined)),
-            afterAct: () => pulse(tab.id!),
-          })
-          filled.push(step.index)
+          // Last look before the write: every await above (a card, a snapshot) is time for a Stop.
+          if (ended()) return { filled, error: ENDED_FILLING }
+          let ok = false
+          try {
+            ok = (
+              await runControlStep({
+                tabId: tab.id, spec, snapshot: snap,
+                // AutofillForm rides the same session, so its field writes join the
+                // same journal — a batch fill is exactly the case where "what did it
+                // just put in my form?" is hardest to answer from the transcript.
+                session,
+                beforeAct: (i) => (i === undefined ? Promise.resolve() : focusOn(tab.id!, i, undefined)),
+                afterAct: () => pulse(tab.id!),
+              })
+            ).ok === true
+          } catch {
+            ok = false
+          }
+          // Only a field whose action succeeded is filled; anything else is still empty, and the
+          // model is told so rather than shown it as done.
+          if (ok) filled.push(step.index)
+          else left.push({ index: step.index, reason: 'failed' })
         }
         if (plan) {
           return {
@@ -1887,8 +1908,11 @@ export function createAgentTools(
         }
         return {
           filled,
+          // Only when something failed: the model's own mapping leaves nothing else unfilled.
+          ...(left.length ? { left } : {}),
           note:
             `Filled ${filled.length} field(s) from profile. Profile memories available: ${profileCount}. Submit is a separate, confirmed step.` +
+            (left.length ? ` Could not fill field(s) ${left.map((l) => l.index).join(', ')} (see left); re-read the page and try those again.` : '') +
             (staleSkipped.length
               ? ` Skipped field(s) ${staleSkipped.join(', ')} — the page changed while waiting for approval; re-read the page and try again for those.`
               : ''),

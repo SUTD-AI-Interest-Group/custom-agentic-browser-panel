@@ -230,6 +230,8 @@ export type DeciderRelayMsg =
   | { type: 'decider.granted'; conversationId: string }
   | { type: 'decider.step'; conversationId: string; step: RelayedStep }
   | { type: 'decider.fill'; conversationId: string; fill: FillObservation }
+  /** The worker stopped waiting for this request (timeout, or the call was aborted). */
+  | { type: 'decider.mapForm.cancel'; conversationId: string; requestId: string }
 
 const ACTIONS: ReadonlySet<string> = new Set<ControlAction>(['click', 'type', 'select', 'scroll', 'highlight', 'navigate', 'press', 'wait'])
 const DIRECTIONS: ReadonlySet<string> = new Set(['up', 'down', 'toElement'])
@@ -293,6 +295,10 @@ export function parseDeciderRelay(raw: unknown): DeciderRelayMsg | null {
   if (raw.type === 'decider.fill') {
     const fill = parseFillObservation(raw.fill)
     return fill ? { type: 'decider.fill', conversationId: raw.conversationId, fill } : null
+  }
+  if (raw.type === 'decider.mapForm.cancel') {
+    if (!isStr(raw.requestId) || raw.requestId === '') return null
+    return { type: 'decider.mapForm.cancel', conversationId: raw.conversationId, requestId: raw.requestId }
   }
   if (raw.type !== 'decider.step') return null
   const step = parseStep(raw.step)
@@ -416,6 +422,8 @@ function selectOptionsNow(tabId: number, elements: DecisionElement[]): Promise<R
 }
 
 const NO_PANEL = 'no Lychee panel is open to run the decision model'
+/** mapForm's answer once its caller's signal aborted (Stop). Shared with the panel's own mapForm. */
+export const STOPPED = 'the turn was stopped'
 
 /** The request's own values, within what parseMapFormRequest accepts: anything else is dropped. */
 function requestValues(values: Record<string, string> | undefined): Record<string, string> {
@@ -525,11 +533,16 @@ export function forwardDeciderHooks(deps: {
     // Assist: ask the panel for a plan and wait for it — this one IS awaited, by an AutofillForm
     // call that brought no fields of its own. Every failure resolves `{ error }` (never rejects),
     // and the plan is rebuilt against this worker's own snapshot before anything acts on it.
+    // The wait ends early when `i.signal` aborts (Stop). Whenever this side gives up — abort or
+    // timeout — it tells the panel (`decider.mapForm.cancel`), which then drops the request: no
+    // more work, no reply plan, no fill record for a plan nobody will apply.
     async mapForm(i) {
       try {
         if (settingsModeOf(deps.settings) !== 'assist') return { error: 'the decision model is not in Assist mode' }
+        if (i.signal?.aborted) return { error: STOPPED }
         const snap = formSnapOf(i.snap)
         const selectOptions = await selectOptionsNow(i.tabId, snap.elements)
+        if (i.signal?.aborted) return { error: STOPPED }
         const requestId = crypto.randomUUID()
         const built: MapFormRequest = {
           type: 'decider.mapForm',
@@ -546,18 +559,25 @@ export function forwardDeciderHooks(deps: {
         const msg = parseMapFormRequest(JSON.parse(JSON.stringify(built)))
         if (!msg) return { error: 'the form is too large to send to the decision model' }
         let timer: ReturnType<typeof setTimeout> | undefined
-        const timeout = new Promise<'timeout'>((resolve) => {
+        let onAbort: (() => void) | undefined
+        const gaveUp = new Promise<'timeout' | 'aborted'>((resolve) => {
           timer = setTimeout(() => resolve('timeout'), deps.mapFormTimeoutMs ?? MAP_FORM_TIMEOUT_MS)
+          onAbort = () => resolve('aborted')
+          i.signal?.addEventListener('abort', onAbort, { once: true })
         })
         let reply: unknown
         try {
-          reply = await Promise.race([Promise.resolve().then(() => (deps.request ?? defaultRequest)(msg)), timeout])
+          reply = await Promise.race([Promise.resolve().then(() => (deps.request ?? defaultRequest)(msg)), gaveUp])
         } catch (err) {
           return { error: requestFailure(err) }
         } finally {
           clearTimeout(timer)
+          if (onAbort) i.signal?.removeEventListener('abort', onAbort)
         }
-        if (reply === 'timeout') return { error: 'the decision model did not answer in time' }
+        if (reply === 'timeout' || reply === 'aborted') {
+          post({ type: 'decider.mapForm.cancel', conversationId: deps.conversationId, requestId })
+          return { error: reply === 'timeout' ? 'the decision model did not answer in time' : STOPPED }
+        }
         if (reply === undefined || reply === null) return { error: NO_PANEL }
         if (!isObj(reply) || reply.requestId !== requestId) return { error: 'the panel sent a malformed reply' }
         if (typeof reply.error === 'string') return { error: reply.error.slice(0, 300) }

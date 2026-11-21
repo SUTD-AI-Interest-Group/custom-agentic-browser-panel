@@ -3,7 +3,11 @@ import type { FillQuestion, FormField, Lookup } from './state'
 
 export interface FillPlan {
   fills: { index: number; kind: FormField['kind']; key: string; value: string; p: number }[]
-  left: { index: number; reason: 'low-confidence' | 'leave-empty' | 'already-set' }[]
+  /**
+   * `failed` is never planned: AutofillForm adds it when a planned fill's action did not succeed
+   * on the page, so the model is told that field is still empty.
+   */
+  left: { index: number; reason: 'low-confidence' | 'leave-empty' | 'already-set' | 'failed' }[]
 }
 
 export function planFill(

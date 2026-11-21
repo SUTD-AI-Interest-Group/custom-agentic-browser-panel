@@ -409,11 +409,41 @@ describe('forwardDeciderHooks.mapForm (the service-worker side of assist)', () =
     expect(request.mock.calls[0][0].selectOptions).toEqual({})
   })
 
-  it('gives up after its timeout — 90 s by default, since the panel may first need one chat-model call', async () => {
+  it('gives up after its timeout — 90 s by default, since the panel may first need one chat-model call — and tells the panel', async () => {
     expect(MAP_FORM_TIMEOUT_MS).toBe(90_000)
-    const request = vi.fn(() => new Promise<never>(() => {}))
-    const out = await forwardDeciderHooks({ conversationId: 'c', settings: () => ({ mode: 'assist' }), request, mapFormTimeoutMs: 20 }).mapForm({ ...formInput(), values: {} })
+    const request = vi.fn((_msg: MapFormRequest) => new Promise<never>(() => {}))
+    const send = vi.fn()
+    const out = await forwardDeciderHooks({ conversationId: 'c', settings: () => ({ mode: 'assist' }), request, send, mapFormTimeoutMs: 20 }).mapForm({ ...formInput(), values: {} })
     expect(out).toEqual({ error: expect.stringContaining('did not answer') })
+    // The panel must not count (or keep working on) a plan nobody will apply.
+    expect(send).toHaveBeenCalledWith({ type: 'decider.mapForm.cancel', conversationId: 'c', requestId: request.mock.calls[0][0].requestId })
+  })
+
+  it('an abort ends the wait at once and tells the panel; an abort before asking asks nothing', async () => {
+    const request = vi.fn((_msg: MapFormRequest) => new Promise<never>(() => {}))
+    const send = vi.fn()
+    const hooks = forwardDeciderHooks({ conversationId: 'c', settings: () => ({ mode: 'assist' }), request, send })
+    const controller = new AbortController()
+    const out = hooks.mapForm({ ...formInput(), values: {}, signal: controller.signal })
+    await vi.waitFor(() => expect(request).toHaveBeenCalledTimes(1))
+    controller.abort()
+    expect(await Promise.race([out, new Promise((r) => setTimeout(() => r('still waiting'), 500))])).toEqual({ error: 'the turn was stopped' })
+    expect(send).toHaveBeenCalledWith({ type: 'decider.mapForm.cancel', conversationId: 'c', requestId: request.mock.calls[0][0].requestId })
+
+    request.mockClear()
+    send.mockClear()
+    expect(await hooks.mapForm({ ...formInput(), values: {}, signal: AbortSignal.abort() })).toEqual({ error: 'the turn was stopped' })
+    expect(request).not.toHaveBeenCalled()
+    expect(send).not.toHaveBeenCalled()
+  })
+
+  it('sends no cancel when the panel answered, plan or error', async () => {
+    const send = vi.fn()
+    for (const reply of [(id: string) => ({ requestId: id, plan: PLAN }), (id: string) => ({ requestId: id, error: 'the decision model is not ready' })]) {
+      const request = answering((msg) => reply(msg.requestId))
+      await forwardDeciderHooks({ conversationId: 'c', settings: () => ({ mode: 'assist' }), request, send }).mapForm({ ...formInput(), values: {} })
+    }
+    expect(send).not.toHaveBeenCalled()
   })
 
   it.each([
@@ -548,6 +578,22 @@ describe('forwardDeciderHooks.observeFill (shadowing a call that brought its own
     await vi.waitFor(() => expect(send).toHaveBeenCalledTimes(1))
     expect((send.mock.calls[0] as unknown as [{ fill: { selectOptions: unknown } }])[0].fill.selectOptions).toEqual({})
     await new Promise((r) => setTimeout(r, 10)) // an unhandled rejection here fails the run
+  })
+})
+
+describe('parseDeciderRelay — decider.mapForm.cancel', () => {
+  it('accepts a cancel naming its request, and rebuilds it', () => {
+    expect(parseDeciderRelay({ type: 'decider.mapForm.cancel', conversationId: 'c', requestId: 'r1', extra: 1 })).toEqual({
+      type: 'decider.mapForm.cancel', conversationId: 'c', requestId: 'r1',
+    })
+  })
+
+  it.each([
+    ['no requestId', { type: 'decider.mapForm.cancel', conversationId: 'c' }],
+    ['an empty requestId', { type: 'decider.mapForm.cancel', conversationId: 'c', requestId: '' }],
+    ['a requestId that is not a string', { type: 'decider.mapForm.cancel', conversationId: 'c', requestId: 7 }],
+  ])('rejects %s', (_label, raw) => {
+    expect(parseDeciderRelay(raw)).toBeNull()
   })
 })
 
