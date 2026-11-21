@@ -57,7 +57,35 @@ const sameAction = (call, rec) =>
   !!rec.llm && rec.llm.op === call.input?.action && (rec.llm.index ?? null) === (call.input?.index ?? null)
 
 /**
- * Pair ControlPage calls (conversation order) with `kind: 'next'` shadow records (seq order).
+ * Shadow records in step order. `seq` restarts with every continuation chain, so it orders
+ * records only within one chain; `at` (taken synchronously as the hook is handed the step) orders
+ * them across chains, with `seq` breaking a same-millisecond tie.
+ */
+export const inStepOrder = (records) => [...records].sort((a, b) => (a.at ?? 0) - (b.at ?? 0) || (a.seq ?? 0) - (b.seq ?? 0))
+
+/**
+ * Steps the hooks numbered but never recorded (a decision superseded under dropIfBusy), summed
+ * over chains. A chain starts wherever `seq` stops increasing; within one, seqs count from 0. A
+ * drop after a chain's last record is invisible here (it shows up as an unpaired call instead).
+ */
+export function seqGapsOf(records) {
+  let gaps = 0
+  let max = -1
+  let count = 0
+  for (const r of inStepOrder(records).filter((x) => Number.isInteger(x.seq))) {
+    if (count && r.seq <= max) {
+      gaps += max + 1 - count
+      max = -1
+      count = 0
+    }
+    max = Math.max(max, r.seq)
+    count++
+  }
+  return count ? gaps + max + 1 - count : gaps
+}
+
+/**
+ * Pair ControlPage calls (conversation order) with `kind: 'next'` shadow records (step order).
  * Every call that reached the decider hook has exactly one record, written from that call's own
  * spec, so the pairing is the longest order-preserving match on (op, index). A call that returned
  * before the hook (no session yet, tab not in front) has none; on a tie the LATER call is paired,
@@ -65,7 +93,7 @@ const sameAction = (call, rec) =>
  * @returns {{ recFor: (object|null)[], unpairedRecords: object[] }}
  */
 export function pairCalls(calls, records) {
-  const recs = [...records].sort((a, b) => a.seq - b.seq || a.at - b.at)
+  const recs = inStepOrder(records)
   const n = calls.length
   const m = recs.length
   const dp = Array.from({ length: n + 1 }, () => new Array(m + 1).fill(0))
@@ -219,16 +247,12 @@ export function scoreRow(row, threshold = DEFAULT_THRESHOLD) {
   })
   const decided = next.filter((r) => !r.skipped && r.top3?.length)
   const ms = decided.map((r) => r.ms)
-  // The hooks number every step they are handed (from 0) before deciding, and write nothing for
-  // a decision superseded under dropIfBusy, so a missing seq is a dropped step. (A drop after the
-  // last record is invisible here; it shows up as an unpaired call instead.)
-  const seqs = new Set((row.shadow ?? []).map((r) => r.seq).filter(Number.isInteger))
-  const seqGaps = seqs.size ? Math.max(...seqs) + 1 - seqs.size : 0
+  const seqGaps = seqGapsOf(row.shadow ?? [])
   const lonely = steps.filter((s, i) => !recFor[i] && !returnedBeforeHook(s.output))
+  const reachedHook = steps.filter((s) => !returnedBeforeHook(s.output)).length
   const agreeable = next.filter((r) => r.agree === true || r.agree === false)
-  const mapped = (row.tools ?? [])
-    .filter((t) => t.toolName === 'AutofillForm' && Array.isArray(t.output?.mapped))
-    .flatMap((t) => t.output.mapped.map((m) => m.key))
+  const autofill = autofillCalls(row.tools)
+  const mapped = autofill.flatMap((a) => a.mapped)
   const fields = fieldScores(row.task, row.fields)
   return {
     controlCalls: steps.length,
@@ -261,11 +285,38 @@ export function scoreRow(row, threshold = DEFAULT_THRESHOLD) {
     unpaired: recording ? { calls: lonely.length, records: unpairedRecords.length } : { calls: 0, records: 0 },
     unpairedCallErrors: recording ? lonely.map((s) => s.output?.error ?? s.output?.message ?? null) : [],
     beforeHookCalls: recording ? steps.filter((s, i) => !recFor[i] && returnedBeforeHook(s.output)).length : 0,
+    reachedHookCalls: reachedHook,
+    // The silent failure this harness exists to catch (a stale service worker, a decider that
+    // never became ready): page steps reached the decider path and not one record was written.
+    missingShadow: recording && reachedHook > 0 && (row.shadow ?? []).length === 0,
     fields,
     fieldAccuracy: fields ? Object.values(fields).filter((f) => f.ok).length / Object.keys(fields).length : null,
+    autofill,
+    assistUsed: autofill.some((a) => a.withoutFields && !a.error),
     mapped,
     steps: scored,
   }
+}
+
+/**
+ * Each AutofillForm call: whether it left `fields` out (the assist path, where the decider maps
+ * the form), the names of the `values` it passed, and what its result reported (mapped keys,
+ * left reasons, how many fields were filled, an error).
+ */
+export function autofillCalls(tools) {
+  return (tools ?? [])
+    .filter((t) => t.toolName === 'AutofillForm')
+    .map((t) => {
+      const out = t.output && typeof t.output === 'object' ? t.output : {}
+      return {
+        withoutFields: !Array.isArray(t.input?.fields),
+        values: Object.keys(t.input?.values ?? {}),
+        mapped: Array.isArray(out.mapped) ? out.mapped.map((m) => m.key) : [],
+        left: Array.isArray(out.left) ? out.left.map((l) => ({ index: l.index, reason: l.reason })) : [],
+        filled: Array.isArray(out.filled) ? out.filled.length : typeof out.filled === 'number' ? out.filled : 0,
+        error: out.error ?? (t.output === undefined ? 'no result' : null),
+      }
+    })
 }
 
 // ── aggregation ───────────────────────────────────────────────────────────────────────────────
@@ -326,6 +377,20 @@ export function summarize(rows) {
     byArm[arm] = { overall: aggregate(mine), byFamily: Object.fromEntries(families.map((f) => [f, aggregate(mine.filter((r) => r.family === f))])) }
   }
   return byArm
+}
+
+/**
+ * The run in one line, per arm: decider accuracy vs the key at p ≥ threshold, chat accuracy vs
+ * the key, coverage, and decider ms p50/p95.
+ */
+export function summaryLine(summary, threshold = DEFAULT_THRESHOLD) {
+  const p = (n, d) => (d ? `${Math.round((100 * n) / d)}% (${n}/${d})` : '—')
+  const parts = Object.entries(summary).map(([arm, { overall: o }]) => {
+    const dec = arm === 'off' ? 'decider off' : `decider@p≥${threshold} ${p(o.deciderCorrectAtThreshold, o.deciderAtThreshold)}`
+    const cov = o.coverage === null ? '—' : `${Math.round(100 * o.coverage)}%`
+    return `${arm}: ${dec}, chat ${p(o.chatCorrect, o.keyed)}, coverage ${cov}, decider ms p50/p95 ${o.msP50 ?? '—'}/${o.msP95 ?? '—'}`
+  })
+  return `summary — ${parts.join(' · ') || 'no rows'}`
 }
 
 // ── rendering ─────────────────────────────────────────────────────────────────────────────────
@@ -402,6 +467,21 @@ export function renderMarkdown(results) {
     L.push('')
   }
 
+  const assistRows = rows.filter((r) => r.arm === 'assist')
+  if (assistRows.length) {
+    L.push('## Assist: AutofillForm calls', '')
+    L.push('| task | rep | AutofillForm without fields | calls | values passed | mapped keys | left (index: reason) | filled | errors |')
+    L.push('|---|---|---|---|---|---|---|---|---|')
+    for (const r of assistRows) {
+      const a = r.score.autofill ?? []
+      const all = (f) => a.flatMap(f)
+      L.push(
+        `| ${r.task} | ${r.rep} | ${r.score.assistUsed ? 'yes' : a.some((x) => x.withoutFields) ? 'tried (error)' : '**no**'} | ${a.length} | ${cell(all((x) => x.values).join(', ') || '—')} | ${cell(all((x) => x.mapped).join(', ') || '—')} | ${cell(all((x) => x.left.map((l) => `${l.index}: ${l.reason}`)).join(', ') || '—')} | ${a.reduce((s, x) => s + x.filled, 0)} | ${cell(all((x) => (x.error ? [x.error] : [])).join('; ') || '—')} |`,
+      )
+    }
+    L.push('')
+  }
+
   const misses = rows.flatMap((r) =>
     r.score.steps
       .filter((s) => s.key.length && (s.chatOk === false || s.deciderOk === false))
@@ -430,6 +510,13 @@ export function renderMarkdown(results) {
           `${r.score.unpaired.records} record(s) without a call, ${r.score.decider.seqGaps} seq gap(s) (decisions superseded under dropIfBusy); ` +
           `${r.score.beforeHookCalls} more call(s) returned before the hook (not counted)`,
       )
+    L.push('')
+  }
+
+  const broken = rows.filter((r) => r.ended === 'harness-error')
+  if (broken.length) {
+    L.push('## Harness errors', '')
+    for (const r of broken) L.push(`- **${r.task}/${r.arm}/${r.rep}: ${cell(r.error ?? 'harness error')}**${r.success ? ' (the task itself succeeded)' : ''}`)
     L.push('')
   }
 

@@ -7,19 +7,20 @@
 //
 // LM Studio (google/gemma-4-26b-a4b at 127.0.0.1:1234) is the default, per CLAUDE.md.
 // --provider anthropic is the explicit opt-in: claude-sonnet-5-5 with the key read from
-// ~/.config/lychee-eval/key (never printed), under a spend cap; the run's `finally` overwrites
-// `settings` with the LM Studio provider so the key never persists in the profile.
+// ~/.config/lychee-eval/key (never printed), under a spend cap.
 //
-// The profile is persistent (~/.cache/lychee-decider-eval/profile) so the ~4.6 GB OPFS model
-// import happens once. See README.md.
+// Every run uses a FRESH temporary Chrome profile, deleted in `finally`, and imports the model
+// (~4.6 GB, ~10–15 s from a local server) through the Experimental tab. A persistent profile kept
+// a stale extension service worker across relaunches on a rebuilt dist/ (the panel pages updated,
+// the worker did not), and shadow records silently dropped to zero. See README.md.
 import { chromium } from 'playwright'
-import { createReadStream, existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
+import { createReadStream, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:http'
-import { homedir } from 'node:os'
+import { homedir, tmpdir } from 'node:os'
 import { dirname, extname, join, normalize, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { TASK_IDS } from './keys.mjs'
-import { DEFAULT_THRESHOLD, scoreRow, summarize, taskCost, usageOf, writeReport } from './report.mjs'
+import { DEFAULT_THRESHOLD, scoreRow, summarize, summaryLine, taskCost, usageOf, writeReport } from './report.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const REPO = resolve(HERE, '..', '..')
@@ -51,9 +52,8 @@ const PROVIDER_KIND = args.provider ?? (process.env.PROVIDER === 'anthropic' ? '
 const CAP = Number(args.cap ?? 10)
 const THRESHOLD = args.threshold === undefined ? undefined : Number(args.threshold)
 const DRY = !!args['dry-run']
-const PROFILE = resolve(args.profile ?? join(homedir(), '.cache', 'lychee-decider-eval', 'profile'))
 const DIST = resolve(args.dist ?? join(REPO, 'dist'))
-const EXPORT_DIR = resolve(args['export-dir'] ?? join(homedir(), 'lychee-decider', 'strands-decider-E2B-gemma4-v2-2611'))
+const MODEL_DIR = resolve(args['model-dir'] ?? join(homedir(), 'lychee-decider', 'strands-decider-E2B-gemma4-v2-2611'))
 const OUT = resolve(args.out ?? join(HERE, 'out'))
 const PORT = Number(args.port ?? 8770)
 const TIMEOUT = Number(args['timeout-min'] ?? 8) * 60_000
@@ -65,6 +65,8 @@ if (!(CAP > 0)) throw new Error('--cap must be > 0')
 if (THRESHOLD !== undefined && !(THRESHOLD >= 0.4 && THRESHOLD <= 0.95)) throw new Error('--threshold must be within 0.4–0.95')
 if (ONLY) for (const id of ONLY) if (!TASK_IDS.includes(id)) throw new Error(`unknown task "${id}"; known: ${TASK_IDS.join(', ')}`)
 if (!existsSync(join(DIST, 'manifest.json'))) throw new Error(`no built extension at ${DIST} — run npm run build`)
+if (!existsSync(join(MODEL_DIR, 'manifest.json'))) throw new Error(`no exported model at ${MODEL_DIR} (manifest.json missing) — pass --model-dir`)
+if (args.profile || args['export-dir']) throw new Error('--profile and --export-dir are gone: every run uses a fresh profile; the model comes from --model-dir')
 
 // ── providers ─────────────────────────────────────────────────────────────────────────────────
 const LMSTUDIO = { id: 'p1', kind: 'lmstudio', name: 'LM Studio', baseURL: 'http://127.0.0.1:1234/v1', apiKey: 'x', models: ['google/gemma-4-26b-a4b'] }
@@ -291,7 +293,7 @@ const modelStatus = (page) => page.evaluate(() => chrome.storage.local.get('deci
 
 /** Import the decider into OPFS through the Experimental tab, unless it is already `ready`. */
 async function ensureModel(ctx, panelUrl) {
-  const manifest = JSON.parse(readFileSync(join(EXPORT_DIR, 'manifest.json'), 'utf8'))
+  const manifest = JSON.parse(readFileSync(join(MODEL_DIR, 'manifest.json'), 'utf8'))
   const page = await ctx.newPage()
   try {
     await page.goto(panelUrl)
@@ -300,8 +302,8 @@ async function ensureModel(ctx, panelUrl) {
       log(`decider model ready (${before.modelId}, imported ${new Date(before.importedAt).toISOString()})`)
       return before
     }
-    log(`decider model ${before ? before.state : 'absent'} — importing ${EXPORT_DIR} through the Experimental tab`)
-    const { server, port } = await serveDir(EXPORT_DIR, 0, { cors: true })
+    log(`decider model ${before ? before.state : 'absent'} — importing ${MODEL_DIR} through the Experimental tab`)
+    const { server, port } = await serveDir(MODEL_DIR, 0, { cors: true })
     try {
       await page.reload()
       await page.locator('button[title="Settings"]').click({ timeout: 15_000 })
@@ -388,7 +390,8 @@ const readStores = (panel, since, promptHead) =>
         }
       const steps = traces.flatMap((t) => [...(t.steps ?? [])].sort((a, b) => a.index - b.index))
       const traceCalls = steps.flatMap((s) => (s.toolCalls ?? []).map((c) => ({ name: c.name, ok: c.ok, at: s.startedAt })))
-      return { conversationIds: [...convIds], tools, reply, steps, traceCalls, shadow: shadow.sort((a, b) => a.seq - b.seq || a.at - b.at) }
+      // Step order: `seq` restarts per continuation chain, `at` does not (report.mjs inStepOrder).
+      return { conversationIds: [...convIds], tools, reply, steps, traceCalls, shadow: shadow.sort((a, b) => a.at - b.at || a.seq - b.seq) }
     },
     { since, promptHead },
   )
@@ -553,9 +556,38 @@ async function runTask(ctx, extId, origin, task, arm, rep, progress = {}) {
 // ── main ──────────────────────────────────────────────────────────────────────────────────────
 const startedAt = new Date().toISOString()
 const tasks = TASKS.filter((t) => !ONLY || ONLY.includes(t.id))
-const needsModel = ARMS.some((a) => a !== 'off')
 log(`provider ${PROVIDER.kind} (${MODEL}); arms ${ARMS.join(',')}; ${tasks.length} task(s) × ${REPS} rep(s); cap $${CAP}${DRY ? '; DRY RUN' : ''}`)
-log(`profile ${PROFILE}; dist ${DIST}`)
+
+// Fresh profile per run (see the header). Each one holds a 4.6 GB model copy, so the profiles of
+// earlier runs that died before their `finally` (SIGKILL, a crash) are swept here: a profile
+// whose owner pid is gone is garbage.
+const PROFILE_PREFIX = 'lychee-decider-eval-'
+const OWNER_FILE = '.eval-owner'
+function sweepStaleProfiles() {
+  for (const name of readdirSync(tmpdir()).filter((d) => d.startsWith(PROFILE_PREFIX))) {
+    const dir = join(tmpdir(), name)
+    let pid = NaN
+    try {
+      pid = Number(readFileSync(join(dir, OWNER_FILE), 'utf8'))
+    } catch {
+      /* no owner file: a profile from before it was written, or a half-made one */
+    }
+    let alive = false
+    try {
+      alive = Number.isInteger(pid) && pid > 0 && (process.kill(pid, 0), true)
+    } catch (e) {
+      alive = e?.code === 'EPERM'
+    }
+    if (alive) continue
+    rmSync(dir, { recursive: true, force: true, maxRetries: 3, retryDelay: 300 })
+    log(`removed a stale eval profile ${dir}`)
+  }
+}
+const removeProfile = () => rmSync(PROFILE, { recursive: true, force: true, maxRetries: 5, retryDelay: 500 })
+sweepStaleProfiles()
+const PROFILE = mkdtempSync(join(tmpdir(), PROFILE_PREFIX))
+writeFileSync(join(PROFILE, OWNER_FILE), String(process.pid))
+log(`fresh profile ${PROFILE}; dist ${DIST}; model ${MODEL_DIR}`)
 
 const { server: fixtureServer, port } = await serveDir(FIX, PORT)
 const origin = `http://127.0.0.1:${port}`
@@ -573,13 +605,13 @@ try {
   })
 } catch (e) {
   fixtureServer.close()
-  const busy = /ProcessSingleton|already in use|SingletonLock/i.test(String(e?.message))
-  throw new Error(busy ? `the profile ${PROFILE} is in use by another Chrome — close it, or pass --profile <dir>` : String(e?.message ?? e))
+  removeProfile()
+  throw e
 }
 const onSignal = () => {
   if (interrupted) process.exit(130)
   interrupted = true
-  log('interrupted — finishing the current step, then scrubbing settings (Ctrl-C again to force)')
+  log('interrupted — finishing the current step, then closing the browser and deleting the profile (Ctrl-C again to force)')
 }
 process.on('SIGINT', onSignal)
 process.on('SIGTERM', onSignal)
@@ -591,16 +623,19 @@ let capReached = false
 let deciderModel = null
 let extId
 let fatal = null
+let noShadow = 0
 try {
   extId = await findExtensionId(ctx)
   const panelUrl = `chrome-extension://${extId}/sidepanel.html`
   await onQuietPage(ctx, extId, async (p) => {
-    // Scrub first: a crashed earlier anthropic run may have left its key here.
+    // Onboarded LM Studio settings, so the panel opens to the chat and the Settings button.
     await writeSettings(p, settingsFor(LMSTUDIO, 'off'))
     await seedMemories(p)
   })
-  log(`extension ${extId}; settings scrubbed to LM Studio; ${PROFILE_MEMORIES.length} profile memories seeded`)
-  if (needsModel) deciderModel = await ensureModel(ctx, panelUrl)
+  log(`extension ${extId}; LM Studio settings; ${PROFILE_MEMORIES.length} profile memories seeded`)
+  // Every arm, `off` included: the arms then differ only in `decider.mode`, and `off` checks
+  // that an imported-but-off model changes nothing. A failed import is fatal (no silent zeros).
+  deciderModel = await ensureModel(ctx, panelUrl)
 
   outer: for (let rep = 1; rep <= REPS; rep++)
     for (const task of tasks)
@@ -638,6 +673,20 @@ try {
         row.score = scoreRow(row, THRESHOLD ?? DEFAULT_THRESHOLD)
         rows.push(row)
         const s = row.score
+        if (s.missingShadow) {
+          row.ended = 'harness-error'
+          row.error = 'no shadow records'
+          noShadow++
+          log(`ERROR ${task.id}/${arm}/${rep}: ${s.reachedHookCalls} ControlPage call(s) reached the decider path and NO shadow record was written — the decider is not recording (stale service worker? model not ready?)`)
+        }
+        if (arm === 'assist') {
+          const a = s.autofill
+          log(
+            `  assist: AutofillForm without fields ${s.assistUsed ? 'called' : a.some((x) => x.withoutFields) ? 'called but errored' : 'NOT called'}` +
+              (a.length ? `; mapped [${a.flatMap((x) => x.mapped).join(', ')}]; left [${a.flatMap((x) => x.left.map((l) => `${l.index}:${l.reason}`)).join(', ')}]` : '') +
+              (a.some((x) => x.error) ? `; errors: ${a.filter((x) => x.error).map((x) => x.error).join(' | ')}` : ''),
+          )
+        }
         log(
           `${task.id}/${arm}/${rep}: success=${row.success} ${row.ended} ${Math.round(row.wallMs / 1000)}s steps=${row.llmSteps} ` +
             `ControlPage=${s.controlCalls} keyed=${s.keyed} chat✓=${s.chatCorrect} decider✓=${s.decider.correct}/${s.decider.keyed} ` +
@@ -660,11 +709,17 @@ try {
       if (JSON.stringify(kinds) !== '["lmstudio"]') throw new Error(`providers after scrub: ${JSON.stringify(kinds)}`)
       log('settings scrubbed: the Anthropic key is no longer in the profile')
     } catch (e) {
-      log(`WARNING: could not scrub the Anthropic key from ${PROFILE} (${e?.message ?? e}); the next run scrubs it at startup, or delete the profile`)
+      log(`WARNING: could not scrub the Anthropic key (${e?.message ?? e}); the profile is deleted next regardless`)
     }
   }
   await ctx.close().catch(() => {})
   fixtureServer.close()
+  try {
+    removeProfile()
+    log(`deleted the profile ${PROFILE}`)
+  } catch (e) {
+    log(`WARNING: could not delete ${PROFILE} (${e?.message ?? e}) — remove it by hand; it holds a 4.6 GB model copy${PROVIDER.kind === 'anthropic' ? ' and may hold the API key' : ''}`)
+  }
 }
 
 if (DRY) {
@@ -682,5 +737,7 @@ if (DRY) {
   const dir = writeReport(results, OUT)
   log(`report: ${join(dir, 'report.md')}`)
   if (capReached) log('cap reached')
+  if (noShadow) log(`ERROR: ${noShadow} row(s) marked harness-error: no shadow records`)
+  console.log(summaryLine(results.summary, results.meta.threshold))
 }
-process.exit(fatal ? 1 : interrupted ? 130 : 0)
+process.exit(fatal || noShadow ? 1 : interrupted ? 130 : 0)

@@ -22,10 +22,21 @@ node --test scripts/decider-eval/          # the keys and the scoring, no browse
 
 Other flags:
 
-- `--profile <dir>`, `--dist <dir>`, `--export-dir <dir>`, `--out <dir>`;
+- `--model-dir <dir>`: the exported model (default
+  `~/lychee-decider/strands-decider-E2B-gemma4-v2-2611`);
+- `--dist <dir>`, `--out <dir>`;
 - `--port 8770` (the fixture server);
 - `--timeout-min 8` (per task);
 - `--key-file <path>`, which overrides the Anthropic key location.
+
+The run ends by printing one line. Per arm, it gives:
+
+- decider accuracy against the key at p ≥ threshold;
+- chat accuracy against the key;
+- coverage;
+- decider ms p50/p95.
+
+The exit code is non-zero after a fatal error or any "no shadow records" row.
 
 `CHROME_BIN` selects the Chrome for Testing binary. Without it, the run uses Playwright's own
 build, or else the newest `chromium-*` in the Playwright cache. Branded Chrome ignores
@@ -49,28 +60,39 @@ per task the settings, fixture tab, panel and composer.
   - Sometimes a prompt went out but no trace usage can be read back: the harness errored, the
     browser died, or a stopped turn wrote no trace. Then the cap is charged a flat **$0.50
     reserve**, and the row's cost is labelled `estimated: 'reserve'`.
-  - The run's `finally` overwrites `settings` with the LM Studio provider, so the key does not
-    persist in the profile. Every run also scrubs at startup, which covers a run that crashed.
+  - The run's `finally` overwrites `settings` with the LM Studio provider, then deletes the whole
+    profile (below).
 
-## The profile
+## The profile: fresh every run
 
-The Chrome profile persists at `~/.cache/lychee-decider-eval/profile`, so the ~4.6 GB OPFS model
-import happens only once. On startup the run:
+Every run creates a temporary Chrome profile (`$TMPDIR/lychee-decider-eval-*`) and deletes it in
+`finally`. A persistent profile was tried first. It kept a **stale extension service worker**
+across `--load-extension` relaunches on a rebuilt `dist/`: the panel pages updated, the worker
+did not, and shadow records silently dropped to zero.
 
-1. scrubs `settings` to LM Studio;
-2. replaces every memory with the five Task 11 profile memories (Ada Lovelace's name, emails,
-   phone and address), and marks a dream as just done so consolidation does not rewrite them
-   mid-run;
-3. for `shadow`/`assist`, checks `chrome.storage.local.deciderModel`. If it is not `ready`, the
-   run serves `--export-dir` (default
-   `~/lychee-decider/strands-decider-E2B-gemma4-v2-2611`) on a local CORS server and imports it
-   through **Settings → Experimental → Import from URL…**.
+Each profile holds a 4.6 GB model copy. A profile whose owner pid (recorded in
+`.eval-owner`) is gone is swept at the next startup, which covers a run that was killed.
+
+On startup the run:
+
+1. writes onboarded LM Studio settings;
+2. seeds the five Task 11 profile memories (Ada Lovelace's name, emails, phone and address),
+   and marks a dream as just done so consolidation does not rewrite them mid-run;
+3. serves `--model-dir` on a local CORS server and imports it through **Settings →
+   Experimental → Import from URL…** (~10–15 s). It then waits for `deciderModel` to be
+   `ready`. A failed import is fatal: the run stops with exit 1.
+
+The import happens for every arm, `off` included. The arms then differ only in
+`decider.mode`, and `off` shows that an imported but switched-off model changes nothing.
 
 Each task then gets fresh settings (provider, plus `decider.mode` for the arm), a fresh fixture
 tab and a fresh panel. Approval cards are clicked automatically.
 
-The profile must load the same `dist/` path every time: the extension id, and with it the OPFS
-origin, is derived from that path. Only one Chrome can hold the profile at a time.
+**Fail loudly.** Sometimes, in a `shadow`/`assist` row, a `ControlPage` call reached the decider
+path (it did not return before the hook, so a page-control session was granted) and yet no
+shadow record was written. That row is marked `ended: 'harness-error'` with
+`error: 'no shadow records'`, logged as an ERROR, listed under "Harness errors", and the run exits
+non-zero.
 
 ## Tasks
 
@@ -137,11 +159,14 @@ a sent form from an unsent one.
   - The **URL** is the fixture tab's URL, taken from Playwright `framenavigated` events, at the
     start of the model step that made the call. Trace step *k*'s calls are mapped to
     conversation call *k*. If the counts differ, the URL falls back to the latest output URL.
-- **Pairing.** `kind: 'next'` shadow records pair with calls in `seq` order, by the
-  longest order-preserving match on `(op, index)` (an LCS), not by raw `seq`.
-  - Raw `seq` cannot be used directly. The hooks number only the calls that reach them, and they
-    also number steps whose decision was superseded and never written. So `seq` *k* is not
-    conversation call *k*.
+- **Pairing.** `kind: 'next'` shadow records pair with calls in step order, by the longest
+  order-preserving match on `(op, index)` (an LCS), not by raw `seq`.
+  - Records are put in step order by `at`, with `seq` only breaking ties. `seq` restarts with
+    every continuation chain, so it orders records within one chain only. `at` is taken
+    synchronously when the hook is handed the step.
+  - Raw `seq` cannot be used directly either. The hooks number only the calls that reach them,
+    and they also number steps whose decision was superseded and never written. So `seq` *k* is
+    not conversation call *k*.
   - Each record's `llm` is the call's own `(op, index)`, so matching on it, in order, recovers
     the pairing despite both kinds of gap.
   - A call that returned before the decider hook has no record by design. Examples are no
@@ -152,6 +177,10 @@ a sent form from an unsent one.
   - `unpaired` counts the other calls without a record, and records without a call.
   - The hooks number every step they are handed, and write nothing for a decision superseded
     under `dropIfBusy`. A missing `seq` is therefore reported as a seq gap, or dropped step.
+    Gaps are counted per chain; a chain starts wherever `seq` stops increasing. Fill records
+    share the counter.
+  - Skipped records (`skipped: 'too-long' | 'error'`) pair like any other record, but are not
+    scored as decisions.
 - **Correctness.** The chat model is correct when its `(op, index)` is in the key. The decider
   is correct when its top-1 is in the key.
   - `highlight` and `wait` steps are left unkeyed for both models. They change nothing on the
@@ -164,6 +193,12 @@ a sent form from an unsent one.
   - calibration by confidence bucket;
   - for form tasks, per-field final-value correctness (`window.__fields()`) and the
     `AutofillForm` `mapped` keys;
+  - for `assist` rows, whether `AutofillForm` was called **without `fields`** (the assist path).
+    The "Assist: AutofillForm calls" table also gives the names of the `values` passed, the
+    mapped keys and the `left` reasons (index: reason), along with filled counts and errors.
+    Mapped keys come from the tool result: `profile.<key>`, `request.<n>` (a request value by
+    position), `option.<n>` (a select option by position) or `tick`. The run also logs this per
+    assist task;
   - every keyed step where either model was wrong, with its URL and key.
 
 Output goes to `scripts/decider-eval/out/<ISO-time>/{results.json,report.md}` (git-ignored).

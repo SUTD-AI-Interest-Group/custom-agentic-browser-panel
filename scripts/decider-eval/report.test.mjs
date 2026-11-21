@@ -1,7 +1,9 @@
 // Pairing, step states, cost and the 2×2: node --test scripts/decider-eval/report.test.mjs
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { controlSteps, estimateCost, pairCalls, renderMarkdown, RESERVE_USD, scoreRow, summarize, taskCost, urlAt, usageOf } from './report.mjs'
+import {
+  autofillCalls, controlSteps, estimateCost, pairCalls, renderMarkdown, RESERVE_USD, scoreRow, seqGapsOf, summarize, summaryLine, taskCost, urlAt, usageOf,
+} from './report.mjs'
 
 const BASE = 'http://127.0.0.1:8770'
 const call = (action, index) => ({ input: index === undefined ? { action } : { action, index } })
@@ -30,6 +32,23 @@ test('pairCalls: a record whose call is missing is reported', () => {
   const { recFor, unpairedRecords } = pairCalls([call('click', 1)], [rec(0, 'click', 1, { op: 'click', index: 1 }), rec(1, 'click', 9, { op: 'click', index: 9 })])
   assert.equal(recFor[0].seq, 0)
   assert.deepEqual(unpairedRecords.map((r) => r.seq), [1])
+})
+
+test('pairCalls / seqGapsOf: seq restarts per continuation chain, so records are ordered by `at`', () => {
+  // Chain 1 handed seqs 0, 1, 2 (1 superseded); chain 2 restarted at 0 and handed 0, 1.
+  const records = [
+    rec(0, 'type', 3, { op: 'type', index: 3 }, 0.9, { at: 100 }),
+    rec(2, 'select', 6, { op: 'select', index: 6 }, 0.9, { at: 300 }),
+    rec(0, 'type', 7, { op: 'type', index: 7 }, 0.9, { at: 400 }),
+    rec(1, 'click', 8, { op: 'click', index: 8 }, 0.9, { at: 500 }),
+  ]
+  const calls = [call('type', 3), call('type', 4), call('select', 6), call('type', 7), call('click', 8)]
+  const { recFor, unpairedRecords } = pairCalls(calls, records)
+  assert.deepEqual(recFor.map((r) => r?.at ?? null), [100, null, 300, 400, 500])
+  assert.equal(unpairedRecords.length, 0)
+  assert.equal(seqGapsOf(records), 1)
+  assert.equal(seqGapsOf([...records, rec(3, 'click', 10, { op: 'click', index: 10 }, 0.9, { at: 600 })]), 2) // chain 2: 0, 1, _, 3
+  assert.equal(seqGapsOf([]), 0)
 })
 
 test('urlAt: the last navigation at or before t', () => {
@@ -149,6 +168,61 @@ test('scoreRow: a call that returned before the hook is not unpaired; one that r
   assert.deepEqual(s.unpaired, { calls: 1, records: 0 })
   assert.equal(s.beforeHookCalls, 1)
   assert.deepEqual(s.unpairedCallErrors, [null])
+})
+
+test('scoreRow: steps that reached the decider path with zero records → missingShadow (shadow/assist only)', () => {
+  const tools = [
+    { toolName: 'ControlPage', input: { action: 'type', index: 3 }, output: { error: 'No page-control session is open. Call RequestPageControl first.' } },
+    { toolName: 'ControlPage', input: { action: 'type', index: 3 }, output: { ok: true } },
+  ]
+  const s = scoreRow({ task: 'form-contact', arm: 'shadow', tools, shadow: [] })
+  assert.equal(s.reachedHookCalls, 1)
+  assert.equal(s.missingShadow, true)
+  assert.equal(scoreRow({ task: 'form-contact', arm: 'off', tools, shadow: [] }).missingShadow, false)
+  // Only a before-hook call (no session was ever granted): nothing should have been recorded.
+  assert.equal(scoreRow({ task: 'form-contact', arm: 'assist', tools: tools.slice(0, 1), shadow: [] }).missingShadow, false)
+  // One record (even a skipped one) means the decider is recording.
+  assert.equal(scoreRow({ task: 'form-contact', arm: 'shadow', tools, shadow: [{ kind: 'next', seq: 0, at: 1, llm: { op: 'type', index: 3 }, top3: [], skipped: 'too-long' }] }).missingShadow, false)
+})
+
+test('autofillCalls: the assist path (no fields), its mapped keys, left reasons and errors', () => {
+  const tools = [
+    { toolName: 'AutofillForm', input: { values: { message: 'Do you offer volume discounts?', topic: 'Sales' } },
+      output: { filled: [3, 4, 6], left: [{ index: 5, reason: 'leave-empty' }, { index: 8, reason: 'low-confidence' }], mapped: [{ index: 3, key: 'profile.full_name' }, { index: 6, key: 'option.3' }, { index: 7, key: 'request.0' }] } },
+    { toolName: 'AutofillForm', input: { fields: [{ index: 3, value: 'Ada' }] }, output: { filled: [3] } },
+    { toolName: 'AutofillForm', input: {}, output: { error: 'Could not map fields automatically (no profile); pass fields explicitly.' } },
+  ]
+  const a = autofillCalls(tools)
+  assert.deepEqual(a[0], {
+    withoutFields: true, values: ['message', 'topic'], mapped: ['profile.full_name', 'option.3', 'request.0'],
+    left: [{ index: 5, reason: 'leave-empty' }, { index: 8, reason: 'low-confidence' }], filled: 3, error: null,
+  })
+  assert.equal(a[1].withoutFields, false)
+  assert.match(a[2].error, /Could not map/)
+  const s = scoreRow({ task: 'form-sales', arm: 'assist', tools, shadow: [] })
+  assert.equal(s.assistUsed, true)
+  assert.deepEqual(s.mapped, ['profile.full_name', 'option.3', 'request.0'])
+  assert.equal(scoreRow({ task: 'form-sales', arm: 'assist', tools: tools.slice(1), shadow: [] }).assistUsed, false)
+})
+
+test('summaryLine: per arm, decider@p≥thr, chat accuracy, coverage, ms', () => {
+  const reg0 = '[3]<input> "Full name"\n[4]<input> email "Email address"\n[10]<button> submit "Send message"'
+  const row = {
+    task: 'form-contact', family: 'form', arm: 'shadow', rep: 1, success: true, ended: 'turn-ended', wallMs: 1, llmSteps: 1, inputTokens: 0, outputTokens: 0,
+    cost: { low: 0, high: 0 }, startUrl: `${BASE}/form.html`, traceCalls: [], urlTimeline: [],
+    tools: [
+      { toolName: 'RequestPageControl', input: {}, output: { url: `${BASE}/form.html`, elements: reg0 } },
+      { toolName: 'ControlPage', input: { action: 'type', index: 3 }, output: { ok: true, elements: reg0 } },
+      { toolName: 'ControlPage', input: { action: 'click', index: 10 }, output: { ok: true } },
+    ],
+    shadow: [rec(0, 'type', 3, { op: 'type', index: 4 }, 0.7), rec(1, 'click', 10, { op: 'type', index: 4 }, 0.5)],
+  }
+  row.score = scoreRow(row)
+  assert.equal(
+    summaryLine(summarize([row]), 0.6),
+    'summary — shadow: decider@p≥0.6 100% (1/1), chat 50% (1/2), coverage 50%, decider ms p50/p95 100/101',
+  )
+  assert.equal(summaryLine({}), 'summary — no rows')
 })
 
 test('scoreRow: a seq the hooks numbered but never recorded counts as a superseded step', () => {
