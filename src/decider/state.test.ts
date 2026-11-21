@@ -17,7 +17,7 @@ describe('nextActionRequest', () => {
     const r = nextActionRequest(facts())
     expect(opts(r).slice(3)).toEqual([
       'type into [3]', 'type into [4]', 'type into [5]', 'select in [6]', 'type into [7]',
-      'click [8]', 'click [9]', 'click [10]', 'click [11]', 'scroll down', 'done',
+      'tick [8]', 'tick [9]', 'click [10]', 'click [11]', 'scroll down', 'done',
     ])
     expect(opts(r).slice(0, 3)).toEqual(['click [0]', 'click [1]', 'click [2]'])
     expect(r.actions.slice(-2)).toEqual([{ op: 'scroll' }, { op: 'done' }])
@@ -28,6 +28,18 @@ describe('nextActionRequest', () => {
     )
     expect(q.criteria['scroll down']).toBe('reveal more of the page')
     expect(q.criteria.done).toBe('the goal is complete, or the answer is now visible on the page')
+  })
+  it('words a checkbox as tick/untick by its state and an unchecked radio as choose; ops stay click', () => {
+    const els = [
+      { ...CONTACT_FORM[8], index: 0, checked: false },
+      { ...CONTACT_FORM[8], index: 1, checked: true },
+      { ...CONTACT_FORM[8], index: 2, type: 'radio', checked: false },
+      { ...CONTACT_FORM[8], index: 3, type: 'radio', checked: true },
+      { ...CONTACT_FORM[8], index: 4, checked: undefined },
+    ]
+    const r = nextActionRequest(facts({ elements: els }))
+    expect(opts(r).slice(0, 5)).toEqual(['tick [0]', 'untick [1]', 'choose [2]', 'click [3]', 'click [4]'])
+    expect(r.actions.slice(0, 5)).toEqual([0, 1, 2, 3, 4].map((index) => ({ op: 'click', index })))
   })
   it('slices previous_actions and adds page_text only when given', () => {
     const prev = Array.from({ length: 13 }, (_, i) => `a${i}`)
@@ -105,6 +117,16 @@ describe('form fill', () => {
     ])
     const checked = fillRequest({ goal: 'g', url: 'u', title: 't', lookup, fields: [{ ...fields[5], checked: true }] })
     expect(planFill(checked.questions, { f8: ans('true', 1, 1) }, lookup, 0.6).left).toEqual([{ index: 8, reason: 'already-set' }])
+  })
+  it('planFill: a ticked checkbox is unticked on a confident no, left as already-set otherwise', () => {
+    const box = fillRequest({ goal: 'g', url: 'u', title: 't', lookup, fields: [{ ...fields[5], checked: true }] }).questions
+    const ans = (yes: number): Answer => ({ kind: 'noul', options: ['false', 'true'], probs: [1 - yes, yes], top: yes >= 0.5 ? 'true' : 'false', p: Math.max(yes, 1 - yes), confidence: 0.9, yes })
+    const at = (yes: number) => planFill(box, { f8: ans(yes) }, lookup, 0.6)
+    expect(at(0.05).fills).toEqual([{ index: 8, kind: 'checkbox', key: 'untick', value: 'untick', p: 0.05 }])
+    expect(at(0.4).fills).toHaveLength(1) // exactly 1 − threshold
+    expect(at(0.45).left).toEqual([{ index: 8, reason: 'already-set' }])
+    expect(at(0.9).left).toEqual([{ index: 8, reason: 'already-set' }])
+    expect(planFill(box, {}, lookup, 0.6).left).toEqual([{ index: 8, reason: 'already-set' }])
   })
   it('planFill: an unticked checkbox is leave-empty on a confident no, low-confidence only in between', () => {
     const box = fillRequest({ goal: 'g', url: 'u', title: 't', lookup, fields: [fields[5]] }).questions

@@ -47,7 +47,16 @@ export function nextActionRequest(f: StepFacts): { request: DecisionRequest; act
       name = `type into [${e.index}]`
     } else {
       op = 'click'
-      name = `click [${e.index}]`
+      // A click does not say which way a checkbox goes; the wording does (the model never unticked a
+      // pre-ticked box when it could only "click" it).
+      const type = (e.type ?? '').toLowerCase()
+      if (e.tag === 'input' && type === 'checkbox' && e.checked !== undefined) {
+        name = `${e.checked ? 'untick' : 'tick'} [${e.index}]`
+      } else if (e.tag === 'input' && type === 'radio' && e.checked === false) {
+        name = `choose [${e.index}]`
+      } else {
+        name = `click [${e.index}]`
+      }
     }
     criteria[name] = describe(e)
     actions.push({ op, index: e.index })

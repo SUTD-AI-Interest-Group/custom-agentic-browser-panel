@@ -1771,7 +1771,7 @@ export function createAgentTools(
         // The steps the loop below runs. With fields: the model's mapping, typed as before. In
         // Assist: the decider's plan, made from one snapshot — so each step remembers the element
         // and the kind of field it was planned for, and acts only if that is still what it finds.
-        type FillStep = { index: number; spec: ControlSpec; planned?: { el: IndexedElement | undefined; kind: FillPlan['fills'][number]['kind'] } }
+        type FillStep = { index: number; spec: ControlSpec; planned?: { el: IndexedElement | undefined; kind: FillPlan['fills'][number]['kind']; untick: boolean } }
         let steps: FillStep[]
         let plan: FillPlan | null = null
         let profileCount = 0
@@ -1794,7 +1794,7 @@ export function createAgentTools(
           if (ended()) return { filled: [], error: 'Page control ended while the form was being mapped; nothing more was filled.' }
           if ('error' in mapped) return { error: `Could not map fields automatically (${mapped.error}); pass fields explicitly.` }
           plan = mapped
-          steps = mapped.fills.map((f) => ({ index: f.index, spec: fillSpecOf(f), planned: { el: planSnap.elements[f.index], kind: f.kind } }))
+          steps = mapped.fills.map((f) => ({ index: f.index, spec: fillSpecOf(f), planned: { el: planSnap.elements[f.index], kind: f.kind, untick: f.value === 'untick' } }))
         }
 
         const filled: number[] = []
@@ -1828,7 +1828,12 @@ export function createAgentTools(
             }
           }
           const el = snap.elements[step.index]
-          const spec = step.spec
+          let spec = step.spec
+          // The model's own mapping is typed by default; a <select> is chosen from instead (typing
+          // into one fails). Decided here, from the field as it stands on the page right now.
+          if (!step.planned && spec.action === 'type' && el?.tag === 'select') {
+            spec = { action: 'select', index: step.index, value: spec.text }
+          }
           if (step.planned) {
             // Only the element the plan was made for, only as the kind of field it was planned as:
             // a click is only ever an unticked checkbox, so a submit can never be pressed from here.
@@ -1836,15 +1841,16 @@ export function createAgentTools(
               staleSkipped.push(step.index)
               continue
             }
-            if (step.planned.kind === 'checkbox' && el?.checked) {
-              left.push({ index: step.index, reason: 'already-set' }) // a click would untick it
+            // A click flips the box: tick only an unticked one, untick only a ticked one.
+            if (step.planned.kind === 'checkbox' && !!el?.checked !== step.planned.untick) {
+              left.push({ index: step.index, reason: 'already-set' })
               continue
             }
           }
           if (isPointOfNoReturn(spec, el, session.origin)) {
             const card =
               spec.action === 'click'
-                ? { summary: `Tick the box "${el?.name ?? step.index}"`, reason: 'Ticking this box may commit you to something.' }
+                ? { summary: `${step.planned?.untick ? 'Untick' : 'Tick'} the box "${el?.name ?? step.index}"`, reason: 'Changing this box may commit you to something.' }
                 : { summary: `Fill a sensitive field (${el?.name ?? step.index})`, reason: 'This field is sensitive.' }
             const approved = await requestApproval({ toolName: 'AutofillForm', ...card, once: true })
             if (!approved) continue
@@ -1876,7 +1882,7 @@ export function createAgentTools(
           // makes is ticking a checkbox, so a click on anything else is refused outright.
           if (spec.action === 'click') {
             const target = snap.elements[step.index]
-            if (target?.tag !== 'input' || target.type !== 'checkbox' || target.checked) {
+            if (target?.tag !== 'input' || target.type !== 'checkbox' || !!target.checked !== !!step.planned?.untick) {
               staleSkipped.push(step.index)
               continue
             }

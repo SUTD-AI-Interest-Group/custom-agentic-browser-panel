@@ -21,7 +21,9 @@ export function planFill(
     const a = answers[q.name]
     const index = q.field.index
     if (q.field.kind === 'checkbox' && q.field.checked) {
-      plan.left.push({ index, reason: 'already-set' })
+      // Already ticked: leave it, unless the model is confident it should not be (a pre-ticked opt-in).
+      if (a && (a.yes ?? 1) <= 1 - threshold) plan.fills.push({ index, kind: 'checkbox', key: 'untick', value: 'untick', p: a.yes ?? 0 })
+      else plan.left.push({ index, reason: 'already-set' })
       continue
     }
     if (!a) {
