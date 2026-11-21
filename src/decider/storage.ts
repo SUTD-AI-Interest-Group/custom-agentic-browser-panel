@@ -166,7 +166,11 @@ export async function importModel(
   src: ImportSource,
   onProgress?: (done: number, total: number) => void,
 ): Promise<void> {
+  // One import at a time per context: a second call resolves immediately, touching neither
+  // OPFS nor the running import's status (importingHere stays true until that one finishes).
+  if (importingHere) return
   importingHere = true
+  let lastProgress: Promise<void> = Promise.resolve()
   try {
     // Claim the status before any byte moves, so a crash mid-import reads as interrupted.
     await setStatus({ state: 'importing', done: 0, total: 0 })
@@ -187,7 +191,6 @@ export async function importModel(
 
     let done = 0
     let lastWrite = 0
-    let lastProgress: Promise<void> = Promise.resolve()
     const onBytes = (n: number): void => {
       done += n
       onProgress?.(done, total)
@@ -214,7 +217,12 @@ export async function importModel(
     } catch {
       // nothing to clean up
     }
-    await setStatus({ state: 'failed', message: e instanceof Error ? e.message : String(e) })
+    await lastProgress // `failed` must be the last status write
+    try {
+      await setStatus({ state: 'failed', message: e instanceof Error ? e.message : String(e) })
+    } catch {
+      // storage itself is unavailable; importModel never throws
+    }
   } finally {
     importingHere = false
   }

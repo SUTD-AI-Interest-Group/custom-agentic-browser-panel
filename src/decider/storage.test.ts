@@ -168,6 +168,52 @@ describe('importModel', () => {
   })
 })
 
+describe('importModel edge cases', () => {
+  const urlFetch = (files: File[], mutate?: (b: Uint8Array<ArrayBuffer>) => Uint8Array<ArrayBuffer>) =>
+    vi.fn(async (u: string) => {
+      const f = files.find((x) => x.name === u.split('/').pop())!
+      let bytes = new Uint8Array(await f.arrayBuffer())
+      if (mutate && f.name === 'w.bin') bytes = mutate(bytes)
+      const body = new ReadableStream<Uint8Array>({
+        start(c) {
+          for (let i = 0; i < bytes.length; i += 3) c.enqueue(bytes.slice(i, i + 3))
+          c.close()
+        },
+      })
+      return new Response(body, { status: 200 })
+    })
+
+  it('verifies chunks that straddle 3-byte reads against a 4-byte chunkBytes', async () => {
+    const { files } = await bundle()
+    vi.stubGlobal('fetch', urlFetch(files))
+    await importModel({ kind: 'url', baseUrl: 'https://x.test/m' })
+    expect(await getModelStatus()).toMatchObject({ state: 'ready', bytes: 10 })
+    const dir = root.dirs.get('decider')!.dirs.get(MODEL_ID)!
+    expect(new TextDecoder().decode(dir.files.get('w.bin')!.data)).toBe('0123456789')
+  })
+
+  it('fails naming the file on a truncated body', async () => {
+    const { files } = await bundle()
+    vi.stubGlobal('fetch', urlFetch(files, (b) => b.slice(0, 6)))
+    await importModel({ kind: 'url', baseUrl: 'https://x.test/m' })
+    const s = await getModelStatus()
+    expect(s.state).toBe('failed')
+    expect((s as { message: string }).message).toContain('w.bin')
+  })
+
+  it('ignores a second import while one is running', async () => {
+    const { files } = await bundle()
+    let second: Promise<void> | undefined
+    const first = importModel({ kind: 'files', files }, () => {
+      second ??= importModel({ kind: 'files', files: [] })
+    })
+    await first
+    await second
+    // had the second run, it would have failed on the missing manifest
+    expect(await getModelStatus()).toMatchObject({ state: 'ready' })
+  })
+})
+
 describe('getModelStatus', () => {
   it('reads a stored importing status at startup as interrupted, never ready', async () => {
     store[MODEL_STATUS_KEY] = { state: 'importing', done: 5, total: 10 }
