@@ -800,3 +800,83 @@ signature has already changed. Unzip the wheel to read it.
   - anything that failed.
 
   Commit the doc with message "decider: harness results".
+
+---
+
+## Phase B (added 2026-11-22 after the go/no-go passed — user instruction: build driver mode, then test performance + integration)
+
+Architecture facts established during Phase A (binding): tool `execute()` runs in the **service worker** (`src/background/toolHost.ts`); the engine is panel-resident; SW↔panel traffic goes through `src/decider/relay.ts` (SW side; runtime imports limited — guard test) and `src/decider/hooks.ts` (panel side, `deciderRelayListener`). Request/response precedent: `decider.mapForm` (requestId, SW-side timeout, `decider.mapForm.cancel`, abort-signal aware). Results: `docs/superpowers/research/2026-11-21-decider-harness-results.md`.
+
+### Task 15a: Untick blind spot + AutofillForm select fix
+
+**Files:** Modify `src/decider/state.ts` (+ `state.test.ts`), `src/decider/fillPlan.ts`, `src/tools/tools.ts` (+ `tools.test.ts`), `src/decider/hooks.ts` (+test) only if the fill record needs the new value.
+
+- [ ] **Step 1: Failing tests.**
+  - **Next-action options.** In `nextActionRequest`, a checkbox element gets the option `tick [i]` when `checked === false` and `untick [i]` when `checked === true`. An unchecked radio gets `choose [i]`. The action op stays `'click'` with the same index. Other elements are unchanged.
+  - **planFill.** A checkbox that is `checked` with `yes ≤ 1 − threshold` produces fill `{ kind: 'checkbox', key: 'untick', value: 'untick' }`. An unchecked checkbox with `yes ≥ threshold` still produces `tick`.
+  - **AutofillForm decider path.** An `untick` fill clicks only an input[type=checkbox] that is currently checked, and a `tick` fill only one that is unchecked. Any other click is still refused (never submit).
+  - **AutofillForm `fields` path.** When the target element is a `<select>`, it runs `{ action: 'select', value }` instead of `type`. A regression test covers the 3/3 failure seen in the benchmark.
+- [ ] **Step 2: Implement.** Then run `npm test`, `npm run typecheck`, `npm run build`, and the relay guard.
+- [ ] **Step 3: Offline re-score.** Use the diagnosis harness (`scratchpad/diag/` cases.py/final.py, fp32 reference) on the 37 states plus the newsletter untick states from the Task 13 runs (`scratchpad/t13/`). Report the before/after top-1 on the untick cases and confirm no regression elsewhere.
+- [ ] **Step 4: Commit** (controller).
+
+### Task 15b: Harness fixes found by Task 13
+
+**Files:** `scripts/decider-eval/**` only.
+
+- The store header "Cart (N)" updates after Add to cart, on the same page.
+- Scoring:
+  - steps after an `AutofillForm` call are scored against the registry *after* that fill;
+  - `ControlPage` calls issued in the same model step as another page-mutating call (parallel-call races) are excluded and counted as `raced`.
+  - Port these from `scratchpad/t13/` rescoring scripts.
+- A `driver` arm stub: seeds `decider.mode = 'driver'`; Task 17 fills in its reporting.
+- Tests: `node --test scripts/decider-eval/` stays green, with new tests for both scoring rules.
+
+### Task 16: Driver mode (spec §7.3 + October loop lessons)
+
+**Files:**
+- Create `src/decider/driverLoop.ts`: pure, testable. It takes injected `decide`, `act`, `snapshot`, `isPointOfNoReturn`, `approve` and `checks`.
+- Create `src/decider/driverLoop.test.ts`.
+- Modify `src/decider/config.ts` (`'driver'` mode), `src/decider/relay.ts` and `src/decider/hooks.ts` (+tests) to add the `decider.next` request/response, `src/tools/tools.ts` (+tests) to add the tool, `src/ui/settings/ExperimentalTab.tsx` to add a Driver option, and `src/background/toolHost.ts` only if wiring needs it.
+
+**Interfaces:**
+- **Settings.** `DeciderMode = 'off' | 'shadow' | 'assist' | 'driver'`. Driver includes assist and shadow behaviour. `normalizeDecider` accepts `'driver'`.
+- **Tool.** `FastSteps` is present in the ToolSet only when the settings mode is `'driver'`. It is added to `activeNames` on the page-control grant in that mode, and the grant note mentions it. Input: `{ goal: string, values?: Record<string,string>, maxSteps?: number }`, with maxSteps defaulting to 12 and capped at 12.
+- **Description.** "Run up to 12 quick page steps toward ONE short sub-goal (e.g. 'search for wireless headphones and open the cheapest result under $100') using the on-device decision model, inside an open page-control session. Pass any values to type in `values`. It hands back when done, unsure, blocked, or after 12 steps; risky steps still ask the user."
+- **Per-step SW→panel request.** `decider.next {conversationId, requestId, goal, values, snap (masked as relay does), pageText (read pre-action in the SW), previousActions (deciderActionLine), exclude: [{op,index}]}`.
+- **Panel reply.** `{ top3: [{op, index?, p}], tokens, ms, value?: { key, text, p } }`. When the top option is `type into [i]`, the panel also runs the single-field fill question (fillRequest with that field; the lookup is profile + values) in the same call, and returns the chosen key's text when p ≥ threshold. Otherwise it replies `{ error }`.
+  - The reply has a 30 s SW timeout plus a cancel message, and is abort-aware, as mapForm is.
+  - The panel writes a ShadowRecord `kind: 'drive'` with `llm: null` and `agree: null`, key names only.
+
+**Loop** (`driverLoop.ts`). Order per step:
+1. abort, steer, session, foreground and origin-drift checks;
+2. snapshot;
+3. dense cap: if the rendered request exceeds 2,500 tokens → hand back `'dense page'`;
+4. decide;
+5. gate: top p ≥ 0.6 acts; 0.4–0.6 acts only when `!isPointOfNoReturn` (tentative); < 0.4 hands back `'unsure'`; `done` needs ≥ 0.6;
+6. repeat exclusion: if (op,index) equals the previous step's and the page didn't change, exclude it and re-ask once;
+7. a `type` with no value (or `leave_empty`) hands back `'needs value'`;
+8. point of no return → one-shot `requestApproval` (once:true) plus the stale-element re-check; denied → `'blocked'`;
+9. `runControlStep` with presence hooks; quick settle (50 ms quiet, 250 ms cap) for non-committing steps, normal `waitForStable` otherwise;
+10. stop on `done`, 2 failed actions, 3 no-change steps in a row, `maxSteps`, abort or steer.
+
+**Return:** `{ status: 'done'|'handback'|'blocked'|'stopped', reason, actions: <redacted journal entries for this call>, elements: <fresh registry>, lastDecision?: top3 }`.
+
+**Tests** (driverLoop is pure, so most cases are unit tests):
+- each gate band, the tentative-PoNR hand-back, and the dense hand-back;
+- repeat exclusion, the fail and no-change caps, and maxSteps;
+- abort mid-loop does nothing further, and steer stops at a step boundary;
+- denied PoNR gives `blocked`; done needs ≥ 0.6;
+- a type without a value hands back;
+- the tool is absent outside driver mode;
+- the SW never imports panel modules (relay guard).
+
+**Browser check:** a FRESH profile, LM Studio, driver mode, on the shop-cheapest task; report the statuses and steps.
+
+### Task 17: Performance + integration test of driver mode
+
+- The eval harness `driver` arm reports, per task: success, wall time, chat-model steps and tokens, FastSteps calls, statuses and hand-back reasons, decider steps executed, decider ms p50/p95, and wrong actions. Wrong actions are scored against the keys using the registry before each executed step, so the tool result must expose a per-step `{op,index}` list without page content.
+- Runs:
+  - Gemma: `off` + `driver` × all 16 tasks, reps 1.
+  - Sonnet: `driver` × all 16, reps 1, `--cap 10`. Always keep the cap at $10 per run.
+- Report: the driver vs off delta in success, wall time, chat-model steps and tokens per task family. This is the "is it actually faster end to end" answer. Append it to the results doc.
