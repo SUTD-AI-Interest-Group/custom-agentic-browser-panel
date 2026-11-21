@@ -10,6 +10,11 @@ Every number below comes from a run made for this report (commands in §1) or fr
 - **Chat model:** the agent's own model. Either LM Studio `google/gemma-4-26b-a4b` (Gemma) or
   Anthropic `claude-sonnet-5-5` (Sonnet).
 
+> **Update (Task 17): driver mode, measured end to end, is in §14.** It is accurate: 0 wrong
+> actions in 37 executed steps. But it is not faster across the suite: with Gemma the median is
+> +0.7 s per task. The one exception is the local model on multi-step store flows: −6 s per task,
+> −2.5 chat steps, −13k tokens. §14.7 gives the causes and the fixes.
+
 ## Summary
 
 **The decider meets all four parts of the spec's go/no-go bar for driver mode**, on 173
@@ -575,3 +580,380 @@ All 200 recorded decisions (187 next-action, 13 lookup) ran on WebGPU.
 - **Earlier evidence** (scratchpad): `spike/RESULTS.md`, `diag/REPORT.md`, `diag/tables.md`,
   `shot/RESULTS.md`.
 - **Task reports:** `.superpowers/sdd/2026-11-21-decider-harness/task-{1,2,6,10,11,12}-report.md`.
+
+## 14. Driver mode — end-to-end (Task 17)
+
+**Question:** does driver mode make the agent faster end to end? In driver mode the chat model
+can call `FastSteps`, and the on-device decider then takes up to 12 page steps itself.
+
+**Short answer: not on this benchmark as a whole.** It is a modest gain on multi-step store flows
+with the local chat model, and no gain with Sonnet.
+
+| Scope | Pairs | Wall time, driver − off (median, paired) | Chat-model steps | Input tokens |
+|---|---|---|---|---|
+| Gemma, all 16 tasks | 16 | **+0.7 s** (mean −2.7 s) | −1 | +0.6k (mean −13k) |
+| Gemma, store family | 16 | **−6 s** (driver faster in 11/16) | −2.5 | −13k |
+| Gemma, store runs where FastSteps ran | 8 | **−6 s** (faster in 5/8) | **−5** | **−34k** |
+| Sonnet, store family (final build) | 8 | **0 s** (faster in 5/8) | 0 | +5k |
+| Sonnet, store runs where FastSteps ran | 5 | +3 s (faster in 2/5) | +1 | +19k |
+
+**Where FastSteps runs, it is accurate and it cuts the chat model's work.**
+- 37 executed steps, **0 wrong** against the answer keys.
+- With Gemma it halves the chat-model steps and tokens.
+- Gemma's store success rose from 12/16 to 13/16. That includes shop-cheapest going from 0/4 to
+  3/4, though only one of those three wins was FastSteps choosing the product itself.
+
+**But it saves little wall time, for three reasons:**
+1. **Few tasks have the right shape.** FastSteps ran in only **2/16 (Gemma) and 3/16 (Sonnet)**
+   of the whole suite. Only 3 of the 16 tasks are multi-step page flows. Forms go to assist, and
+   help-site and inbox tasks take a single click.
+2. **Gemma's first typed value waits for the profile.** In every Gemma FastSteps call that started
+   with a `type`, that step waited **13–26 s** (median 19 s, 7 calls) for a chat-model
+   profile-structuring call, although each value came from `values`.
+3. **The gate hands back at Search.** In the 0.4–0.6 band, the Search submit is a point of no
+   return, so it is handed back: **8 of the 15** "click Search after typing" decisions. The decider
+   was right on all 15.
+
+Sonnet's own steps are fast (about 2.5 s), so a FastSteps call that hands back after one step is
+pure overhead.
+
+### 14.1 What was run
+
+| Run | Build | Command (`node scripts/decider-eval/run.mjs …`) | Output (`scripts/decider-eval/out/…`) | Sonnet spend |
+|---|---|---|---|---|
+| **A** Gemma, all tasks | `1e967d2` | `--arms off,driver --reps 1` | `2026-11-21T21-38-11-474Z` (36 min) | $0 |
+| **B** Sonnet, all tasks | `ba598bd` | `--arms driver --reps 1 --provider anthropic --cap 10` | `2026-11-21T22-14-44-584Z` (12 min) | **$2.28** |
+| **C** Gemma, store family | `fdfafdf` | `--arms off,driver --tasks shop-cheapest,shop-qty,shop-mug,dense-catalog --reps 3` | `2026-11-21T22-27-26-302Z` (37 min) | $0 |
+| **D** Sonnet, store family | `fdfafdf` | `--arms off,driver --tasks shop-cheapest,shop-qty,shop-mug,dense-catalog --reps 2 --provider anthropic --cap 10` | `2026-11-21T23-04-19-225Z` (12 min) | **$2.42** |
+
+**Notes on the runs:**
+- **The cap was never reached.** Sonnet spent $4.69 in total, across two runs each capped at $10.
+  The estimate excludes the profile-structuring calls described in the README.
+- **Every run used a fresh profile and a fresh model import** (10–12 s). All decisions ran on
+  WebGPU. No run had a harness error, a cancelled request or a skipped decision.
+
+**Builds.**
+- **Run A used `1e967d2`,** which predates the final-review fixes. The fixes that touch driver
+  mode:
+  - FastSteps no longer echoes typed values;
+  - FastSteps and assist appear only once the model is ready (in the eval it always is);
+  - ControlPage and AutofillForm refuse to run during a FastSteps run;
+  - a box that flipped since the decision hands back;
+  - the gates are NaN-safe.
+
+  None of these changes a decision on these fixtures.
+- **Run B used `ba598bd`, and runs C and D used `fdfafdf`.** `fdfafdf` changes only the erase-all
+  path in `src/data/storage.ts`.
+
+**Why runs C and D were added (not in the brief):**
+- Runs A and B showed that FastSteps is only ever used on the multi-step store tasks.
+- Run B's only Sonnet baseline was the Task 13 shadow run. That run predates the Task 15b
+  cart-header fix. In it, Sonnet ended 4 of the 5 store tasks by opening the cart to check a
+  stale "Cart (0)", which cost 2 steps each, so a comparison against it is confounded.
+- Run D is the clean Sonnet comparison, at $2.42 under its own $10 cap. Run C adds repetitions on
+  Gemma where FastSteps applies, at no cost.
+
+**How wrong actions were scored** (harness, `report.mjs` `driverCalls`):
+- A FastSteps result lists its executed steps as `{op, index?, p, ms, ok}` and carries no page
+  content.
+- In driver rows the harness copies every `decider.next` request into the results, from a passive
+  listener in the panel page. Each request carries the masked page snapshot (URL and elements) that
+  the service worker sent the panel.
+- Each `drive` record is paired with the request it answered: they share a timestamp to the
+  millisecond.
+- Each executed step is matched, in order, to the decision whose top-1 is that step's `(op, index)`
+  at the same rounded p.
+- The step is keyed against that decision's registry, rendered by a port of `serializeRegistry`.
+- **A fallback replays** from the registry the chat model last saw. It applies typed values, from
+  the step's `key` or the older `actions[].value`, and box flips. It marks every step after a
+  navigating click `unscoreable`.
+- **All 37 executed steps were scored by capture.** None needed the fallback.
+
+### 14.2 Gemma: off vs driver, all 16 tasks (run A)
+
+| Family | Success off → driver | Wall p50 (s) | Chat steps p50 (total) | Tokens in p50 (total) |
+|---|---|---|---|---|
+| Store | 4/5 → 4/5 | 42 → 45 | 9 → 8 (42 → 39) | 40k → 41k |
+| Form | 4/4 → 3/4 | 63 → 67 | 10.5 → 8 (43 → 33) | 59k → 44k |
+| Nav | 3/3 → 3/3 | 66 → 70 | 11 → 11 (37 → 33) | 59k → 56k |
+| Inbox | 4/4 → 3/4 | 41 → 45 | 9 → 9.5 (49 → 37) | 42k → 42k |
+| **All** | **15/16 → 13/16** | **50 → 53** | **9.5 → 9 (171 → 142)** | **53k → 44k** (971k → 765k) |
+
+**FastSteps ran in 2 tasks:**
+- **shop-mug: done in one call.** It clicked Kitchen, then the blue mug, then Add to cart (card).
+  The decider took 0.7 s in total. Against off: 38 → 27 s, 9 → 5 chat steps, 40k → 20k tokens.
+- **shop-cheapest: typed and searched, then handed back.** The hand-back was `done` at p 0.36 on
+  the results page, which was wrong but gated. Gemma finished with ControlPage. The off run had
+  failed.
+
+**Why nothing else used it:**
+- **Forms:** the grant note routes them to `AutofillForm` assist. Gemma took assist in
+  form-shipping and form-newsletter. Assist filled the whole newsletter form, including the
+  untick, in one call.
+- **Nav, inbox, shop-price, dense-catalog:** each needs one or two clicks, so the chat model
+  clicked directly.
+
+**Gemma's 3 driver failures are not driver failures.** They are shop-qty, form-contact and
+inbox-library.
+- Each is Gemma's known pre-grant failure (§4): it calls `ControlPage` without a session and loops
+  on `ToolSearch`.
+- No driver code ran in any of them.
+- The off arm hit the same pattern in 4 tasks and failed 1.
+
+**Where the time differences come from.**
+- **Big wins.** The two largest (nav-warranty −47 s, inbox-order −99 s) are the off arm wandering
+  through 16 and 24 steps on tasks where FastSteps never ran: chat-model variance.
+- **The one large loss.** form-newsletter took +48 s. Of that:
+  - an outlier first chat step took 29 s, before any page control;
+  - the assist call took 34 s, including Gemma's profile structuring.
+
+### 14.3 The store family, where FastSteps applies
+
+**Gemma, runs A and C pooled** (16 paired runs):
+
+| Arm | n | Success | Wall p50 | Chat steps p50 | Tokens in p50 | FastSteps used | Executed (wrong) |
+|---|---|---|---|---|---|---|---|
+| off | 16 | 12/16 | 47 s | 10 | 53k | — | — |
+| driver | 16 | **13/16** | 47 s | **7** | **45k** | 8/16 | 23 (0) |
+| driver, FastSteps ran | 8 | **8/8** | 68 s | 7 | 31k | | |
+| driver, FastSteps did not run | 8 | 5/8 | 44 s | 7 | 54k | | |
+
+| Task (Gemma) | off: success · wall p50 · steps · tokens | driver: success · wall p50 · steps · tokens · FastSteps ran |
+|---|---|---|
+| shop-cheapest | 0/4 · 34 s · 9.5 · 38k | **3/4** · 84 s · 9.5 · 45k · 3/4 |
+| shop-qty | 4/4 · 140 s · 17.5 · 99k | 2/4 · **52 s** · 11 · 45k · 2/4 |
+| shop-mug | 4/4 · 59 s · 10.5 · 65k | 4/4 · **47 s** · **5** · **20k** · 3/4 |
+| dense-catalog | 4/4 · 42 s · 6 · 53k | 4/4 · 44 s · 6.5 · 60k · 0/4 |
+
+**Sonnet, run D** (final build, 8 paired runs):
+
+| Arm | n | Success | Wall p50 | Chat steps p50 | Tokens in p50 | Cost (upper) | FastSteps used | Executed (wrong) |
+|---|---|---|---|---|---|---|---|---|
+| off | 8 | 8/8 | 35 s | 9.5 | 112k | $1.21 | — | — |
+| driver | 8 | 8/8 | 36 s | 10.5 | 113k | $1.20 | 5/8 | 8 (0) |
+
+| Task (Sonnet) | off: wall p50 · steps · tokens | driver: wall p50 · steps · tokens · FastSteps ran |
+|---|---|---|
+| shop-cheapest | 44 s · 12 · 126k | 46 s · 11 · 120k · 1/2 |
+| shop-qty | 38 s · 11 · 105k | 39 s · 11 · 121k · 2/2 |
+| shop-mug | 34 s · 9 · 79k | 35 s · 10.5 · 102k · 2/2 |
+| dense-catalog | 27 s · 7.5 · 119k | 22 s · 7 · 104k · 0/2 |
+
+**Why the store results differ between the two chat models:**
+- **Gemma: some of the success gain is FastSteps, some is noise.**
+  - Gemma failed shop-cheapest all 4 times in off:
+    - twice it never opened a session, and ended by asking permission;
+    - once it narrated its plan without acting;
+    - once it ended with the wrong cart while replying that it had added the Arc.
+  - Driver mode won 3 of 4:
+    - once FastSteps itself opened the $64 Arc from the results (p 0.77);
+    - twice FastSteps typed and searched, and Gemma then chose the product.
+    - The fourth driver run failed before it had a session.
+  - Sonnet's FastSteps calls also opened the Arc from the results (p 0.83 and 0.87).
+  - With 4 runs per arm, the shop-cheapest swing is suggestive, not proof.
+  - In shop-qty and shop-mug, off runs sometimes wandered: 302 s and 35 steps, 127 s and 16 steps.
+    The three FastSteps calls that reached `done` finished their tasks in 27–54 s and 5 chat
+    steps.
+- **Gemma: the wall-time gain is smaller than the step saving.**
+  - Each FastSteps call that types first waits for the profile lookup, 13–26 s.
+  - That eats most of what the saved Gemma steps would buy: 5 steps at about 6 s each, including
+    tool time.
+- **Gemma: one driver run took 221 s.** FastSteps typed the query and handed back at Search
+  (p 0.57). Gemma then wandered through 25 ControlPage and navigate steps on its own, the same
+  pattern as off's 302 s run.
+- **Sonnet: FastSteps mostly stops after one step.**
+  - 4 of its 5 calls typed the query and handed back at the Search click, at p 0.39–0.50. The
+    decider's top-1 was right every time.
+  - So a FastSteps call replaced one `type` step and added the FastSteps step itself: zero or one
+    extra step.
+  - Sonnet's own steps take about 2.5 s, so there is little to save anyway.
+  - The one call that ran the whole flow did 4 actions in 14 s. The decider's share of that was
+    1.1 s; the rest was 2 approval cards and full settles after 3 navigations.
+- **Sonnet: input tokens rose a little** (+5k median). The likely cause is the longer driver grant
+  note and the FastSteps schema, which ride on every step after the grant; this was not measured
+  separately.
+
+**Run B (Sonnet, all 16, `ba598bd`) against the Task 13 Sonnet shadow run.** Shadow never acts, so
+for the chat model it behaves like off.
+
+| Family | Success shadow → driver | Wall p50 | Chat steps p50 | Tokens in p50 |
+|---|---|---|---|---|
+| Store | 5/5 → 5/5 | 49 → 37 s | 14 → 10 | 155k → 109k |
+| Form | 4/4 → 4/4 | 34 → 31 s | 9 → 8 | 97k → 89k |
+| Nav | 3/3 → 3/3 | 29 → 36 s | 8 → 9 | 55k → 84k |
+| Inbox | 4/4 → 4/4 | 24 → 28 s | 6.5 → 9 | 56k → 95k |
+| **All** | **16/16 → 16/16** | **31 → 31 s** | **9 → 9** | **92k → 95k** |
+
+Spend: $2.12 → $2.28 (upper estimates).
+
+**Do not read the store row as a driver gain.** 4 of the 5 store runs in the shadow column (all but
+shop-price) ended with `click "Cart (0)"` and a re-read. The fixture's header never updated, which Task 15b fixed, and
+that accounts for about 2 of the 4 saved steps. Run D, on the fixed fixture, shows no gain.
+
+**Nav and inbox did not use FastSteps.** Their changes are Sonnet adding `HighlightContent` steps
+this time (+2–3 steps), which is behavioural variance.
+
+### 14.4 FastSteps usage, statuses and hand-back reasons
+
+**How often it ran:**
+
+| | A Gemma | B Sonnet | C Gemma | D Sonnet |
+|---|---|---|---|---|
+| Driver tasks where FastSteps reached its loop | 2/16 | 3/16 | 6/12 | 5/8 |
+| …on a multi-step store task with a session open | 2/2 | 3/3 | 6/7 | 5/6 |
+| Share of page actions taken by the decider (executed ÷ executed + chat ControlPage) | 24% | 17% | 36% | 25% |
+
+When the chat model held a session on a multi-step store task, it chose FastSteps **16 times out
+of 18**. It never called FastSteps on dense-catalog, shop-price, a form, or a help-site or inbox
+task. Every FastSteps call carried `values: {query: …}`.
+
+**How the 17 calls ended:**
+
+| How the call ended | Calls | Decider's top-1 at the hand-back |
+|---|---|---|
+| `done` (p ≥ 0.6) | 3 | — |
+| `handback / unsure`: risky step in the 0.4–0.6 band (always the Search submit) | 7 | right 7/7 |
+| `handback / unsure`: `done` below 0.6 | 3 | right 1/3 (0.56 ✓; 0.48, 0.36 ✗) |
+| `handback / unsure`: top p < 0.4 | 3 | right 2/3 (Search at 0.39 ✓, a product at 0.39 ✓; "Cart (1)" at 0.35 ✗) |
+| `handback / max steps` (Sonnet passed `maxSteps: 4`) | 1 | — |
+| `blocked`, `dense page`, `repeat`, `failed actions`, `page changed`, `decider error` | 0 | |
+
+- **10 of the 13 hand-backs were on a right top-1.** Counting the 3 `done` stops as well, 13 of 16
+  keyed stop decisions were right. The gate is conservative. It never let a wrong action through,
+  and most of the time it handed back a step the decider would have got right.
+- **Most hand-backs come from one decision.** "Click Search" right after typing the query came up
+  15 times:
+  - p was 0.95, 0.94, 0.91, 0.89, 0.80, 0.75, 0.64 (acted on, 7);
+  - and 0.57, 0.50, 0.49, 0.45, 0.45, 0.43, 0.39 (handed back, 8).
+  - The decider was right all 15 times.
+- **No "dense page" hand-back occurred.** Neither chat model called FastSteps on the dense
+  catalog.
+
+**Scope overshoot.**
+- In 4 of the 17 calls the sub-goal stopped at the search results, but the decider kept going.
+  Example sub-goals: "Search for wireless headphones and open the search results page", or
+  "search for 'blue Aurora mug'". It opened the product, and in 3 of the 4 clicked Add to cart.
+- Each Add to cart went through its one-shot card, and each matched what the user had asked for,
+  so the key scores them right.
+- But FastSteps does not stop at the boundary of its sub-goal. The decider's request carries both
+  the sub-goal and the session plan, and it follows the plan.
+- After one such overshoot (run B, shop-cheapest), Sonnet spent 2 more steps re-running the
+  search to verify. The shadow decider said `done` (p 0.63 and 0.48) on both of those steps.
+
+### 14.5 Decider accuracy in driver mode
+
+| | A | B | C | D | **All** |
+|---|---|---|---|---|---|
+| Executed steps (wrong) | 5 (0) | 6 (0) | 18 (0) | 8 (0) | **37 (0)** |
+| All keyed decisions, top-1 right | 6/7 | 8/8 | 24/25 | 12/13 | **50/53 (94%)** |
+
+- **The 3 wrong decisions were never acted on.** All were stop decisions under the threshold:
+  - `done` at 0.36 on the results page;
+  - `done` at 0.48 on the product page before the add;
+  - `click "Cart (1)"` at 0.35 after the add.
+- **Wrong-action rate: 0 of 37 executed steps** (95% CI 0–9.5%). The executed steps were:
+  - 15 `type`s of the search query;
+  - 7 Search clicks;
+  - 8 product or category clicks;
+  - 6 Add to cart clicks, each with a card;
+  - 1 `select` of quantity 2, with the value chosen by the single-field option question at
+    p 0.96.
+- **The shadow decider on the chat model's own ControlPage calls,** across these runs, agrees with
+  §5: 89–100% at p ≥ 0.6.
+
+### 14.6 Latency: the decider is not the bottleneck
+
+- **The decider itself is fast.** Over all 53 driver decisions:
+  - **p50 154 ms, p90 349 ms, p95 548 ms, max 633 ms**;
+  - the first decision of each panel (cold) took 220–633 ms;
+  - its total time per FastSteps call was 0.1–1.2 s. That is 2–8% of a multi-step call (0.7 of
+    30.8 s; 1.1 of 14.1 s), and up to about 15% of a one-step call (0.47 of 3.0 s).
+- **The rest of a FastSteps call's time goes to:**
+  - **The first `type`'s profile lookup.**
+    - With Gemma: 13, 13, 14, 19, 22, 22 and 26 s (median 19 s) in the seven calls that began
+      with a `type`. The Task 16 grant-time pre-warm starts the lookup, but Gemma's structuring
+      call takes about 16–20 s with reasoning, while the chat model's next step takes about
+      3–5 s.
+    - With Sonnet: 0.8–2.3 s.
+    - Every one of these values came from `values` (`request.0`), not from the profile.
+  - **Carded steps.** The Search submit and Add to cart each raise a one-shot card, then wait for
+    a full settle. Each took 4–5 s from its decision to the next one; the harness clicks a card
+    within about 0.5–1 s, and a person would take longer, in both arms.
+  - **Link clicks.** A plain link click (the product or a category) took about 1 s, with a full
+    settle. Non-navigating steps settle quickly, at 50/250 ms.
+- **The chat model's own page-action steps** (median, ControlPage-only model steps): Gemma
+  3.5–3.7 s, Sonnet 2.4–2.5 s.
+- **So a FastSteps action is not faster than a chat-model action:** about 1 s for a link click, and
+  4–5 s for a carded step. The saving comes from fewer model steps and less context, not from
+  faster actions.
+
+### 14.7 Is driver mode faster end to end?
+
+**No, not across this benchmark.**
+- **Whole suite:** with Gemma the median paired change is **+0.7 s per task** (16 pairs). The
+  steps and tokens are flat or slightly down.
+- **Sonnet, the family where FastSteps applies** (final build): **0 s** (8 pairs).
+
+**It is faster only on multi-step store flows driven by the local model:**
+- **About −6 s per task** (median of 16 pairs; driver faster in 11). That is roughly −13% of a
+  47 s task.
+- **−2.5 chat-model steps and −13k input tokens** per task.
+- **Where FastSteps actually ran:** −5 steps and −34k tokens, about half.
+- **Higher success:** 12/16 → 13/16, which includes shop-cheapest going from 0/4 to 3/4. This is
+  partly chat-model noise (§14.3).
+
+Accuracy is not the limit: 0 wrong actions in 37. What limits the gain, in order:
+
+1. **The first typed value waits for a chat-model profile lookup** (13–26 s with Gemma), even
+   when the value is in `values`.
+   - Fix: answer a `type` from the request values first, and structure the profile only when they
+     cannot fill the field.
+   - With Gemma this would take about 19 s (median) off every FastSteps call that types.
+2. **The Search submit counts as a point of no return,** so it hands back between 0.4 and 0.6:
+   8 of 15 Search decisions, all of them right.
+   - Fix: treat a GET search form (`input[type=search]`, `role=search`) as non-committing in the
+     driver gate, or let its card cover the tentative band.
+   - This is the main reason Sonnet's FastSteps calls stop after one step.
+3. **The suite has few driver-shaped tasks:** 3 of 16.
+   - A benchmark for driver mode needs longer flows: pagination, filters, multi-item carts,
+     multi-page forms.
+4. **The sub-goal boundary is not kept** (overshoot in 4 of 17 calls). This is a behaviour
+   question rather than a speed one. The cards still gate every Add to cart.
+
+### 14.8 Integration checks
+
+At `fdfafdf`, on the Task 17 harness changes:
+- `npm test`: **196 files, 2,688 passed, 1 skipped.** At `ba598bd`: 2,687 passed, 1 skipped.
+- `npm run typecheck`: clean.
+- `npm run build`: clean.
+- `node --test scripts/decider-eval/`: **62/62.** That is 49 before, plus 13 new driver-scoring
+  tests in `driver.test.mjs`; the summary-line expectation in `report.test.mjs` was also updated.
+  The new scoring tests were mutation-checked: removing the call windows, the step↔decision match,
+  the replay, or the "a refused call owns no decisions" guard each fails a test.
+- **End to end in a real browser, on the final build** (runs B–D, 36 driver tasks):
+  - fresh profiles, with the model imported from a URL;
+  - the readiness-gated FastSteps and the grant note: every granted session named FastSteps;
+  - the `decider.next` round trip from the service worker to the panel: 46 decisions in runs B–D
+    (53 with run A), all on WebGPU, with no timeouts or cancels;
+  - one-shot cards inside FastSteps;
+  - the single-field select question;
+  - assist still working in driver mode (Gemma);
+  - FastSteps never raced a ControlPage call. The 6 raced calls in the Sonnet runs were
+    AutofillForm + ControlPage and two ControlPage calls batched by Sonnet itself.
+
+**Harness changes** (`scripts/decider-eval/`):
+- `run.mjs`: the `decider.next` capture, the `selectOptions` capture, and a per-task driver log
+  line with warnings.
+- `report.mjs`: `registryOf`, `pairDriveRequests`, `driverCalls`, `driverScore`, `valueOfStep`,
+  `replayStep`. It also adds FastSteps to the page-mutating calls (race detection), the driver and
+  off-vs-driver report sections, and medians in the aggregate.
+- New `rescore.mjs`: re-scores a run, and merges re-runs into it.
+- New `driver.test.mjs`.
+- `README.md`.
+
+**Analysis scripts** (session scratchpad `t17/`, may be cleared):
+- `analyze.mjs` — family tables and paired deltas;
+- `pooled.mjs` — the pooled store family;
+- `tally.mjs` — the calls, hand-back kinds, latency, the Search decisions and overshoot;
+- `fstimeline.py` and `rawpairs.py` — per-call timelines;
+- `integ.py` — backend, cancels, sessions.

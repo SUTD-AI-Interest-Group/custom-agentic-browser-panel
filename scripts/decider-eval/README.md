@@ -7,8 +7,11 @@ built extension through 16 fixture tasks with a real chat model, once per **arm*
 - **`shadow`**: the decider records a decision on every `ControlPage` step.
 - **`assist`**: shadow, plus the decider maps form fields for `AutofillForm`. It runs only on
   the four ◆ form tasks.
-- **`driver`** (stub): seeds `decider.mode = 'driver'`. The mode lands in Task 16, and until then
-  `normalizeDecider` drops it, so the arm runs like `off`. Reporting is completed in Task 17.
+- **`driver`**: seeds `decider.mode = 'driver'`. The chat model gets `FastSteps`, which lets the
+  decider take up to 12 page steps itself (shadow and assist behaviour stay on). The arm reports
+  FastSteps use, statuses and hand-back reasons, the steps the decider executed and whether each
+  was right against the key (see "Driver mode" below). Run it beside `off` for the end-to-end
+  comparison: `--arms off,driver`.
 
 Every `ControlPage` step is then scored against an **answer key**: the set of correct next
 actions for the state the agent was in. The chat model's action and the decider's top option
@@ -20,7 +23,12 @@ node scripts/decider-eval/run.mjs --arms shadow,assist [--tasks id,…] [--reps 
   [--provider lmstudio|anthropic] [--cap 10] [--threshold 0.6] [--dry-run]
 # or: npm run test:decider:eval -- --arms shadow
 node --test scripts/decider-eval/          # the keys and the scoring, no browser
+node scripts/decider-eval/rescore.mjs out/<run> [--merge out/<rerun>] [--out <dir>]
 ```
+
+`rescore.mjs` re-scores a finished run with the current `report.mjs` (no browser, no model), and
+`--merge` replaces the rows of a re-run (same task, arm and rep). Without `--out` it rewrites the
+run's `results.json` and `report.md` in place; the raw rows are kept.
 
 Other flags:
 
@@ -33,10 +41,13 @@ Other flags:
 
 The run ends by printing one line. Per arm, it gives:
 
+- task success;
 - decider accuracy against the key at p ≥ threshold;
 - chat accuracy against the key;
 - coverage;
-- decider ms p50/p95.
+- decider ms p50/p95;
+- for `driver`: the tasks where FastSteps reached its loop, the steps it executed, its wrong steps
+  among the keyed ones, and the driver decisions' ms p50/p95.
 
 The exit code is non-zero after a fatal error or any "no shadow records" row.
 
@@ -209,6 +220,67 @@ a sent form from an unsent one.
     position), `option.<n>` (a select option by position) or `tick`. The run also logs this per
     assist task;
   - every keyed step where either model was wrong, with its URL and key.
+
+### Driver mode (`report.mjs` `driverCalls` / `driverScore`)
+
+A FastSteps result lists the steps it executed as `{op, index?, p, ms, ok}`, with no page content,
+plus `decisions`, `deciderMs`, a status and a reason. Each executed step is keyed against the state
+its own decision was made on:
+
+1. **`capture`** (the primary method). In driver rows, `run.mjs` adds a listener to the panel page
+   that copies every `decider.next` request the service worker posts (its masked snapshot: URL and
+   elements) into `row.driveRequests`. The listener only copies; it never answers, so the app's own
+   listener still replies.
+   - Each `drive` shadow record answers the latest request copied at or before it (50 ms
+     tolerance). A cancelled request has no record.
+   - An executed step is the next decision in its call's model step whose top-1 is the step's
+     `(op, index)` at the same rounded p. The first ask of an excluded repeat is passed over.
+   - The step's registry is that request's elements, rendered by `registryOf`, a port of
+     `domIndex.ts` `serializeRegistry`. That is the exact text ControlPage shows the chat model.
+2. **`replay`** (the fallback, used when a step has no capture). It starts from the registry the
+   chat model last saw before the call, patched by any earlier `AutofillForm`, at the call's URL.
+   It then replays the call's earlier steps, starting from the last captured state:
+   - a `type` or `select` writes its value. The value comes from the step's `key`:
+     `request.<name>` → the call's `values`, `profile.<key>` → the seeded profile,
+     `option.<n>` → the select's captured options. Builds before `ba598bd` carried it in the
+     journal's `actions[].value` instead;
+   - a click on a checkbox or radio flips it.
+   Any other click, a scroll or a press may navigate or move the viewport, so every later step is
+   `unscoreable`.
+
+A call's decisions are the captured requests made between its model step's start and the next
+step's start. A call that decided nothing, such as one refused as "another FastSteps run is in
+progress", owns none.
+
+**Each step's verdict** is one of:
+- `right` — in the key;
+- `wrong` — keyed, but not in the key;
+- `unkeyed` — no key for that state;
+- `unscoreable` — no state is known.
+
+**Decisions that were not executed are keyed too.** These are hand-backs and re-asked repeats. So
+the report says whether a hand-back's own top-1 was right, which is the gate's cost.
+
+**Two more rules:**
+- A `ControlPage` issued in the same model step as a FastSteps call races it, and is scored like
+  the other races.
+- "Chat page actions" counts the chat model's `ControlPage` calls that reached the page, not
+  highlight or wait.
+
+The run logs a WARNING, which is not fatal, when FastSteps decided but nothing was captured (the
+scoring falls back to replay) or no `drive` record was written.
+
+**The report adds:**
+- a driver summary;
+- an **off → driver** table by task family, when both arms ran: success, wall p50, chat steps,
+  tokens;
+- a per-task table;
+- every FastSteps call, with its executed steps, verdicts and how it ended;
+- the wrong executed steps, with their keys.
+
+**Chat-model cost in driver mode.** On the first `type`, and on the page-control grant (a
+pre-warm), the panel makes one structured `profileLookup` call to the chat model. That call is not
+in the turn trace, like assist's, so it is not counted in tokens. The $0.50 cap margin covers it.
 
 Output goes to `scripts/decider-eval/out/<ISO-time>/{results.json,report.md}` (git-ignored).
 `results.json` keeps each step's full state: registry, URL, key and both choices. The fixtures

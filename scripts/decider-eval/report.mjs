@@ -217,37 +217,54 @@ export function stepTimes(row) {
  * order <-> conversation order), else from the latest earlier output's `url`. `raced` marks a call
  * issued in the same model step as another page-mutating call.
  */
-export function controlSteps(row) {
+/** A call that changes the page: AutofillForm, FastSteps, or a ControlPage that is not highlight/wait. */
+const mutating = (t) => t.toolName === 'AutofillForm' || t.toolName === 'FastSteps' || (t.toolName === 'ControlPage' && !NEUTRAL_OPS.has(t.input?.action))
+
+/**
+ * The state every tool call was made in, by conversation position: the registry of the latest
+ * earlier output carrying one (with the fills of any earlier-step AutofillForm applied), the latest
+ * earlier output's `url`, the model-step start time, and whether the call raced another
+ * page-mutating call issued in the same model step.
+ */
+function toolStates(row) {
   const tools = row.tools ?? []
   const at = stepTimes(row)
-  const mutating = (t) => t.toolName === 'AutofillForm' || (t.toolName === 'ControlPage' && !NEUTRAL_OPS.has(t.input?.action))
   const autofills = tools.map((t, i) => (t.toolName === 'AutofillForm' ? { at: at[i], fills: fillsOf(t) } : null)).filter((x) => x?.fills)
-  const calls = []
+  const states = []
   let registry = null
   let regAt = -Infinity
   let outUrl = row.startUrl
   for (const [i, t] of tools.entries()) {
-    if (t.toolName === 'ControlPage') {
-      const callAt = at[i]
-      const raced = callAt != null && mutating(t) && tools.some((o, j) => j !== i && at[j] === callAt && mutating(o))
-      let reg = registry
-      let patched = false
-      if (reg && callAt != null) {
-        // Fills from earlier steps that this registry predates (captured at or before the fill's step).
-        const due = autofills.filter((a) => a.at != null && a.at < callAt && a.at >= regAt)
-        if (due.length) {
-          reg = due.reduce((r, a) => applyFills(r, a.fills), reg)
-          patched = reg !== registry
-        }
+    const callAt = at[i]
+    const raced = callAt != null && mutating(t) && tools.some((o, j) => j !== i && at[j] === callAt && mutating(o))
+    let reg = registry
+    let patched = false
+    if (reg && callAt != null) {
+      // Fills from earlier steps that this registry predates (captured at or before the fill's step).
+      const due = autofills.filter((a) => a.at != null && a.at < callAt && a.at >= regAt)
+      if (due.length) {
+        reg = due.reduce((r, a) => applyFills(r, a.fills), reg)
+        patched = reg !== registry
       }
-      calls.push({ input: t.input ?? {}, output: t.output, registry: reg, patched, raced, outUrl })
     }
+    states.push({ registry: reg, patched, raced, outUrl, at: callAt })
     const out = t.output && typeof t.output === 'object' ? t.output : null
     if (hasRegistry(out)) {
       registry = out.elements
       regAt = at[i] ?? regAt
     }
     if (out && typeof out.url === 'string') outUrl = out.url
+  }
+  return { tools, states }
+}
+
+export function controlSteps(row) {
+  const { tools, states } = toolStates(row)
+  const calls = []
+  for (const [i, t] of tools.entries()) {
+    if (t.toolName !== 'ControlPage') continue
+    const { registry, patched, raced, outUrl } = states[i]
+    calls.push({ input: t.input ?? {}, output: t.output, registry, patched, raced, outUrl })
   }
   const times = (row.traceCalls ?? []).filter((c) => c.name === 'ControlPage').map((c) => c.at)
   const aligned = times.length === calls.length && (row.urlTimeline?.length ?? 0) > 0
@@ -256,6 +273,255 @@ export function controlSteps(row) {
     url: (aligned ? urlAt(row.urlTimeline, times[i]) : undefined) ?? c.outUrl,
     urlSource: aligned ? 'timeline' : 'outputs',
   }))
+}
+
+// ── driver mode (FastSteps) ───────────────────────────────────────────────────────────────────
+// A FastSteps call takes up to 12 page steps on the decider's own decisions, and its result lists
+// the executed steps as `{op, index?, p, ms, ok}` with no page content. Each executed step is keyed
+// against the state the decider decided it on:
+//
+// 1. `capture` (primary). run.mjs copies every `decider.next` request the worker posts to the panel
+//    (its masked snapshot: url + elements) into `row.driveRequests`. Each `drive` shadow record is
+//    the panel's answer to the latest request it had received, so request ↔ record pair by time
+//    (`pairDriveRequests`). An executed step is the next decision, in order within its call's model
+//    step, whose top-1 is the step's (op, index) at the same rounded p (a repeat's excluded first
+//    ask is passed over). Its registry is the request's elements, rendered by `registryOf`, a port
+//    of domIndex.ts serializeRegistry — the exact text ControlPage shows the chat model.
+// 2. `replay` (fallback, no capture for that step). The registry the chat model last saw before
+//    the call (patched by any earlier AutofillForm) at the call's URL, with this call's earlier
+//    executed steps replayed onto it: a `type`/`select` writes the journal's value, a click on a
+//    checkbox/radio flips its state. Any other click, a scroll or a press may navigate or move the
+//    viewport, so every step after one is `unscoreable`.
+//
+// Every decision (executed or not) with a captured state is also keyed, so the report can say
+// whether a hand-back's own top-1 was right (the gate's cost) as well as whether an action was.
+
+/** domIndex.ts `serializeRegistry`, ported: a decision snapshot's elements → the registry text. */
+export function registryOf(elements) {
+  if (!Array.isArray(elements)) return null
+  if (elements.length === 0) return '(no interactive elements found)'
+  return elements
+    .map((e) => {
+      const attrs = [
+        e.type && e.type !== 'text' ? e.type : '',
+        e.name ? `"${e.name}"` : '',
+        (e.checked === undefined || e.checked === null) && e.value ? `= "${e.value}"` : '',
+        e.checked === undefined || e.checked === null ? '' : e.checked ? '(checked)' : '(unchecked)',
+        e.sensitive ? '(sensitive)' : '',
+      ]
+        .filter(Boolean)
+        .join(' ')
+      return `[${e.index}]<${e.tag}${e.role ? ` role=${e.role}` : ''}> ${attrs}`.trimEnd()
+    })
+    .join('\n')
+}
+
+/** How late a record may be stamped before its request was copied (both are taken in the panel). */
+const PAIR_TOLERANCE_MS = 50
+
+/**
+ * Pair captured `decider.next` requests with `drive` records, in time order: a record answers the
+ * latest request copied at or before it. A cancelled request (`decider.next.cancel`: the worker
+ * gave up) has no record by design.
+ * @returns {{ pairs: {req: object, rec: object|null, cancelled: boolean}[], unpairedRecords: object[] }}
+ */
+export function pairDriveRequests(requests, records) {
+  const all = Array.isArray(requests) ? requests : []
+  const cancelled = new Set(all.filter((q) => q?.cancel).map((q) => q.requestId))
+  const pairs = all
+    .filter((q) => q && !q.cancel)
+    .sort((a, b) => a.at - b.at)
+    .map((req) => ({ req, rec: null, cancelled: cancelled.has(req.requestId) }))
+  const unpairedRecords = []
+  for (const rec of inStepOrder((records ?? []).filter((r) => r?.kind === 'drive'))) {
+    let k = -1
+    for (let i = 0; i < pairs.length && pairs[i].req.at <= (rec.at ?? 0) + PAIR_TOLERANCE_MS; i++) k = i
+    if (k >= 0 && !pairs[k].rec) pairs[k].rec = rec
+    else unpairedRecords.push(rec)
+  }
+  return { pairs, unpairedRecords }
+}
+
+const round2 = (p) => Math.round(p * 100) / 100
+const topOf = (rec) => (rec && !rec.skipped && rec.top3?.length ? rec.top3[0] : null)
+const sameStep = (top, s) => !!top && top.op === s.op && (top.index ?? null) === (s.index ?? null) && Math.abs(round2(top.p) - s.p) < 0.006
+
+/**
+ * One executed step replayed onto `registry`: the new registry, or null when its effect cannot be
+ * known from the registry alone (a click that is not on a checkbox/radio, a scroll, a press).
+ * A step the page refused (`ok: false`) changed nothing.
+ */
+export function replayStep(registry, step, value) {
+  if (!step.ok) return registry
+  if ((step.op === 'type' || step.op === 'select') && value !== undefined) return patchLine(registry, step.index, { value })
+  if (step.op === 'click' && isBox(registry, step.index)) {
+    const line = registry.split('\n').find((l) => l.startsWith(`[${step.index}]`)) ?? ''
+    const radio = /^\[\d+\]<input> radio/.test(line)
+    return patchLine(registry, step.index, { checked: radio ? true : !/\(checked\)/.test(line) })
+  }
+  return null
+}
+
+/**
+ * What one `type`/`select` step wrote, by the step's own `key` (builds from ba598bd on: the result
+ * never echoes a value): `request.<name>` → the call's `values`, `profile.<key>` → the seeded
+ * profile, `option.<n>` → the n-th option the worker read for that select (`options(index)`).
+ * Older builds' results carried the journal's value in `actions[]` instead; that is used first,
+ * matched in order by (action, index).
+ */
+export function valueOfStep(key, values, options) {
+  if (typeof key !== 'string') return undefined
+  const dot = key.indexOf('.')
+  const group = key.slice(0, dot)
+  const name = key.slice(dot + 1)
+  if (group === 'request') return values && Object.hasOwn(values, name) ? String(values[name]) : /^\d+$/.test(name) ? Object.values(values ?? {})[Number(name)] : undefined
+  if (group === 'profile') return profileValue(name)
+  if (group === 'option') return options?.[Number(name)]
+  return undefined
+}
+
+function valuesFor(steps, actions, values, options) {
+  const out = []
+  let j = 0
+  for (const s of steps) {
+    if (!s.ok || (s.op !== 'type' && s.op !== 'select')) {
+      out.push(undefined)
+      continue
+    }
+    let v
+    while (j < actions.length && !(actions[j].action === s.op && actions[j].index === s.index)) j++
+    if (j < actions.length) v = actions[j++].value
+    out.push(v ?? valueOfStep(s.key, values, options(s.index)))
+  }
+  return out
+}
+
+/**
+ * Every FastSteps call with its executed steps keyed (see the section comment) and its decisions:
+ * `[{ i, input, status, reason, message, error, raced, decisions, deciderMs, steps, decided }]`.
+ * A call's decisions are the captured requests issued during its model step (from that step's
+ * start to the next step's); without trace times, they are taken in order across calls.
+ */
+export function driverCalls(row) {
+  const { tools, states } = toolStates(row)
+  const { pairs } = pairDriveRequests(row.driveRequests, row.shadow)
+  const starts = [...new Set((row.traceCalls ?? []).map((c) => c.at).filter((x) => x != null))].sort((a, b) => a - b)
+  const used = new Set()
+  let cursor = 0
+  const calls = []
+  for (const [i, t] of tools.entries()) {
+    if (t.toolName !== 'FastSteps') continue
+    const out = t.output && typeof t.output === 'object' ? t.output : {}
+    const steps = Array.isArray(out.steps) ? out.steps : []
+    const decisions = Number.isFinite(out.decisions) ? out.decisions : 0
+    const st = states[i]
+    const callAt = st.at
+    const end = callAt == null ? Infinity : (starts.find((s) => s > callAt) ?? Infinity)
+    // A call that decided nothing (refused, errored before the loop) owns no decisions.
+    const mine =
+      decisions === 0 && steps.length === 0
+        ? []
+        : pairs
+            .map((p, k) => ({ ...p, k }))
+            .filter((p) => !used.has(p.k) && (callAt == null ? p.k >= cursor : p.req.at >= callAt && p.req.at < end))
+    for (const p of mine) used.add(p.k)
+    if (callAt == null && mine.length) cursor = mine.at(-1).k + 1
+    const startUrl = (callAt != null && row.urlTimeline?.length ? urlAt(row.urlTimeline, callAt) : undefined) ?? st.outUrl
+    // A select's options, as the worker read them for this call's decisions (captured requests).
+    const options = (index) => mine.map((p) => p.req.selectOptions?.[index]).find(Array.isArray)
+    const values = valuesFor(steps, Array.isArray(out.actions) ? out.actions : [], t.input?.values ?? {}, options)
+    const executed = new Set()
+    let next = 0
+    // The latest known state, carried forward: from the call's start, or the last captured step.
+    let replay = st.registry ? { registry: st.registry, url: startUrl } : null
+    const keyed = steps.map((s, j) => {
+      let state = null
+      for (let k = next; k < mine.length; k++)
+        if (sameStep(topOf(mine[k].rec), s)) {
+          executed.add(k)
+          next = k + 1
+          state = { registry: registryOf(mine[k].req.elements), url: mine[k].req.url, method: 'capture' }
+          break
+        }
+      if (!state && replay) state = { ...replay, method: 'replay' }
+      const after = state?.registry && state.url ? replayStep(state.registry, s, values[j]) : null
+      replay = after ? { registry: after, url: state.url } : null
+      const key = state?.registry && state.url ? answerKey(row.task, state.registry, state.url) : []
+      const verdict = !state ? 'unscoreable' : !key.length ? 'unkeyed' : matches(s, key) ? 'right' : 'wrong'
+      return { ...s, method: state?.method ?? null, url: state?.url ?? null, key, verdict, registry: state?.registry ?? null }
+    })
+    // Every decision with a captured state, keyed: was its top-1 right, and was it acted on?
+    const decided = mine.map((p, k) => {
+      const top = topOf(p.rec)
+      const registry = registryOf(p.req.elements)
+      const key = registry && p.req.url && top ? answerKey(row.task, registry, p.req.url) : []
+      return {
+        at: p.req.at,
+        url: p.req.url,
+        top3: p.rec?.top3?.map((o) => ({ op: o.op, ...(o.index !== undefined ? { index: o.index } : {}), p: round2(o.p) })) ?? null,
+        skipped: p.rec?.skipped ?? null,
+        cancelled: p.cancelled,
+        ms: p.rec?.ms ?? null,
+        cold: p.rec?.cold ?? null,
+        tokens: p.rec?.tokens ?? null,
+        executed: executed.has(k),
+        key,
+        topOk: key.length && top ? matches(top, key) : null,
+      }
+    })
+    calls.push({
+      i,
+      input: t.input ?? {},
+      status: out.status ?? null,
+      reason: out.reason ?? null,
+      message: out.message ?? null,
+      error: out.error ?? (t.output === undefined ? 'no result' : null),
+      raced: st.raced,
+      decisions,
+      deciderMs: Number.isFinite(out.deciderMs) ? out.deciderMs : 0,
+      steps: keyed,
+      decided,
+    })
+  }
+  return calls
+}
+
+/** One row's driver-mode summary (zeros for a row without FastSteps). */
+export function driverScore(row) {
+  const calls = driverCalls(row)
+  const steps = calls.flatMap((c) => c.steps)
+  const decided = calls.flatMap((c) => c.decided)
+  const count = (xs, f) => xs.reduce((a, x) => ((a[f(x)] = (a[f(x)] ?? 0) + 1), a), {})
+  const drive = (row.shadow ?? []).filter((r) => r.kind === 'drive')
+  const timed = drive.filter((r) => !r.skipped && Number.isFinite(r.ms))
+  const stops = decided.filter((d) => !d.executed && d.top3)
+  return {
+    calls: calls.length,
+    // A call is "used" when it reached the loop: the model called it inside a session.
+    usedCalls: calls.filter((c) => c.status).length,
+    errors: calls.filter((c) => c.error).map((c) => c.error),
+    statuses: count(calls.filter((c) => c.status), (c) => `${c.status}/${c.reason}`),
+    executed: steps.length,
+    executedOk: steps.filter((s) => s.ok).length,
+    decisions: calls.reduce((a, c) => a + c.decisions, 0),
+    deciderMs: calls.reduce((a, c) => a + c.deciderMs, 0),
+    verdicts: count(steps, (s) => s.verdict),
+    methods: count(steps.filter((s) => s.method), (s) => s.method),
+    captured: (row.driveRequests ?? []).filter((q) => !q.cancel).length,
+    driveRecords: drive.length,
+    driveSkipped: count(drive.filter((r) => r.skipped), (r) => r.skipped),
+    msP50: percentile(timed.map((r) => r.ms), 50),
+    msP95: percentile(timed.map((r) => r.ms), 95),
+    coldMs: timed.filter((r) => r.cold).map((r) => r.ms),
+    ms: timed.map((r) => r.ms),
+    // Decision-level: every keyed decision, and the not-executed ones (hand-backs, re-asked repeats).
+    decisionsKeyed: decided.filter((d) => d.topOk !== null).length,
+    decisionsRight: decided.filter((d) => d.topOk === true).length,
+    stopsKeyed: stops.filter((d) => d.topOk !== null).length,
+    stopsRight: stops.filter((d) => d.topOk === true).length,
+    wrongSteps: steps.filter((s) => s.verdict === 'wrong').map((s) => ({ op: s.op, index: s.index, p: s.p, url: s.url, key: s.key, method: s.method })),
+    detail: calls,
+  }
 }
 
 // ── scoring ───────────────────────────────────────────────────────────────────────────────────
@@ -392,6 +658,10 @@ export function scoreRow(row, threshold = DEFAULT_THRESHOLD) {
     autofill,
     assistUsed: autofill.some((a) => a.withoutFields && !a.error),
     mapped,
+    // Page actions the chat model took itself (a ControlPage that reached the page, not
+    // highlight/wait), beside FastSteps' executed steps.
+    chatActions: steps.filter((s) => !NEUTRAL_OPS.has(s.input.action) && !returnedBeforeHook(s.output)).length,
+    driver: driverScore(row),
     steps: scored,
   }
 }
@@ -437,10 +707,39 @@ function aggregate(rows) {
   const decisions = sum((r) => r.score.decider.decisions)
   const covered = rows.reduce((a, r) => a + (r.score.decider.coverage ?? 0) * r.score.decider.decisions, 0)
   const agreeN = sum((r) => r.score.decider.agreeN)
+  const merge = (f) => rows.reduce((a, r) => {
+    for (const [k, v] of Object.entries(f(r) ?? {})) a[k] = (a[k] ?? 0) + v
+    return a
+  }, {})
+  const dv = (r) => r.score.driver ?? {}
   return {
     runs: rows.length,
     success: rows.filter((r) => r.success).length,
     wallMsP50: percentile(rows.map((r) => r.wallMs), 50),
+    wallMsMean: rows.length ? Math.round(sum((r) => r.wallMs) / rows.length) : null,
+    llmStepsP50: percentile(rows.map((r) => r.llmSteps), 50),
+    inputTokensP50: percentile(rows.map((r) => r.inputTokens), 50),
+    outputTokensP50: percentile(rows.map((r) => r.outputTokens), 50),
+    chatActions: sum((r) => r.score.chatActions),
+    driver: {
+      rowsUsing: rows.filter((r) => dv(r).usedCalls > 0).length,
+      calls: sum((r) => dv(r).calls),
+      usedCalls: sum((r) => dv(r).usedCalls),
+      errors: rows.flatMap((r) => dv(r).errors ?? []),
+      statuses: merge((r) => dv(r).statuses),
+      executed: sum((r) => dv(r).executed),
+      executedOk: sum((r) => dv(r).executedOk),
+      decisions: sum((r) => dv(r).decisions),
+      verdicts: merge((r) => dv(r).verdicts),
+      methods: merge((r) => dv(r).methods),
+      decisionsKeyed: sum((r) => dv(r).decisionsKeyed),
+      decisionsRight: sum((r) => dv(r).decisionsRight),
+      stopsKeyed: sum((r) => dv(r).stopsKeyed),
+      stopsRight: sum((r) => dv(r).stopsRight),
+      msP50: percentile(rows.flatMap((r) => dv(r).ms ?? []), 50),
+      msP95: percentile(rows.flatMap((r) => dv(r).ms ?? []), 95),
+      driveSkipped: merge((r) => dv(r).driveSkipped),
+    },
     llmSteps: sum((r) => r.llmSteps),
     inputTokens: sum((r) => r.inputTokens),
     outputTokens: sum((r) => r.outputTokens),
@@ -487,7 +786,12 @@ export function summaryLine(summary, threshold = DEFAULT_THRESHOLD) {
   const parts = Object.entries(summary).map(([arm, { overall: o }]) => {
     const dec = arm === 'off' ? 'decider off' : `decider@p≥${threshold} ${p(o.deciderCorrectAtThreshold, o.deciderAtThreshold)}`
     const cov = o.coverage === null ? '—' : `${Math.round(100 * o.coverage)}%`
-    return `${arm}: ${dec}, chat ${p(o.chatCorrect, o.keyed)}, coverage ${cov}, decider ms p50/p95 ${o.msP50 ?? '—'}/${o.msP95 ?? '—'}`
+    const d = o.driver
+    const drv =
+      arm === 'driver'
+        ? `; FastSteps in ${d.rowsUsing}/${o.runs} tasks, ${d.executed} steps, wrong ${d.verdicts.wrong ?? 0}/${(d.verdicts.wrong ?? 0) + (d.verdicts.right ?? 0)} keyed, drive ms p50/p95 ${d.msP50 ?? '—'}/${d.msP95 ?? '—'}`
+        : ''
+    return `${arm}: success ${p(o.success, o.runs)}, ${dec}, chat ${p(o.chatCorrect, o.keyed)}, coverage ${cov}, decider ms p50/p95 ${o.msP50 ?? '—'}/${o.msP95 ?? '—'}${drv}`
   })
   return `summary — ${parts.join(' · ') || 'no rows'}`
 }
@@ -551,6 +855,8 @@ export function renderMarkdown(results) {
     )
   }
   L.push('')
+
+  L.push(...renderDriver(results))
 
   const assist = rows.filter((r) => r.score.fields)
   if (assist.length) {
@@ -626,6 +932,84 @@ export function renderMarkdown(results) {
     L.push('')
   }
   return L.join('\n')
+}
+
+const sec = (ms) => (ms === null || ms === undefined ? '—' : String(Math.round(ms / 1000)))
+const tally = (o) => Object.entries(o ?? {}).sort((a, b) => b[1] - a[1]).map(([k, v]) => `${k} ${v}`).join(', ') || '—'
+const fmtAct = (a) => (a ? `${a.op}${a.index === undefined || a.index === null ? '' : ` ${a.index}`}` : '—')
+
+/** The driver-mode sections: only when a row ran in driver mode. */
+export function renderDriver(results) {
+  const { rows, summary } = results
+  const drows = rows.filter((r) => r.arm === 'driver')
+  if (!drows.length) return []
+  const L = []
+  L.push('## Driver mode: FastSteps', '')
+  L.push('Executed steps are keyed against the state their decision saw (`capture`), else replayed from the chat model\'s last registry (`replay`); see report.mjs.', '')
+  L.push('| arm | runs | FastSteps used (tasks) | calls (reached the loop) | statuses | executed steps (ok) | chat page actions | decisions | right / wrong / unkeyed / unscoreable | method | all decisions top-1 right | hand-back top-1 right | drive ms p50 / p95 |')
+  L.push('|---|---|---|---|---|---|---|---|---|---|---|---|---|')
+  for (const [arm, { overall: o }] of Object.entries(summary)) {
+    if (arm !== 'driver') continue
+    const d = o.driver
+    const v = d.verdicts
+    L.push(
+      `| ${arm} | ${o.runs} | ${d.rowsUsing}/${o.runs} | ${d.calls} (${d.usedCalls}) | ${cell(tally(d.statuses))} | ${d.executed} (${d.executedOk}) | ${o.chatActions} | ${d.decisions} | ${v.right ?? 0} / ${v.wrong ?? 0} / ${v.unkeyed ?? 0} / ${v.unscoreable ?? 0} | ${cell(tally(d.methods))} | ${pct(d.decisionsRight, d.decisionsKeyed)} | ${pct(d.stopsRight, d.stopsKeyed)} | ${num(d.msP50)} / ${num(d.msP95)} |`,
+    )
+  }
+  L.push('')
+
+  if (summary.off && summary.driver) {
+    L.push('## Driver vs off, by task family', '')
+    L.push('| family | success off → driver | wall p50 s off → driver | chat steps p50 off → driver | chat steps total | tokens in p50 off → driver | tokens in / out total off → driver | FastSteps used |')
+    L.push('|---|---|---|---|---|---|---|---|')
+    const fams = ['**all**', ...Object.keys(summary.driver.byFamily)]
+    for (const f of fams) {
+      const a = f === '**all**' ? summary.off.overall : summary.off.byFamily[f]
+      const b = f === '**all**' ? summary.driver.overall : summary.driver.byFamily[f]
+      if (!a || !b) continue
+      L.push(
+        `| ${f} | ${a.success}/${a.runs} → ${b.success}/${b.runs} | ${sec(a.wallMsP50)} → ${sec(b.wallMsP50)} | ${num(a.llmStepsP50)} → ${num(b.llmStepsP50)} | ${a.llmSteps} → ${b.llmSteps} | ${num(a.inputTokensP50)} → ${num(b.inputTokensP50)} | ${a.inputTokens} / ${a.outputTokens} → ${b.inputTokens} / ${b.outputTokens} | ${b.driver.rowsUsing}/${b.runs} |`,
+      )
+    }
+    L.push('')
+  }
+
+  L.push('## Driver: per task', '')
+  L.push('| task | rep | ok | wall s | chat steps | tokens in / out | FastSteps calls | statuses (reason) | steps executed | chat page actions | decisions | drive ms p50 / p95 | right / wrong / unkeyed / unscoreable | errors |')
+  L.push('|---|---|---|---|---|---|---|---|---|---|---|---|---|---|')
+  for (const r of drows) {
+    const d = r.score.driver
+    const v = d.verdicts
+    L.push(
+      `| ${r.task} | ${r.rep} | ${r.success ? '✓' : '✗'} | ${sec(r.wallMs)} | ${r.llmSteps} | ${r.inputTokens} / ${r.outputTokens} | ${d.calls} | ${cell(tally(d.statuses))} | ${d.executed} | ${r.score.chatActions} | ${d.decisions} | ${num(d.msP50)} / ${num(d.msP95)} | ${v.right ?? 0} / ${v.wrong ?? 0} / ${v.unkeyed ?? 0} / ${v.unscoreable ?? 0} | ${cell(d.errors.join('; ') || '—')} |`,
+    )
+  }
+  L.push('')
+
+  const calls = drows.flatMap((r) => r.score.driver.detail.filter((c) => c.status || c.error).map((c) => ({ r, c })))
+  if (calls.length) {
+    L.push('## Driver: FastSteps calls', '')
+    L.push('| task | rep | goal | executed (p, verdict) | ended | last decision |')
+    L.push('|---|---|---|---|---|---|')
+    for (const { r, c } of calls) {
+      const exec = c.steps.map((s) => `${fmtAct(s)} (${s.p}${s.ok ? '' : ', refused'}, ${s.verdict})`).join(' → ') || '—'
+      const last = c.decided.filter((d) => !d.executed).at(-1)
+      const lastTxt = last?.top3 ? `${fmtAct(last.top3[0])} ${last.top3[0].p}${last.topOk === null ? '' : last.topOk ? ' ✓' : ' ✗'}` : last?.skipped ? `skipped (${last.skipped})` : '—'
+      L.push(`| ${r.task} | ${r.rep} | ${cell(c.input.goal ?? '')} | ${cell(exec)} | ${cell(c.error ? `error: ${c.error}` : `${c.status}/${c.reason}${c.message ? `: ${c.message}` : ''}`)} | ${cell(lastTxt)} |`)
+    }
+    L.push('')
+  }
+
+  const wrong = drows.flatMap((r) => r.score.driver.wrongSteps.map((s) => ({ r, s })))
+  if (wrong.length) {
+    L.push('## Driver: wrong executed steps', '')
+    L.push('| task | rep | url | step (p) | key | method |')
+    L.push('|---|---|---|---|---|---|')
+    for (const { r, s } of wrong)
+      L.push(`| ${r.task} | ${r.rep} | ${cell((s.url ?? '').replace(/^https?:\/\/[^/]+/, ''))} | ${fmtAct(s)} (${s.p}) | ${cell(s.key.map(fmtAct).join(', '))} | ${s.method} |`)
+    L.push('')
+  }
+  return L
 }
 
 /** Writes out/<ISO-time>/{results.json,report.md} under `outRoot`; returns the directory. */

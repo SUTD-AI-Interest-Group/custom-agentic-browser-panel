@@ -433,6 +433,28 @@ async function settleShadow(panel, since) {
   }
 }
 
+/**
+ * Runs in the panel page: copies every `decider.next` request (and its cancel) into
+ * `window.__evalDrive`. Fixture pages hold no user data, so keeping the elements is safe here.
+ */
+function captureDriveRequests() {
+  window.__evalDrive = []
+  chrome.runtime.onMessage.addListener((m) => {
+    try {
+      if (m?.type === 'decider.next')
+        window.__evalDrive.push({
+          at: Date.now(), requestId: m.requestId, conversationId: m.conversationId, goal: m.goal,
+          url: m.snap?.url ?? null, title: m.snap?.title ?? null, elements: m.snap?.elements ?? null,
+          exclude: m.exclude ?? [], previousActions: m.previousActions ?? [], values: m.values ?? {}, selectOptions: m.selectOptions ?? {},
+        })
+      else if (m?.type === 'decider.next.cancel') window.__evalDrive.push({ at: Date.now(), cancel: true, requestId: m.requestId })
+    } catch {
+      /* a copy only */
+    }
+    return undefined
+  })
+}
+
 let interrupted = false
 
 /** `progress.sentAt` is set the moment the prompt is about to go out (see the error path in main). */
@@ -473,6 +495,13 @@ async function runTask(ctx, extId, origin, task, arm, rep, progress = {}) {
       await composer.fill('')
       return null
     }
+
+    // Driver mode: the state each FastSteps decision saw. The worker posts every step's masked page
+    // (`decider.next`, src/decider/relay.ts) to the panel through chrome.runtime.sendMessage, which
+    // every extension page receives. This listener only copies it (returns nothing, never answers),
+    // so the app's own listener still holds the channel and replies. report.mjs keys each executed
+    // step against the registry rebuilt from this snapshot (driverSteps).
+    if (arm === 'driver') await panel.evaluate(captureDriveRequests)
 
     const since = Date.now()
     log(`${task.id}/${arm}/${rep}: start`)
@@ -536,6 +565,7 @@ async function runTask(ctx, extId, origin, task, arm, rep, progress = {}) {
     } catch {
       success = false
     }
+    const driveRequests = arm === 'driver' ? await panel.evaluate(() => window.__evalDrive ?? null).catch(() => null) : undefined
     const form = task.family === 'form'
     const fields = form ? await fx.evaluate(() => (typeof window.__fields === 'function' ? window.__fields() : null)).catch(() => null) : null
     const submitted = form ? await submittedOf(fx).catch(() => null) : null
@@ -547,6 +577,7 @@ async function runTask(ctx, extId, origin, task, arm, rep, progress = {}) {
       cost: taskCost(db.steps, { providerKind: PROVIDER.kind, sent: true }),
       approvals: approvals.map((a) => a.head), reply, conversationIds: db.conversationIds,
       tools: db.tools, traceCalls: db.traceCalls, urlTimeline: timeline, shadow: db.shadow, fields, submitted,
+      ...(driveRequests !== undefined ? { driveRequests } : {}),
     }
   } finally {
     await fx.close().catch(() => {})
@@ -687,6 +718,19 @@ try {
               (a.length ? `; mapped [${a.flatMap((x) => x.mapped).join(', ')}]; left [${a.flatMap((x) => x.left.map((l) => `${l.index}:${l.reason}`)).join(', ')}]` : '') +
               (a.some((x) => x.error) ? `; errors: ${a.filter((x) => x.error).map((x) => x.error).join(' | ')}` : ''),
           )
+        }
+        if (arm === 'driver') {
+          const d = s.driver
+          const v = d.verdicts
+          log(
+            `  driver: FastSteps ${d.calls} call(s), ${d.usedCalls} reached the loop [${Object.entries(d.statuses).map(([k, x]) => `${k}×${x}`).join(', ')}]; ` +
+              `executed ${d.executed}; decisions ${d.decisions}; drive ms p50/p95 ${d.msP50 ?? '—'}/${d.msP95 ?? '—'}; ` +
+              `right/wrong/unkeyed/unscoreable ${v.right ?? 0}/${v.wrong ?? 0}/${v.unkeyed ?? 0}/${v.unscoreable ?? 0}` +
+              (d.errors.length ? `; errors: ${d.errors.join(' | ')}` : ''),
+          )
+          // Not fatal (success, wall time and steps stand), but the scoring degrades: say so.
+          if (d.decisions > 0 && d.captured === 0) log(`  WARNING ${task.id}/${arm}/${rep}: no decider.next request was captured; executed steps fell back to replay scoring`)
+          if (d.decisions > 0 && d.driveRecords === 0) log(`  WARNING ${task.id}/${arm}/${rep}: FastSteps decided ${d.decisions} time(s) but no drive record was written`)
         }
         log(
           `${task.id}/${arm}/${rep}: success=${row.success} ${row.ended} ${Math.round(row.wallMs / 1000)}s steps=${row.llmSteps} ` +

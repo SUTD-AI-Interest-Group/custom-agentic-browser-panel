@@ -220,7 +220,7 @@ test('summaryLine: per arm, decider@p≥thr, chat accuracy, coverage, ms', () =>
   row.score = scoreRow(row)
   assert.equal(
     summaryLine(summarize([row]), 0.6),
-    'summary — shadow: decider@p≥0.6 100% (1/1), chat 50% (1/2), coverage 50%, decider ms p50/p95 100/101',
+    'summary — shadow: success 100% (1/1), decider@p≥0.6 100% (1/1), chat 50% (1/2), coverage 50%, decider ms p50/p95 100/101',
   )
   assert.equal(summaryLine({}), 'summary — no rows')
 })
