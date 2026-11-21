@@ -278,6 +278,8 @@ export interface NextRequest {
   snap: FormSnap
   /** Read by the worker before the step; null when that read failed. */
   pageText: string | null
+  /** The page's (non-sensitive) selects' options, read by the worker: what a `select` can choose. */
+  selectOptions: Record<number, string[]>
   previousActions: string[]
   /** Pairs this step must not choose: refused earlier, or a repeat of an action that changed nothing. */
   exclude: OpRef[]
@@ -475,7 +477,8 @@ export function parseNextRequest(raw: unknown): NextRequest | null {
   }
   const snap = parseFormSnap(raw.snap)
   const values = parseValues(raw.values)
-  if (!snap || !values) return null
+  const selectOptions = parseSelectOptions(raw.selectOptions)
+  if (!snap || !values || !selectOptions) return null
   return {
     type: 'decider.next',
     conversationId: raw.conversationId,
@@ -486,6 +489,7 @@ export function parseNextRequest(raw: unknown): NextRequest | null {
     values,
     snap,
     pageText: raw.pageText as string | null,
+    selectOptions,
     previousActions: (raw.previousActions as string[]).slice(-PREVIOUS_ACTIONS_WINDOW),
     exclude,
   }
@@ -495,9 +499,10 @@ const isMs = (v: unknown): v is number => typeof v === 'number' && Number.isFini
 
 /**
  * The panel's driver answer, rebuilt field by field — or null. Every option must name an element
- * on the page the worker snapshotted, and a value may only accompany a `type` at the top.
+ * on the page the worker snapshotted; a value may only accompany a `type` or `select` at the top,
+ * and a select's value must be one of the options the worker read off that select.
  */
-export function parseNextReply(raw: unknown, onPage: ReadonlySet<number>): DriverDecideOutcome | null {
+export function parseNextReply(raw: unknown, onPage: ReadonlySet<number>, selectOptions: Record<number, string[]> = {}): DriverDecideOutcome | null {
   if (!isObj(raw)) return null
   if (raw.steerPending !== undefined && typeof raw.steerPending !== 'boolean') return null
   const steer = raw.steerPending === true ? { steerPending: true } : {}
@@ -513,7 +518,9 @@ export function parseNextReply(raw: unknown, onPage: ReadonlySet<number>): Drive
   const out: DriverDecideOutcome = { top3, tokens: raw.tokens, ms: raw.ms, ...steer }
   if (raw.value !== undefined) {
     const v = raw.value
-    if (top3[0].op !== 'type' || !isObj(v) || !isStr(v.key) || v.key === '' || v.key.length > MAX_KEY + 'request.'.length || !isStr(v.text) || !isProb(v.p)) return null
+    const first = top3[0]
+    if ((first.op !== 'type' && first.op !== 'select') || !isObj(v) || !isStr(v.key) || v.key === '' || v.key.length > MAX_KEY + 'request.'.length || !isStr(v.text) || !isProb(v.p)) return null
+    if (first.op === 'select' && !(selectOptions[first.index!] ?? []).includes(v.text)) return null
     out.value = { key: v.key, text: v.text, p: v.p }
   }
   return out
@@ -768,6 +775,9 @@ export function forwardDeciderHooks(deps: {
         if (settingsModeOf(deps.settings) !== 'driver') return { error: 'the decision model is not in Driver mode' }
         if (i.signal?.aborted) return { error: STOPPED }
         const snap = formSnapOf(i.snap)
+        // What a `select` could choose, read here (before the step), as assist's mapForm does.
+        const selectOptions = await selectOptionsNow(i.tabId, snap.elements)
+        if (i.signal?.aborted) return { error: STOPPED }
         const requestId = crypto.randomUUID()
         const built: NextRequest = {
           type: 'decider.next',
@@ -779,6 +789,7 @@ export function forwardDeciderHooks(deps: {
           values: requestValues(i.values),
           snap,
           pageText: i.pageText,
+          selectOptions,
           previousActions: previousActionsOf(i.session, i.snap),
           exclude: i.exclude.slice(0, MAX_EXCLUDE),
         }
@@ -793,7 +804,13 @@ export function forwardDeciderHooks(deps: {
         if ('error' in asked) return asked
         const reply = asked.reply
         if (!isObj(reply) || reply.requestId !== requestId) return { error: 'the panel sent a malformed reply' }
-        return parseNextReply(reply, new Set(snap.elements.map((e) => e.index))) ?? { error: 'the panel sent a malformed decision' }
+        const decided = parseNextReply(reply, new Set(snap.elements.map((e) => e.index)), msg.selectOptions)
+        if (!decided) return { error: 'the panel sent a malformed decision' }
+        // This worker's own exclusions bind, whatever the panel did with them: an option it was told
+        // to leave out (refused earlier, or an immediate repeat) is never acted on.
+        if (!('error' in decided) && decided.top3.some((o) => msg.exclude.some((x) => x.op === o.op && x.index === o.index)))
+          return { error: 'the decision model offered an action it was told to exclude', ...(decided.steerPending ? { steerPending: true } : {}) }
+        return decided
       } catch (err) {
         return { error: requestFailure(err) }
       }

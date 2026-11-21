@@ -607,29 +607,41 @@ export function createDeciderHooks(deps: DeciderHookDeps): DeciderPanelHooks {
   }
 
   /**
-   * The value for a `type` at the top: the single-field fill question over profile + values, and
-   * the chosen key's text when it clears the threshold. Never throws — no value is a hand-back
-   * ("needs value"), not a failure. `entry` is the record's view of it: a key NAME, never the text.
+   * The value for a `type` or `select` at the top: the single-field fill question (state.ts's
+   * formFields + fillRequest) — for a text field over profile + values, for a select over its own
+   * options (the worker read them) with profile + values as the context — and the chosen text when
+   * it clears the threshold. Never throws: no value is a hand-back ("needs value"), not a failure.
+   * `entry` is the record's view of it: a key NAME or an option's POSITION, never the text.
    */
-  async function typedValue(
+  async function fieldValue(
     step: NextStep,
     el: IndexedElement | undefined,
+    op: 'type' | 'select',
     cancelled: () => boolean,
   ): Promise<{ ms: number; value?: { key: string; text: string; p: number }; entry?: NonNullable<ShadowRecord['fill']>[number] }> {
     try {
-      const field = el ? formFields([el], {})[0] : undefined
-      if (!field || field.kind !== 'text') return { ms: 0 }
-      const lookup = await lookupFor(step.values)
-      if (cancelled() || (Object.keys(lookup.profile).length === 0 && Object.keys(lookup.request).length === 0)) return { ms: 0 }
+      const field = el ? formFields([el], step.selectOptions)[0] : undefined
+      if (!field || field.kind !== (op === 'type' ? 'text' : 'select')) return { ms: 0 }
+      let lookup: Lookup
+      try {
+        lookup = await lookupFor(step.values)
+      } catch (err) {
+        // A text field has nothing to choose from without it; a select still has its options.
+        if (op === 'type') throw err
+        lookup = { profile: {}, request: step.values }
+      }
+      if (cancelled()) return { ms: 0 }
+      if (op === 'type' && Object.keys(lookup.profile).length === 0 && Object.keys(lookup.request).length === 0) return { ms: 0 }
       const { request, questions } = fillRequest({ goal: step.goal, url: step.snap.url, title: step.snap.title, lookup, fields: [field] })
       const result = (await engine().decide(request)) as DecisionResult
       const q = questions[0]
       const a = result.answers[q.name]
       if (!a) return { ms: result.ms }
-      const entry = { index: field.index, key: fillKey(q, a, Object.keys(lookup.request)), p: a.p, llmAgrees: null }
-      const text = a.top === 'leave_empty' ? undefined : lookupValue(lookup, a.top)
+      const key = fillKey(q, a, Object.keys(lookup.request))
+      const entry = { index: field.index, key, p: a.p, llmAgrees: null }
+      const text = op === 'select' ? a.top : a.top === 'leave_empty' ? undefined : lookupValue(lookup, a.top)
       if (a.p < resolver.threshold() || text === undefined) return { ms: result.ms, entry }
-      return { ms: result.ms, entry, value: { key: a.top, text, p: a.p } }
+      return { ms: result.ms, entry, value: { key: op === 'select' ? key : a.top, text, p: a.p } }
     } catch {
       return { ms: 0 }
     }
@@ -691,7 +703,8 @@ export function createDeciderHooks(deps: DeciderHookDeps): DeciderPanelHooks {
       .slice(0, 3)
     const top3 = order.map((k) => optionOf(actions[k], a.probs[k]))
     const best = actions[order[0]]
-    const typed = best.op === 'type' ? await typedValue(step, elements.find((e) => e.index === best.index), cancelled) : { ms: 0 }
+    const typed =
+      best.op === 'type' || best.op === 'select' ? await fieldValue(step, elements.find((e) => e.index === best.index), best.op, cancelled) : { ms: 0 }
     if (cancelled()) return { error: CANCELLED }
     const ms = result.ms + typed.ms
     try {
@@ -703,6 +716,9 @@ export function createDeciderHooks(deps: DeciderHookDeps): DeciderPanelHooks {
         cold: result.cold,
         top3: top3.map((o) => ({ ...o })),
         agree: null,
+        // The loop also acts in the tentative band (0.4 to the threshold) on a step that is not a
+        // point of no return, but that classifier needs fields the panel is never sent (href, the
+        // ancestor's name), so this counts only the band where it acts unconditionally.
         wouldAct: top3[0].p >= resolver.threshold(),
         ...(typed.entry ? { fill: [typed.entry] } : {}),
       }
@@ -724,10 +740,12 @@ export function createDeciderHooks(deps: DeciderHookDeps): DeciderPanelHooks {
   function sessionGranted(): void {
     try {
       if (!isDeciderOn(resolver.settingsMode())) return
-      void resolver
-        .resolveReady()
-        .then((r) => (r ? engine().warm() : undefined))
-        .catch(() => {})
+      const ready = resolver.resolveReady()
+      void ready.then((r) => (r ? engine().warm() : undefined)).catch(() => {})
+      // Assist and driver fill from the profile, whose structuring is one chat-model call (cached
+      // per memory set). Made now, while the chat model reads the page, rather than inside the
+      // first fill — where it measured ~16 s on a local model, against a driver step's 30 s budget.
+      if (assistsForms(resolver.settingsMode())) void ready.then((r) => (r ? lookupFor({}) : undefined)).catch(() => {})
     } catch {
       /* additive only: a broken decider must never touch the grant */
     }
@@ -761,19 +779,24 @@ export function createDeciderHooks(deps: DeciderHookDeps): DeciderPanelHooks {
       try {
         if (i.signal?.aborted) return Promise.resolve({ error: STOPPED })
         const aborted = () => i.signal?.aborted === true
-        const step: NextStep = {
-          tabId: i.tabId,
-          goal: i.goal,
-          plan: i.session.plan,
-          values: { ...i.values },
-          snap: formSnapOf(i.snap),
-          pageText: i.pageText,
-          previousActions: previousActionsOf(i.session, i.snap),
-          exclude: i.exclude,
-        }
+        const snap = formSnapOf(i.snap)
+        const previousActions = previousActionsOf(i.session, i.snap)
+        const stepP = optionsNow(i.tabId, snap).then(
+          (selectOptions): NextStep => ({
+            tabId: i.tabId,
+            goal: i.goal,
+            plan: i.session.plan,
+            values: { ...i.values },
+            snap,
+            pageText: i.pageText,
+            selectOptions,
+            previousActions,
+            exclude: i.exclude,
+          }),
+        )
         // Stop ends the wait at once; decideNext, still running, sees the abort and drops its answer.
         return Promise.race([
-          nextFor(n, step, aborted).then((r) => (aborted() ? { error: STOPPED } : r)),
+          stepP.then((step) => nextFor(n, step, aborted)).then((r) => (aborted() ? { error: STOPPED } : r)),
           whenAborted(i.signal).then(() => ({ error: STOPPED })),
         ])
       } catch (err) {

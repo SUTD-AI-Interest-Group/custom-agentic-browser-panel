@@ -18,12 +18,15 @@
 //     a step acts; between 0.4 and the threshold it acts only if it is NOT a point of no return;
 //     below 0.4 it hands back. `done` always needs the full threshold — the chat model will act
 //     on that claim.
-//  6. repeat exclusion: the same (op, index) as the last action, after that action changed
-//     nothing, excludes the pair and asks once more — "not that one again" is a change to the
-//     options, not a hope about the model.
-//  7. a `type` needs a value the panel chose with confidence; otherwise hand back.
-//  8. a point of no return gets the one-shot card, then the stale-element re-check (the card
-//     described the element as it was before the human's reaction time).
+//  6. repeat exclusion (spec §3): an immediate repeat of the last action — the same (op, index) on
+//     the same page, at an element that has not changed — excludes the pair and asks once more:
+//     "not that one again" is a change to the options, not a hope about the model. (A target-less
+//     scroll counts only when the last one changed nothing.)
+//  7. a `type` or `select` needs a value the panel chose with confidence; otherwise hand back.
+//  8. right before acting: a point of no return gets the one-shot card; then the page is re-read,
+//     the guards run, the element must still be the one decided on, and it is classified again
+//     (a step that became risky is carded, or handed back in the tentative band). The decision
+//     and any card took time; nothing acts on a snapshot from before it.
 //  9. act — a quick settle for a step that commits nothing, the full one otherwise.
 // 10. stop on done, two refused actions, three no-change actions in a row, maxSteps, Stop or steer.
 //
@@ -56,7 +59,10 @@ export interface DriverDecision {
   tokens: number
   /** Decider time for this step (the next-action pass, plus the value pass for a `type`). */
   ms: number
-  /** For a `type`: what to type, when the panel chose a lookup key with confidence. */
+  /**
+   * For a `type`: the text to type, when the panel chose a lookup key with confidence. For a
+   * `select`: the option to choose (one the worker read off that select), likewise.
+   */
   value?: { key: string; text: string; p: number }
   /** The user queued a steer: stop at this step boundary. */
   steerPending?: boolean
@@ -83,6 +89,7 @@ export type DriverReason =
   | 'stopped'
   | 'steer'
   | 'session ended'
+  | 'another FastSteps run is in progress'
   | 'parked'
   | 'page moved'
   | 'page changed'
@@ -148,13 +155,17 @@ const shown = (o: DriverOption): DriverOption => ({ ...refOf(o), p: round(o.p) }
 const target = (o: OpRef) => (o.index === undefined ? o.op : `${o.op} [${o.index}]`)
 const findEl = (snap: PageSnapshot, index: number | undefined) => (index === undefined ? undefined : snap.elements.find((e) => e.index === index))
 
+/** A page's address without its fragment: a hash change (`#added`) does not make it another page. */
+const pageOf = (url: string) => url.split('#')[0]
+
 /** What the page looks like for "did that action change anything": address, registry, text. */
 const fingerprint = (snap: PageSnapshot, pageText: string | null) => `${snap.url}\u0000${snap.text}\u0000${pageText ?? ''}`
 
-/** The action a decision names. Only `type` carries text; `select` and `done` never reach here. */
+/** The action a decision names: `type` carries its text, `select` its option; `done` never gets here. */
 function specOf(o: OpRef, text?: string): ControlSpec {
   if (o.op === 'scroll') return { action: 'scroll', direction: 'down' }
   if (o.op === 'type') return { action: 'type', index: o.index, text: text ?? '', clear: true }
+  if (o.op === 'select') return { action: 'select', index: o.index, value: text ?? '' }
   return { action: 'click', index: o.index }
 }
 
@@ -170,7 +181,7 @@ export async function runDriverLoop(deps: DriverDeps): Promise<DriverResult> {
   let failed = 0
   let noChange = 0
   /** The last successful action, and the page as it was before it. */
-  let prev: { ref: OpRef; before: string; changed?: boolean } | null = null
+  let prev: { ref: OpRef; before: string; page: string; el: IndexedElement | undefined; changed?: boolean } | null = null
 
   const end = (stop: DriverStop, withDecision = false): DriverResult => ({
     status: stop.status,
@@ -243,55 +254,90 @@ export async function runDriverLoop(deps: DriverDeps): Promise<DriverResult> {
       por = deps.isPointOfNoReturn(specOf(best), findEl(snap, best.index))
       if (best.p < deps.threshold && por)
         return end({ status: 'handback', reason: 'unsure', message: `Not sure enough (p=${best.p.toFixed(2)}) for a risky step: ${target(best)}.` }, true)
+      // (Re-classified on the live element right before acting — step 8.)
 
-      // 6. A repeat of an action that changed nothing.
-      if (prev && prev.changed === false && sameRef(prev.ref, best)) {
+      // 6. An immediate repeat of the last action's target (spec §3): excluded, and asked once
+      // more. An element target repeats when it is the same page (its address, fragment aside)
+      // and the same element — clicking "Add to cart" again after the header changed is exactly
+      // the repeat October measured (five cards, five items) — even though the page changed. The
+      // same INDEX on another page, or at an element that changed, is a different target: indices
+      // are reassigned on every page (measured: [5] was a search result, then "Add to cart").
+      // A target-less scroll repeats only when the last one changed nothing: scrolling on down a
+      // long page is not a loop.
+      const repeated =
+        prev !== null &&
+        sameRef(prev.ref, best) &&
+        (best.index === undefined
+          ? prev.changed === false
+          : prev.page === pageOf(snap.url) && !deps.hasElementChanged(prev.el, findEl(snap, best.index)))
+      if (repeated) {
         if (attempt === 0) {
           exclude.push(refOf(best))
           continue
         }
-        return end({ status: 'handback', reason: 'repeat', message: `Would repeat ${target(best)}, which changed nothing.` }, true)
+        return end({ status: 'handback', reason: 'repeat', message: `Would repeat ${target(best)} twice in a row.` }, true)
       }
       top = best
       decision = out
       break
     }
 
-    // 7. A value to type, or a hand-back.
-    if (top.op === 'select')
-      return end({ status: 'handback', reason: 'needs value', message: `Choose the option in [${top.index}] with ControlPage.` }, true)
-    if (top.op === 'type' && !decision.value)
-      return end({ status: 'handback', reason: 'needs value', message: `No confident value to type into [${top.index}]; pass it in values or type it with ControlPage.` }, true)
+    // 7. A value to type or choose, or a hand-back.
+    if ((top.op === 'type' || top.op === 'select') && !decision.value) {
+      const what = top.op === 'type' ? `No confident value to type into [${top.index}]; pass it in values or type it` : `No confident option to choose in [${top.index}]; choose it`
+      return end({ status: 'handback', reason: 'needs value', message: `${what} with ControlPage.` }, true)
+    }
     const spec = specOf(top, decision.value?.text)
-    const el = findEl(snap, top.index)
+    let el = findEl(snap, top.index)
 
-    // 8. A point of no return: the one-shot card, then the stale-element re-check.
+    // 8. Right before acting, the target as it stands NOW. The decision (and any card) took time
+    // — ~150 ms warm, up to 30 s on a cold first step, a human's reaction time on a card — and a
+    // quick settle can leave the page mid-render: a button relabelled in place ("Choose size" →
+    // "Buy now") must not be clicked on the strength of what it used to say. So: a point of no
+    // return gets its one-shot card first; then, either way, the page is re-read, the guards run
+    // (after the read, whose wait for a loading tab can be seconds), the element must be the one
+    // decided on, and it is classified again — a step that has BECOME risky is carded (or, in the
+    // tentative band, handed back) and re-checked once more before anything acts.
     let actSnap = snap
-    if (por) {
-      let approved: boolean
-      try {
-        approved = await deps.approve(spec, el)
-      } catch (err) {
+    let carded = false
+    for (;;) {
+      if (por && !carded) {
+        if (top.p < deps.threshold)
+          return end({ status: 'handback', reason: 'unsure', message: `Not sure enough (p=${top.p.toFixed(2)}) for a risky step: ${target(top)}.` }, true)
+        let approved: boolean
+        try {
+          approved = await deps.approve(spec, el)
+        } catch (err) {
+          if (deps.aborted()) return end(STOPPED)
+          throw err
+        }
         if (deps.aborted()) return end(STOPPED)
-        throw err
+        if (!approved) return end({ status: 'blocked', reason: 'denied', message: 'The user declined this step.' }, true)
+        carded = true
       }
-      if (deps.aborted()) return end(STOPPED)
-      if (!approved) return end({ status: 'blocked', reason: 'denied', message: 'The user declined this step.' }, true)
-      const after = await deps.guard()
-      if (after) return end(after)
       try {
         actSnap = await deps.snapshot()
       } catch {
-        return end({ status: 'handback', reason: 'page changed', message: 'Could not re-read the page after the approval; re-read it and continue.' })
+        return end({ status: 'handback', reason: 'page changed', message: 'Could not re-read the page before acting; re-read it and continue.' })
       }
       elements = actSnap.text
-      if (top.index !== undefined && deps.hasElementChanged(el, findEl(actSnap, top.index)))
-        return end({ status: 'handback', reason: 'page changed', message: 'The page changed while waiting for approval; re-read it and continue.' })
-    } else {
       const now = await deps.guard()
       if (now) return end(now)
+      if (deps.aborted()) return end(STOPPED)
+      const fresh = findEl(actSnap, top.index)
+      if (top.index !== undefined && deps.hasElementChanged(el, fresh))
+        return end({
+          status: 'handback',
+          reason: 'page changed',
+          message: carded ? 'The page changed while waiting for approval; re-read it and continue.' : 'The page changed before the step could run; re-read it and continue.',
+        })
+      el = fresh
+      if (!carded && deps.isPointOfNoReturn(spec, el)) {
+        por = true
+        continue
+      }
+      break
     }
-    if (deps.aborted()) return end(STOPPED)
 
     // 9. Act. A link click may load a page, so it waits like a committing step does.
     const settle = por || (top.op === 'click' && !!el?.href) ? 'full' : 'quick'
@@ -307,6 +353,6 @@ export async function runDriverLoop(deps: DriverDeps): Promise<DriverResult> {
     }
     if (r.moved)
       return end({ status: 'handback', reason: 'page moved', message: `The page is now on ${r.moved}; re-read the elements and continue with ControlPage.` })
-    prev = { ref: refOf(top), before }
+    prev = { ref: refOf(top), before, page: pageOf(actSnap.url), el }
   }
 }

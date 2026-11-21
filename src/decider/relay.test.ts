@@ -709,7 +709,9 @@ const DRIVE_ELEMENTS = [
   el({ index: 0, tag: 'input', type: 'search', name: 'Search products' }),
   el({ index: 1, tag: 'button', type: 'submit', name: 'Search' }),
   el({ index: 2, tag: 'input', type: 'password', name: 'Password', value: 'hunter2', sensitive: true }),
+  el({ index: 3, tag: 'select', name: 'Sort by' }),
 ]
+const SORT = ['Featured', 'Price: low to high', 'Price: high to low']
 const driveInput = (over: Record<string, unknown> = {}) => ({
   tabId: 7,
   snap: snap(DRIVE_ELEMENTS),
@@ -720,12 +722,13 @@ const driveInput = (over: Record<string, unknown> = {}) => ({
   exclude: [{ op: 'click' as const, index: 1 }],
   ...over,
 })
-const DECISION = { top3: [{ op: 'type', index: 0, p: 0.91 }, { op: 'click', index: 1, p: 0.05 }, { op: 'scroll', p: 0.02 }], tokens: 512, ms: 180 }
+const DECISION = { top3: [{ op: 'type', index: 0, p: 0.91 }, { op: 'select', index: 3, p: 0.05 }, { op: 'scroll', p: 0.02 }], tokens: 512, ms: 180 }
 
 describe('forwardDeciderHooks.next (the service-worker side of driver mode)', () => {
   const answering = (reply: (msg: NextRequest) => unknown) => vi.fn(async (msg: NextRequest) => reply(msg))
 
   it('asks the panel once with the masked page, the worker-read text and the exclusions, and returns the decision it validated', async () => {
+    vi.mocked(readSelectOptions).mockResolvedValue({ 3: SORT })
     const requestNext = answering((msg) => ({ requestId: msg.requestId, ...DECISION, value: { key: 'request.query', text: 'wireless headphones', p: 0.88 } }))
     const send = vi.fn()
     const hooks = forwardDeciderHooks({ conversationId: 'conv-1', settings: () => ({ mode: 'driver' }), send, requestNext })
@@ -748,9 +751,11 @@ describe('forwardDeciderHooks.next (the service-worker side of driver mode)', ()
           { index: 0, tag: 'input', type: 'search', name: 'Search products', sensitive: false },
           { index: 1, tag: 'button', type: 'submit', name: 'Search', sensitive: false },
           { index: 2, tag: 'input', type: 'password', name: 'Password', value: SENSITIVE_VALUE_MASK, sensitive: true },
+          { index: 3, tag: 'select', name: 'Sort by', sensitive: false },
         ],
       },
       pageText: 'Northwind Store. Search products.',
+      selectOptions: { 3: SORT },
       previousActions: ['opened the store'],
       exclude: [{ op: 'click', index: 1 }],
     })
@@ -759,6 +764,28 @@ describe('forwardDeciderHooks.next (the service-worker side of driver mode)', ()
     expect(parseNextRequest(JSON.parse(JSON.stringify(msg)))).toEqual(msg)
     expect(send).not.toHaveBeenCalled() // a request, not a post
     expect(readViewportText).not.toHaveBeenCalled() // the loop read it, before the step
+    expect(readSelectOptions).toHaveBeenCalledWith(7, [3]) // the worker reads what a select can choose
+  })
+
+  it('accepts a select value only when it is one of the options this worker read off that select', async () => {
+    vi.mocked(readSelectOptions).mockResolvedValue({ 3: SORT })
+    const choose = (text: string) =>
+      answering((msg) => ({ requestId: msg.requestId, top3: [{ op: 'select', index: 3, p: 0.9 }], tokens: 400, ms: 150, value: { key: 'option.1', text, p: 0.8 } }))
+    const ok = await forwardDeciderHooks({ conversationId: 'c', settings: () => ({ mode: 'driver' }), requestNext: choose('Price: low to high') }).next(driveInput())
+    expect(ok).toMatchObject({ value: { key: 'option.1', text: 'Price: low to high', p: 0.8 } })
+    const invented = await forwardDeciderHooks({ conversationId: 'c', settings: () => ({ mode: 'driver' }), requestNext: choose('Delete my account') }).next(driveInput())
+    expect(invented).toEqual({ error: expect.stringContaining('malformed') })
+  })
+
+  it('enforces its own exclusions on the reply: an excluded pair anywhere in it is an error, never a decision', async () => {
+    const offering = (top3: unknown[], extra: Record<string, unknown> = {}) =>
+      answering((msg) => ({ requestId: msg.requestId, top3, tokens: 400, ms: 150, ...extra }))
+    const hooks = (requestNext: ReturnType<typeof answering>) => forwardDeciderHooks({ conversationId: 'c', settings: () => ({ mode: 'driver' }), requestNext })
+    // driveInput excludes click [1].
+    expect(await hooks(offering([{ op: 'click', index: 1, p: 0.9 }])).next(driveInput())).toEqual({ error: expect.stringContaining('exclude') })
+    expect(await hooks(offering([{ op: 'scroll', p: 0.6 }, { op: 'click', index: 1, p: 0.3 }])).next(driveInput())).toEqual({ error: expect.stringContaining('exclude') })
+    expect(await hooks(offering([{ op: 'click', index: 1, p: 0.9 }], { steerPending: true })).next(driveInput())).toMatchObject({ steerPending: true })
+    expect(await hooks(offering([{ op: 'click', index: 0, p: 0.9 }])).next(driveInput())).toMatchObject({ top3: [{ op: 'click', index: 0, p: 0.9 }] })
   })
 
   it.each([
@@ -856,7 +883,7 @@ describe('parseNextRequest', () => {
   const REQ: NextRequest = {
     type: 'decider.next', conversationId: 'c', requestId: 'r1', tabId: 7, goal: 'g', plan: 'p', values: { query: 'q' },
     snap: { url: 'https://shop.test/', title: 'Shop', elements: [{ index: 0, tag: 'input', type: 'password', name: 'Pin', value: SENSITIVE_VALUE_MASK, sensitive: true }] },
-    pageText: null, previousActions: ['a'], exclude: [{ op: 'click', index: 0 }, { op: 'scroll' }],
+    pageText: null, selectOptions: { 4: ['A', 'B'] }, previousActions: ['a'], exclude: [{ op: 'click', index: 0 }, { op: 'scroll' }],
   }
 
   it('accepts a well-formed request, re-masks a sensitive value and drops anything extra', () => {
@@ -875,6 +902,8 @@ describe('parseNextRequest', () => {
     ['a scroll exclusion with an index', { ...REQ, exclude: [{ op: 'scroll', index: 2 }] }],
     ['too many exclusions', { ...REQ, exclude: Array.from({ length: 51 }, () => ({ op: 'scroll' })) }],
     ['values that are not strings', { ...REQ, values: { query: 1 } }],
+    ['select options that are not lists', { ...REQ, selectOptions: { 4: 'A' } }],
+    ['no select options', { ...REQ, selectOptions: undefined }],
   ])('rejects %s', (_label, raw) => {
     expect(parseNextRequest(raw)).toBeNull()
   })

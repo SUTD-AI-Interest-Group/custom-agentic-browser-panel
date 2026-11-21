@@ -1291,7 +1291,10 @@ describe('FastSteps — the decider drives, every ControlPage guard intact', () 
       decisions: 3,
       deciderMs: 360,
     })
-    expect(result.elements).toBe('registry 2')
+    // Two reads per step — the one decided on, and the one re-read right before acting — so the
+    // third step's decision read is the fifth.
+    expect(result.elements).toBe('registry 4')
+    expect(snapshotPage).toHaveBeenCalledTimes(5)
   })
 
   it('a point of no return asks once (once: true, never "Allow this chat"), then acts with the full settle', async () => {
@@ -1350,7 +1353,8 @@ describe('FastSteps — the decider drives, every ControlPage guard intact', () 
   })
 
   it('maxSteps is capped at 12', async () => {
-    const next = scriptedNext(decided(top('click', 1, 0.9)))
+    // Alternating targets: an immediate repeat of one would be excluded (spec §3).
+    const next = scriptedNext(...Array.from({ length: 13 }, (_, k) => decided(top('click', k % 2 ? 0 : 1, 0.9))))
     const result = await within((buildDriverTools({ session: buildSession(), next }).FastSteps as any).execute({ goal: 'g', maxSteps: 50 }, {} as any), 5000)
     expect(result).toMatchObject({ status: 'handback', reason: 'max steps' })
     expect(runControlStep).toHaveBeenCalledTimes(12)
@@ -1362,5 +1366,73 @@ describe('FastSteps — the decider drives, every ControlPage guard intact', () 
     const result = await within((buildDriverTools({ session: buildSession(), decider }).FastSteps as any).execute({ goal: 'open the cart' }, {} as any))
     expect(result).toMatchObject({ status: 'done', decisions: 1, deciderMs: 90 })
     expect(requestNext).toHaveBeenCalledWith(expect.objectContaining({ type: 'decider.next', goal: 'open the cart', exclude: [] }))
+  })
+})
+
+describe('FastSteps — fix round 1', () => {
+  beforeEach(() => {
+    vi.mocked(snapshotPage).mockReset()
+    vi.mocked(runControlStep).mockReset()
+    let reads = 0
+    vi.mocked(snapshotPage).mockImplementation(async () => ({ ...snap(DRIVE_FORM), text: `registry ${reads++}` }))
+    vi.mocked(runControlStep).mockResolvedValue({ ok: true, message: 'done', registry: 'after step', origin: 'https://example.com' })
+    stubForeground()
+  })
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('a target relabelled between the decision and the act ("Show more" → "Buy now") is never clicked', async () => {
+    let reads = 0
+    vi.mocked(snapshotPage).mockImplementation(async () =>
+      snap(reads++ === 0 ? DRIVE_FORM : DRIVE_FORM.map((e) => (e.index === 1 ? { ...e, name: 'Buy now' } : e))),
+    )
+    const requestApproval = vi.fn<ApprovalGate>(async () => true)
+    const next = scriptedNext(decided(top('click', 1, 0.95)))
+    const result: any = await within((buildDriverTools({ session: buildSession(), next, requestApproval }).FastSteps as any).execute({ goal: 'g' }, {} as any))
+    expect(result).toMatchObject({ status: 'handback', reason: 'page changed' })
+    expect(runControlStep).not.toHaveBeenCalled()
+    expect(requestApproval).not.toHaveBeenCalled()
+  })
+
+  it('a second concurrent run on the same session is refused, and the flag is cleared when the first ends', async () => {
+    let release: (v: unknown) => void = () => {}
+    let calls = 0
+    const first = vi.fn(() => (++calls === 1 ? new Promise((r) => (release = r)) : Promise.resolve(decided(top('done', undefined, 0.9))))) as unknown as NextFn
+    const session = buildSession()
+    const tools = buildDriverTools({ session, next: first })
+    const running = (tools.FastSteps as any).execute({ goal: 'g' }, {} as any)
+    await vi.waitFor(() => expect(first).toHaveBeenCalledTimes(1))
+    expect(session.driving).toBe(true)
+    const second = await within((tools.FastSteps as any).execute({ goal: 'g2' }, {} as any))
+    expect(second).toEqual({ status: 'stopped', reason: 'another FastSteps run is in progress' })
+    expect(first).toHaveBeenCalledTimes(1) // the refused run asked the decider nothing
+    release(decided(top('done', undefined, 0.9)))
+    expect(await within(running)).toMatchObject({ status: 'done' })
+    expect(session.driving).toBe(false)
+    expect(await within((tools.FastSteps as any).execute({ goal: 'g3' }, {} as any))).toMatchObject({ status: 'done' })
+  })
+
+  it('the flag is cleared even when the run fails', async () => {
+    const session = buildSession()
+    const next = vi.fn(async () => {
+      throw new Error('boom')
+    }) as unknown as NextFn
+    const result: any = await within((buildDriverTools({ session, next }).FastSteps as any).execute({ goal: 'g' }, {} as any))
+    expect(result.error).toContain('boom')
+    expect(session.driving).toBe(false)
+  })
+
+  it('the Driver grant note carries the Assist form guidance word for word', async () => {
+    vi.mocked(snapshotPage).mockResolvedValue(snap([el({ index: 0 })]))
+    stubTabsQuery(FG_TAB)
+    const driver: any = await within((buildDriverTools({ session: buildSession() }).RequestPageControl as any).execute({ plan: 'p' }, {} as any))
+    stubTabsQuery(FG_TAB)
+    const assist: any = await within(
+      (buildDriverTools({ session: buildSession(), decider: stubHooks({ mode: () => 'assist', settingsMode: () => 'assist' }) }).RequestPageControl as any).execute({ plan: 'p' }, {} as any),
+    )
+    const guidance = assist.note.replace('Assist mode is on: ', '')
+    expect(guidance).toMatch(/^for a form, call AutofillForm/)
+    expect(driver.note.endsWith(guidance)).toBe(true)
   })
 })

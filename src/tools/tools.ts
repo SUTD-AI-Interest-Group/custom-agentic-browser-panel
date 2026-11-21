@@ -64,14 +64,17 @@ import {
 
 type PlannedFill = FillPlan['fills'][number]
 
+/** How to fill a form through the decider — the part of the grant note Assist and Driver share. */
+const FORM_GUIDANCE =
+  'for a form, call AutofillForm with `values` (the details from the user\'s request) and omit `fields` — the decision model maps the fields from the user\'s saved profile in one step.'
+
 /** RequestPageControl's grant, in Assist mode: the one place the model learns the path exists. */
-const ASSIST_GRANT_NOTE =
-  'Assist mode is on: for a form, call AutofillForm with `values` (the details from the user\'s request) and omit `fields` — the decision model maps the fields from the user\'s saved profile in one step.'
+const ASSIST_GRANT_NOTE = `Assist mode is on: ${FORM_GUIDANCE}`
 
 /** RequestPageControl's grant, in Driver mode (which includes Assist). */
 const DRIVER_GRANT_NOTE =
   'Driver mode is on: for a run of routine steps toward ONE short sub-goal (search, open a result, tick a box, add to cart), call FastSteps with that sub-goal and any text to type in `values` — the on-device decision model takes the steps and hands back when done or unsure; then check the page and continue. ' +
-  ASSIST_GRANT_NOTE.replace('Assist mode is on: for a form', 'For a form')
+  `And ${FORM_GUIDANCE}`
 
 /** FastSteps' description, verbatim from the plan (Task 16). */
 const FAST_STEPS_DESCRIPTION =
@@ -2000,104 +2003,113 @@ export function createAgentTools(
         const tab = await resolveTab()
         if (tab?.id === undefined || tab.id !== session.tabId) return { error: 'The controlled tab is no longer active.' }
         if (!(await isForeground(tab))) return parkFor(tab, 'act on this page')
-        const tabId = tab.id
-        await mountPresence(tabId)
-        await setTint(tabId, true)
-        const journalStart = session.journal?.length ?? 0
-        let parked: { parked: true; note: string } | undefined
-        const originOf = (url: string | undefined) => {
-          try {
-            return new URL(url ?? '').origin
-          } catch {
-            return ''
-          }
-        }
-
-        let result: DriverResult
+        // One run per session at a time. The SDK runs a model step's tool calls concurrently, so
+        // two FastSteps in one step would otherwise interleave their clicks on the same page — each
+        // deciding on a page the other is changing under it.
+        if (session.driving) return { status: 'stopped', reason: 'another FastSteps run is in progress' }
+        session.driving = true
         try {
-          result = await runDriverLoop({
-            maxSteps: Math.min(DRIVER_MAX_STEPS, Math.max(1, Math.floor(maxSteps ?? DRIVER_MAX_STEPS))),
-            threshold: decider.threshold(),
-            aborted: () => abortSignal?.aborted === true,
-            // The session, the tab in front, the origin — ControlPage's entry checks, every step.
-            guard: async () => {
-              if (!session.active || pageControl.session() !== session)
-                return { status: 'stopped', reason: 'session ended', message: 'Page control ended. Call RequestPageControl again to continue.' }
-              const live = await resolveTab()
-              if (live?.id !== tabId) return { status: 'stopped', reason: 'session ended', message: 'The controlled tab is no longer active.' }
-              if (!(await isForeground(live))) {
-                parked = parkFor(live, 'act on this page')
-                return { status: 'stopped', reason: 'parked', message: parked.note }
-              }
-              const liveOrigin = originOf(live.url)
-              if (liveOrigin !== session.origin) {
-                // An approved point of no return authorized this crossing: re-fence silently, as
-                // ControlPage does. Either way hand back — never act on a page that just changed
-                // site; an unapproved crossing is ControlPage's to put to the user.
-                if (session.crossingAuthorized) {
-                  session.origin = liveOrigin
-                  session.crossingAuthorized = false
+          const tabId = tab.id
+          await mountPresence(tabId)
+          await setTint(tabId, true)
+          const journalStart = session.journal?.length ?? 0
+          let parked: { parked: true; note: string } | undefined
+          const originOf = (url: string | undefined) => {
+            try {
+              return new URL(url ?? '').origin
+            } catch {
+              return ''
+            }
+          }
+
+          let result: DriverResult
+          try {
+            result = await runDriverLoop({
+              maxSteps: Math.min(DRIVER_MAX_STEPS, Math.max(1, Math.floor(maxSteps ?? DRIVER_MAX_STEPS))),
+              threshold: decider.threshold(),
+              aborted: () => abortSignal?.aborted === true,
+              // The session, the tab in front, the origin — ControlPage's entry checks, every step.
+              guard: async () => {
+                if (!session.active || pageControl.session() !== session)
+                  return { status: 'stopped', reason: 'session ended', message: 'Page control ended. Call RequestPageControl again to continue.' }
+                const live = await resolveTab()
+                if (live?.id !== tabId) return { status: 'stopped', reason: 'session ended', message: 'The controlled tab is no longer active.' }
+                if (!(await isForeground(live))) {
+                  parked = parkFor(live, 'act on this page')
+                  return { status: 'stopped', reason: 'parked', message: parked.note }
                 }
-                return { status: 'handback', reason: 'page moved', message: `The page is now on ${hostLabel(liveOrigin)}; re-read it and continue with ControlPage.` }
-              }
-              return null
-            },
-            snapshot: async () => {
-              await untilLoaded(tabId)
-              return snapshotPage(tabId)
-            },
-            readPageText: () => readViewportText(tabId, PAGE_TEXT_CAP).then((t) => (typeof t === 'string' ? t : null), () => null),
-            decide: ({ snap, pageText, exclude }) => decider.next({ tabId, snap, session, goal, values: values ?? {}, pageText, exclude, signal: abortSignal }),
-            isPointOfNoReturn: (spec, el) => isPointOfNoReturn(spec, el, session.origin),
-            approve: (spec, el) =>
-              requestApproval({ toolName: 'FastSteps', summary: pointOfNoReturnSummary(spec, el), reason: 'This step changes state or leaves the page.', once: true }),
-            hasElementChanged,
-            act: async (spec, snap, { settle, approved }) => {
-              const r = await runControlStep({
-                tabId,
-                spec,
-                snapshot: snap,
-                session,
-                settle,
-                beforeAct: (index) => (index === undefined ? Promise.resolve() : focusOn(tabId, index, undefined)),
-                afterAct: () => pulse(tabId),
-                afterNav: async () => {
-                  await mountPresence(tabId)
-                  await setTint(tabId, true)
-                },
-              })
-              // ControlPage's post-action origin rule: an approved crossing re-fences; an
-              // unapproved one does not (the next ControlPage asks the user). Both hand back.
-              let moved: string | undefined
-              if (r.origin && r.origin !== session.origin) {
-                moved = hostLabel(r.origin)
-                if (approved) {
-                  session.origin = r.origin
-                  session.crossingAuthorized = false
+                const liveOrigin = originOf(live.url)
+                if (liveOrigin !== session.origin) {
+                  // An approved point of no return authorized this crossing: re-fence silently, as
+                  // ControlPage does. Either way hand back — never act on a page that just changed
+                  // site; an unapproved crossing is ControlPage's to put to the user.
+                  if (session.crossingAuthorized) {
+                    session.origin = liveOrigin
+                    session.crossingAuthorized = false
+                  }
+                  return { status: 'handback', reason: 'page moved', message: `The page is now on ${hostLabel(liveOrigin)}; re-read it and continue with ControlPage.` }
                 }
-              } else {
-                session.crossingAuthorized = approved
-              }
-              return { ok: r.ok, message: r.message, registry: r.registry, ...(moved ? { moved } : {}) }
-            },
-          })
-        } catch (err) {
-          if (abortSignal?.aborted) throw err
-          return { error: `FastSteps failed (${err instanceof Error ? err.message : String(err)}); continue with ControlPage.` }
-        }
-        // What this call did, from the session's own (redacted) journal.
-        const actions = (session.journal ?? []).slice(journalStart).map((e) => ({
-          action: e.action,
-          ...(e.index !== undefined ? { index: e.index } : {}),
-          summary: e.summary,
-          ...(e.redactedValue !== undefined ? { value: e.redactedValue } : {}),
-        }))
-        const { elements, ...rest } = result
-        return {
-          ...rest,
-          actions,
-          ...(parked ?? {}),
-          ...(elements !== undefined ? { elements } : {}),
+                return null
+              },
+              snapshot: async () => {
+                await untilLoaded(tabId)
+                return snapshotPage(tabId)
+              },
+              readPageText: () => readViewportText(tabId, PAGE_TEXT_CAP).then((t) => (typeof t === 'string' ? t : null), () => null),
+              decide: ({ snap, pageText, exclude }) => decider.next({ tabId, snap, session, goal, values: values ?? {}, pageText, exclude, signal: abortSignal }),
+              isPointOfNoReturn: (spec, el) => isPointOfNoReturn(spec, el, session.origin),
+              approve: (spec, el) =>
+                requestApproval({ toolName: 'FastSteps', summary: pointOfNoReturnSummary(spec, el), reason: 'This step changes state or leaves the page.', once: true }),
+              hasElementChanged,
+              act: async (spec, snap, { settle, approved }) => {
+                const r = await runControlStep({
+                  tabId,
+                  spec,
+                  snapshot: snap,
+                  session,
+                  settle,
+                  beforeAct: (index) => (index === undefined ? Promise.resolve() : focusOn(tabId, index, undefined)),
+                  afterAct: () => pulse(tabId),
+                  afterNav: async () => {
+                    await mountPresence(tabId)
+                    await setTint(tabId, true)
+                  },
+                })
+                // ControlPage's post-action origin rule: an approved crossing re-fences; an
+                // unapproved one does not (the next ControlPage asks the user). Both hand back.
+                let moved: string | undefined
+                if (r.origin && r.origin !== session.origin) {
+                  moved = hostLabel(r.origin)
+                  if (approved) {
+                    session.origin = r.origin
+                    session.crossingAuthorized = false
+                  }
+                } else {
+                  session.crossingAuthorized = approved
+                }
+                return { ok: r.ok, message: r.message, registry: r.registry, ...(moved ? { moved } : {}) }
+              },
+            })
+          } catch (err) {
+            if (abortSignal?.aborted) throw err
+            return { error: `FastSteps failed (${err instanceof Error ? err.message : String(err)}); continue with ControlPage.` }
+          }
+          // What this call did, from the session's own (redacted) journal.
+          const actions = (session.journal ?? []).slice(journalStart).map((e) => ({
+            action: e.action,
+            ...(e.index !== undefined ? { index: e.index } : {}),
+            summary: e.summary,
+            ...(e.redactedValue !== undefined ? { value: e.redactedValue } : {}),
+          }))
+          const { elements, ...rest } = result
+          return {
+            ...rest,
+            actions,
+            ...(parked ?? {}),
+            ...(elements !== undefined ? { elements } : {}),
+          }
+        } finally {
+          session.driving = false
         }
       },
     }),

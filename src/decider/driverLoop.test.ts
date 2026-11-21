@@ -69,7 +69,10 @@ function harness(s: Script) {
     maxSteps: s.maxSteps ?? DRIVER_MAX_STEPS,
     threshold: s.threshold ?? 0.6,
     aborted: s.aborted ?? (() => false),
-    guard: vi.fn(s.guard ?? (async () => null)),
+    guard: vi.fn(async () => {
+      log.push('guard')
+      return s.guard ? s.guard() : null
+    }),
     snapshot: vi.fn(async () => {
       const text = s.pages ? s.pages[Math.min(reads, s.pages.length - 1)] : `page ${reads}`
       reads++
@@ -123,6 +126,13 @@ describe('the confidence gate', () => {
     expect(r.message).toMatch(/risky/)
     expect(h.deps.approve).not.toHaveBeenCalled()
     expect(h.deps.act).not.toHaveBeenCalled()
+  })
+
+  it('the risky-step gate comes before the value check: a tentative risky type is "unsure", not "needs value"', async () => {
+    const h = harness({ decisions: [decision(opt('type', 0, 0.5))], ponr: (spec) => spec.action === 'type' })
+    const r = await runDriverLoop(h.deps)
+    expect(r).toMatchObject({ status: 'handback', reason: 'unsure' })
+    expect(r.message).toMatch(/risky/)
   })
 
   it('hands back below 0.4, showing the top three', async () => {
@@ -181,10 +191,18 @@ describe('what the decider cannot answer', () => {
     expect(h.acts[0].spec).toEqual({ action: 'type', index: 0, text: 'wireless headphones', clear: true })
   })
 
-  it('a select hands back "needs value": the decider does not choose options here', async () => {
+  it('a select without a confident option hands back "needs value"', async () => {
     const h = harness({ decisions: [decision(opt('select', 4, 0.9))] })
-    expect(await runDriverLoop(h.deps)).toMatchObject({ status: 'handback', reason: 'needs value' })
+    const r = await runDriverLoop(h.deps)
+    expect(r).toMatchObject({ status: 'handback', reason: 'needs value' })
+    expect(r.message).toContain('[4]')
     expect(h.deps.act).not.toHaveBeenCalled()
+  })
+
+  it('a select with an option chooses it', async () => {
+    const h = harness({ decisions: [decision(opt('select', 4, 0.9), { value: { key: 'option.1', text: 'Price: low to high', p: 0.8 } }), decision(opt('done', undefined, 0.9))] })
+    expect(await runDriverLoop(h.deps)).toMatchObject({ status: 'done' })
+    expect(h.acts[0]).toMatchObject({ spec: { action: 'select', index: 4, value: 'Price: low to high' }, settle: 'quick' })
   })
 
   it('a scroll scrolls down', async () => {
@@ -203,7 +221,8 @@ describe('a point of no return', () => {
     const h = harness({ decisions: [decision(opt('click', 1, 0.9)), decision(opt('done', undefined, 0.9))] })
     expect(await runDriverLoop(h.deps)).toMatchObject({ status: 'done' })
     expect(h.deps.approve).toHaveBeenCalledWith({ action: 'click', index: 1 }, SEARCH[1])
-    expect(h.log.slice(0, 5)).toEqual(['snapshot', 'decide', 'approve', 'snapshot', 'act click1'])
+    // The guards run AFTER the re-read (whose wait for a loading tab can take seconds).
+    expect(h.log.slice(0, 7)).toEqual(['guard', 'snapshot', 'decide', 'approve', 'snapshot', 'guard', 'act click1'])
     expect(h.deps.hasElementChanged).toHaveBeenCalledWith(SEARCH[1], SEARCH[1])
     expect(h.acts[0]).toMatchObject({ settle: 'full', approved: true })
   })
@@ -231,6 +250,42 @@ describe('a point of no return', () => {
       guard: async () => (++calls >= 2 ? { status: 'stopped', reason: 'parked', message: 'switched away' } : null),
     })
     expect(await runDriverLoop(h.deps)).toMatchObject({ status: 'stopped', reason: 'parked', message: 'switched away' })
+    expect(h.deps.act).not.toHaveBeenCalled()
+  })
+
+  it('a non-risky target that changed between the decision and the act is handed back, not clicked', async () => {
+    const h = harness({ decisions: [decision(opt('click', 3, 0.92))] })
+    let reads = 0
+    // Decided on "Choose size"; by the time it would be clicked, the same button says "Buy now".
+    h.deps.snapshot = vi.fn(async () => pageOf(`p${reads}`, reads++ === 0 ? SEARCH : SEARCH.map((e) => (e.index === 3 ? { ...e, name: 'Buy now' } : e))))
+    const r = await runDriverLoop(h.deps)
+    expect(r).toMatchObject({ status: 'handback', reason: 'page changed' })
+    expect(h.deps.act).not.toHaveBeenCalled()
+    expect(h.deps.approve).not.toHaveBeenCalled()
+    expect(h.deps.hasElementChanged).toHaveBeenCalledWith(SEARCH[3], { ...SEARCH[3], name: 'Buy now' })
+  })
+
+  it('every step acts on the snapshot re-read right before it, not the one it was decided on', async () => {
+    const h = harness({ decisions: [decision(opt('click', 3, 0.9)), decision(opt('done', undefined, 0.9))] })
+    await runDriverLoop(h.deps)
+    expect(h.log.slice(0, 5)).toEqual(['guard', 'snapshot', 'decide', 'snapshot', 'guard'])
+    expect(vi.mocked(h.deps.act).mock.calls[0][1].text).toBe('page 1') // the second read, not 'page 0'
+  })
+
+  it('a step that BECAME risky by the time it would run is carded at full confidence, then re-checked again', async () => {
+    let classified = 0
+    const h = harness({ decisions: [decision(opt('click', 3, 0.9)), decision(opt('done', undefined, 0.9))], ponr: () => ++classified > 1 })
+    expect(await runDriverLoop(h.deps)).toMatchObject({ status: 'done' })
+    expect(h.deps.approve).toHaveBeenCalledTimes(1)
+    expect(h.log.slice(0, 8)).toEqual(['guard', 'snapshot', 'decide', 'snapshot', 'guard', 'approve', 'snapshot', 'guard'])
+    expect(h.acts[0]).toMatchObject({ spec: { action: 'click', index: 3 }, settle: 'full', approved: true })
+  })
+
+  it('a step that became risky in the tentative band is handed back, with no card', async () => {
+    let classified = 0
+    const h = harness({ decisions: [decision(opt('click', 3, 0.5))], ponr: () => ++classified > 1 })
+    expect(await runDriverLoop(h.deps)).toMatchObject({ status: 'handback', reason: 'unsure' })
+    expect(h.deps.approve).not.toHaveBeenCalled()
     expect(h.deps.act).not.toHaveBeenCalled()
   })
 
@@ -262,11 +317,70 @@ describe('loop rules', () => {
     expect(h.acts.map((a) => a.spec.action)).toEqual(['click', 'scroll'])
   })
 
-  it('a repeat after a click that DID change the page is not a repeat', async () => {
+  it('an immediate repeat of an element target is excluded even when the page changed (the double "Add to cart")', async () => {
+    const h = harness({
+      decisions: [decision(opt('click', 3, 0.9)), decision(opt('click', 3, 0.9)), decision(opt('done', undefined, 0.9))],
+    })
+    expect(await runDriverLoop(h.deps)).toMatchObject({ status: 'done' })
+    expect(h.acts.map((a) => a.spec.index)).toEqual([3])
+    expect(h.decideCalls.map((c) => c.exclude)).toEqual([[], [], [{ op: 'click', index: 3 }]])
+  })
+
+  it('a repeat on the same page counts even when only its fragment changed (the store adds #added after a buy)', async () => {
     const h = harness({ decisions: [decision(opt('click', 3, 0.9)), decision(opt('click', 3, 0.9)), decision(opt('done', undefined, 0.9))] })
+    let reads = 0
+    // Two reads before the click (the decision, and the re-read before acting); the fragment lands after it.
+    h.deps.snapshot = vi.fn(async () => pageOf(`p${reads}`, SEARCH, reads++ < 2 ? 'https://shop.test/product?id=3' : 'https://shop.test/product?id=3#added'))
+    await runDriverLoop(h.deps)
+    expect(h.acts.map((a) => a.spec.index)).toEqual([3])
+    expect(h.decideCalls.map((c) => c.exclude)).toEqual([[], [], [{ op: 'click', index: 3 }]])
+  })
+
+  it('the same index after a page change is a different target, not a repeat', async () => {
+    // Measured: [5] was "Arc wireless headphones" on the results, then "Add to cart" on the product page.
+    const results = SEARCH.map((e) => (e.index === 3 ? { ...e, tag: 'a', name: 'Arc wireless headphones', href: 'https://shop.test/product?id=3' } : e))
+    const product = SEARCH.map((e) => (e.index === 3 ? { ...e, name: 'Add to cart' } : e))
+    const h = harness({ decisions: [decision(opt('click', 3, 0.9)), decision(opt('click', 3, 0.9)), decision(opt('done', undefined, 0.9))] })
+    h.deps.snapshot = vi.fn(async () => (h.acts.length === 0 ? pageOf('results', results, 'https://shop.test/search?q=arc') : pageOf(`product ${h.acts.length}`, product, 'https://shop.test/product?id=3')))
     await runDriverLoop(h.deps)
     expect(h.acts.map((a) => a.spec.index)).toEqual([3, 3])
     expect(h.decideCalls.every((c) => c.exclude.length === 0)).toBe(true)
+  })
+
+  it('an identical element at the same index on the next page is not a repeat ("Next page" through results)', async () => {
+    const next = SEARCH.map((e) => (e.index === 3 ? { ...e, name: 'Next page' } : e))
+    const h = harness({ decisions: [decision(opt('click', 3, 0.9)), decision(opt('click', 3, 0.9)), decision(opt('done', undefined, 0.9))] })
+    h.deps.snapshot = vi.fn(async () => pageOf(`page ${h.acts.length + 1}`, next, `https://shop.test/search?q=mug&page=${h.acts.length + 1}`))
+    await runDriverLoop(h.deps)
+    expect(h.acts.map((a) => a.spec.index)).toEqual([3, 3])
+    expect(h.decideCalls.every((c) => c.exclude.length === 0)).toBe(true)
+  })
+
+  it('the same index on the same page at an element that changed is not a repeat either', async () => {
+    const h = harness({ decisions: [decision(opt('click', 3, 0.9)), decision(opt('click', 3, 0.9)), decision(opt('done', undefined, 0.9))] })
+    h.deps.snapshot = vi.fn(async () => pageOf(`p${h.acts.length}`, SEARCH.map((e) => (e.index === 3 ? { ...e, name: `Show more (${h.acts.length})` } : e))))
+    await runDriverLoop(h.deps)
+    expect(h.acts.map((a) => a.spec.index)).toEqual([3, 3])
+    expect(h.decideCalls.every((c) => c.exclude.length === 0)).toBe(true)
+  })
+
+  it('the same target is fine again once another step came between', async () => {
+    const h = harness({
+      decisions: [decision(opt('click', 3, 0.9)), decision(opt('click', 0, 0.9)), decision(opt('click', 3, 0.9)), decision(opt('done', undefined, 0.9))],
+    })
+    await runDriverLoop(h.deps)
+    expect(h.acts.map((a) => a.spec.index)).toEqual([3, 0, 3])
+    expect(h.decideCalls.every((c) => c.exclude.length === 0)).toBe(true)
+  })
+
+  it('scrolling on down a page that keeps changing is not a repeat; a scroll that changed nothing is', async () => {
+    const moving = harness({ decisions: [decision(opt('scroll', undefined, 0.8)), decision(opt('scroll', undefined, 0.8)), decision(opt('done', undefined, 0.9))] })
+    await runDriverLoop(moving.deps)
+    expect(moving.acts.map((a) => a.spec.action)).toEqual(['scroll', 'scroll'])
+    const stuck = harness({ pages: ['bottom'], decisions: [decision(opt('scroll', undefined, 0.8)), decision(opt('scroll', undefined, 0.8)), decision(opt('done', undefined, 0.9))] })
+    await runDriverLoop(stuck.deps)
+    expect(stuck.acts.map((a) => a.spec.action)).toEqual(['scroll'])
+    expect(stuck.decideCalls.map((c) => c.exclude)).toEqual([[], [], [{ op: 'scroll' }]])
   })
 
   it('a second repeat after the re-ask hands back "repeat"', async () => {
@@ -304,7 +418,7 @@ describe('loop rules', () => {
   })
 
   it('stops after maxSteps actions, handing back the last registry', async () => {
-    const h = harness({ maxSteps: 3, decisions: [decision(opt('click', 3, 0.9))] })
+    const h = harness({ maxSteps: 3, decisions: [decision(opt('click', 3, 0.9)), decision(opt('click', 0, 0.9)), decision(opt('click', 3, 0.9))] })
     const r = await runDriverLoop(h.deps)
     expect(r).toMatchObject({ status: 'handback', reason: 'max steps', elements: 'after 3' })
     expect(h.acts).toHaveLength(3)
@@ -441,7 +555,8 @@ describe('stopping', () => {
   })
 
   it('maxSteps is clamped to 1..12', async () => {
-    const big = harness({ maxSteps: 99, decisions: [decision(opt('click', 3, 0.9))] })
+    const alternating = Array.from({ length: 13 }, (_, k) => decision(opt('click', k % 2 ? 0 : 3, 0.9)))
+    const big = harness({ maxSteps: 99, decisions: alternating })
     expect((await runDriverLoop(big.deps)).steps).toHaveLength(DRIVER_MAX_STEPS)
     const zero = harness({ maxSteps: 0, decisions: [decision(opt('click', 3, 0.9))] })
     expect((await runDriverLoop(zero.deps)).steps).toHaveLength(1)

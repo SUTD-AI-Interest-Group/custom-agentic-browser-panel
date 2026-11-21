@@ -1167,13 +1167,15 @@ const SHOP = [
   el({ index: 1, tag: 'button', type: 'submit', name: 'Search' }),
   el({ index: 2, tag: 'a', name: 'Cart (0)', href: 'https://example.com/cart' }),
   el({ index: 3, tag: 'input', type: 'password', name: 'Password', value: 'hunter2', sensitive: true }),
+  el({ index: 4, tag: 'select', name: 'Sort by' }),
 ]
+const SORT = ['Featured', 'Price: low to high', 'Price: high to low']
 const SHOP_ELEMENTS = SHOP.map(({ index, tag, type, name, sensitive }) => ({ index, tag, name, sensitive, ...(type ? { type } : {}) }))
 const nextMsg = (over: Record<string, unknown> = {}) => ({
   type: 'decider.next', conversationId: 'conv-1', requestId: 'req-1', tabId: 7,
   goal: 'search for wireless headphones', plan: 'Find headphones', values: { query: 'wireless headphones' },
   snap: { url: 'https://example.com/', title: 'Northwind Store', elements: SHOP_ELEMENTS },
-  pageText: 'Northwind Store. Audio, home and gifts.', previousActions: ['opened the store'], exclude: [],
+  pageText: 'Northwind Store. Audio, home and gifts.', selectOptions: { 4: SORT }, previousActions: ['opened the store'], exclude: [],
   ...over,
 })
 
@@ -1277,6 +1279,26 @@ describe('driver mode (FastSteps steps)', () => {
     expect(reply).not.toHaveProperty('value')
   })
 
+  it('a select at the top answers the select question over the options the worker read, and returns the confident option', async () => {
+    const { engine, requests } = driveEngine('select in [4]', 0.88, ['Price: low to high', 0.83])
+    const reply = await driveHooks({ engine }).answer(nextMsg({ goal: 'sort the results by lowest price' }))
+    expect(reply).toMatchObject({ requestId: 'req-1', value: { key: 'option.1', text: 'Price: low to high', p: 0.83 } })
+    expect(requests).toHaveLength(2)
+    expect(Object.keys((requests[1].req.questions.f4 as { criteria: Record<string, unknown> }).criteria)).toEqual(SORT)
+    expect(readSelectOptions).not.toHaveBeenCalled() // the worker read them, before the step
+    const [r] = await recordsAfter(1)
+    expect(r.fill).toEqual([{ index: 4, key: 'option.1', p: 0.83, llmAgrees: null }]) // a position, never the label
+    expect(JSON.stringify(r)).not.toContain('Price')
+  })
+
+  it('a select comes back without a value under the threshold, or with fewer than two options to choose from', async () => {
+    const unsure = driveEngine('select in [4]', 0.9, ['Featured', 0.5])
+    expect(await driveHooks({ engine: unsure.engine }).answer(nextMsg())).not.toHaveProperty('value')
+    const single = driveEngine('select in [4]', 0.9, ['Featured', 0.99])
+    expect(await driveHooks({ engine: single.engine }).answer(nextMsg({ selectOptions: { 4: ['Featured'] } }))).not.toHaveProperty('value')
+    expect(single.requests).toHaveLength(1)
+  })
+
   it('a type into a sensitive field is never given a value', async () => {
     const { engine, requests } = driveEngine('type into [3]', 0.9, ['request.query', 0.99])
     const reply = await driveHooks({ engine }).answer(nextMsg())
@@ -1350,6 +1372,27 @@ describe('driver mode (FastSteps steps)', () => {
     await vi.waitFor(() => expect(slow.decide).toHaveBeenCalledTimes(1))
     controller.abort()
     expect(await within(out)).toEqual({ error: 'the turn was stopped' })
+  })
+
+  it('a grant in assist or driver mode structures the profile ahead of the first fill, once, without being awaited', async () => {
+    for (const mode of ['driver', 'assist'] as const) {
+      vi.mocked(profileLookup).mockClear()
+      const { engine } = driveEngine('done', 0.9)
+      const hooks = driveHooks({ engine, mode })
+      expect(hooks.sessionGranted()).toBeUndefined()
+      await vi.waitFor(() => expect(profileLookup).toHaveBeenCalledWith(CHAT_MODEL, MEMORIES))
+    }
+    vi.mocked(profileLookup).mockClear()
+    for (const over of [{ mode: 'shadow' as const }, { ready: false }]) {
+      driveHooks({ engine: driveEngine('done', 0.9).engine, ...over }).sessionGranted()
+    }
+    await settle()
+    expect(profileLookup).not.toHaveBeenCalled()
+    // A failed structuring call is swallowed (an unhandled rejection would fail the run).
+    vi.mocked(profileLookup).mockRejectedValue(new Error('HTTP 500'))
+    driveHooks({ engine: driveEngine('done', 0.9).engine }).sessionGranted()
+    await vi.waitFor(() => expect(profileLookup).toHaveBeenCalled())
+    await settle()
   })
 
   it('driver mode includes shadow and assist: mode() is driver, a step is shadowed, a form is mapped, the engine warms on a grant', async () => {

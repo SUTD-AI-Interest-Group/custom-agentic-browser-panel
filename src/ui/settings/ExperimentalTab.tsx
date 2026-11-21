@@ -222,7 +222,7 @@ function ShadowStats({ threshold }: { threshold: number }) {
             {s.decisions} decision{s.decisions === 1 ? '' : 's'} · {s.skipped} skipped
             <br />
             Agreement {s.agreement} · next steps {s.next} · form fills {s.fill}
-            {s.driven > 0 && <> · driver steps {s.driven}</>}
+            {s.driven > 0 && <> · driver decisions {s.driven}</>}
             <br />
             Would act at {threshold}: {s.coverage} of decisions
             <br />

@@ -58,6 +58,12 @@ export interface ControlSession {
    * already approved the crossing) instead of demanding a fresh grant.
    */
   crossingAuthorized?: boolean
+  /**
+   * A FastSteps run (driver mode) is driving this session right now. Set and cleared by that tool
+   * around its loop, so a second concurrent run on the same session is refused rather than
+   * interleaving its actions with the first.
+   */
+  driving?: boolean
 }
 
 export type ControlAction =
