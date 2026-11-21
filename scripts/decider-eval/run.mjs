@@ -459,9 +459,7 @@ async function runTask(ctx, extId, origin, task, arm, rep, progress = {}) {
     await composer.waitFor({ timeout: 20_000 })
     await sleep(2500)
     const live = await readSettings(panel)
-    // The `driver` arm is a stub until Task 16 adds the mode: normalizeDecider drops an unknown
-    // mode, so settings read back without it. Tolerated for that arm only.
-    const modeOk = (live?.decider?.mode ?? 'off') === arm || (arm === 'driver' && live?.decider?.mode === undefined)
+    const modeOk = (live?.decider?.mode ?? 'off') === arm
     if (!modeOk || live?.selected?.modelId !== MODEL)
       throw new Error(`settings did not take: decider ${JSON.stringify(live?.decider)}, model ${live?.selected?.modelId}`)
 

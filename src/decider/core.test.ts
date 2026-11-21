@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { parseManifest } from './manifest'
 import { packPass } from './pack'
 import { codeProbabilities, toAnswer } from './readout'
-import { normalizeDecider } from './config'
+import { assistsForms, DECIDER_MAX_TOKENS, DRIVER_MAX_TOKENS, normalizeDecider, tokenCap } from './config'
 import type { RenderedQuestion } from './prompt'
 
 const manifest = (): Record<string, any> => ({
@@ -75,9 +75,28 @@ describe('normalizeDecider', () => {
   it('normalizes', () => {
     expect(normalizeDecider(undefined)).toBeUndefined()
     expect(normalizeDecider({ mode: 'shadow' })).toEqual({ mode: 'shadow' })
-    expect(normalizeDecider({ mode: 'driver' })).toBeUndefined()
+    expect(normalizeDecider({ mode: 'driver' })).toEqual({ mode: 'driver' })
+    expect(normalizeDecider({ mode: 'driver', actThreshold: 0.75 })).toEqual({ mode: 'driver', actThreshold: 0.75 })
+    expect(normalizeDecider({ mode: 'pilot' })).toBeUndefined()
     expect(normalizeDecider({ mode: 'assist', actThreshold: 2 })).toEqual({ mode: 'assist' })
     expect(normalizeDecider({ mode: 'assist', actThreshold: 0.7, extra: 1 })).toEqual({ mode: 'assist', actThreshold: 0.7 })
     expect(normalizeDecider('x')).toBeUndefined()
+  })
+})
+
+describe('assistsForms', () => {
+  it('is assist and driver — driver includes assist', () => {
+    expect(['off', 'shadow', 'assist', 'driver', undefined].map((m) => assistsForms(m as never))).toEqual([false, false, true, true, false])
+  })
+})
+
+describe('tokenCap', () => {
+  it('is the least of the model limit, the hard cap and a positive integer the caller asked for', () => {
+    expect(tokenCap(32768)).toBe(DECIDER_MAX_TOKENS)
+    expect(tokenCap(4096)).toBe(4096)
+    expect(tokenCap(32768, DRIVER_MAX_TOKENS)).toBe(2500)
+    expect(tokenCap(2000, 2500)).toBe(2000)
+    expect(tokenCap(32768, 100_000)).toBe(DECIDER_MAX_TOKENS)
+    for (const junk of [0, -5, 1.5, Number.NaN, Number.POSITIVE_INFINITY]) expect(tokenCap(32768, junk)).toBe(DECIDER_MAX_TOKENS)
   })
 })

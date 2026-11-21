@@ -1,8 +1,16 @@
-export type DeciderMode = 'off' | 'shadow' | 'assist'
+/**
+ * What the on-device decision model is allowed to do. Each mode includes the one before it:
+ * `shadow` records what it would have done at every page-control step, `assist` also maps forms
+ * (AutofillForm without `fields`), and `driver` also takes page steps itself (FastSteps).
+ */
+export type DeciderMode = 'off' | 'shadow' | 'assist' | 'driver'
 export interface DeciderSettings {
   mode: DeciderMode
   actThreshold?: number
 }
+
+/** Assist's form mapping runs in this mode: assist, and driver, which includes it. */
+export const assistsForms = (m: DeciderMode | undefined): boolean => m === 'assist' || m === 'driver'
 
 export const DEFAULT_ACT_THRESHOLD = 0.6
 /**
@@ -14,11 +22,13 @@ export const PAGE_TEXT_CAP = 1200
 export const MODEL_ID = 'strands-decider-E2B-gemma4-v2-2611'
 export const MODEL_STATUS_KEY = 'deciderModel'
 
+const MODES: ReadonlySet<unknown> = new Set<DeciderMode>(['off', 'shadow', 'assist', 'driver'])
+
 export function normalizeDecider(raw: unknown): DeciderSettings | undefined {
   if (typeof raw !== 'object' || raw === null) return undefined
   const r = raw as Record<string, unknown>
-  if (r.mode !== 'off' && r.mode !== 'shadow' && r.mode !== 'assist') return undefined
-  const out: DeciderSettings = { mode: r.mode }
+  if (!MODES.has(r.mode)) return undefined
+  const out: DeciderSettings = { mode: r.mode as DeciderMode }
   const t = r.actThreshold
   if (typeof t === 'number' && Number.isFinite(t) && t >= 0.4 && t <= 0.95) out.actThreshold = t
   return out
@@ -26,3 +36,20 @@ export function normalizeDecider(raw: unknown): DeciderSettings | undefined {
 
 /** Hard cap on a packed pass: at the model's 32768 the worker would allocate ~1.4 GB. */
 export const DECIDER_MAX_TOKENS = 8192
+
+/**
+ * Driver mode's dense-page cap (spec §7.3): a next-action pass longer than this hands the page back
+ * to the chat model instead of deciding slowly — 2.9 s at 4,920 tokens in the spike, and the dense
+ * catalog (≈ 3,540 tokens) took 1.5–3.0 s in the harness runs.
+ */
+export const DRIVER_MAX_TOKENS = 2500
+
+/**
+ * The longest pass the worker will run: the model's own limit, the hard cap above, and — when the
+ * caller asks for less (driver mode's dense cap) — the caller's. A `maxTokens` that is not a
+ * positive integer is ignored rather than trusted.
+ */
+export function tokenCap(maxLength: number, maxTokens?: number): number {
+  const asked = typeof maxTokens === 'number' && Number.isInteger(maxTokens) && maxTokens > 0 ? maxTokens : Infinity
+  return Math.min(maxLength, DECIDER_MAX_TOKENS, asked)
+}

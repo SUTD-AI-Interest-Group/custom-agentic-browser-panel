@@ -239,7 +239,20 @@ export interface ControlStepDeps {
    * page instead of vanishing for the rest of the session.
    */
   afterNav?: () => Promise<void>
+  /**
+   * How long to let the page settle before the re-read. `'full'` (the default, and all that
+   * ControlPage and AutofillForm ever use) waits for the DOM to go quiet for 400 ms, capped at 4 s
+   * (8 s after a navigation) — right for a submit or a page load. `'quick'` is for a step that
+   * commits nothing (driver mode's FastSteps, never a point of no return): a couple of frames,
+   * 50 ms quiet within a 250 ms cap. October measured the full wait costing about a second per
+   * step on pages that had already finished changing (a0df0e2^:src/tools/pageControl.ts). An
+   * explicit navigate always gets the full wait.
+   */
+  settle?: 'quick' | 'full'
 }
+
+/** The quick settle: a couple of frames. */
+export const QUICK_SETTLE = { quietMs: 50, timeoutMs: 250 } as const
 
 export interface ControlStepResult extends ActionResult {
   /** Refreshed registry text after the action. */
@@ -331,7 +344,8 @@ export async function runControlStep(deps: ControlStepDeps): Promise<ControlStep
   // Let async pages settle before re-reading, instead of a fixed delay. Skip
   // for 'wait' (already waited) and 'highlight'/'scroll' (no state change).
   if (['click', 'type', 'select', 'navigate', 'press'].includes(spec.action)) {
-    await waitForStable(tabId, { timeoutMs: spec.action === 'navigate' ? 8000 : 4000 })
+    if (deps.settle === 'quick' && spec.action !== 'navigate') await waitForStable(tabId, { ...QUICK_SETTLE })
+    else await waitForStable(tabId, { timeoutMs: spec.action === 'navigate' ? 8000 : 4000 })
   }
   let registry = '(page not re-read)'
   let origin = ''

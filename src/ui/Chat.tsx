@@ -3233,6 +3233,9 @@ export default function Chat({
           return null
         }
       },
+      // Driver mode: FastSteps runs in the service worker, so a queued steer reaches it on
+      // each step's decision reply and it stops at that step boundary (see steerPending below).
+      steerPending: () => steerQueueRef.current.length > 0,
     })
     // Raised by a page tool that needs this chat's tab in front (see PageTarget
     // in tools.ts). Chain-scoped like imageQueue, but CLEARED at the top of each

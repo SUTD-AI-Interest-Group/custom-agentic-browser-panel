@@ -10,7 +10,7 @@ let workers: FakeWorker[]
 let hold: boolean
 class FakeWorker implements WorkerLike {
   terminated = false
-  decides: { id: string; request: DecisionRequest }[] = []
+  decides: { id: string; request: DecisionRequest; maxTokens?: number }[] = []
   private listeners: ((e: MessageEvent<DeciderWorkerReply>) => void)[] = []
   held = hold
   constructor() { workers.push(this) }
@@ -20,7 +20,7 @@ class FakeWorker implements WorkerLike {
     if (m.type === 'dispose') this.emit({ type: 'disposed' })
     else if (m.type === 'init') this.emit({ type: 'ready', backend: 'wasm', bootMs: 1 })
     else if (m.type === 'decide') {
-      this.decides.push({ id: m.id, request: m.request })
+      this.decides.push('maxTokens' in m ? { id: m.id, request: m.request, maxTokens: m.maxTokens } : { id: m.id, request: m.request })
       if (!this.held) this.emit({ type: 'result', id: m.id, result: resultFor(1) })
     }
   }
@@ -175,4 +175,13 @@ it('dispose during boot settles the waiting call, and a later boot is not killed
   await vi.advanceTimersByTimeAsync(2000)
   expect(workers[1].terminated).toBe(false)
   expect((await e.decide(req('b')))?.tokens).toBe(1)
+})
+
+it('forwards a caller cap (driver mode\'s dense-page cap) to the worker, and sends none otherwise', async () => {
+  const e = make()
+  await e.decide(req('capped'), { maxTokens: 2500 })
+  await e.decide(req('plain'))
+  await e.decide(req('shadow'), { dropIfBusy: true })
+  expect(workers[0].decides.map((d) => [d.request.state, d.maxTokens])).toEqual([['capped', 2500], ['plain', undefined], ['shadow', undefined]])
+  expect(workers[0].decides.slice(1).every((d) => !('maxTokens' in d))).toBe(true)
 })

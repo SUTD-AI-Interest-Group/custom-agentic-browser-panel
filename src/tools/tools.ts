@@ -47,6 +47,9 @@ import { createProposeResearchTool } from './research'
 import { buildCatalog, searchCatalog, partitionToolNames, type CatalogEntry } from './toolDiscovery'
 import type { DeciderHooks } from '../decider/hooks'
 import type { FillPlan } from '../decider/fillPlan'
+import { assistsForms, PAGE_TEXT_CAP } from '../decider/config'
+import { DRIVER_MAX_STEPS, runDriverLoop, type DriverResult } from '../decider/driverLoop'
+import { readViewportText } from '../platform/viewportText'
 import {
   hasElementChanged,
   isPointOfNoReturn,
@@ -64,6 +67,33 @@ type PlannedFill = FillPlan['fills'][number]
 /** RequestPageControl's grant, in Assist mode: the one place the model learns the path exists. */
 const ASSIST_GRANT_NOTE =
   'Assist mode is on: for a form, call AutofillForm with `values` (the details from the user\'s request) and omit `fields` — the decision model maps the fields from the user\'s saved profile in one step.'
+
+/** RequestPageControl's grant, in Driver mode (which includes Assist). */
+const DRIVER_GRANT_NOTE =
+  'Driver mode is on: for a run of routine steps toward ONE short sub-goal (search, open a result, tick a box, add to cart), call FastSteps with that sub-goal and any text to type in `values` — the on-device decision model takes the steps and hands back when done or unsure; then check the page and continue. ' +
+  ASSIST_GRANT_NOTE.replace('Assist mode is on: for a form', 'For a form')
+
+/** FastSteps' description, verbatim from the plan (Task 16). */
+const FAST_STEPS_DESCRIPTION =
+  "Run up to 12 quick page steps toward ONE short sub-goal (e.g. 'search for wireless headphones and open the cheapest result under $100') using the on-device decision model, inside an open page-control session. Pass any values to type in `values`. It hands back when done, unsure, blocked, or after 12 steps; risky steps still ask the user."
+
+/** How long FastSteps waits for a tab that is still loading before it reads the page. */
+const LOADING_WAIT_MS = 8000
+
+/** Resolves once the tab is no longer loading (or after `capMs`); never rejects. */
+async function untilLoaded(tabId: number, capMs = LOADING_WAIT_MS): Promise<void> {
+  const until = Date.now() + capMs
+  while (Date.now() < until) {
+    let status: string | undefined
+    try {
+      status = (await chrome.tabs.get(tabId))?.status
+    } catch {
+      return
+    }
+    if (status !== 'loading') return
+    await new Promise((r) => setTimeout(r, 100))
+  }
+}
 
 /** text → type (replacing what is there), select → select, checkbox → click. Never a submit. */
 function fillSpecOf(f: PlannedFill): ControlSpec {
@@ -1518,22 +1548,27 @@ export function createAgentTools(
         activeNames.add('ControlPage')
         activeNames.add('AutofillForm')
         activeNames.add('GetScreenshot')
+        // Driver mode: FastSteps joins the cluster — only when it is in this ToolSet at all (Driver
+        // mode, and not set to Never), so the grant never names a tool the model cannot call.
+        const fastSteps = 'FastSteps' in tools
+        if (fastSteps) activeNames.add('FastSteps')
         await mountPresence(tab.id)
         // Entering active control: turn the soft dark tint on (ambient shows the
         // frame only). The spotlight/cursor come alive on the first ControlPage.
         await setTint(tab.id, true)
         // Assist is only useful if the model knows the path exists: say so where it matters, on
-        // the grant, and only when the settings say Assist (in the worker, decider.mode() IS the
-        // settings mode — the panel checks the model's readiness when it is asked to map).
+        // the grant, and only when the settings say Assist or Driver (in the worker, decider.mode()
+        // IS the settings mode — the panel checks the model's readiness when it is asked to map).
         let assistOn = false
         try {
-          assistOn = decider?.mode() === 'assist'
+          assistOn = assistsForms(decider?.mode())
         } catch {
           /* additive only */
         }
+        const note = fastSteps ? DRIVER_GRANT_NOTE : assistOn ? ASSIST_GRANT_NOTE : undefined
         try {
           const snap = await snapshotPage(tab.id)
-          return await lookResult(tab, snap, { started: true, ...(assistOn ? { note: ASSIST_GRANT_NOTE } : {}) }, selected, visionCapable, imageQueue)
+          return await lookResult(tab, snap, { started: true, ...(note ? { note } : {}) }, selected, visionCapable, imageQueue)
         } catch (err) {
           pageControl.endSession()
           return { error: `Cannot control this page (${err instanceof Error ? err.message : String(err)}).` }
@@ -1747,7 +1782,7 @@ export function createAgentTools(
         let assist = false
         if (!fields) {
           try {
-            assist = decider?.mode() === 'assist'
+            assist = assistsForms(decider?.mode())
           } catch {
             assist = false
           }
@@ -1935,6 +1970,134 @@ export function createAgentTools(
             (staleSkipped.length
               ? ` Skipped field(s) ${staleSkipped.join(', ')} — the page changed while waiting for approval; re-read the page and try again for those.`
               : ''),
+        }
+      },
+    }),
+
+    /**
+     * Driver mode (spec §7.3): the on-device decision model takes up to 12 page steps toward one
+     * sub-goal, inside the session the user granted. It follows ControlPage exactly — the session
+     * check, foreground parking, origin drift, the one-shot card for every point of no return with
+     * the stale-element re-check after it, runControlStep with the presence hooks — and adds the
+     * loop's own stop rules (src/decider/driverLoop.ts, pure and unit-tested). Present ONLY in
+     * Driver mode (deleted below otherwise), so the repair hook can never resurrect it.
+     */
+    FastSteps: tool({
+      description: FAST_STEPS_DESCRIPTION,
+      inputSchema: z.object({
+        goal: z.string().describe('ONE short sub-goal for these steps, in plain words.'),
+        values: z
+          .record(z.string(), z.string())
+          .optional()
+          .describe('Text the steps may type, by a short snake_case name — e.g. {"query": "wireless headphones"}.'),
+        maxSteps: z.number().optional().describe(`At most ${DRIVER_MAX_STEPS} (the default).`),
+      }),
+      execute: async ({ goal, values, maxSteps }, options) => {
+        const abortSignal = options?.abortSignal
+        if (!decider) return { error: 'The decision model is not available here; use ControlPage.' }
+        const session = pageControl.session()
+        if (!session || !session.active) return { error: 'No page-control session is open. Call RequestPageControl first.' }
+        const tab = await resolveTab()
+        if (tab?.id === undefined || tab.id !== session.tabId) return { error: 'The controlled tab is no longer active.' }
+        if (!(await isForeground(tab))) return parkFor(tab, 'act on this page')
+        const tabId = tab.id
+        await mountPresence(tabId)
+        await setTint(tabId, true)
+        const journalStart = session.journal?.length ?? 0
+        let parked: { parked: true; note: string } | undefined
+        const originOf = (url: string | undefined) => {
+          try {
+            return new URL(url ?? '').origin
+          } catch {
+            return ''
+          }
+        }
+
+        let result: DriverResult
+        try {
+          result = await runDriverLoop({
+            maxSteps: Math.min(DRIVER_MAX_STEPS, Math.max(1, Math.floor(maxSteps ?? DRIVER_MAX_STEPS))),
+            threshold: decider.threshold(),
+            aborted: () => abortSignal?.aborted === true,
+            // The session, the tab in front, the origin — ControlPage's entry checks, every step.
+            guard: async () => {
+              if (!session.active || pageControl.session() !== session)
+                return { status: 'stopped', reason: 'session ended', message: 'Page control ended. Call RequestPageControl again to continue.' }
+              const live = await resolveTab()
+              if (live?.id !== tabId) return { status: 'stopped', reason: 'session ended', message: 'The controlled tab is no longer active.' }
+              if (!(await isForeground(live))) {
+                parked = parkFor(live, 'act on this page')
+                return { status: 'stopped', reason: 'parked', message: parked.note }
+              }
+              const liveOrigin = originOf(live.url)
+              if (liveOrigin !== session.origin) {
+                // An approved point of no return authorized this crossing: re-fence silently, as
+                // ControlPage does. Either way hand back — never act on a page that just changed
+                // site; an unapproved crossing is ControlPage's to put to the user.
+                if (session.crossingAuthorized) {
+                  session.origin = liveOrigin
+                  session.crossingAuthorized = false
+                }
+                return { status: 'handback', reason: 'page moved', message: `The page is now on ${hostLabel(liveOrigin)}; re-read it and continue with ControlPage.` }
+              }
+              return null
+            },
+            snapshot: async () => {
+              await untilLoaded(tabId)
+              return snapshotPage(tabId)
+            },
+            readPageText: () => readViewportText(tabId, PAGE_TEXT_CAP).then((t) => (typeof t === 'string' ? t : null), () => null),
+            decide: ({ snap, pageText, exclude }) => decider.next({ tabId, snap, session, goal, values: values ?? {}, pageText, exclude, signal: abortSignal }),
+            isPointOfNoReturn: (spec, el) => isPointOfNoReturn(spec, el, session.origin),
+            approve: (spec, el) =>
+              requestApproval({ toolName: 'FastSteps', summary: pointOfNoReturnSummary(spec, el), reason: 'This step changes state or leaves the page.', once: true }),
+            hasElementChanged,
+            act: async (spec, snap, { settle, approved }) => {
+              const r = await runControlStep({
+                tabId,
+                spec,
+                snapshot: snap,
+                session,
+                settle,
+                beforeAct: (index) => (index === undefined ? Promise.resolve() : focusOn(tabId, index, undefined)),
+                afterAct: () => pulse(tabId),
+                afterNav: async () => {
+                  await mountPresence(tabId)
+                  await setTint(tabId, true)
+                },
+              })
+              // ControlPage's post-action origin rule: an approved crossing re-fences; an
+              // unapproved one does not (the next ControlPage asks the user). Both hand back.
+              let moved: string | undefined
+              if (r.origin && r.origin !== session.origin) {
+                moved = hostLabel(r.origin)
+                if (approved) {
+                  session.origin = r.origin
+                  session.crossingAuthorized = false
+                }
+              } else {
+                session.crossingAuthorized = approved
+              }
+              return { ok: r.ok, message: r.message, registry: r.registry, ...(moved ? { moved } : {}) }
+            },
+          })
+        } catch (err) {
+          if (abortSignal?.aborted) throw err
+          return { error: `FastSteps failed (${err instanceof Error ? err.message : String(err)}); continue with ControlPage.` }
+        }
+        // What this call did, from the session's own (redacted) journal.
+        const actions = (session.journal ?? []).slice(journalStart).map((e) => ({
+          action: e.action,
+          ...(e.index !== undefined ? { index: e.index } : {}),
+          summary: e.summary,
+          ...(e.redactedValue !== undefined ? { value: e.redactedValue } : {}),
+        }))
+        const { elements, ...rest } = result
+        return {
+          ...rest,
+          actions,
+          ...(parked ?? {}),
+          ...(elements !== undefined ? { elements } : {}),
         }
       },
     }),
@@ -2336,6 +2499,18 @@ export function createAgentTools(
   // sources are named in its description) so the model never requests an
   // ungranted source.
   if (grantedSources.length === 0) delete tools.QueryBrowserData
+
+  // Driver mode's FastSteps exists only when the SETTINGS say Driver — decided from the settings'
+  // mode in both realms (the panel builds the schemas the model sees, the worker the tools that
+  // execute), so the two always agree. Absent from the ToolSet otherwise, so neither ToolSearch
+  // nor the repair hook can ever surface it. Readiness is the panel's to check, per decision.
+  let driverOn = false
+  try {
+    driverOn = decider?.settingsMode() === 'driver'
+  } catch {
+    driverOn = false
+  }
+  if (!driverOn) delete tools.FastSteps
 
   // The MCP resource tools exist only when the user has configured at least one
   // MCP server — same principle as QueryBrowserData: a capability the user

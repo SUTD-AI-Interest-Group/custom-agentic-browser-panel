@@ -1157,3 +1157,241 @@ describe('form filling', () => {
 })
 
 const SHADOW_PICKS_FOR_RELAY: Record<string, [string, number]> = { f0: ['profile.full_name', 0.9] }
+
+// ---------------------------------------------------------------------------
+// Driver mode: one FastSteps step (`next` locally, `answer()` for the worker's decider.next)
+// ---------------------------------------------------------------------------
+
+const SHOP = [
+  el({ index: 0, tag: 'input', type: 'search', name: 'Search products' }),
+  el({ index: 1, tag: 'button', type: 'submit', name: 'Search' }),
+  el({ index: 2, tag: 'a', name: 'Cart (0)', href: 'https://example.com/cart' }),
+  el({ index: 3, tag: 'input', type: 'password', name: 'Password', value: 'hunter2', sensitive: true }),
+]
+const SHOP_ELEMENTS = SHOP.map(({ index, tag, type, name, sensitive }) => ({ index, tag, name, sensitive, ...(type ? { type } : {}) }))
+const nextMsg = (over: Record<string, unknown> = {}) => ({
+  type: 'decider.next', conversationId: 'conv-1', requestId: 'req-1', tabId: 7,
+  goal: 'search for wireless headphones', plan: 'Find headphones', values: { query: 'wireless headphones' },
+  snap: { url: 'https://example.com/', title: 'Northwind Store', elements: SHOP_ELEMENTS },
+  pageText: 'Northwind Store. Audio, home and gifts.', previousActions: ['opened the store'], exclude: [],
+  ...over,
+})
+
+/**
+ * Answers `next` with `top` at `p` (the rest share 1 − p) and any fill question `f<i>` with
+ * `fill` — so one engine serves both of a `type` step's passes.
+ */
+function driveEngine(top: string, p: number, fill?: [string, number], extra: Partial<DecisionResult> = {}) {
+  const requests: { req: DecisionRequest; opts?: { dropIfBusy?: boolean; maxTokens?: number } }[] = []
+  const engine = {
+    warm: vi.fn(async () => {}),
+    decide: vi.fn(async (req: DecisionRequest, opts?: { dropIfBusy?: boolean; maxTokens?: number }): Promise<DecisionResult | null> => {
+      requests.push({ req, opts })
+      const [name, q] = Object.entries(req.questions)[0]
+      const options = Object.keys((q as { criteria: Record<string, unknown> }).criteria)
+      const [t, tp] = name === 'next' ? [top, p] : (fill ?? [options[0], 1 / options.length])
+      if (!options.includes(t)) throw new Error(`fixture: "${t}" is not an option of ${name} (${options.join(', ')})`)
+      const probs = options.map((o) => (o === t ? tp : (1 - tp) / (options.length - 1)))
+      return {
+        answers: { [name]: { kind: 'choice', options, probs, top: t, p: tp, confidence: 0.5 } },
+        ms: name === 'next' ? 120 : 40, tokens: name === 'next' ? 700 : 300, backend: 'webgpu', cold: false, ...extra,
+      }
+    }),
+  }
+  return { engine, requests }
+}
+
+function driveHooks(o: { engine: ReturnType<typeof driveEngine>['engine']; mode?: DeciderSettings['mode']; ready?: boolean; steer?: () => boolean; threshold?: number }) {
+  return createDeciderHooks({
+    settings: () => ({ mode: o.mode ?? 'driver', ...(o.threshold ? { actThreshold: o.threshold } : {}) }),
+    conversationId: 'conv-1',
+    currentGoal: () => 'the user message, which a driver step does NOT use as its goal',
+    chatModel: () => CHAT_MODEL,
+    engine: o.engine,
+    modelReady: async () => o.ready ?? true,
+    steerPending: o.steer,
+  })
+}
+
+describe('driver mode (FastSteps steps)', () => {
+  beforeEach(() => {
+    vi.mocked(getProfileMemories).mockReset()
+    vi.mocked(getProfileMemories).mockResolvedValue(MEMORIES)
+    vi.mocked(profileLookup).mockReset()
+    vi.mocked(profileLookup).mockResolvedValue({ ...PROFILE })
+  })
+
+  it('answers a step with the top three, queued (not dropIfBusy) under the dense cap, and records it as drive', async () => {
+    const { engine, requests } = driveEngine('click [2]', 0.83)
+    const reply = await within(driveHooks({ engine }).answer(nextMsg())!)
+    expect(reply).toMatchObject({ requestId: 'req-1', tokens: 700, ms: 120 })
+    const { top3 } = reply as { top3: { op: string; index?: number; p: number }[] }
+    expect(top3[0]).toEqual({ op: 'click', index: 2, p: 0.83 })
+    expect(top3).toHaveLength(3)
+    expect(requests).toHaveLength(1)
+    expect(requests[0].opts).toEqual({ maxTokens: 2500 })
+    const state = requests[0].req.state as Record<string, unknown>
+    expect(state).toMatchObject({ goal: 'search for wireless headphones', plan: 'Find headphones', page_text: 'Northwind Store. Audio, home and gifts.', previous_actions: ['opened the store'] })
+    expect(JSON.stringify(requests[0].req)).not.toContain('hunter2')
+
+    const [r] = await recordsAfter(1)
+    expect(r).toMatchObject({ kind: 'drive', conversationId: 'conv-1', llm: null, agree: null, wouldAct: true, tokens: 700, ms: 120, backend: 'webgpu' })
+    expect(r.top3[0]).toEqual({ op: 'click', index: 2, p: 0.83 })
+    const stored = JSON.stringify(r)
+    for (const needle of ['Cart', 'Search', 'Northwind', 'example.com', 'headphones', 'hunter2']) expect(stored, needle).not.toContain(needle)
+  })
+
+  it('leaves the excluded pairs out of the options', async () => {
+    const { engine, requests } = driveEngine('scroll down', 0.7)
+    await driveHooks({ engine }).answer(nextMsg({ exclude: [{ op: 'click', index: 2 }, { op: 'type', index: 0 }] }))
+    const options = Object.keys((requests[0].req.questions.next as { criteria: Record<string, unknown> }).criteria)
+    expect(options).not.toContain('click [2]')
+    expect(options).not.toContain('type into [0]')
+    expect(options).toContain('click [1]')
+    expect(options).toContain('scroll down')
+    expect(options).toContain('done')
+  })
+
+  it('a type at the top runs the single-field fill question over profile + values, and returns the confident value', async () => {
+    const { engine, requests } = driveEngine('type into [0]', 0.9, ['request.query', 0.86])
+    const reply = await driveHooks({ engine }).answer(nextMsg())
+    expect(reply).toMatchObject({ requestId: 'req-1', ms: 160, value: { key: 'request.query', text: 'wireless headphones', p: 0.86 } })
+    expect(requests).toHaveLength(2)
+    expect(requests[1].opts).toBeUndefined() // the fill pass: queued, uncapped beyond the hard cap
+    expect((requests[1].req.state as { info: unknown }).info).toEqual({ profile: PROFILE, request: { query: 'wireless headphones' } })
+    expect(Object.keys(requests[1].req.questions)).toEqual(['f0'])
+    const [r] = await recordsAfter(1)
+    // The record holds a request value by position, never its name or text.
+    expect(r.fill).toEqual([{ index: 0, key: 'request.0', p: 0.86, llmAgrees: null }])
+    expect(JSON.stringify(r)).not.toContain('wireless')
+    expect(r.ms).toBe(160)
+  })
+
+  it.each([
+    ['a value under the threshold', ['request.query', 0.5] as [string, number]],
+    ['leave_empty', ['leave_empty', 0.95] as [string, number]],
+  ])('a type with %s comes back without a value', async (_label, fill) => {
+    const { engine } = driveEngine('type into [0]', 0.9, fill)
+    const reply = await driveHooks({ engine }).answer(nextMsg())
+    expect(reply).toMatchObject({ requestId: 'req-1' })
+    expect(reply).not.toHaveProperty('value')
+  })
+
+  it('a type into a sensitive field is never given a value', async () => {
+    const { engine, requests } = driveEngine('type into [3]', 0.9, ['request.query', 0.99])
+    const reply = await driveHooks({ engine }).answer(nextMsg())
+    expect(reply).not.toHaveProperty('value')
+    expect(requests).toHaveLength(1) // no fill question asked about it at all
+  })
+
+  it('a page over the dense cap is an error flagged dense, and a skipped drive record', async () => {
+    const engine = { warm: vi.fn(async () => {}), decide: vi.fn(async () => { throw new Error('too-long: 3540 tokens exceeds 2500') }) }
+    const reply = await driveHooks({ engine } as never).answer(nextMsg())
+    expect(reply).toEqual({ requestId: 'req-1', error: 'dense page (3540 tokens)', dense: true })
+    const [r] = await recordsAfter(1)
+    expect(r).toMatchObject({ kind: 'drive', skipped: 'too-long', tokens: 3540, llm: null })
+  })
+
+  it.each([
+    ['assist', { mode: 'assist' as const }, 'Driver mode'],
+    ['shadow', { mode: 'shadow' as const }, 'Driver mode'],
+    ['a model that is not ready', { ready: false }, 'not ready'],
+  ])('answers an error in %s, deciding nothing', async (_label, over, reason) => {
+    const { engine } = driveEngine('click [2]', 0.9)
+    expect(await driveHooks({ engine, ...over }).answer(nextMsg())).toEqual({ requestId: 'req-1', error: expect.stringContaining(reason) })
+    expect(engine.decide).not.toHaveBeenCalled()
+  })
+
+  it('every reply carries the steer flag from the chain, decision or error', async () => {
+    let steering = false
+    const { engine } = driveEngine('click [2]', 0.9)
+    const hooks = driveHooks({ engine, steer: () => steering })
+    expect(await hooks.answer(nextMsg())).not.toHaveProperty('steerPending')
+    steering = true
+    expect(await hooks.answer(nextMsg({ requestId: 'req-2' }))).toMatchObject({ requestId: 'req-2', steerPending: true, top3: expect.any(Array) })
+    expect(await driveHooks({ engine, mode: 'shadow', steer: () => true }).answer(nextMsg({ requestId: 'req-3' }))).toMatchObject({ error: expect.any(String), steerPending: true })
+  })
+
+  it('a cancel from the worker drops the answer: no decision in the reply, no record', async () => {
+    let answer: (r: DecisionResult) => void = () => {}
+    const { engine: picks } = driveEngine('click [2]', 0.9)
+    const engine = { warm: vi.fn(async () => {}), decide: vi.fn((req: DecisionRequest) => new Promise<DecisionResult>((r) => { answer = r; void req })) }
+    const hooks = driveHooks({ engine } as never)
+    const reply = hooks.answer(nextMsg())!
+    await vi.waitFor(() => expect(engine.decide).toHaveBeenCalledTimes(1))
+    hooks.relay({ type: 'decider.next.cancel', conversationId: 'conv-1', requestId: 'req-1' })
+    answer((await picks.decide(engine.decide.mock.calls[0][0]))!)
+    expect(await reply).toEqual({ requestId: 'req-1', error: 'the request was cancelled' })
+    await settle()
+    expect(await listShadow()).toEqual([])
+  })
+
+  it('answer() ignores another conversation and a malformed step', async () => {
+    const { engine } = driveEngine('click [2]', 0.9)
+    const hooks = driveHooks({ engine })
+    for (const msg of [nextMsg({ conversationId: 'other' }), nextMsg({ exclude: [{ op: 'click' }] }), nextMsg({ goal: 7 })]) expect(hooks.answer(msg)).toBeUndefined()
+    await settle()
+    expect(engine.decide).not.toHaveBeenCalled()
+  })
+
+  it('next() (the panel realm): decides from the session and snapshot it is handed, and an abort ends the wait at once', async () => {
+    const { engine, requests } = driveEngine('click [1]', 0.92)
+    const hooks = driveHooks({ engine })
+    const input = {
+      tabId: 7, snap: snapOf(SHOP), session: session({ journal: journal(['opened the store']) }), goal: 'search', values: {},
+      pageText: 'text', exclude: [],
+    }
+    expect(await hooks.next(input)).toMatchObject({ top3: [{ op: 'click', index: 1, p: 0.92 }, expect.anything(), expect.anything()] })
+    expect((requests[0].req.state as Record<string, unknown>).previous_actions).toEqual(['opened the store'])
+
+    const slow = { warm: vi.fn(async () => {}), decide: vi.fn(() => new Promise<never>(() => {})) }
+    const controller = new AbortController()
+    const out = driveHooks({ engine: slow } as never).next({ ...input, signal: controller.signal })
+    await vi.waitFor(() => expect(slow.decide).toHaveBeenCalledTimes(1))
+    controller.abort()
+    expect(await within(out)).toEqual({ error: 'the turn was stopped' })
+  })
+
+  it('driver mode includes shadow and assist: mode() is driver, a step is shadowed, a form is mapped, the engine warms on a grant', async () => {
+    const { engine } = fakeEngine(answering('click [2]', 0.9))
+    const hooks = hooksWith({ engine, settings: { mode: 'driver' } })
+    hooks.sessionGranted()
+    await vi.waitFor(() => expect(engine.warm).toHaveBeenCalledTimes(1))
+    expect(hooks.mode()).toBe('driver')
+    expect(hooks.settingsMode()).toBe('driver')
+    hooks.observeStep({ tabId: 7, snap: snapOf(FORM), spec: { action: 'click', index: 2 }, session: session() })
+    const [r] = await recordsAfter(1)
+    expect(r).toMatchObject({ kind: 'next', agree: true })
+
+    const fill = fillEngine(ASSIST_PICKS)
+    const plan = await fillHooks({ engine: fill.engine, mode: 'driver' }).mapForm({ tabId: 7, snap: snapOf(FILL_FORM), session: session(), values: VALUES })
+    expect(plan).toMatchObject({ fills: expect.arrayContaining([expect.objectContaining({ index: 0, key: 'profile.full_name' })]) })
+  })
+
+  describe('deciderRelayListener', () => {
+    const EXT = 'lychee-ext-id'
+    const at = (path: string) => `chrome-extension://${EXT}/${path}`
+    beforeEach(() => {
+      vi.stubGlobal('chrome', { runtime: { id: EXT, getURL: at } })
+    })
+    afterEach(() => {
+      vi.unstubAllGlobals()
+    })
+
+    it('holds the channel open for a driver step from our worker and answers through sendResponse', async () => {
+      const { engine } = driveEngine('click [2]', 0.9)
+      const sendResponse = vi.fn()
+      expect(deciderRelayListener(driveHooks({ engine }), 'conv-1')(nextMsg(), { id: EXT, url: at('background.js') }, sendResponse)).toBe(true)
+      await vi.waitFor(() => expect(sendResponse).toHaveBeenCalledTimes(1))
+      expect(sendResponse.mock.calls[0][0]).toMatchObject({ requestId: 'req-1', top3: expect.any(Array) })
+    })
+
+    it('ignores a driver step from anyone but our worker', async () => {
+      const { engine } = driveEngine('click [2]', 0.9)
+      const sendResponse = vi.fn()
+      expect(deciderRelayListener(driveHooks({ engine }), 'conv-1')(nextMsg(), { id: EXT, url: at('sidepanel.html') }, sendResponse)).toBeUndefined()
+      await settle()
+      expect(engine.decide).not.toHaveBeenCalled()
+    })
+  })
+})

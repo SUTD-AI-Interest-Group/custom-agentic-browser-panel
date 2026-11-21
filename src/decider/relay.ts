@@ -19,6 +19,11 @@
 // that comes back carries profile values to the worker: transient, in memory, and validated field
 // by field against the worker's own snapshot before AutofillForm's guarded loop types a thing.
 //
+// DRIVER MODE (FastSteps) is a request per step: `decider.next` carries the masked page, the
+// worker-read viewport text, the previous actions and the pairs to exclude; the panel answers with
+// the top three options (and, for a `type`, the value it chose) within NEXT_TIMEOUT_MS. Like a
+// plan, a typed value travels panel → worker only, in memory, for the one action that types it.
+//
 // WHAT CROSSES THE CHANNEL is exactly what a decision needs and nothing more — `stepOf` below:
 // url/title, the plan, the last ten journal entries as `deciderActionLine`s (built from the
 // journal's already-redacted values, pageControlJournal.ts),
@@ -32,7 +37,8 @@ import { readSelectOptions, type IndexedElement, type PageSnapshot } from '../pl
 import { readViewportText } from '../platform/viewportText'
 import type { ControlAction, ControlSession, ControlSpec } from '../tools/pageControl'
 import type { ControlJournalEntry } from '../tools/pageControlJournal'
-import { DEFAULT_ACT_THRESHOLD, PAGE_TEXT_CAP, PREVIOUS_ACTIONS_WINDOW, type DeciderMode, type DeciderSettings } from './config'
+import { assistsForms, DEFAULT_ACT_THRESHOLD, PAGE_TEXT_CAP, PREVIOUS_ACTIONS_WINDOW, type DeciderMode, type DeciderSettings } from './config'
+import type { DriverDecideOutcome, DriverOp, DriverOption, OpRef } from './driverLoop'
 import type { FillPlan } from './fillPlan'
 import type { DeciderHooks } from './hooks'
 
@@ -40,7 +46,7 @@ import type { DeciderHooks } from './hooks'
 // Mode resolution, shared by both realms
 // ---------------------------------------------------------------------------
 
-export const isDeciderOn = (m: DeciderMode | undefined): m is 'shadow' | 'assist' => m === 'shadow' || m === 'assist'
+export const isDeciderOn = (m: DeciderMode | undefined): m is 'shadow' | 'assist' | 'driver' => m === 'shadow' || m === 'assist' || m === 'driver'
 
 /** The settings' mode alone, 'off' when absent or unreadable. Never throws. */
 export function settingsModeOf(settings: () => DeciderSettings | undefined): DeciderMode {
@@ -169,6 +175,10 @@ function checkedNowFor(e: ControlJournalEntry, snap: PageSnapshot): boolean | un
   return el.checked
 }
 
+/** The session's last actions as the decider reads them, against the page as it stands now. */
+export const previousActionsOf = (session: ControlSession, snap: PageSnapshot): string[] =>
+  (session.journal ?? []).slice(-PREVIOUS_ACTIONS_WINDOW).map((e) => deciderActionLine(e, checkedNowFor(e, snap)))
+
 /**
  * Capture one ControlPage step NOW, synchronously: the action it describes is about to run, and
  * its own journal entry lands the moment runControlStep finishes.
@@ -182,7 +192,7 @@ export function stepOf(i: { tabId: number; snap: PageSnapshot; spec: ControlSpec
     url: i.snap.url,
     title: i.snap.title,
     plan: i.session.plan,
-    previousActions: (i.session.journal ?? []).slice(-PREVIOUS_ACTIONS_WINDOW).map((e) => deciderActionLine(e, checkedNowFor(e, i.snap))),
+    previousActions: previousActionsOf(i.session, i.snap),
     elements: i.snap.elements.map(decisionElement),
     spec,
   }
@@ -255,6 +265,34 @@ export type MapFormReply = { requestId: string; plan: FillPlan } | { requestId: 
  */
 export const MAP_FORM_TIMEOUT_MS = 90_000
 
+/** Driver mode's per-step request: decide the next action on this page (FastSteps). */
+export interface NextRequest {
+  type: 'decider.next'
+  conversationId: string
+  requestId: string
+  tabId: number
+  /** FastSteps' sub-goal, from the chat model. */
+  goal: string
+  plan: string
+  values: Record<string, string>
+  snap: FormSnap
+  /** Read by the worker before the step; null when that read failed. */
+  pageText: string | null
+  previousActions: string[]
+  /** Pairs this step must not choose: refused earlier, or a repeat of an action that changed nothing. */
+  exclude: OpRef[]
+}
+
+/** The panel's answer: the decision without its requestId, or why there is none. */
+export type NextReply = { requestId: string } & DriverDecideOutcome
+
+/**
+ * How long the worker waits for one step's decision (two passes at most, under a second warm). The
+ * first one may also boot the model, and a first `type` may structure the profile with one
+ * chat-model call; a step that outlasts this is handed back to the chat model, not retried.
+ */
+export const NEXT_TIMEOUT_MS = 30_000
+
 // ---------------------------------------------------------------------------
 // The message, and its validator (the panel trusts nothing it did not rebuild)
 // ---------------------------------------------------------------------------
@@ -265,6 +303,8 @@ export type DeciderRelayMsg =
   | { type: 'decider.fill'; conversationId: string; fill: FillObservation }
   /** The worker stopped waiting for this request (timeout, or the call was aborted). */
   | { type: 'decider.mapForm.cancel'; conversationId: string; requestId: string }
+  /** The same, for a driver step's request. */
+  | { type: 'decider.next.cancel'; conversationId: string; requestId: string }
 
 const ACTIONS: ReadonlySet<string> = new Set<ControlAction>(['click', 'type', 'select', 'scroll', 'highlight', 'navigate', 'press', 'wait'])
 const DIRECTIONS: ReadonlySet<string> = new Set(['up', 'down', 'toElement'])
@@ -329,9 +369,9 @@ export function parseDeciderRelay(raw: unknown): DeciderRelayMsg | null {
     const fill = parseFillObservation(raw.fill)
     return fill ? { type: 'decider.fill', conversationId: raw.conversationId, fill } : null
   }
-  if (raw.type === 'decider.mapForm.cancel') {
+  if (raw.type === 'decider.mapForm.cancel' || raw.type === 'decider.next.cancel') {
     if (!isStr(raw.requestId) || raw.requestId === '') return null
-    return { type: 'decider.mapForm.cancel', conversationId: raw.conversationId, requestId: raw.requestId }
+    return { type: raw.type, conversationId: raw.conversationId, requestId: raw.requestId }
   }
   if (raw.type !== 'decider.step') return null
   const step = parseStep(raw.step)
@@ -405,9 +445,82 @@ export function parseMapFormRequest(raw: unknown): MapFormRequest | null {
   return { type: 'decider.mapForm', conversationId: raw.conversationId, requestId: raw.requestId, tabId: raw.tabId, snap, plan: raw.plan, selectOptions, values }
 }
 
+const isProb = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v) && v >= 0 && v <= 1
+
+const DRIVER_OPS: ReadonlySet<string> = new Set<DriverOp>(['click', 'type', 'select', 'scroll', 'done'])
+/** Ops that name an element; the others never carry an index. */
+const ELEMENT_OPS: ReadonlySet<string> = new Set<DriverOp>(['click', 'type', 'select'])
+const MAX_EXCLUDE = 50
+
+function parseOpRef(raw: unknown): OpRef | null {
+  if (!isObj(raw) || typeof raw.op !== 'string' || !DRIVER_OPS.has(raw.op)) return null
+  const op = raw.op as DriverOp
+  if (ELEMENT_OPS.has(op)) return isIndex(raw.index) ? { op, index: raw.index } : null
+  return raw.index === undefined ? { op } : null
+}
+
+/** The worker's driver request, rebuilt field by field — or null. Pure. */
+export function parseNextRequest(raw: unknown): NextRequest | null {
+  if (!isObj(raw) || raw.type !== 'decider.next') return null
+  if (!isStr(raw.conversationId) || raw.conversationId === '' || !isStr(raw.requestId) || raw.requestId === '') return null
+  if (!isIndex(raw.tabId) || !isStr(raw.goal) || !isStr(raw.plan)) return null
+  if (raw.pageText !== null && !isStr(raw.pageText)) return null
+  if (!Array.isArray(raw.previousActions) || !raw.previousActions.every(isStr)) return null
+  if (!Array.isArray(raw.exclude) || raw.exclude.length > MAX_EXCLUDE) return null
+  const exclude: OpRef[] = []
+  for (const x of raw.exclude) {
+    const ref = parseOpRef(x)
+    if (!ref) return null
+    exclude.push(ref)
+  }
+  const snap = parseFormSnap(raw.snap)
+  const values = parseValues(raw.values)
+  if (!snap || !values) return null
+  return {
+    type: 'decider.next',
+    conversationId: raw.conversationId,
+    requestId: raw.requestId,
+    tabId: raw.tabId,
+    goal: raw.goal,
+    plan: raw.plan,
+    values,
+    snap,
+    pageText: raw.pageText as string | null,
+    previousActions: (raw.previousActions as string[]).slice(-PREVIOUS_ACTIONS_WINDOW),
+    exclude,
+  }
+}
+
+const isMs = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v) && v >= 0
+
+/**
+ * The panel's driver answer, rebuilt field by field — or null. Every option must name an element
+ * on the page the worker snapshotted, and a value may only accompany a `type` at the top.
+ */
+export function parseNextReply(raw: unknown, onPage: ReadonlySet<number>): DriverDecideOutcome | null {
+  if (!isObj(raw)) return null
+  if (raw.steerPending !== undefined && typeof raw.steerPending !== 'boolean') return null
+  const steer = raw.steerPending === true ? { steerPending: true } : {}
+  if (typeof raw.error === 'string') return { error: raw.error.slice(0, 300), ...(raw.dense === true ? { dense: true } : {}), ...steer }
+  if (!Array.isArray(raw.top3) || raw.top3.length === 0 || raw.top3.length > 3) return null
+  const top3: DriverOption[] = []
+  for (const o of raw.top3) {
+    const ref = parseOpRef(o)
+    if (!ref || !isProb((o as Obj).p) || (ref.index !== undefined && !onPage.has(ref.index))) return null
+    top3.push({ ...ref, p: (o as Obj).p as number })
+  }
+  if (!isMs(raw.tokens) || !isMs(raw.ms)) return null
+  const out: DriverDecideOutcome = { top3, tokens: raw.tokens, ms: raw.ms, ...steer }
+  if (raw.value !== undefined) {
+    const v = raw.value
+    if (top3[0].op !== 'type' || !isObj(v) || !isStr(v.key) || v.key === '' || v.key.length > MAX_KEY + 'request.'.length || !isStr(v.text) || !isProb(v.p)) return null
+    out.value = { key: v.key, text: v.text, p: v.p }
+  }
+  return out
+}
+
 const FILL_KINDS: ReadonlySet<string> = new Set(['text', 'select', 'checkbox'])
 const LEFT_REASONS: ReadonlySet<string> = new Set(['low-confidence', 'leave-empty', 'already-set'])
-const isProb = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v) && v >= 0 && v <= 1
 
 /**
  * The panel's plan, rebuilt field by field — or null. Every index must be on the page the worker
@@ -439,7 +552,7 @@ export function parseFillPlan(raw: unknown, onPage: ReadonlySet<number>): FillPl
 
 const defaultSend = (msg: DeciderRelayMsg): unknown => chrome.runtime.sendMessage(msg)
 /** A request: resolves with the panel listener's sendResponse value. */
-const defaultRequest = (msg: MapFormRequest): Promise<unknown> => chrome.runtime.sendMessage(msg)
+const defaultRequest = (msg: MapFormRequest | NextRequest): Promise<unknown> => chrome.runtime.sendMessage(msg)
 
 /** Start the select-options read NOW (issued before this returns); never rejects — `{}` on failure. */
 function selectOptionsNow(tabId: number, elements: DecisionElement[]): Promise<Record<number, string[]>> {
@@ -488,6 +601,42 @@ function pageTextNow(tabId: number): Promise<string | null> {
 }
 
 /**
+ * One request to the panel, bounded: the panel's reply, or the reason there is none. Ends early when
+ * `signal` aborts (Stop). Whenever this side gives up — abort or timeout — it tells the panel
+ * (`cancel`), which then drops the request: no more work, no reply, no record for an answer nobody
+ * will use. No pending-request state lives in the (evictable) worker beyond this one await.
+ */
+async function askPanel(o: {
+  request: () => Promise<unknown>
+  timeoutMs: number
+  signal?: AbortSignal
+  cancel: () => void
+}): Promise<{ reply: unknown } | { error: string }> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  let onAbort: (() => void) | undefined
+  const gaveUp = new Promise<'timeout' | 'aborted'>((resolve) => {
+    timer = setTimeout(() => resolve('timeout'), o.timeoutMs)
+    onAbort = () => resolve('aborted')
+    o.signal?.addEventListener('abort', onAbort, { once: true })
+  })
+  let reply: unknown
+  try {
+    reply = await Promise.race([Promise.resolve().then(o.request), gaveUp])
+  } catch (err) {
+    return { error: requestFailure(err) }
+  } finally {
+    clearTimeout(timer)
+    if (onAbort) o.signal?.removeEventListener('abort', onAbort)
+  }
+  if (reply === 'timeout' || reply === 'aborted') {
+    o.cancel()
+    return { error: reply === 'timeout' ? 'the decision model did not answer in time' : STOPPED }
+  }
+  if (reply === undefined || reply === null) return { error: NO_PANEL }
+  return { reply }
+}
+
+/**
  * DeciderHooks for the realm that executes the tools (toolHost.ts). Every hook is synchronous and
  * fire-and-forget: nothing is ever awaited on the ControlPage path, and every failure — no panel
  * open ("Receiving end does not exist"), a closed channel, a throw — is swallowed. Nothing is read
@@ -510,8 +659,12 @@ export function forwardDeciderHooks(deps: {
   send?: (msg: DeciderRelayMsg) => unknown
   /** Assist's round trip; defaults to chrome.runtime.sendMessage with a response. */
   request?: (msg: MapFormRequest) => Promise<unknown>
+  /** Driver's per-step round trip; defaults to chrome.runtime.sendMessage with a response. */
+  requestNext?: (msg: NextRequest) => Promise<unknown>
   /** Defaults to MAP_FORM_TIMEOUT_MS. */
   mapFormTimeoutMs?: number
+  /** Defaults to NEXT_TIMEOUT_MS. */
+  nextTimeoutMs?: number
   modelReady?: () => Promise<boolean>
 }): DeciderHooks {
   const resolver = deps.modelReady ? createModeResolver(deps.settings, deps.modelReady) : null
@@ -525,6 +678,7 @@ export function forwardDeciderHooks(deps: {
   }
   return {
     mode: () => (resolver ? resolver.mode() : settingsModeOf(deps.settings)),
+    settingsMode: () => settingsModeOf(deps.settings),
     threshold: () => {
       try {
         return deps.settings()?.actThreshold ?? DEFAULT_ACT_THRESHOLD
@@ -566,12 +720,10 @@ export function forwardDeciderHooks(deps: {
     // Assist: ask the panel for a plan and wait for it — this one IS awaited, by an AutofillForm
     // call that brought no fields of its own. Every failure resolves `{ error }` (never rejects),
     // and the plan is rebuilt against this worker's own snapshot before anything acts on it.
-    // The wait ends early when `i.signal` aborts (Stop). Whenever this side gives up — abort or
-    // timeout — it tells the panel (`decider.mapForm.cancel`), which then drops the request: no
-    // more work, no reply plan, no fill record for a plan nobody will apply.
+    // The wait ends early when `i.signal` aborts (Stop); see askPanel for the cancel.
     async mapForm(i) {
       try {
-        if (settingsModeOf(deps.settings) !== 'assist') return { error: 'the decision model is not in Assist mode' }
+        if (!assistsForms(settingsModeOf(deps.settings))) return { error: 'the decision model is not in Assist mode' }
         if (i.signal?.aborted) return { error: STOPPED }
         const snap = formSnapOf(i.snap)
         const selectOptions = await selectOptionsNow(i.tabId, snap.elements)
@@ -591,31 +743,57 @@ export function forwardDeciderHooks(deps: {
         // would cost the whole timeout to learn nothing. (A JSON round trip, as the channel makes.)
         const msg = parseMapFormRequest(JSON.parse(JSON.stringify(built)))
         if (!msg) return { error: 'the form is too large to send to the decision model' }
-        let timer: ReturnType<typeof setTimeout> | undefined
-        let onAbort: (() => void) | undefined
-        const gaveUp = new Promise<'timeout' | 'aborted'>((resolve) => {
-          timer = setTimeout(() => resolve('timeout'), deps.mapFormTimeoutMs ?? MAP_FORM_TIMEOUT_MS)
-          onAbort = () => resolve('aborted')
-          i.signal?.addEventListener('abort', onAbort, { once: true })
+        const asked = await askPanel({
+          request: () => (deps.request ?? defaultRequest)(msg),
+          timeoutMs: deps.mapFormTimeoutMs ?? MAP_FORM_TIMEOUT_MS,
+          signal: i.signal,
+          cancel: () => post({ type: 'decider.mapForm.cancel', conversationId: deps.conversationId, requestId }),
         })
-        let reply: unknown
-        try {
-          reply = await Promise.race([Promise.resolve().then(() => (deps.request ?? defaultRequest)(msg)), gaveUp])
-        } catch (err) {
-          return { error: requestFailure(err) }
-        } finally {
-          clearTimeout(timer)
-          if (onAbort) i.signal?.removeEventListener('abort', onAbort)
-        }
-        if (reply === 'timeout' || reply === 'aborted') {
-          post({ type: 'decider.mapForm.cancel', conversationId: deps.conversationId, requestId })
-          return { error: reply === 'timeout' ? 'the decision model did not answer in time' : STOPPED }
-        }
-        if (reply === undefined || reply === null) return { error: NO_PANEL }
+        if ('error' in asked) return asked
+        const reply = asked.reply
         if (!isObj(reply) || reply.requestId !== requestId) return { error: 'the panel sent a malformed reply' }
         if (typeof reply.error === 'string') return { error: reply.error.slice(0, 300) }
         const plan = parseFillPlan(reply.plan, new Set(snap.elements.map((e) => e.index)))
         return plan ?? { error: 'the panel sent a malformed plan' }
+      } catch (err) {
+        return { error: requestFailure(err) }
+      }
+    },
+
+    // Driver: one step's decision, awaited by FastSteps. The same contract as mapForm — bounded,
+    // abort-aware, cancelled when this side gives up, never rejecting — and the reply is rebuilt
+    // against this worker's own snapshot: an option naming an element not on it is refused.
+    async next(i) {
+      try {
+        if (settingsModeOf(deps.settings) !== 'driver') return { error: 'the decision model is not in Driver mode' }
+        if (i.signal?.aborted) return { error: STOPPED }
+        const snap = formSnapOf(i.snap)
+        const requestId = crypto.randomUUID()
+        const built: NextRequest = {
+          type: 'decider.next',
+          conversationId: deps.conversationId,
+          requestId,
+          tabId: i.tabId,
+          goal: i.goal,
+          plan: i.session.plan,
+          values: requestValues(i.values),
+          snap,
+          pageText: i.pageText,
+          previousActions: previousActionsOf(i.session, i.snap),
+          exclude: i.exclude.slice(0, MAX_EXCLUDE),
+        }
+        const msg = parseNextRequest(JSON.parse(JSON.stringify(built)))
+        if (!msg) return { error: 'the page is too large to send to the decision model' }
+        const asked = await askPanel({
+          request: () => (deps.requestNext ?? defaultRequest)(msg),
+          timeoutMs: deps.nextTimeoutMs ?? NEXT_TIMEOUT_MS,
+          signal: i.signal,
+          cancel: () => post({ type: 'decider.next.cancel', conversationId: deps.conversationId, requestId }),
+        })
+        if ('error' in asked) return asked
+        const reply = asked.reply
+        if (!isObj(reply) || reply.requestId !== requestId) return { error: 'the panel sent a malformed reply' }
+        return parseNextReply(reply, new Set(snap.elements.map((e) => e.index))) ?? { error: 'the panel sent a malformed decision' }
       } catch (err) {
         return { error: requestFailure(err) }
       }

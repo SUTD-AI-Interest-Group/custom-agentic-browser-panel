@@ -113,6 +113,8 @@ export interface ShadowSummary {
   agreement: string
   next: string
   fill: string
+  /** Decisions driver mode acted on: counted, never judged (nothing to compare them with). */
+  driven: number
   coverage: string
   latency: { p50: number; p95: number; coldP50: number | null }
   calibration: { range: string; decisions: number; judged: number; agreement: string }[]
@@ -134,6 +136,7 @@ export function shadowSummary(records: ShadowRecord[], threshold: number): Shado
     agreement: judged.n ? `${pct(all.agreement)} of ${judged.n} judged` : '—',
     next: rate(all.byKind.next.agreement, judged.byKind.next.n),
     fill: rate(all.byKind.fill.agreement, judged.byKind.fill.n),
+    driven: all.byKind.drive.n,
     coverage: pct(all.coverage),
     latency: { p50: all.p50, p95: all.p95, coldP50: all.coldP50 },
     calibration: all.calibration.flatMap((b, i) =>
@@ -219,6 +222,7 @@ function ShadowStats({ threshold }: { threshold: number }) {
             {s.decisions} decision{s.decisions === 1 ? '' : 's'} · {s.skipped} skipped
             <br />
             Agreement {s.agreement} · next steps {s.next} · form fills {s.fill}
+            {s.driven > 0 && <> · driver steps {s.driven}</>}
             <br />
             Would act at {threshold}: {s.coverage} of decisions
             <br />
@@ -443,12 +447,16 @@ export default function ExperimentalTab({
 
   return (
     <div className="settings-tabpane">
-      <Section title="Decision model" hint="A small on-device model that watches page steps and, in Assist, fills forms.">
+      <Section
+        title="Decision model"
+        hint="A small on-device model that watches page steps, in Assist fills forms, and in Driver takes routine page steps itself (risky steps still ask you)."
+      >
         <div className="field-row">
           <Select label="Mode" value={mode} onChange={setMode}>
             <option value="off">Off</option>
             <option value="shadow">Shadow — record only</option>
             <option value="assist">Assist — record + decider fills forms</option>
+            <option value="driver">Driver — Assist + decider takes page steps</option>
           </Select>
           <label className="field">
             Act threshold

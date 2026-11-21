@@ -11,7 +11,12 @@ export interface ShadowRecord {
   conversationId: string
   seq: number
   at: number
-  kind: 'next' | 'fill'
+  /**
+   * `next`: shadowing a ControlPage step. `fill`: a form mapping (shadowed, or assist's own).
+   * `drive`: a decision driver mode acted on (FastSteps) — `llm` and `agree` are null, since there
+   * was no chat-model action to compare it with.
+   */
+  kind: 'next' | 'fill' | 'drive'
   modelId: string
   tokens: number
   ms: number

@@ -3,7 +3,7 @@ import type { ShadowRecord } from './shadowStore'
 export interface DeciderStats {
   n: number
   agreement: number
-  byKind: Record<'next' | 'fill', { n: number; agreement: number }>
+  byKind: Record<'next' | 'fill' | 'drive', { n: number; agreement: number }>
   calibration: { lo: number; hi: number; n: number; agreement: number }[]
   coverage: number
   p50: number
@@ -32,8 +32,9 @@ export function summarize(records: ShadowRecord[], threshold: number): DeciderSt
   const byKind = {
     next: { n: 0, agreement: 0 },
     fill: { n: 0, agreement: 0 },
+    drive: { n: 0, agreement: 0 },
   }
-  for (const k of ['next', 'fill'] as const) {
+  for (const k of ['next', 'fill', 'drive'] as const) {
     const rs = live.filter((r) => r.kind === k)
     byKind[k] = { n: rs.length, agreement: agreementOf(rs) }
   }

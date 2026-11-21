@@ -20,13 +20,16 @@ import {
   deciderActionLine,
   forwardDeciderHooks,
   MAP_FORM_TIMEOUT_MS,
+  NEXT_TIMEOUT_MS,
   parseDeciderRelay,
   parseMapFormRequest,
+  parseNextRequest,
   SENSITIVE_VALUE_MASK,
   stepOf,
   type DeciderRelayMsg,
   type DecisionStep,
   type MapFormRequest,
+  type NextRequest,
   type RelayedStep,
 } from './relay'
 
@@ -695,5 +698,189 @@ describe('parseDeciderRelay — decider.fill', () => {
     ['no snap', { ...FILL, snap: null }],
   ])('rejects %s', (_label, fill) => {
     expect(parseDeciderRelay({ type: 'decider.fill', conversationId: 'c', fill })).toBeNull()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Driver mode across the channel: decider.next is a request per FastSteps step
+// ---------------------------------------------------------------------------
+
+const DRIVE_ELEMENTS = [
+  el({ index: 0, tag: 'input', type: 'search', name: 'Search products' }),
+  el({ index: 1, tag: 'button', type: 'submit', name: 'Search' }),
+  el({ index: 2, tag: 'input', type: 'password', name: 'Password', value: 'hunter2', sensitive: true }),
+]
+const driveInput = (over: Record<string, unknown> = {}) => ({
+  tabId: 7,
+  snap: snap(DRIVE_ELEMENTS),
+  session: session({ plan: 'Find headphones', journal: journal(['opened the store']) }),
+  goal: 'search for wireless headphones',
+  values: { query: 'wireless headphones' },
+  pageText: 'Northwind Store. Search products.',
+  exclude: [{ op: 'click' as const, index: 1 }],
+  ...over,
+})
+const DECISION = { top3: [{ op: 'type', index: 0, p: 0.91 }, { op: 'click', index: 1, p: 0.05 }, { op: 'scroll', p: 0.02 }], tokens: 512, ms: 180 }
+
+describe('forwardDeciderHooks.next (the service-worker side of driver mode)', () => {
+  const answering = (reply: (msg: NextRequest) => unknown) => vi.fn(async (msg: NextRequest) => reply(msg))
+
+  it('asks the panel once with the masked page, the worker-read text and the exclusions, and returns the decision it validated', async () => {
+    const requestNext = answering((msg) => ({ requestId: msg.requestId, ...DECISION, value: { key: 'request.query', text: 'wireless headphones', p: 0.88 } }))
+    const send = vi.fn()
+    const hooks = forwardDeciderHooks({ conversationId: 'conv-1', settings: () => ({ mode: 'driver' }), send, requestNext })
+    const out = await hooks.next(driveInput())
+    expect(out).toEqual({ ...DECISION, value: { key: 'request.query', text: 'wireless headphones', p: 0.88 } })
+    expect(requestNext).toHaveBeenCalledTimes(1)
+    const msg = requestNext.mock.calls[0][0]
+    expect(msg).toEqual({
+      type: 'decider.next',
+      conversationId: 'conv-1',
+      requestId: expect.any(String),
+      tabId: 7,
+      goal: 'search for wireless headphones',
+      plan: 'Find headphones',
+      values: { query: 'wireless headphones' },
+      snap: {
+        url: 'https://shop.test/checkout',
+        title: 'Checkout',
+        elements: [
+          { index: 0, tag: 'input', type: 'search', name: 'Search products', sensitive: false },
+          { index: 1, tag: 'button', type: 'submit', name: 'Search', sensitive: false },
+          { index: 2, tag: 'input', type: 'password', name: 'Password', value: SENSITIVE_VALUE_MASK, sensitive: true },
+        ],
+      },
+      pageText: 'Northwind Store. Search products.',
+      previousActions: ['opened the store'],
+      exclude: [{ op: 'click', index: 1 }],
+    })
+    expect(msg.requestId).not.toBe('')
+    expect(JSON.stringify(msg)).not.toContain('hunter2')
+    expect(parseNextRequest(JSON.parse(JSON.stringify(msg)))).toEqual(msg)
+    expect(send).not.toHaveBeenCalled() // a request, not a post
+    expect(readViewportText).not.toHaveBeenCalled() // the loop read it, before the step
+  })
+
+  it.each([
+    ['assist', { mode: 'assist' }],
+    ['shadow', { mode: 'shadow' }],
+    ['off', { mode: 'off' }],
+    ['no settings', undefined],
+  ] as [string, DeciderSettings | undefined][])('answers an error without asking anything in %s', async (_label, settings) => {
+    const requestNext = vi.fn()
+    const out = await forwardDeciderHooks({ conversationId: 'c', settings: () => settings, requestNext }).next(driveInput())
+    expect(out).toEqual({ error: expect.stringContaining('Driver') })
+    expect(requestNext).not.toHaveBeenCalled()
+  })
+
+  it('gives up after 30 s by default and tells the panel', async () => {
+    expect(NEXT_TIMEOUT_MS).toBe(30_000)
+    const requestNext = vi.fn((_msg: NextRequest) => new Promise<never>(() => {}))
+    const send = vi.fn()
+    const out = await forwardDeciderHooks({ conversationId: 'c', settings: () => ({ mode: 'driver' }), requestNext, send, nextTimeoutMs: 20 }).next(driveInput())
+    expect(out).toEqual({ error: expect.stringContaining('did not answer') })
+    expect(send).toHaveBeenCalledWith({ type: 'decider.next.cancel', conversationId: 'c', requestId: requestNext.mock.calls[0][0].requestId })
+  })
+
+  it('an abort ends the wait at once and tells the panel; an abort before asking asks nothing', async () => {
+    const requestNext = vi.fn((_msg: NextRequest) => new Promise<never>(() => {}))
+    const send = vi.fn()
+    const hooks = forwardDeciderHooks({ conversationId: 'c', settings: () => ({ mode: 'driver' }), requestNext, send })
+    const controller = new AbortController()
+    const out = hooks.next({ ...driveInput(), signal: controller.signal })
+    await vi.waitFor(() => expect(requestNext).toHaveBeenCalledTimes(1))
+    controller.abort()
+    expect(await Promise.race([out, new Promise((r) => setTimeout(() => r('still waiting'), 500))])).toEqual({ error: 'the turn was stopped' })
+    expect(send).toHaveBeenCalledWith({ type: 'decider.next.cancel', conversationId: 'c', requestId: requestNext.mock.calls[0][0].requestId })
+
+    requestNext.mockClear()
+    send.mockClear()
+    expect(await hooks.next({ ...driveInput(), signal: AbortSignal.abort() })).toEqual({ error: 'the turn was stopped' })
+    expect(requestNext).not.toHaveBeenCalled()
+    expect(send).not.toHaveBeenCalled()
+  })
+
+  it("passes the panel's error through, with the dense and steer flags", async () => {
+    const requestNext = answering((msg) => ({ requestId: msg.requestId, error: 'dense page (3540 tokens)', dense: true, steerPending: true, extra: 1 }))
+    expect(await forwardDeciderHooks({ conversationId: 'c', settings: () => ({ mode: 'driver' }), requestNext }).next(driveInput())).toEqual({
+      error: 'dense page (3540 tokens)',
+      dense: true,
+      steerPending: true,
+    })
+  })
+
+  it('carries a steer flag on a decision', async () => {
+    const requestNext = answering((msg) => ({ requestId: msg.requestId, ...DECISION, steerPending: true }))
+    expect(await forwardDeciderHooks({ conversationId: 'c', settings: () => ({ mode: 'driver' }), requestNext }).next(driveInput())).toEqual({ ...DECISION, steerPending: true })
+  })
+
+  it.each([
+    ['another request’s answer', (id: string) => ({ ...DECISION, requestId: `${id}-other` })],
+    ['an option for an element not on the page', (id: string) => ({ requestId: id, ...DECISION, top3: [{ op: 'click', index: 99, p: 0.9 }] })],
+    ['an unknown op', (id: string) => ({ requestId: id, ...DECISION, top3: [{ op: 'navigate', p: 0.9 }] })],
+    ['a click without an index', (id: string) => ({ requestId: id, ...DECISION, top3: [{ op: 'click', p: 0.9 }] })],
+    ['a probability outside [0, 1]', (id: string) => ({ requestId: id, ...DECISION, top3: [{ op: 'scroll', p: 1.5 }] })],
+    ['no options', (id: string) => ({ requestId: id, ...DECISION, top3: [] })],
+    ['a value under a click', (id: string) => ({ requestId: id, ...DECISION, top3: [{ op: 'click', index: 1, p: 0.9 }], value: { key: 'request.query', text: 'x', p: 0.9 } })],
+    ['a value whose text is not a string', (id: string) => ({ requestId: id, ...DECISION, value: { key: 'request.query', text: 7, p: 0.9 } })],
+    ['no timing', (id: string) => ({ requestId: id, top3: DECISION.top3 })],
+  ])('rejects %s as a malformed reply', async (_label, reply) => {
+    const requestNext = answering((msg) => reply(msg.requestId))
+    const out = await forwardDeciderHooks({ conversationId: 'c', settings: () => ({ mode: 'driver' }), requestNext }).next(driveInput())
+    expect(out).toEqual({ error: expect.stringContaining('malformed') })
+  })
+
+  it('answers an error when no panel is open', async () => {
+    const requestNext = vi.fn(() => Promise.reject(new Error('Could not establish connection. Receiving end does not exist.')))
+    expect(await forwardDeciderHooks({ conversationId: 'c', settings: () => ({ mode: 'driver' }), requestNext }).next(driveInput())).toEqual({
+      error: expect.stringContaining('no Lychee panel'),
+    })
+  })
+})
+
+describe('driver mode includes assist and shadow', () => {
+  it('observeStep posts, sessionGranted posts, and mapForm asks — all in driver mode', async () => {
+    const send = vi.fn()
+    const request = vi.fn(async (msg: MapFormRequest) => ({ requestId: msg.requestId, plan: PLAN }))
+    const hooks = forwardDeciderHooks({ conversationId: 'c', settings: () => ({ mode: 'driver' }), send, request })
+    expect(await hooks.mapForm({ ...formInput(), values: {} })).toEqual(PLAN)
+    hooks.sessionGranted()
+    expect(send).toHaveBeenCalledWith({ type: 'decider.granted', conversationId: 'c' })
+    hooks.observeStep({ tabId: 7, snap: snap(DRIVE_ELEMENTS), spec: { action: 'click', index: 1 }, session: session() })
+    await vi.waitFor(() => expect(send).toHaveBeenCalledWith(expect.objectContaining({ type: 'decider.step' })))
+    expect(hooks.settingsMode()).toBe('driver')
+  })
+})
+
+describe('parseNextRequest', () => {
+  const REQ: NextRequest = {
+    type: 'decider.next', conversationId: 'c', requestId: 'r1', tabId: 7, goal: 'g', plan: 'p', values: { query: 'q' },
+    snap: { url: 'https://shop.test/', title: 'Shop', elements: [{ index: 0, tag: 'input', type: 'password', name: 'Pin', value: SENSITIVE_VALUE_MASK, sensitive: true }] },
+    pageText: null, previousActions: ['a'], exclude: [{ op: 'click', index: 0 }, { op: 'scroll' }],
+  }
+
+  it('accepts a well-formed request, re-masks a sensitive value and drops anything extra', () => {
+    expect(parseNextRequest(REQ)).toEqual(REQ)
+    const raw = { ...REQ, extra: 1, snap: { ...REQ.snap, elements: [{ ...REQ.snap.elements[0], value: '1234' }] } }
+    expect(parseNextRequest(raw)).toEqual(REQ)
+  })
+
+  it.each([
+    ['another type', { ...REQ, type: 'decider.mapForm' }],
+    ['an empty requestId', { ...REQ, requestId: '' }],
+    ['a goal that is not a string', { ...REQ, goal: 1 }],
+    ['page text that is not a string or null', { ...REQ, pageText: 3 }],
+    ['an exclusion with an unknown op', { ...REQ, exclude: [{ op: 'press' }] }],
+    ['a click exclusion without an index', { ...REQ, exclude: [{ op: 'click' }] }],
+    ['a scroll exclusion with an index', { ...REQ, exclude: [{ op: 'scroll', index: 2 }] }],
+    ['too many exclusions', { ...REQ, exclude: Array.from({ length: 51 }, () => ({ op: 'scroll' })) }],
+    ['values that are not strings', { ...REQ, values: { query: 1 } }],
+  ])('rejects %s', (_label, raw) => {
+    expect(parseNextRequest(raw)).toBeNull()
+  })
+
+  it('a driver cancel is a relay message like assist’s', () => {
+    expect(parseDeciderRelay({ type: 'decider.next.cancel', conversationId: 'c', requestId: 'r1', x: 1 })).toEqual({ type: 'decider.next.cancel', conversationId: 'c', requestId: 'r1' })
+    expect(parseDeciderRelay({ type: 'decider.next.cancel', conversationId: 'c', requestId: '' })).toBeNull()
   })
 })

@@ -3,7 +3,7 @@
 // design: rendering, packing, readout and table math all live in tested pure modules.
 
 import * as ort from 'onnxruntime-web/webgpu'
-import { DECIDER_MAX_TOKENS } from './config'
+import { tokenCap } from './config'
 import { createEncoder } from './tokenizer'
 import { parseManifest, type DeciderManifest } from './manifest'
 import { renderRequest } from './prompt'
@@ -125,13 +125,13 @@ async function open(modelId: string, wasmUrl: string): Promise<{ boot: Boot; boo
   }
 }
 
-async function decide(b: Boot, request: DecisionRequest) {
+async function decide(b: Boot, request: DecisionRequest, maxTokens?: number) {
   const t0 = performance.now()
   const { manifest } = b
   const rendered = renderRequest(request, b.encode, manifest.controlTokenIds)
   const packed = packPass(rendered.stateIds, rendered.questions.map((q) => q.ids))
   const T = packed.ids.length
-  const cap = Math.min(manifest.maxLength, DECIDER_MAX_TOKENS)
+  const cap = tokenCap(manifest.maxLength, maxTokens)
   if (T > cap) throw new Error(`too-long: ${T} tokens exceeds ${cap}`)
 
   const embeds = new Float32Array(T * manifest.hidden)
@@ -196,7 +196,7 @@ self.onmessage = async (e: MessageEvent<DeciderWorkerRequest>) => {
   if (msg.type === 'decide') {
     if (!boot) return post({ type: 'failed', id: msg.id, message: 'decider not initialised' })
     try {
-      const r = await decide(boot, msg.request)
+      const r = await decide(boot, msg.request, msg.maxTokens)
       post({ type: 'result', id: msg.id, result: { ...r, cold } })
       cold = false
     } catch (err) {

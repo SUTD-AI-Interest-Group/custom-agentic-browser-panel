@@ -69,6 +69,15 @@ describe('summarize', () => {
     expect(s.coldP50).toBe(5000)
   })
 
+  it('counts drive decisions apart, and never as agreement (there is no chat-model action to compare)', () => {
+    const d = summarize([...records, rec({ id: '6', kind: 'drive', agree: null, top3: [{ op: 'click', index: 3, p: 0.92 }] })], 0.9)
+    expect(d.byKind.drive).toEqual({ n: 1, agreement: 0 })
+    expect(d.byKind.next).toEqual(s.byKind.next)
+    expect(d.agreement).toBeCloseTo(2 / 3) // unchanged: a drive record is unjudged
+    expect(d.n).toBe(5)
+    expect(s.byKind.drive).toEqual({ n: 0, agreement: 0 })
+  })
+
   it('empty input is safe', () => {
     const e = summarize([], 0.9)
     expect(e.n).toBe(0)

@@ -19,6 +19,7 @@ export interface WorkerLike {
 interface Job {
   req: DecisionRequest
   dropIfBusy: boolean
+  maxTokens?: number
   resolve: (r: DecisionResult | null) => void
   reject: (e: Error) => void
 }
@@ -64,10 +65,13 @@ export class DeciderEngine {
 
   /**
    * Queue one decision. With `dropIfBusy`, a still-queued earlier `dropIfBusy` call is replaced
-   * (it resolves `null`), so a burst of stale snapshots collapses to the newest.
+   * (it resolves `null`), so a burst of stale snapshots collapses to the newest. With `maxTokens`,
+   * a pass longer than that rejects `too-long` in the worker instead of running (driver mode's
+   * dense-page cap); without it, only the hard cap applies.
    */
-  decide(req: DecisionRequest, opts: { dropIfBusy?: boolean } = {}): Promise<DecisionResult | null> {
+  decide(req: DecisionRequest, opts: { dropIfBusy?: boolean; maxTokens?: number } = {}): Promise<DecisionResult | null> {
     const dropIfBusy = !!opts.dropIfBusy
+    const maxTokens = opts.maxTokens
     clearTimeout(this.idleTimer)
     return new Promise((resolve, reject) => {
       if (dropIfBusy) {
@@ -77,7 +81,7 @@ export class DeciderEngine {
           return false
         })
       }
-      this.queue.push({ req, dropIfBusy, resolve, reject })
+      this.queue.push({ req, dropIfBusy, maxTokens, resolve, reject })
       void this.pump()
     })
   }
@@ -101,7 +105,7 @@ export class DeciderEngine {
         try {
           // Re-ensure per call: an earlier timeout may have torn the worker down.
           await this.ensure()
-          job.resolve(await this.roundTrip(job.req))
+          job.resolve(await this.roundTrip(job.req, job.maxTokens))
         } catch (err) {
           job.reject(err instanceof Error ? err : new Error(String(err)))
         }
@@ -177,7 +181,7 @@ export class DeciderEngine {
     }
   }
 
-  private roundTrip(request: DecisionRequest): Promise<DecisionResult> {
+  private roundTrip(request: DecisionRequest, maxTokens?: number): Promise<DecisionResult> {
     return new Promise((resolve, reject) => {
       const worker = this.worker
       if (!worker) return reject(new Error('the decider is not running'))
@@ -189,7 +193,7 @@ export class DeciderEngine {
         reject(new Error('the decider stopped responding and was reset'))
       }, this.decideTimeoutMs)
       this.inFlight = { id, resolve, reject, timer }
-      worker.postMessage({ type: 'decide', id, request })
+      worker.postMessage(maxTokens === undefined ? { type: 'decide', id, request } : { type: 'decide', id, request, maxTokens })
     })
   }
 

@@ -19,6 +19,12 @@
 // list of fills; AutofillForm's own loop still runs every guard on each. `observeFill` shadows a
 // call that brought its own fields, like observeStep shadows a step.
 //
+// DRIVER (FastSteps) is the other awaited path, one request per step (`next` locally, `answer()`
+// for the worker's `decider.next`): nextActionRequest minus the excluded pairs → decide (queued,
+// capped at DRIVER_MAX_TOKENS so a dense page is handed back instead of decided slowly) → for a
+// `type` at the top, the single-field fill question over profile + values. Every decision writes a
+// `drive` record (llm and agree null: nothing to compare with), key names only.
+//
 // Built ONCE per continuation chain, so `seq` numbers every step this chain's hooks were handed —
 // recorded, dropped or off alike — and model readiness is probed once per chain.
 //
@@ -36,12 +42,14 @@ import { getProfileMemories } from '../data/memory'
 import { readSelectOptions, type IndexedElement, type PageSnapshot } from '../platform/domIndex'
 import { readViewportText } from '../platform/viewportText'
 import type { ControlSession, ControlSpec } from '../tools/pageControl'
-import { MODEL_ID, PAGE_TEXT_CAP, type DeciderMode, type DeciderSettings } from './config'
+import { assistsForms, DRIVER_MAX_TOKENS, MODEL_ID, PAGE_TEXT_CAP, type DeciderMode, type DeciderSettings } from './config'
+import type { DriverDecideOutcome, DriverOption, OpRef } from './driverLoop'
 import { getDeciderEngine, type DeciderEngine } from './engine'
 import { planFill, type FillPlan } from './fillPlan'
 import { profileLookup } from './profileLookup'
 import type { DecisionResult } from './protocol'
 import type { Answer } from './readout'
+import type { DecisionRequest } from './request'
 import {
   createModeResolver,
   formSnapOf,
@@ -49,6 +57,8 @@ import {
   observedFields,
   parseDeciderRelay,
   parseMapFormRequest,
+  parseNextRequest,
+  previousActionsOf,
   selectIndicesOf,
   stepOf,
   STOPPED,
@@ -56,14 +66,24 @@ import {
   type FillObservation,
   type FormSnap,
   type MapFormReply,
+  type NextReply,
+  type NextRequest,
 } from './relay'
 import { putShadow, type ShadowRecord } from './shadowStore'
 import { fillRequest, formFields, nextActionRequest, type FillQuestion, type Lookup, type OptionAction } from './state'
 import { isModelReady } from './storage'
 
+/** One FastSteps step, as a decision needs it — what `decider.next` carries, minus its addressing. */
+export type NextStep = Omit<NextRequest, 'type' | 'conversationId' | 'requestId'>
+
 export interface DeciderHooks {
-  /** 'off' unless the settings say shadow/assist AND the imported model is ready. */
+  /** 'off' unless the settings say shadow/assist/driver AND the imported model is ready. */
   mode(): DeciderMode
+  /**
+   * The settings' mode alone, readiness not consulted. Whether FastSteps exists at all is decided
+   * from this in both realms, so the panel's schemas and the worker's tools always agree.
+   */
+  settingsMode(): DeciderMode
   threshold(): number
   /** A page-control session was granted: warm the engine (never awaited; errors swallowed). */
   sessionGranted(): void
@@ -81,6 +101,22 @@ export interface DeciderHooks {
    * neither returned nor recorded.
    */
   mapForm(i: { tabId: number; snap: PageSnapshot; session: ControlSession; values: Record<string, string>; signal?: AbortSignal }): Promise<FillPlan | { error: string }>
+  /**
+   * Driver: decide one FastSteps step — the top three next actions on this page, without the
+   * `exclude`d pairs, and for a `type` the value to type when one is chosen with confidence.
+   * Awaited; resolves a decision or `{ error }` (`dense` when the page is over the dense cap),
+   * never rejects, and ends at once with `{ error }` when `signal` aborts.
+   */
+  next(i: {
+    tabId: number
+    snap: PageSnapshot
+    session: ControlSession
+    goal: string
+    values: Record<string, string>
+    pageText: string | null
+    exclude: OpRef[]
+    signal?: AbortSignal
+  }): Promise<DriverDecideOutcome>
 }
 
 /** The panel's hooks: DeciderHooks plus the entry points for messages from the worker. */
@@ -91,11 +127,12 @@ export interface DeciderPanelHooks extends DeciderHooks {
    */
   relay(msg: unknown): void
   /**
-   * Answer the worker's assist request (`decider.mapForm`) for THIS conversation: the reply to hand
-   * to sendResponse. `undefined` for anything else — another conversation's request is left for
-   * that conversation's own chain to answer. Never throws; the promise never rejects.
+   * Answer the worker's request — assist's `decider.mapForm` or driver's `decider.next` — for THIS
+   * conversation: the reply to hand to sendResponse. `undefined` for anything else — another
+   * conversation's request is left for that conversation's own chain to answer. Never throws; the
+   * promise never rejects.
    */
-  answer(msg: unknown): Promise<MapFormReply> | undefined
+  answer(msg: unknown): Promise<MapFormReply | NextReply> | undefined
 }
 
 /** The two engine calls the hooks make — a DeciderEngine, or a test double. */
@@ -112,6 +149,11 @@ export interface DeciderHookDeps {
   engine?: DeciderEngineLike
   /** Defaults to storage.ts's isModelReady. */
   modelReady?: () => Promise<boolean>
+  /**
+   * Whether the user has queued a mid-turn steer (runTurnChain's steer queue). Every driver reply
+   * carries it, so FastSteps — running in the worker — stops at its next step boundary.
+   */
+  steerPending?: () => boolean
 }
 
 // ---------------------------------------------------------------------------
@@ -470,7 +512,7 @@ export function createDeciderHooks(deps: DeciderHookDeps): DeciderPanelHooks {
     cancelled: () => boolean,
   ): Promise<FillPlan | { error: string }> {
     try {
-      if (resolver.settingsMode() !== 'assist') return { error: 'the decision model is not in Assist mode' }
+      if (!assistsForms(resolver.settingsMode())) return { error: 'the decision model is not in Assist mode' }
       if (!(await resolver.resolveReady())) return { error: 'the decision model is not ready' }
       const fields = formFields(form.snap.elements.map(asIndexed), await options())
       if (fields.length === 0) return { error: 'no fillable fields on this page' }
@@ -552,6 +594,133 @@ export function createDeciderHooks(deps: DeciderHookDeps): DeciderPanelHooks {
     }
   }
 
+  // -------------------------------------------------------------------------
+  // Driver: one FastSteps step
+  // -------------------------------------------------------------------------
+
+  const steer = (): { steerPending?: true } => {
+    try {
+      return deps.steerPending?.() === true ? { steerPending: true } : {}
+    } catch {
+      return {}
+    }
+  }
+
+  /**
+   * The value for a `type` at the top: the single-field fill question over profile + values, and
+   * the chosen key's text when it clears the threshold. Never throws — no value is a hand-back
+   * ("needs value"), not a failure. `entry` is the record's view of it: a key NAME, never the text.
+   */
+  async function typedValue(
+    step: NextStep,
+    el: IndexedElement | undefined,
+    cancelled: () => boolean,
+  ): Promise<{ ms: number; value?: { key: string; text: string; p: number }; entry?: NonNullable<ShadowRecord['fill']>[number] }> {
+    try {
+      const field = el ? formFields([el], {})[0] : undefined
+      if (!field || field.kind !== 'text') return { ms: 0 }
+      const lookup = await lookupFor(step.values)
+      if (cancelled() || (Object.keys(lookup.profile).length === 0 && Object.keys(lookup.request).length === 0)) return { ms: 0 }
+      const { request, questions } = fillRequest({ goal: step.goal, url: step.snap.url, title: step.snap.title, lookup, fields: [field] })
+      const result = (await engine().decide(request)) as DecisionResult
+      const q = questions[0]
+      const a = result.answers[q.name]
+      if (!a) return { ms: result.ms }
+      const entry = { index: field.index, key: fillKey(q, a, Object.keys(lookup.request)), p: a.p, llmAgrees: null }
+      const text = a.top === 'leave_empty' ? undefined : lookupValue(lookup, a.top)
+      if (a.p < resolver.threshold() || text === undefined) return { ms: result.ms, entry }
+      return { ms: result.ms, entry, value: { key: a.top, text, p: a.p } }
+    } catch {
+      return { ms: 0 }
+    }
+  }
+
+  /** The next-action options without the excluded pairs: criteria and actions stay index-aligned. */
+  function withoutExcluded(request: DecisionRequest, actions: OptionAction[], exclude: OpRef[]): { request: DecisionRequest; actions: OptionAction[] } {
+    if (exclude.length === 0) return { request, actions }
+    const q = request.questions.next as Extract<DecisionRequest['questions'][string], { type: 'choice' }>
+    const names = Object.keys(q.criteria)
+    const keep = actions.map((a) => !exclude.some((x) => x.op === a.op && x.index === ('index' in a ? a.index : undefined)))
+    return {
+      request: { ...request, questions: { next: { ...q, criteria: Object.fromEntries(names.filter((_, k) => keep[k]).map((n) => [n, q.criteria[n]])) } } },
+      actions: actions.filter((_, k) => keep[k]),
+    }
+  }
+
+  const optionOf = (a: OptionAction, p: number): DriverOption => ('index' in a ? { op: a.op, index: a.index, p } : { op: a.op, p })
+
+  /**
+   * One driver step, for both realms: nextActionRequest minus the excluded pairs → decide (queued,
+   * NOT dropIfBusy — FastSteps is waiting — and capped at DRIVER_MAX_TOKENS) → for a `type` at the
+   * top, its value → a `drive` record. `cancelled` is the caller giving up; checked after each
+   * decision, so an answer nobody will act on is neither returned nor recorded.
+   */
+  async function decideNext(n: number, step: NextStep, cancelled: () => boolean): Promise<DriverDecideOutcome> {
+    if (resolver.settingsMode() !== 'driver') return { error: 'the decision model is not in Driver mode' }
+    if (!(await resolver.resolveReady())) return { error: 'the decision model is not ready' }
+    if (cancelled()) return { error: CANCELLED }
+    const elements = step.snap.elements.map(asIndexed)
+    const built = nextActionRequest({
+      goal: step.goal,
+      plan: step.plan,
+      url: step.snap.url,
+      title: step.snap.title,
+      previousActions: step.previousActions,
+      pageText: step.pageText ?? undefined,
+      elements,
+    })
+    const { request, actions } = withoutExcluded(built.request, built.actions, step.exclude)
+    const at = Date.now()
+    let result: DecisionResult
+    try {
+      result = (await engine().decide(request, { maxTokens: DRIVER_MAX_TOKENS })) as DecisionResult
+    } catch (err) {
+      if (cancelled()) return { error: CANCELLED }
+      void putShadow(skippedOf(n, at, null, err, 'drive')).catch(() => {})
+      const message = err instanceof Error ? err.message : String(err)
+      if (message.startsWith('too-long')) return { error: `dense page (${tooLongTokens(message)} tokens)`, dense: true }
+      return { error: decideFailure(err) }
+    }
+    if (cancelled()) return { error: CANCELLED }
+    const a = result.answers.next
+    if (!a || a.probs.length !== actions.length || a.options.length !== actions.length) return { error: 'the decision does not match the options it was asked' }
+    lastBackend = result.backend
+    const order = a.probs
+      .map((_, k) => k)
+      .sort((x, y) => a.probs[y] - a.probs[x])
+      .slice(0, 3)
+    const top3 = order.map((k) => optionOf(actions[k], a.probs[k]))
+    const best = actions[order[0]]
+    const typed = best.op === 'type' ? await typedValue(step, elements.find((e) => e.index === best.index), cancelled) : { ms: 0 }
+    if (cancelled()) return { error: CANCELLED }
+    const ms = result.ms + typed.ms
+    try {
+      const record: ShadowRecord = {
+        ...base(n, at, null, 'drive'),
+        tokens: result.tokens,
+        ms,
+        backend: result.backend,
+        cold: result.cold,
+        top3: top3.map((o) => ({ ...o })),
+        agree: null,
+        wouldAct: top3[0].p >= resolver.threshold(),
+        ...(typed.entry ? { fill: [typed.entry] } : {}),
+      }
+      void putShadow(record).catch(() => {})
+    } catch {
+      /* the record is a log; the decision stands */
+    }
+    return { top3, tokens: result.tokens, ms, ...(typed.value ? { value: typed.value } : {}) }
+  }
+
+  /** decideNext, with the steer flag attached and every throw turned into `{ error }`. */
+  function nextFor(n: number, step: NextStep, cancelled: () => boolean): Promise<DriverDecideOutcome> {
+    return decideNext(n, step, cancelled).then(
+      (r) => ({ ...r, ...steer() }),
+      (err) => ({ error: `the decision model failed: ${err instanceof Error ? err.message : String(err)}`.slice(0, 200), ...steer() }),
+    )
+  }
+
   function sessionGranted(): void {
     try {
       if (!isDeciderOn(resolver.settingsMode())) return
@@ -566,6 +735,7 @@ export function createDeciderHooks(deps: DeciderHookDeps): DeciderPanelHooks {
 
   return {
     mode: resolver.mode,
+    settingsMode: resolver.settingsMode,
     threshold: resolver.threshold,
     sessionGranted,
     observeStep(i) {
@@ -577,12 +747,37 @@ export function createDeciderHooks(deps: DeciderHookDeps): DeciderPanelHooks {
         if (!m || m.conversationId !== deps.conversationId) return
         if (m.type === 'decider.granted') sessionGranted()
         else if (m.type === 'decider.fill') shadowFill(() => ({ obs: m.fill, options: Promise.resolve(m.fill.selectOptions) }))
-        else if (m.type === 'decider.mapForm.cancel') {
+        else if (m.type === 'decider.mapForm.cancel' || m.type === 'decider.next.cancel') {
           const request = pending.get(m.requestId)
           if (request) request.cancelled = true
         } else shadow(() => m.step)
       } catch {
         /* additive only */
+      }
+    },
+
+    next(i) {
+      const n = seq++
+      try {
+        if (i.signal?.aborted) return Promise.resolve({ error: STOPPED })
+        const aborted = () => i.signal?.aborted === true
+        const step: NextStep = {
+          tabId: i.tabId,
+          goal: i.goal,
+          plan: i.session.plan,
+          values: { ...i.values },
+          snap: formSnapOf(i.snap),
+          pageText: i.pageText,
+          previousActions: previousActionsOf(i.session, i.snap),
+          exclude: i.exclude,
+        }
+        // Stop ends the wait at once; decideNext, still running, sees the abort and drops its answer.
+        return Promise.race([
+          nextFor(n, step, aborted).then((r) => (aborted() ? { error: STOPPED } : r)),
+          whenAborted(i.signal).then(() => ({ error: STOPPED })),
+        ])
+      } catch (err) {
+        return Promise.resolve({ error: `the decision model failed: ${err instanceof Error ? err.message : String(err)}`.slice(0, 200) })
       }
     },
 
@@ -616,6 +811,19 @@ export function createDeciderHooks(deps: DeciderHookDeps): DeciderPanelHooks {
 
     answer(msg) {
       try {
+        if ((msg as { type?: unknown } | null)?.type === 'decider.next') {
+          const m = parseNextRequest(msg)
+          if (!m || m.conversationId !== deps.conversationId) return undefined
+          const n = seq++
+          const request = { cancelled: false }
+          pending.set(m.requestId, request)
+          const { type: _type, conversationId: _conversationId, requestId, ...step } = m
+          return nextFor(n, step, () => request.cancelled)
+            .then((r): NextReply => (request.cancelled ? { requestId, error: CANCELLED } : { requestId, ...r }))
+            .finally(() => {
+              if (pending.get(requestId) === request) pending.delete(requestId)
+            })
+        }
         const m = parseMapFormRequest(msg)
         if (!m || m.conversationId !== deps.conversationId) return undefined
         const n = seq++
@@ -649,20 +857,22 @@ const SERVICE_WORKER_SCRIPT = 'background.js'
  * another of our own pages — and names this chain's conversation; the hooks then validate the rest.
  *
  * A step, grant or fill observation is fire-and-forget: the listener returns nothing, so it never
- * holds the sender's channel open. An assist request (`decider.mapForm`) is the one exception: the
- * listener returns `true` and answers through `sendResponse` once the plan (or its error) is ready.
- * Another conversation's request is left alone, for that conversation's own chain. Never throws.
+ * holds the sender's channel open. A request — assist's `decider.mapForm`, driver's `decider.next` —
+ * is the exception: the listener returns `true` and answers through `sendResponse` once the plan or
+ * decision (or its error) is ready. Another conversation's request is left alone, for that
+ * conversation's own chain. Never throws.
  */
 export function deciderRelayListener(
   decider: Pick<DeciderPanelHooks, 'relay' | 'answer'>,
   conversationId: string,
-): (msg: unknown, sender: chrome.runtime.MessageSender, sendResponse?: (reply: MapFormReply) => void) => true | undefined {
+): (msg: unknown, sender: chrome.runtime.MessageSender, sendResponse?: (reply: MapFormReply | NextReply) => void) => true | undefined {
   return (msg, sender, sendResponse) => {
     try {
       if (!sender || sender.id !== chrome.runtime.id || sender.tab) return undefined
       if (sender.url !== chrome.runtime.getURL(SERVICE_WORKER_SCRIPT)) return undefined
       if (typeof msg !== 'object' || msg === null || (msg as { conversationId?: unknown }).conversationId !== conversationId) return undefined
-      if ((msg as { type?: unknown }).type === 'decider.mapForm') {
+      const type = (msg as { type?: unknown }).type
+      if (type === 'decider.mapForm' || type === 'decider.next') {
         const reply = decider.answer(msg)
         if (!reply) return undefined
         void reply.then((r) => {

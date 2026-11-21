@@ -54,6 +54,8 @@ import { runControlStep, type ControlSession } from './pageControl'
 import type { IndexedElement, PageSnapshot } from '../platform/domIndex'
 import type { TabFacts } from './tabPolicy'
 import { createDeciderHooks, type DeciderHooks } from '../decider/hooks'
+import { forwardDeciderHooks } from '../decider/relay'
+import { asSchema } from 'ai'
 import type { FillPlan } from '../decider/fillPlan'
 import { profileLookup } from '../decider/profileLookup'
 import { getProfileMemories, type MemoryRecord } from '../data/memory'
@@ -406,11 +408,13 @@ function buildDeciderTools(opts: { session: ControlSession; decider?: DeciderHoo
 function stubHooks(over: Partial<DeciderHooks> = {}): DeciderHooks {
   return {
     mode: () => 'shadow',
+    settingsMode: () => 'shadow',
     threshold: () => 0.6,
     sessionGranted: vi.fn(),
     observeStep: vi.fn(),
     observeFill: vi.fn(),
     mapForm: vi.fn(async () => ({ error: 'unused' })),
+    next: vi.fn(async () => ({ error: 'unused' })),
     ...over,
   }
 }
@@ -1088,4 +1092,275 @@ describe('WebMCP tool approval', () => {
     expect(executeWebMcp).not.toHaveBeenCalled()
   })
 
+})
+
+// ---------------------------------------------------------------------------
+// FastSteps — driver mode (Task 16): the decision model takes the steps, inside the session,
+// with every ControlPage guard. Present ONLY when the settings say Driver.
+// ---------------------------------------------------------------------------
+
+const DRIVE_FORM = [
+  el({ index: 0, tag: 'input', type: 'search', name: 'Search products' }),
+  el({ index: 1, tag: 'button', name: 'Show more' }),
+  el({ index: 2, tag: 'button', type: 'submit', name: 'Search' }),
+]
+
+type NextFn = DeciderHooks['next']
+const top = (op: string, index: number | undefined, p: number) => (index === undefined ? { op, p } : { op, index, p }) as never
+const decided = (first: unknown, extra: Record<string, unknown> = {}) => ({ top3: [first, top('scroll', undefined, 0.02), top('done', undefined, 0.01)], tokens: 400, ms: 120, ...extra }) as never
+
+/** A decider that answers each FastSteps step in turn (the last answer repeats). */
+function scriptedNext(...answers: unknown[]) {
+  let k = 0
+  return vi.fn(async () => answers[Math.min(k++, answers.length - 1)]) as unknown as NextFn & ReturnType<typeof vi.fn>
+}
+
+function buildDriverTools(opts: {
+  session: ControlSession
+  next?: NextFn
+  mode?: DeciderHooks['settingsMode']
+  requestApproval?: ApprovalGate
+  policy?: (name: string) => 'always' | 'ask' | 'never'
+  activeNames?: Set<string>
+  decider?: DeciderHooks
+}) {
+  const pageControl: PageControlGate = {
+    requestSession: async () => true,
+    session: () => opts.session,
+    endSession: () => {
+      opts.session.active = false
+    },
+  }
+  const decider = opts.decider ?? stubHooks({ mode: () => 'driver', settingsMode: opts.mode ?? (() => 'driver'), next: opts.next ?? scriptedNext({ error: 'unused' }) })
+  return createAgentTools(
+    opts.requestApproval ?? (async () => true),
+    'all-tabs',
+    new Set(),
+    pageControl,
+    null,
+    false,
+    [],
+    opts.policy ?? (() => 'always'),
+    'conv-1',
+    opts.activeNames ?? new Set(),
+    undefined,
+    undefined,
+    { resolveTab: async () => FG_TAB, park: () => {} },
+    decider,
+  )
+}
+
+describe('FastSteps — present only in Driver mode', () => {
+  it.each(['off', 'shadow', 'assist'] as const)('is absent from the ToolSet in %s mode, so nothing can surface or resurrect it', (mode) => {
+    const tools = buildDriverTools({ session: buildSession(), mode: () => mode })
+    expect(tools).not.toHaveProperty('FastSteps')
+    expect(tools).toHaveProperty('ControlPage')
+  })
+
+  it('is absent without a decider, and when the mode cannot be read', () => {
+    expect(buildDeciderTools({ session: buildSession() })).not.toHaveProperty('FastSteps')
+    const broken = buildDriverTools({ session: buildSession(), mode: () => { throw new Error('settings gone') } })
+    expect(broken).not.toHaveProperty('FastSteps')
+  })
+
+  it('is present in Driver mode, with the plan’s description and a goal/values/maxSteps input', async () => {
+    const tools = buildDriverTools({ session: buildSession() })
+    expect(tools).toHaveProperty('FastSteps')
+    expect(tools.FastSteps.description).toBe(
+      "Run up to 12 quick page steps toward ONE short sub-goal (e.g. 'search for wireless headphones and open the cheapest result under $100') using the on-device decision model, inside an open page-control session. Pass any values to type in `values`. It hands back when done, unsure, blocked, or after 12 steps; risky steps still ask the user.",
+    )
+    const schema = (await asSchema(tools.FastSteps.inputSchema).jsonSchema) as { properties: Record<string, unknown>; required?: string[] }
+    expect(Object.keys(schema.properties).sort()).toEqual(['goal', 'maxSteps', 'values'])
+    expect(schema.required).toEqual(['goal'])
+    // ToolSearch/GetTool can list and load it: the catalog is derived from this ToolSet.
+    const listed = await (tools.ToolSearch as any).execute({ query: 'FastSteps' }, {} as any)
+    expect(JSON.stringify(listed)).toContain('FastSteps')
+  })
+
+  it('a Never policy removes it even in Driver mode', () => {
+    expect(buildDriverTools({ session: buildSession(), policy: (n) => (n === 'FastSteps' ? 'never' : 'always') })).not.toHaveProperty('FastSteps')
+  })
+
+  it('in the worker realm, the settings alone decide it — no readiness probe there', () => {
+    const tools = (settings: unknown) =>
+      buildDriverTools({ session: buildSession(), decider: forwardDeciderHooks({ conversationId: 'conv-1', settings: () => settings as never, send: vi.fn() }) })
+    expect(tools({ mode: 'driver' })).toHaveProperty('FastSteps')
+    expect(tools({ mode: 'assist' })).not.toHaveProperty('FastSteps')
+    expect(tools(undefined)).not.toHaveProperty('FastSteps')
+  })
+})
+
+describe('RequestPageControl — Driver mode loads FastSteps on the grant and says so', () => {
+  beforeEach(() => {
+    vi.mocked(snapshotPage).mockReset()
+    vi.mocked(snapshotPage).mockResolvedValue(snap([el({ index: 0 })]))
+  })
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('adds FastSteps to the active set with a note that names it; Assist keeps its own note and adds nothing', async () => {
+    stubTabsQuery(FG_TAB)
+    const driverNames = new Set<string>()
+    const driver: any = await within((buildDriverTools({ session: buildSession(), activeNames: driverNames }).RequestPageControl as any).execute({ plan: 'p' }, {} as any))
+    expect(driverNames.has('FastSteps')).toBe(true)
+    expect(driver.note).toContain('FastSteps')
+    expect(driver.note).toContain('AutofillForm') // Driver includes Assist
+
+    stubTabsQuery(FG_TAB)
+    const assistNames = new Set<string>()
+    const assist: any = await within(
+      (buildDriverTools({ session: buildSession(), activeNames: assistNames, mode: () => 'assist', decider: stubHooks({ mode: () => 'assist', settingsMode: () => 'assist' }) })
+        .RequestPageControl as any).execute({ plan: 'p' }, {} as any),
+    )
+    expect(assistNames.has('FastSteps')).toBe(false)
+    expect(assist.note).not.toContain('FastSteps')
+    expect(assist.note).toContain('Assist mode is on')
+  })
+})
+
+describe('FastSteps — the decider drives, every ControlPage guard intact', () => {
+  let journalled: ControlSession | null = null
+  beforeEach(() => {
+    vi.mocked(snapshotPage).mockReset()
+    vi.mocked(runControlStep).mockReset()
+    let reads = 0
+    // Each read differs, so no step looks like a no-change step unless a test says so.
+    vi.mocked(snapshotPage).mockImplementation(async () => ({ ...snap(DRIVE_FORM), text: `registry ${reads++}` }))
+    vi.mocked(runControlStep).mockImplementation(async (deps) => {
+      // Like the real one: a successful step lands in the session's (redacted) journal.
+      journalled = deps.session ?? null
+      if (deps.session) {
+        deps.session.journal = [
+          ...(deps.session.journal ?? []),
+          { at: 0, action: deps.spec.action, index: deps.spec.index, summary: `${deps.spec.action} ${deps.spec.index ?? ''}`.trim(), undoable: false, sensitive: false, origin: 'https://example.com', url: 'https://example.com/', ...(deps.spec.text ? { redactedValue: deps.spec.text } : {}) },
+        ]
+      }
+      return { ok: true, message: 'done', registry: 'after step', origin: 'https://example.com' }
+    })
+    stubForeground()
+  })
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    journalled = null
+  })
+
+  it('needs an open session, like ControlPage — and asks the decider nothing without one', async () => {
+    const next = scriptedNext(decided(top('click', 1, 0.9)))
+    const result = await (buildDriverTools({ session: buildSession({ active: false }), next }).FastSteps as any).execute({ goal: 'g' }, {} as any)
+    expect(result).toEqual({ error: 'No page-control session is open. Call RequestPageControl first.' })
+    expect(next).not.toHaveBeenCalled()
+    expect(runControlStep).not.toHaveBeenCalled()
+  })
+
+  it('parks, like ControlPage, when its tab is not in front', async () => {
+    vi.stubGlobal('chrome', { tabs: { query: vi.fn(async () => [BG_TAB]) } })
+    const next = scriptedNext(decided(top('click', 1, 0.9)))
+    const result = await (buildDriverTools({ session: buildSession(), next }).FastSteps as any).execute({ goal: 'g' }, {} as any)
+    expect(result).toMatchObject({ parked: true })
+    expect(next).not.toHaveBeenCalled()
+  })
+
+  it('types the value the panel chose, clicks, and hands back done — quick settle, the steps and the journal reported', async () => {
+    const next = scriptedNext(
+      decided(top('type', 0, 0.92), { value: { key: 'request.query', text: 'wireless headphones', p: 0.9 } }),
+      decided(top('click', 1, 0.81)),
+      decided(top('done', undefined, 0.93)),
+    )
+    const session = buildSession()
+    const result: any = await within((buildDriverTools({ session, next }).FastSteps as any).execute({ goal: "search for wireless headphones", values: { query: 'wireless headphones' } }, {} as any))
+    expect(vi.mocked(runControlStep).mock.calls.map(([d]) => [d.spec, d.settle])).toEqual([
+      [{ action: 'type', index: 0, text: 'wireless headphones', clear: true }, 'quick'],
+      [{ action: 'click', index: 1 }, 'quick'],
+    ])
+    expect(journalled).toBe(session) // it rides the granted session: same journal, same undo
+    expect(next).toHaveBeenCalledWith(
+      expect.objectContaining({ tabId: 1, session, goal: 'search for wireless headphones', values: { query: 'wireless headphones' }, exclude: [] }),
+    )
+    expect(result).toMatchObject({
+      status: 'done',
+      reason: 'done',
+      steps: [
+        { op: 'type', index: 0, p: 0.92, ok: true },
+        { op: 'click', index: 1, p: 0.81, ok: true },
+      ],
+      actions: [
+        { action: 'type', index: 0, value: 'wireless headphones' },
+        { action: 'click', index: 1 },
+      ],
+      decisions: 3,
+      deciderMs: 360,
+    })
+    expect(result.elements).toBe('registry 2')
+  })
+
+  it('a point of no return asks once (once: true, never "Allow this chat"), then acts with the full settle', async () => {
+    const requestApproval = vi.fn<ApprovalGate>(async () => true)
+    const next = scriptedNext(decided(top('click', 2, 0.9)), decided(top('done', undefined, 0.9)))
+    const result: any = await within((buildDriverTools({ session: buildSession(), next, requestApproval }).FastSteps as any).execute({ goal: "search" }, {} as any))
+    expect(requestApproval).toHaveBeenCalledTimes(1)
+    expect(requestApproval).toHaveBeenCalledWith(expect.objectContaining({ toolName: 'FastSteps', once: true, summary: 'Click “Search”' }))
+    expect(vi.mocked(runControlStep).mock.calls.map(([d]) => [d.spec, d.settle])).toEqual([[{ action: 'click', index: 2 }, 'full']])
+    expect(result.status).toBe('done')
+  })
+
+  it('a denied point of no return is blocked, and nothing is clicked', async () => {
+    const next = scriptedNext(decided(top('click', 2, 0.95)))
+    const result = await within((buildDriverTools({ session: buildSession(), next, requestApproval: async () => false }).FastSteps as any).execute({ goal: 'search' }, {} as any))
+    expect(result).toMatchObject({ status: 'blocked', reason: 'denied', steps: [] })
+    expect(runControlStep).not.toHaveBeenCalled()
+  })
+
+  it('a tentative point of no return is handed back with no card at all', async () => {
+    const requestApproval = vi.fn<ApprovalGate>(async () => true)
+    const next = scriptedNext(decided(top('click', 2, 0.5)))
+    const result: any = await within((buildDriverTools({ session: buildSession(), next, requestApproval }).FastSteps as any).execute({ goal: "search" }, {} as any))
+    expect(result).toMatchObject({ status: 'handback', reason: 'unsure' })
+    expect(requestApproval).not.toHaveBeenCalled()
+    expect(runControlStep).not.toHaveBeenCalled()
+  })
+
+  it('Stop during a decision acts on nothing', async () => {
+    const controller = new AbortController()
+    const next = vi.fn(async () => {
+      controller.abort()
+      return decided(top('click', 1, 0.95))
+    }) as unknown as NextFn
+    const result = await within((buildDriverTools({ session: buildSession(), next }).FastSteps as any).execute({ goal: 'g' }, { abortSignal: controller.signal }))
+    expect(result).toMatchObject({ status: 'stopped', reason: 'stopped' })
+    expect(runControlStep).not.toHaveBeenCalled()
+  })
+
+  it('a steer stops it at the step boundary', async () => {
+    const next = scriptedNext(decided(top('click', 1, 0.9)), decided(top('click', 0, 0.9), { steerPending: true }))
+    const result = await within((buildDriverTools({ session: buildSession(), next }).FastSteps as any).execute({ goal: 'g' }, {} as any))
+    expect(result).toMatchObject({ status: 'stopped', reason: 'steer' })
+    expect(runControlStep).toHaveBeenCalledTimes(1)
+  })
+
+  it('a session ended mid-run (the user revoked control) stops before the next step', async () => {
+    const session = buildSession()
+    const next = vi.fn(async () => {
+      session.active = false
+      return decided(top('click', 1, 0.9))
+    }) as unknown as NextFn
+    const result = await within((buildDriverTools({ session, next }).FastSteps as any).execute({ goal: 'g' }, {} as any))
+    expect(result).toMatchObject({ status: 'stopped', reason: 'session ended' })
+    expect(runControlStep).not.toHaveBeenCalled()
+  })
+
+  it('maxSteps is capped at 12', async () => {
+    const next = scriptedNext(decided(top('click', 1, 0.9)))
+    const result = await within((buildDriverTools({ session: buildSession(), next }).FastSteps as any).execute({ goal: 'g', maxSteps: 50 }, {} as any), 5000)
+    expect(result).toMatchObject({ status: 'handback', reason: 'max steps' })
+    expect(runControlStep).toHaveBeenCalledTimes(12)
+  })
+
+  it('through the worker realm: each step is a decider.next request to the panel', async () => {
+    const requestNext = vi.fn(async (msg: { requestId: string; goal: string; exclude: unknown[] }) => ({ requestId: msg.requestId, top3: [{ op: 'done', p: 0.9 }], tokens: 300, ms: 90 }))
+    const decider = forwardDeciderHooks({ conversationId: 'conv-1', settings: () => ({ mode: 'driver' }), send: vi.fn(), requestNext: requestNext as never })
+    const result = await within((buildDriverTools({ session: buildSession(), decider }).FastSteps as any).execute({ goal: 'open the cart' }, {} as any))
+    expect(result).toMatchObject({ status: 'done', decisions: 1, deciderMs: 90 })
+    expect(requestNext).toHaveBeenCalledWith(expect.objectContaining({ type: 'decider.next', goal: 'open the cart', exclude: [] }))
+  })
 })

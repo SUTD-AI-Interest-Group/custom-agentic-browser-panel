@@ -11,7 +11,8 @@ export interface DecisionResult {
 
 export type DeciderWorkerRequest =
   | { type: 'init'; modelId: string; wasmUrl: string }
-  | { type: 'decide'; id: string; request: DecisionRequest }
+  /** `maxTokens`: fail a longer pass `too-long` (driver mode's dense cap); absent = the hard cap. */
+  | { type: 'decide'; id: string; request: DecisionRequest; maxTokens?: number }
   | { type: 'dispose' }
 
 export type DeciderWorkerReply =
