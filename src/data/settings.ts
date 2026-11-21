@@ -7,6 +7,7 @@ import type { ModelPrice } from '../agent/pricing'
 import type { McpSettings } from '../mcp/config'
 import { clearAuth } from '../mcp/auth'
 import { openSettings, sealSettings, secretValues } from './settingsVault'
+import { normalizeDecider, type DeciderSettings } from '../decider/config'
 import { isSealed } from './vaultFormat'
 
 /**
@@ -263,6 +264,8 @@ export interface Settings {
    * leaves the browser. A user may reasonably want either, both, or neither.
    */
   turnTrace?: boolean
+  /** In-browser decision model (src/decider). Absent = off. Normalized on load so a malformed value never reaches the UI. */
+  decider?: DeciderSettings
   /**
    * MCP servers: `servers` is byte-for-byte the standard `mcpServers` JSON
    * object (upload/edit/copy are pure serialization); enabled flags and
@@ -423,6 +426,9 @@ export async function loadSettings(): Promise<Settings> {
   const data = await chrome.storage.local.get(STORAGE_KEY)
   const stored = data[STORAGE_KEY] as Partial<Settings> | undefined
   const settings = { ...EMPTY, ...stored }
+  const decider = normalizeDecider(stored?.decider)
+  if (decider) settings.decider = decider
+  else delete settings.decider
   // Migration: installs that configured a provider before onboarding existed
   // shouldn't be forced through the wizard.
   if (stored && stored.onboarded === undefined && (stored.providers?.length ?? 0) > 0) {

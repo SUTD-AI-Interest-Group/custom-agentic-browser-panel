@@ -166,3 +166,15 @@ describe('response preference settings', () => {
     expect((await loadSettings()).systemPrompt).toBe(DEFAULT_SYSTEM_PROMPT)
   })
 })
+
+describe('settings.decider', () => {
+  it('drops a malformed stored decider and keeps a valid one', async () => {
+    const store = stubChromeStorage()
+    store.settings = { ...withKey(), decider: { mode: 'driver' } }
+    const bad = await loadSettings()
+    expect('decider' in bad).toBe(false)
+    store.settings = { ...withKey(), decider: { mode: 'shadow', actThreshold: 0.7, junk: 1 } }
+    const good = await loadSettings()
+    expect(good.decider).toEqual({ mode: 'shadow', actThreshold: 0.7 })
+  })
+})
