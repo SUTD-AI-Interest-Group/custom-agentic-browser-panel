@@ -18,7 +18,7 @@ import { sumUsage } from '../agent/usage'
 import { ensureVisionCapability } from '../agent/vision'
 import { createDeciderHooks, deciderRelayListener, latestUserText } from '../decider/hooks'
 import { MODEL_STATUS_KEY, withDriverOverride } from '../decider/config'
-import { DRIVER_TOKEN, driverUnavailableReason, isDriverMessage, parseDriverPrompt, stripDriverToken, type DriverSpec } from '../decider/driverPrompt'
+import { DRIVER_TOKEN, driverModelText, driverSpecFor, driverUnavailableReason, type DriverSpec } from '../decider/driverPrompt'
 import { isReadyStatus, readModelReady } from '../decider/modelStatus'
 import {
   dehydrateHistory,
@@ -94,7 +94,7 @@ import { shouldTearDownPageControl, type ChainExitReason } from './chainLifecycl
 import { shouldAttemptNaming } from './chatNaming'
 import { recallableUserTexts, shouldIgnoreComposerKeydown } from './composerKeys'
 import { clearDraft, loadDraft, saveDraft } from './drafts'
-import { CONTINUE_WITH_CHAT_MODEL, driverContinueOffered, driverSpecFromTranscript } from './driverTurn'
+import { CONTINUE_WITH_CHAT_MODEL, driverContinueOffered, driverSendBlock, driverSpecFromTranscript, enqueueSpec } from './driverTurn'
 import { useDismissOnOutside } from './hooks'
 import { createLatestRequest } from './latestRequest'
 import { hasUncompilableMath } from './mathRepairFilter'
@@ -661,10 +661,13 @@ export default function Chat({
   const [preparing, setPreparing] = useState('')
   const preparationRef = useRef<AbortController | null>(null)
   const streaming = generating || !!preparing || activeChatRun(backgroundRun)
-  // A message the user submitted while the agent was working: parked here (shown in
-  // the steer strip) instead of sent. It auto-sends as a follow-up when the turn
-  // finishes, unless the user presses "Steer now" to inject it mid-turn.
-  const [queued, setQueued] = useState<MessageSpec | null>(null)
+  // Messages the user submitted while the agent was working: parked here (the first
+  // shown in the steer strip) instead of sent. Each auto-sends as a follow-up when
+  // the turn before it finishes, unless the user presses "Steer now" to inject it
+  // mid-turn. Usually one: ordinary submits merge (enqueueSpec), and only a @driver
+  // message — which never merges — waits as a turn of its own.
+  const [queue, setQueue] = useState<MessageSpec[]>([])
+  const queued = queue[0] ?? null
   const [turnStartedAt, setTurnStartedAt] = useState<number | null>(null)
   // A long task paused at the auto-continue ceiling: the Continue card shows the
   // model's checkpoint and, on click, resumes with a fresh budget. Ephemeral —
@@ -1507,13 +1510,20 @@ export default function Chat({
 
   // Flush a queued follow-up once the turn finishes: a message the user submitted
   // while the agent was working (and didn't inject via "Steer now") sends as a
-  // fresh turn the moment streaming ends. Clearing `queued` first stops it firing
-  // twice; startFreshTurn re-enters streaming, and the next queued message (if any)
-  // waits for the new turn to end.
+  // fresh turn the moment streaming ends. Taking it off the queue first stops it
+  // firing twice; startFreshTurn re-enters streaming, and the next queued message
+  // (if any) waits for the new turn to end.
   useEffect(() => {
-    if (streaming || !queued) return
+    if (streaming || !queued || preparationRef.current || streamingRef.current) return
     const spec = queued
-    setQueued(null)
+    setQueue((q) => q.slice(1))
+    // A queued @driver message re-checks availability as it leaves — the model may have been
+    // deleted or the decider turned off since it was queued. Refused: back into the composer.
+    if (refuseDriver(spec.driver)) {
+      setInput((current) => (current.trim() ? `${spec.text}\n\n${current}` : spec.text))
+      setAttachments((current) => [...spec.attachments, ...current])
+      return
+    }
     void startFreshTurn(spec)
     // startFreshTurn is a stable per-render closure; driving this off queued+streaming
     // alone keeps it to one send per queued message.
@@ -1948,7 +1958,7 @@ export default function Chat({
     // Discard any queued steers, and the pending follow-up too — the user asked to
     // stop, so it must not auto-send when streaming ends (see the flush effect).
     steerQueueRef.current = []
-    setQueued(null)
+    setQueue([])
     // Drop any park, or returning to the tab would silently restart the very turn
     // the user just stopped.
     setParkedReason(null)
@@ -2395,8 +2405,10 @@ export default function Chat({
 
     // A driver turn's model-facing copy is the plain instruction, so a later chat-model turn (or
     // "Continue with chat model") reads what was asked rather than a routing token. The decider's
-    // value question reads it too (hooks.ts currentGoal → latestUserText).
-    let modelText = o.driver ? stripDriverToken(text) : text
+    // value question reads it too (hooks.ts currentGoal → latestUserText). The tab-mention tokens go
+    // with it (the tabs' content still rides below): this is the very text the goal was parsed
+    // from, which is how the scripted run finds its turn.
+    let modelText = o.driver ? driverModelText(text, activeMentions.map((m) => m.token)) : text
     let syncedTabs: TabContent[] = []
     if (tabIds.length > 0) {
       syncedTabs = await Promise.all(
@@ -2566,9 +2578,10 @@ export default function Chat({
       includeCurrentTab || includeDeicticTab
         ? companionTabs.filter((t) => canAttachPage(t.url) && !dismissedTabs.has(t.tabId))
         : []
-    // @driver routes the message to the decision model. Not combined with a leading /skill: that
-    // message is an ordinary one (the skill's instructions are for the chat model).
-    const driver = isDriverMessage(text) && !/^\/[a-z0-9-]+(?:\s|$)/.test(text) ? parseDriverPrompt(text) : undefined
+    // @driver routes the message to the decision model — read with the tab mentions taken out (a tab
+    // titled "Driver Booster…" is inserted as `@Driver Booster…`), and never with a leading /skill
+    // (that message is an ordinary one: the skill's instructions are for the chat model).
+    const driver = driverSpecFor(text, activeMentions.map((m) => m.token))
     return { text, attachments, activeMentions, useMemory, useAll, includeCurrentTab, includeDeicticTab, activeSelection, companions, ...(driver ? { driver } : {}) }
   }
 
@@ -2936,13 +2949,16 @@ export default function Chat({
    */
   function mergeQueuedSpec(a: MessageSpec, b: MessageSpec): MessageSpec {
     const text = [a.text, b.text].filter(Boolean).join('\n\n')
+    const activeMentions = [...a.activeMentions, ...b.activeMentions]
+    // enqueueSpec never merges a @driver message, so this is only ever two ordinary ones. Should
+    // one ever reach here, its routing is re-read from the whole text by the one rule the composer
+    // uses (mentions out, never with a leading /skill), not carried over blindly.
+    const driver = a.driver || b.driver ? driverSpecFor(text, activeMentions.map((m) => m.token)) : undefined
     return {
       text,
-      // Either half asked for the decision model: the merged message goes there, its goal and
-      // values re-parsed from the whole text.
-      ...(a.driver || b.driver ? { driver: parseDriverPrompt(text) } : {}),
+      ...(driver ? { driver } : {}),
       attachments: [...a.attachments, ...b.attachments],
-      activeMentions: [...a.activeMentions, ...b.activeMentions],
+      activeMentions,
       useMemory: a.useMemory || b.useMemory,
       useAll: a.useAll || b.useAll,
       includeCurrentTab: a.includeCurrentTab || b.includeCurrentTab,
@@ -2989,17 +3005,23 @@ export default function Chat({
     if (!spec) return
     // @driver that cannot run is not sent at all: the text stays in the composer, with the
     // reason in the composer's inline error.
-    if (spec.driver) {
-      const blocked = driverBlock ?? (spec.driver.goal ? null : 'Say what to do after @driver.')
-      if (blocked) {
-        setCaptureNeedsFileAccess(false)
-        setCaptureError(blocked)
-        return
-      }
-    }
+    if (refuseDriver(spec.driver)) return
     clearComposer(spec.activeSelection)
-    if (streaming || streamingRef.current || preparationRef.current) setQueued((prev) => (prev ? mergeQueuedSpec(prev, spec) : spec))
+    if (streaming || streamingRef.current || preparationRef.current) setQueue((q) => enqueueSpec(q, spec, mergeQueuedSpec))
     else void startFreshTurn(spec)
+  }
+
+  /**
+   * The one availability check for every way a @driver turn starts — a send, a queued flush, a
+   * regenerate, a recovery (driverTurn.ts driverSendBlock): blocked → the composer's inline error,
+   * and true. An ordinary turn (no spec) is never blocked.
+   */
+  function refuseDriver(driver: DriverSpec | undefined): boolean {
+    const blocked = driverSendBlock(driver, driverBlock)
+    if (!blocked) return false
+    setCaptureNeedsFileAccess(false)
+    setCaptureError(blocked)
+    return true
   }
 
   /**
@@ -3052,7 +3074,7 @@ export default function Chat({
       // beside it is not what the user asked about.
       companions: [],
     }
-    if (streaming || streamingRef.current || preparationRef.current) setQueued((prev) => (prev ? mergeQueuedSpec(prev, spec) : spec))
+    if (streaming || streamingRef.current || preparationRef.current) setQueue((q) => enqueueSpec(q, spec, mergeQueuedSpec))
     else void startFreshTurn(spec)
   }
 
@@ -3067,7 +3089,7 @@ export default function Chat({
   function steerNow() {
     if (!queued) return
     injectSteer(queued)
-    setQueued(null)
+    setQueue((q) => q.slice(1))
   }
 
   /** Pull a queued follow-up back into the composer to edit or discard it. */
@@ -3081,7 +3103,7 @@ export default function Chat({
     const pulled = queued
     setInput((current) => (current.trim() ? `${pulled.text}\n\n${current}` : pulled.text))
     setAttachments((current) => [...pulled.attachments, ...current])
-    setQueued(null)
+    setQueue((q) => q.slice(1))
   }
 
   /**
@@ -3930,6 +3952,11 @@ export default function Chat({
   async function resumeInterruptedTurn() {
     if (streaming || !recovery) return
     const record = recovery
+    // An interrupted driver turn resumes as one — from its transcript's own marks and its
+    // model-facing text, so the in-flight record carries nothing new — and only while it could be
+    // sent now: blocked, the recovery card stays and the composer says why.
+    const driver = driverSpecFromTranscript(record.messages, latestUserText(record.history))
+    if (refuseDriver(driver)) return
     setRecovery(null)
     const { ctx, activeNames } = restoreCtx(record)
     // Drop the checkpoint before re-running: if the resumed turn is itself
@@ -3945,9 +3972,6 @@ export default function Chat({
     episodeIdRef.current = record.episodeId
     autoContinuesRef.current = record.autoContinues
     turnAllowed.current = new Set(activeNames)
-    // An interrupted driver turn resumes as one — from its transcript's own mark, so the in-flight
-    // record carries nothing new.
-    const driver = driverSpecFromTranscript(record.messages)
     await runTurnChain({
       startedAt: Date.now(),
       attachedSources: ctx.attachedSources,
@@ -4039,9 +4063,10 @@ export default function Chat({
     if (streamingRef.current) return
     setParkedReason(null)
     // A parked driver turn resumes as one: handing it to the chat model now would be exactly the
-    // automatic hand-off @driver does not make. The scripted run sees the parked result and makes
-    // the same call again.
-    const driver = driverSpecFromTranscript(messagesRef.current)
+    // automatic hand-off @driver does not make. The scripted run sees the parked result and asks
+    // for control again (the resumed chain's session is a new one), then runs FastSteps. If the
+    // decider has gone unavailable meanwhile, the script says so before any card.
+    const driver = driverSpecFromTranscript(messagesRef.current, latestUserText(historyRef.current))
     await runTurnChain({
       startedAt: Date.now(),
       attachedSources: [],
@@ -4136,8 +4161,10 @@ export default function Chat({
     // Read the failures out of the bubbles before they are dropped — they are
     // the only record of what went wrong.
     const retryNote = buildRetryNote(messagesRef.current.slice(cut))
-    // Regenerating a driver turn runs the decision model again (its opener is the driver message).
-    const driver = driverSpecFromTranscript(messagesRef.current.slice(0, cut))
+    // Regenerating a driver turn runs the decision model again (its opener is the driver message) —
+    // checked BEFORE the reply is torn out, so a blocked one leaves the transcript as it was.
+    const driver = driverSpecFromTranscript(messagesRef.current.slice(0, cut), target.opener ? latestUserText([target.opener]) : '')
+    if (refuseDriver(driver)) return
     setMessages((m) => m.slice(0, cut))
     historyRef.current.length = target.historyLen
     if (target.opener) historyRef.current.push(target.opener)
@@ -4598,6 +4625,8 @@ export default function Chat({
               <span className="steer-strip__queued" title={queued.text || 'Queued follow-up'}>
                 {queued.text || `${queued.attachments.length} attachment${queued.attachments.length > 1 ? 's' : ''}`}
               </span>
+              {/* A @driver message never merges, so it can wait as a turn of its own behind this one. */}
+              {queue.length > 1 && <span className="steer-strip__more">+{queue.length - 1} more</span>}
               <button
                 className="steer-strip__retract"
                 title="Edit or remove this queued message"

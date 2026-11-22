@@ -2461,6 +2461,12 @@ body {
   white-space: nowrap;
 }
 
+.steer-strip__more {
+  flex-shrink: 0;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
 .steer-strip__retract {
   display: inline-flex;
   align-items: center;

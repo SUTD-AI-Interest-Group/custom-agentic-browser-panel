@@ -13,27 +13,52 @@ import { parseDriverPrompt, type DriverSpec } from '../decider/driverPrompt'
 /** The user message a "Continue with chat model" click sends. */
 export const CONTINUE_WITH_CHAT_MODEL = 'Continue this task with the chat model.'
 
-const textOf = (m: UIMessage) =>
-  m.parts
-    .flatMap((p) => (p.type === 'text' ? [p.text] : []))
-    .join(' ')
-    .trim()
-
 /**
  * Re-entering a chain over this transcript (park resume, regenerate, recovery): is it a driver
  * chain? Only when the newest user message is one that STARTED a driver turn — a steer that merely
  * contains `@driver` is an ordinary message, and a "Continue with chat model" turn is the chat
- * model's. Returns the spec re-parsed from that message, or undefined.
+ * model's — AND every assistant bubble after it is the scripted run's own: anything else since (an
+ * MCP-completion chain, say) means the driver turn is over, and its old goal must not run again.
+ *
+ * `typedText` is that turn's MODEL-FACING text as typed (the newest user history message, its
+ * context blocks cut off — hooks.ts latestUserText): the text the spec was first parsed from, tab
+ * mentions already out, so the re-parsed goal is the one the scripted run matches its turn by.
+ * Returns the spec, or undefined.
  */
-export function driverSpecFromTranscript(messages: UIMessage[]): DriverSpec | undefined {
+export function driverSpecFromTranscript(messages: UIMessage[], typedText: string): DriverSpec | undefined {
   for (let i = messages.length - 1; i >= 0; i--) {
     const m = messages[i]
-    if (m.role !== 'user') continue
+    if (m.role === 'assistant') {
+      if (m.driver !== true) return undefined
+      continue
+    }
     if (m.driver !== true) return undefined
-    const spec = parseDriverPrompt(textOf(m))
+    const spec = parseDriverPrompt(typedText)
     return spec.goal ? spec : undefined
   }
   return undefined
+}
+
+/**
+ * Why a driver message may not start a turn now — the composer's inline error — or null. The same
+ * check guards every way a driver turn can start: a send, a queued flush, a regenerate, a recovery.
+ * An ordinary message (no spec) is never blocked here.
+ */
+export function driverSendBlock(driver: DriverSpec | undefined, unavailable: string | null): string | null {
+  if (!driver) return null
+  return unavailable ?? (driver.goal ? null : 'Say what to do after @driver.')
+}
+
+/**
+ * Queue a message submitted while a turn runs. Two ordinary messages (composer actions included)
+ * merge as before; a @driver message never merges with anything — merged, either its goal would
+ * swallow an ordinary request or an ordinary one would lose its routing — so it waits as its own
+ * turn. Pure.
+ */
+export function enqueueSpec<T extends { driver?: unknown }>(queue: readonly T[], spec: T, merge: (a: T, b: T) => T): T[] {
+  const last = queue[queue.length - 1]
+  if (last && !last.driver && !spec.driver) return [...queue.slice(0, -1), merge(last, spec)]
+  return [...queue, spec]
 }
 
 const isObj = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v)

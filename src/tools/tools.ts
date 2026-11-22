@@ -1602,7 +1602,11 @@ export function createAgentTools(
         // the grant — decided from the same build-time mode as AutofillForm's schema, so the note
         // never offers a field-less call the schema would refuse, nor a tool set to Never.
         const formsOn = assistOn && 'AutofillForm' in tools
-        const note = fastSteps ? (formsOn ? DRIVER_GRANT_NOTE : DRIVER_NOTE) : formsOn ? ASSIST_GRANT_NOTE : undefined
+        // A `@driver` run gets no note: the scripted run reads none, and the grant stays in history
+        // for a later chat-model turn ("Continue with chat model"), whose ToolSet follows the
+        // settings' own mode — a note naming FastSteps or field-less Assist could mislead it there.
+        const note =
+          decider?.driverRun === true ? undefined : fastSteps ? (formsOn ? DRIVER_GRANT_NOTE : DRIVER_NOTE) : formsOn ? ASSIST_GRANT_NOTE : undefined
         try {
           const snap = await snapshotPage(tab.id)
           return await lookResult(tab, snap, { started: true, ...(note ? { note } : {}) }, selected, visionCapable, imageQueue)

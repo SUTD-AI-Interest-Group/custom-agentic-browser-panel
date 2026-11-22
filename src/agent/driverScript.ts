@@ -12,8 +12,10 @@
 //
 // A PARKED result (the tab was not in front) never appears mid-cycle — parkPending stops the cycle
 // on it — so seeing one as the newest result means the chain is resuming after the user came back:
-// the same call is made again. The token grants nothing: the session and every card are FastSteps'
-// and RequestPageControl's own, exactly as for the chat model.
+// control is requested again (a fresh card — the resumed chain's session is a new one), then
+// FastSteps. Without FastSteps on offer the script says so before any card; without its own user
+// message in the prompt it fails closed. The token grants nothing: the session and every card are
+// FastSteps' and RequestPageControl's own, exactly as for the chat model.
 //
 // PURE. No Chrome, no fetch, no engine, nothing from `ai/test`. The final text is deterministic and
 // short; it names element LABELS (the name part of a registry line, never its `= "value"`), lookup
@@ -52,6 +54,13 @@ export type DriverAction = { tool: typeof RPC | typeof FAST; input: Record<strin
 const isObj = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v)
 const valueOf = (o: Outcome | undefined): Record<string, unknown> | undefined => (o?.kind === 'value' && isObj(o.value) ? o.value : undefined)
 const isParked = (o: Outcome | undefined) => valueOf(o)?.parked === true
+/** FastSteps' answer when the page-control session it needs is gone (tools.ts). */
+const SESSION_GONE = /^No page-control session is open/
+const sessionGone = (c: SeenCall): boolean => {
+  const o = c.outcome
+  const v = valueOf(o)
+  return (typeof v?.error === 'string' && SESSION_GONE.test(v.error)) || (o?.kind === 'error' && SESSION_GONE.test(o.text))
+}
 
 function outcomeOf(output: unknown): Outcome | undefined {
   if (!isObj(output)) return undefined
@@ -80,26 +89,26 @@ const userText = (m: LanguageModelV3Prompt[number]): string =>
  * context blocks; parseDriverPrompt's goal is that same text, whitespace collapsed). Roles alone
  * cannot say it: the messages prepareStep injects at the tail (the agent-state block, queued
  * images, the wrap-up nudge) are `user` messages too, and a fresh turn can follow an earlier one
- * that ended on a tool result. Without a goal to match (never sent: the panel refuses an empty
- * one), the fallback is the user message before the newest run of assistant/tool messages.
+ * that ended on a tool result. No match (or no goal — the panel refuses an empty one) is -1: the run
+ * FAILS CLOSED rather than guess which tool results are its own.
  */
 function turnStart(prompt: LanguageModelV3Prompt, goal: string): number {
   const want = collapse(goal)
-  if (want) {
-    for (let i = prompt.length - 1; i >= 0; i--) if (prompt[i].role === 'user' && collapse(userText(prompt[i])).startsWith(want)) return i + 1
-  }
-  let end = prompt.length
-  while (end > 0 && (prompt[end - 1].role === 'user' || prompt[end - 1].role === 'system')) end--
-  let start = end
-  while (start > 0 && prompt[start - 1].role !== 'user' && prompt[start - 1].role !== 'system') start--
-  return start
+  if (!want) return -1
+  for (let i = prompt.length - 1; i >= 0; i--) if (prompt[i].role === 'user' && collapse(userText(prompt[i])).startsWith(want)) return i + 1
+  return -1
 }
 
-/** This turn's tool calls, oldest first, each with its result (turnStart says where it begins). */
-export function turnCalls(prompt: LanguageModelV3Prompt, goal: string): SeenCall[] {
+/**
+ * This turn's tool calls, oldest first, each with its result (turnStart says where it begins), or
+ * null when the turn's own user message is not in the prompt.
+ */
+export function turnCalls(prompt: LanguageModelV3Prompt, goal: string): SeenCall[] | null {
+  const start = turnStart(prompt, goal)
+  if (start < 0) return null
   const calls: SeenCall[] = []
   const byId = new Map<string, SeenCall>()
-  for (const msg of prompt.slice(turnStart(prompt, goal))) {
+  for (const msg of prompt.slice(start)) {
     if (msg.role === 'assistant') {
       for (const part of msg.content) {
         if (part.type !== 'tool-call') continue
@@ -228,9 +237,15 @@ export function finalTextFor(fastSteps: (Outcome | undefined)[]): string {
 export function nextDriverAction(spec: DriverSpec, prompt: LanguageModelV3Prompt, offered: ReadonlySet<string> | null): DriverAction {
   const has = (name: string) => offered === null || offered.has(name)
   const calls = turnCalls(prompt, spec.goal)
+  // Fail closed: without its own user message the script cannot tell its results from another turn's.
+  if (!calls) return { text: 'Stopped: this request could not be found in the conversation.' }
+  // Nothing to do without FastSteps (model not ready, Mode Off, a policy of Never): say so BEFORE any
+  // card, rather than ask the user for control of a page that nothing will then act on.
+  if (!has(FAST)) return { text: "The decision model isn't available in this chat — check Settings → Experimental." }
   const relevant = calls.filter((c) => c.name === RPC || c.name === FAST)
   const fast = relevant.filter((c) => c.name === FAST)
-  const fastText = () => finalTextFor(fast.filter((c) => !isParked(c.outcome)).map((c) => c.outcome))
+  // Steps count from every run, parked ones included: they were taken.
+  const fastText = () => finalTextFor(fast.map((c) => c.outcome))
   if (calls.length >= MAX_SCRIPT_CALLS) return { text: fast.length ? fastText() : 'Stopped: page control could not be started.' }
 
   // What the decider is told (the framed goal when the values are goal phrases); the turn itself is
@@ -245,8 +260,12 @@ export function nextDriverAction(spec: DriverSpec, prompt: LanguageModelV3Prompt
 
   const last = relevant[relevant.length - 1]
   if (!last) return requestControl()
-  // Resuming after a park: make the same call again.
-  if (isParked(last.outcome)) return last.name === RPC ? requestControl() : fastSteps()
+  // Resuming after a park asks for control again, whichever call parked: the resumed chain is a new
+  // chain, and the service worker ends the parked chain's session as soon as the new one runs a
+  // tool (toolHost.ts) — so a FastSteps re-run would only find "No page-control session is open".
+  if (isParked(last.outcome)) return requestControl()
+  // The same, met as that error: one fresh request, never a loop.
+  if (last.name === FAST && sessionGone(last) && fast.filter(sessionGone).length === 1) return requestControl()
 
   if (last.name === RPC) {
     const v = valueOf(last.outcome)
@@ -257,7 +276,8 @@ export function nextDriverAction(spec: DriverSpec, prompt: LanguageModelV3Prompt
   }
 
   const v = valueOf(last.outcome)
-  const runs = fast.filter((c) => !isParked(c.outcome)).length
+  // Runs toward the max-steps re-run cap: the ones that took a turn at the page.
+  const runs = fast.filter((c) => !isParked(c.outcome) && !sessionGone(c)).length
   if (v?.status === 'handback' && v.reason === 'max steps' && runs < MAX_FAST_STEPS_RUNS && has(FAST)) return fastSteps()
   return { text: fastText() }
 }

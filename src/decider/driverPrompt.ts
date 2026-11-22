@@ -51,11 +51,41 @@ export function stripDriverToken(text: string): string {
 }
 
 /**
+ * `text` with every occurrence of each tab-mention token removed. A tab titled "Driver Booster" is
+ * inserted as `@Driver Booster`, which reads as the @driver token; the mentions are attachments, not
+ * words of the request, so they are taken out before anything looks for the token. Longest first,
+ * so a token that contains another is removed whole.
+ */
+export function withoutMentionTokens(text: string, tokens: readonly string[]): string {
+  let out = text
+  for (const t of [...tokens].sort((a, b) => b.length - a.length)) if (t) out = out.split(t).join('')
+  return out
+}
+
+/**
+ * The @driver spec for a composed message, or undefined when it is an ordinary one: its tab-mention
+ * tokens are removed first (withoutMentionTokens), and a leading `/skill` is never combined with it.
+ */
+export function driverSpecFor(text: string, mentionTokens: readonly string[] = []): DriverSpec | undefined {
+  if (/^\/[a-z0-9-]+(?:\s|$)/.test(text)) return undefined
+  const routable = withoutMentionTokens(text, mentionTokens)
+  return isDriverMessage(routable) ? parseDriverPrompt(routable) : undefined
+}
+
+/**
+ * The model-facing copy of a driver message: the tab-mention tokens and the @driver token removed —
+ * the same text driverSpecFor parsed the goal from, which is how the scripted run finds its turn.
+ */
+export function driverModelText(text: string, mentionTokens: readonly string[] = []): string {
+  return stripDriverToken(withoutMentionTokens(text, mentionTokens))
+}
+
+/**
  * Double-quoted spans: straight `"…"` or curly `“…”` (either closing quote closes either opening
  * one, since a keyboard's smart quotes and a pasted straight quote mix). The inside never holds a
- * quote character.
+ * quote character. A quote right after a digit is an inch mark (`the 15" laptop`), never an opening.
  */
-const QUOTED = /["“]([^"“”]*)["”]/g
+const QUOTED = /(?<!\d)["“]([^"“”]*)["”]/g
 
 /** The key for a value: the word right before its opening quote, lowercased, `[a-z0-9_]` only. */
 function keyBefore(between: string): string {
@@ -119,7 +149,8 @@ const CART_WORD = /^(carts?|checkouts?|baskets?)$/
 /** At most this many phrases are offered. */
 export const MAX_DRIVER_PHRASES = 4
 
-const SPLIT = new RegExp(`\\b(?:${CONNECTORS.join('|')})\\b|[,;!?]|\\.(?=\\s|$)`, 'i')
+// A connector is a whole word: not part of a hyphenated one ("in-ear headphones" stays whole).
+const SPLIT = new RegExp(`(?<![\\w-])(?:${CONNECTORS.join('|')})(?![\\w-])|[,;!?]|\\.(?=\\s|$)`, 'i')
 const EDGES = /^[\s"“”'‘’()[\]{}:]+|[\s"“”'‘’()[\]{}:]+$/g
 const bare = (word: string) => word.toLowerCase().replace(/^[^a-z0-9$]+|[^a-z0-9]+$/g, '')
 

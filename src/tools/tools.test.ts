@@ -1288,6 +1288,15 @@ describe('RequestPageControl — Driver mode loads FastSteps on the grant and sa
     expect(assist.note).not.toContain('FastSteps')
     expect(assist.note).toContain('Assist mode is on')
   })
+
+  it('a @driver run: the grant carries no note (a later chat-model turn may have no FastSteps), FastSteps still loaded', async () => {
+    stubTabsQuery(FG_TAB)
+    const names = new Set<string>()
+    const grant: any = await within((buildDriverTools({ session: buildSession(), activeNames: names, driverRun: true }).RequestPageControl as any).execute({ plan: 'p' }, {} as any))
+    expect(grant.started).toBe(true)
+    expect(grant).not.toHaveProperty('note')
+    expect(names.has('FastSteps')).toBe(true)
+  })
 })
 
 describe('FastSteps — the decider drives, every ControlPage guard intact', () => {

@@ -58,6 +58,20 @@ describe('durable chat storage', () => {
     expect(messages[1].usage?.totalTokens).toBe(17)
   })
 
+  it('a @driver run adds no usage (its zeros are not chat-model tokens) and keeps the driver mark, panel open or not', () => {
+    const job = run()
+    job.driver = { goal: 'add the mug', values: {} }
+    job.parts = [{ type: 'text', text: 'Done in 2 steps.' }]
+    job.result = { parts: job.parts, responseMessages: [], stop: { reason: 'completed', stepsUsed: 3 }, usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 } }
+    const bubble = chatRunMessages(job).at(-1)!
+    expect(bubble.usage).toBeUndefined()
+    expect(bubble.driver).toBe(true)
+    // A bubble the panel already counted keeps exactly what it had.
+    job.messages = [...job.messages, { id: 'answer', role: 'assistant', parts: [], driver: true }]
+    expect(chatRunMessages(job).at(-1)).toMatchObject({ driver: true, parts: job.parts })
+    expect(chatRunMessages(job).at(-1)?.usage).toBeUndefined()
+  })
+
   it('keeps partial text and shows a generation error on restoration', () => {
     const job = run()
     job.parts = [{ type: 'text', text: 'Partial reply' }]

@@ -31,6 +31,11 @@ interface Script {
   fastThrows?: string
   /** Push a set-of-marks style image on the grant, as lookResult does for a vision model. */
   imageOnGrant?: boolean
+  /**
+   * Model the service worker's session: a grant opens it; FastSteps without one answers "No
+   * page-control session is open" (a resumed chain's tool host has ended the parked chain's).
+   */
+  sessions?: { open: boolean }
 }
 
 async function drive(spec: DriverSpec, script: Script, history: ModelMessage[] = [{ role: 'user', content: spec.goal }]) {
@@ -47,7 +52,9 @@ async function drive(spec: DriverSpec, script: Script, history: ModelMessage[] =
       execute: async (input) => {
         calls.push({ name: 'RequestPageControl', input })
         if (script.imageOnGrant) imageQueue.push({ dataUrl: 'data:image/png;base64,AAAA', caption: 'marks' })
-        return (script.rpc ?? [GRANT])[Math.min(r++, (script.rpc ?? [GRANT]).length - 1)] as object
+        const out = (script.rpc ?? [GRANT])[Math.min(r++, (script.rpc ?? [GRANT]).length - 1)] as { started?: boolean }
+        if (script.sessions && out.started === true) script.sessions.open = true
+        return out
       },
     }),
     FastSteps: tool({
@@ -56,6 +63,7 @@ async function drive(spec: DriverSpec, script: Script, history: ModelMessage[] =
       execute: async (input) => {
         calls.push({ name: 'FastSteps', input })
         if (script.fastThrows) throw new Error(script.fastThrows)
+        if (script.sessions && !script.sessions.open) return { error: 'No page-control session is open. Call RequestPageControl first.' }
         const list = script.fast ?? [run({ status: 'done', reason: 'done' })]
         return list[Math.min(f++, list.length - 1)] as object
       },
@@ -111,9 +119,19 @@ describe('createDriverScript through runAgentTurn', () => {
   })
 
   it('a FastSteps error result → a final text and stop', async () => {
-    const { calls, text } = await drive(SPEC, { fast: [{ error: 'No page-control session is open. Call RequestPageControl first.' }] })
+    const { calls, text } = await drive(SPEC, { fast: [{ error: 'The controlled tab is no longer active.' }] })
     expect(calls.map((c) => c.name)).toEqual(['RequestPageControl', 'FastSteps'])
-    expect(text).toMatch(/^Stopped before taking a step — the decision model couldn't run \(No page-control session is open/)
+    expect(text).toBe("Stopped before taking a step — the decision model couldn't run (The controlled tab is no longer active.).")
+  })
+
+  it('"No page-control session is open" once → control is requested again (a fresh card), then FastSteps; twice → a final text', async () => {
+    const gone = { error: 'No page-control session is open. Call RequestPageControl first.' }
+    const once = await drive(SPEC, { fast: [gone, run({ status: 'done', reason: 'done', steps: [step('click', 4)] })] })
+    expect(once.calls.map((c) => c.name)).toEqual(['RequestPageControl', 'FastSteps', 'RequestPageControl', 'FastSteps'])
+    expect(once.text).toBe('Done in 1 step.')
+    const twice = await drive(SPEC, { fast: [gone] })
+    expect(twice.calls.map((c) => c.name)).toEqual(['RequestPageControl', 'FastSteps', 'RequestPageControl', 'FastSteps'])
+    expect(twice.text).toMatch(/couldn't run \(No page-control session is open/)
   })
 
   it('a FastSteps that throws (a tool-error) → a final text and stop', async () => {
@@ -231,6 +249,36 @@ describe('createDriverScript through runAgentTurn', () => {
     expect(text).toBe('Done in 0 steps.')
   })
 
+  it('resuming after a parked FastSteps asks for control again (fresh card) before FastSteps — the session is the resumed chain\'s', async () => {
+    const parked = run({ status: 'stopped', reason: 'parked', parked: true, steps: [step('type', 0, 'request.search'), step('click', 1)] })
+    const history: ModelMessage[] = [
+      { role: 'user', content: SPEC.goal },
+      { role: 'assistant', content: [{ type: 'tool-call', toolCallId: 'p-1', toolName: 'RequestPageControl', input: { plan: SPEC.goal } }] },
+      { role: 'tool', content: [{ type: 'tool-result', toolCallId: 'p-1', toolName: 'RequestPageControl', output: { type: 'json', value: GRANT } }] },
+      { role: 'assistant', content: [{ type: 'tool-call', toolCallId: 'p-2', toolName: 'FastSteps', input: { goal: SPEC.goal } }] },
+      { role: 'tool', content: [{ type: 'tool-result', toolCallId: 'p-2', toolName: 'FastSteps', output: { type: 'json', value: parked } }] },
+    ]
+    // The resumed chain starts with no session in the worker: FastSteps alone would fail.
+    const sessions = { open: false }
+    const { calls, text } = await drive(SPEC, { sessions, fast: [run({ status: 'done', reason: 'done', steps: [step('click', 4)] })] }, history)
+    expect(calls.map((c) => c.name)).toEqual(['RequestPageControl', 'FastSteps'])
+    // Steps count from the parked run too: 2 there, 1 after.
+    expect(text).toBe('Done in 3 steps. Typed values: request.search.')
+  })
+
+  it('a parked page-control request is asked again, and FastSteps runs on the session it opens', async () => {
+    const sessions = { open: false }
+    const { calls, text } = await drive(SPEC, { sessions, rpc: [{ parked: true, note: 'x' }, GRANT], fast: [run({ status: 'done', reason: 'done' })] })
+    expect(calls.map((c) => c.name)).toEqual(['RequestPageControl', 'RequestPageControl', 'FastSteps'])
+    expect(text).toBe('Done in 0 steps.')
+  })
+
+  it('fails closed when its own user message is not in the prompt: a short text, no tool call', async () => {
+    const { calls, text } = await drive(SPEC, {}, [{ role: 'user', content: 'something else entirely' }])
+    expect(calls).toEqual([])
+    expect(text).toBe('Stopped: this request could not be found in the conversation.')
+  })
+
   it('resuming after a park (the newest result is parked) makes the same call again', async () => {
     const parkedRpc = { parked: true, note: 'Cannot take control of this page: … stop here.' }
     const history: ModelMessage[] = [
@@ -244,17 +292,21 @@ describe('createDriverScript through runAgentTurn', () => {
 })
 
 describe('nextDriverAction (the pure decision)', () => {
-  const user = { role: 'user' as const, content: [{ type: 'text' as const, text: 'go' }] }
+  const user = { role: 'user' as const, content: [{ type: 'text' as const, text: SPEC.goal }] }
   it('without RequestPageControl on offer, says so rather than calling it', () => {
     expect(nextDriverAction(SPEC, [user], new Set(['FastSteps']))).toEqual({ text: expect.stringMatching(/Page control isn't available/) })
   })
-  it('granted but FastSteps not on offer (model not ready, Mode off): says so', () => {
-    const prompt = [
+  it('without FastSteps on offer (model not ready, Mode off): says so BEFORE asking for control — no card for a run that cannot proceed', () => {
+    expect(nextDriverAction(SPEC, [user], new Set(['RequestPageControl']))).toEqual({ text: expect.stringMatching(/decision model isn't available/) })
+    const granted = [
       user,
       { role: 'assistant' as const, content: [{ type: 'tool-call' as const, toolCallId: 'a', toolName: 'RequestPageControl', input: {} }] },
       { role: 'tool' as const, content: [{ type: 'tool-result' as const, toolCallId: 'a', toolName: 'RequestPageControl', output: { type: 'json' as const, value: GRANT } }] },
     ]
-    expect(nextDriverAction(SPEC, prompt, new Set(['RequestPageControl']))).toEqual({ text: expect.stringMatching(/decision model isn't available/) })
+    expect(nextDriverAction(SPEC, granted, new Set(['RequestPageControl']))).toEqual({ text: expect.stringMatching(/decision model isn't available/) })
+  })
+  it('an empty goal fails closed too', () => {
+    expect(nextDriverAction({ goal: '', values: {} }, [user], null)).toEqual({ text: 'Stopped: this request could not be found in the conversation.' })
   })
   it('stops after MAX_SCRIPT_CALLS calls whatever the prompt holds', () => {
     const prompt: any[] = [user]

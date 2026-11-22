@@ -111,7 +111,13 @@ export async function updateChatRun(chat: string, change: (old: ChatRun | undefi
 export function chatRunMessages(run: ChatRun): UIMessage[] {
   const parts = [...run.baseParts, ...run.parts]
   if (run.error) parts.push({ type: 'text', text: `**Error:** ${run.error}` })
-  const bubble: UIMessage = { id: run.assistantId, role: 'assistant', parts, usage: sumUsage(run.messages.find(m => m.id === run.assistantId)?.usage, run.result?.usage) }
+  const prior = run.messages.find(m => m.id === run.assistantId)?.usage
+  // A `@driver` run's scripted model reports zero usage — no chat-model tokens were spent — so it
+  // adds none (the panel attaches none either: a "0 → 0" chip reads as a bug), and its bubble keeps
+  // the driver mark even when no panel was open to set it.
+  const bubble: UIMessage = run.driver
+    ? { id: run.assistantId, role: 'assistant', parts, usage: prior, driver: true }
+    : { id: run.assistantId, role: 'assistant', parts, usage: sumUsage(prior, run.result?.usage) }
   return run.messages.some((m) => m.id === run.assistantId)
     ? run.messages.map((m) => m.id === run.assistantId ? { ...m, ...bubble } : m)
     : [...run.messages, bubble]

@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
+  driverModelText,
+  driverSpecFor,
   driverUnavailableReason,
   frameGoal,
   goalPhrases,
@@ -155,6 +157,52 @@ describe('goalPhrases (unquoted text, offered for a search box)', () => {
     const p = goalPhrases('red and green and blue and white and black')
     expect(Object.keys(p)).toHaveLength(MAX_DRIVER_PHRASES)
     expect(p).toEqual({ phrase: 'red', phrase_2: 'green', phrase_3: 'blue', phrase_4: 'white' })
+  })
+})
+
+describe('driverSpecFor (a composed message: tab mentions are not the token)', () => {
+  it('a tab titled "Driver Booster…" mentioned as @Driver Booster is an ordinary message', () => {
+    expect(driverSpecFor('@Driver Booster Pro what is this?', ['@Driver Booster Pro'])).toBeUndefined()
+    expect(driverSpecFor('summarize @Driver Booster Pro', ['@Driver Booster Pro'])).toBeUndefined()
+    // Without knowing it is a mention, the same text would read as @driver.
+    expect(driverSpecFor('@Driver Booster Pro what is this?')).toBeDefined()
+  })
+  it('an explicit @driver beside such a mention is a driver message; the goal leaves the mention out', () => {
+    expect(driverSpecFor('@driver open @Driver Booster Pro downloads', ['@Driver Booster Pro'])).toEqual({
+      goal: 'open downloads',
+      values: { phrase: 'downloads' },
+      deciderGoal: 'search for "downloads", then open downloads',
+    })
+  })
+  it('the model-facing copy is the text the goal came from, so the scripted run finds its turn', () => {
+    const text = '@driver open @Driver Booster Pro downloads'
+    const tokens = ['@Driver Booster Pro']
+    expect(driverModelText(text, tokens).replace(/\s+/g, ' ')).toBe(driverSpecFor(text, tokens)!.goal)
+    expect(driverModelText('@driver add the mug')).toBe('add the mug')
+  })
+  it('a longer token is removed whole before a shorter one inside it', () => {
+    expect(driverSpecFor('@Driver Booster Pro and @Driver Booster', ['@Driver Booster', '@Driver Booster Pro'])).toBeUndefined()
+    // Shorter first would leave " Max" of "@Driver Max" behind in the goal.
+    expect(driverSpecFor('@driver open @Driver Max', ['@Driver', '@Driver Max'])?.goal).toBe('open')
+  })
+  it('never with a leading /skill', () => {
+    expect(driverSpecFor('/summarize @driver add it')).toBeUndefined()
+    expect(driverSpecFor('@driver add it')).toBeDefined()
+  })
+})
+
+describe('the parser on hyphens and inch marks', () => {
+  it('a hyphenated word is not split at a connector inside it', () => {
+    expect(goalPhrases('add the in-ear headphones to my cart')).toEqual({ phrase: 'in-ear headphones' })
+    expect(goalPhrases('find a step-by-step guide')).toEqual({ phrase: 'step-by-step guide' })
+    expect(goalPhrases('find a carry-on bag for the trip')).toEqual({ phrase: 'carry-on bag', phrase_2: 'trip' })
+  })
+  it('a quote right after a digit is an inch mark, not a quote', () => {
+    expect(parseDriverPrompt('@driver compare the 15" laptop and the 13" tablet').values).not.toHaveProperty('text')
+    // ("compare" is not one of the stripped verbs.)
+    expect(parseDriverPrompt('@driver compare the 15" laptop and the 13" tablet').values).toEqual({ phrase: 'compare the 15" laptop', phrase_2: '13" tablet' })
+    // A real quote after one still counts.
+    expect(parseDriverPrompt('@driver buy the 15" laptop, search "sleeve"').values).toEqual({ search: 'sleeve' })
   })
 })
 
