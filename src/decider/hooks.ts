@@ -193,6 +193,9 @@ const CONTEXT_MARKERS = [
   '\n\n[The user attached',
   '\n\n[attachment "',
   '\n\n--- attached file:',
+  // A spreadsheet's block opens with its manifest line (officeText.ts formatWorkbook), not the
+  // "--- attached file:" header the other documents use.
+  '\n\n[workbook:',
 ]
 
 function typedPart(text: string): string {

@@ -7,6 +7,7 @@
 // re-parsed from the user's own text when a chain has to be re-entered (a park resumed, a turn
 // regenerated or recovered), so nothing new is persisted.
 
+import type { ModelMessage } from 'ai'
 import type { UIMessage } from '../agent/agent'
 import { parseDriverPrompt, type DriverSpec } from '../decider/driverPrompt'
 
@@ -37,6 +38,16 @@ export function driverSpecFromTranscript(messages: UIMessage[], typedText: strin
     return spec.goal ? spec : undefined
   }
   return undefined
+}
+
+/**
+ * The history a REGENERATED turn's driver message is read from (as hooks.ts latestUserText reads
+ * it): the turn's opener when it has one; a chain that was itself a park resume or a recovery has
+ * none, and then it is the history up to the rewind point, whose newest user message is that turn's.
+ * Without this a resumed driver chain regenerated as an ordinary one, on the chat model. Pure.
+ */
+export function regenSource(opener: ModelMessage | null, history: readonly ModelMessage[], historyLen: number): ModelMessage[] {
+  return opener ? [opener] : history.slice(0, historyLen)
 }
 
 /**

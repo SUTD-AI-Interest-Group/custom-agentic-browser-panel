@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import type { UIMessage, UIPart } from '../agent/agent'
-import { driverContinueOffered, driverSendBlock, driverSpecFromTranscript, enqueueSpec } from './driverTurn'
+import { driverContinueOffered, driverSendBlock, driverSpecFromTranscript, enqueueSpec, regenSource } from './driverTurn'
+import { latestUserText } from '../decider/hooks'
+import type { ModelMessage } from 'ai'
 import { driverSpecFor } from '../decider/driverPrompt'
 
 const fast = (output: unknown, state: 'running' | 'done' | 'error' = 'done'): UIPart => ({
@@ -98,5 +100,28 @@ describe('enqueueSpec — messages submitted while a turn runs', () => {
     expect(enqueueSpec<Q>([d1], d2, merge)).toEqual([d1, d2])
     // An ordinary message after a driver one merges with a later ordinary one, not across it.
     expect(enqueueSpec<Q>([{ text: 'a' }, d1, { text: 'b' }], { text: 'c' }, merge)).toEqual([{ text: 'a' }, d1, { text: 'b+c' }])
+  })
+})
+
+describe('regenSource — regenerating a driver chain that was itself a park resume or a recovery', () => {
+  const user = (text: string, driver?: boolean): UIMessage => ({ id: text, role: 'user', parts: [{ type: 'text', text }], ...(driver ? { driver } : {}) })
+  const history: ModelMessage[] = [
+    { role: 'user', content: 'add the mug\n\n[Open on screen right now: "Store" (http://x/). This supersedes …]' },
+    { role: 'assistant', content: [{ type: 'tool-call', toolCallId: 'p', toolName: 'FastSteps', input: {} }] },
+    { role: 'tool', content: [{ type: 'tool-result', toolCallId: 'p', toolName: 'FastSteps', output: { type: 'json', value: { parked: true } } }] },
+  ]
+  const transcript = [user('@driver add the mug', true), bubble([rpc])]
+  it('no opener (the resumed chain\'s regen target): the driver message is read from the history up to the rewind point', () => {
+    const spec = driverSpecFromTranscript(transcript, latestUserText(regenSource(null, history, history.length)))
+    expect(spec).toMatchObject({ goal: 'add the mug' })
+  })
+  it('the bug this fixes: reading "" for a missing opener made the regenerate an ordinary (chat-model) turn', () => {
+    expect(driverSpecFromTranscript(transcript, '')).toBeUndefined()
+  })
+  it('with an opener, the opener — and otherwise only the history BEFORE the rewind point', () => {
+    const opener: ModelMessage = { role: 'user', content: 'search "mugs"' }
+    expect(regenSource(opener, history, history.length)).toEqual([opener])
+    const later: ModelMessage[] = [...history, { role: 'user', content: 'a steer after the rewind point' }]
+    expect(latestUserText(regenSource(null, later, history.length))).toBe('add the mug')
   })
 })

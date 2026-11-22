@@ -4,6 +4,7 @@ import {
   driverSpecFor,
   driverUnavailableReason,
   frameGoal,
+  isSearchRequest,
   goalPhrases,
   MAX_DRIVER_PHRASES,
   isDriverMessage,
@@ -72,6 +73,27 @@ describe('parseDriverPrompt', () => {
 
   it('frameGoal', () => {
     expect(frameGoal('add the mug to my cart', 'mug')).toBe('search for "mug", then add the mug to my cart')
+  })
+
+  it('framed only for a search/shopping request (mug, Halo, headphones); never for one with nothing to search for', () => {
+    expect(parseDriverPrompt('@driver add the Halo noise-cancelling wireless headphones to my cart').deciderGoal).toBe(
+      'search for "Halo noise-cancelling wireless headphones", then add the Halo noise-cancelling wireless headphones to my cart',
+    )
+    expect(parseDriverPrompt('@driver add the blue Aurora mug to my cart').deciderGoal).toBeDefined()
+    expect(parseDriverPrompt('@driver search wireless headphones and add the cheapest under $100 to my cart').deciderGoal).toBeDefined()
+    for (const text of ['@driver click the login button', '@driver open my orders', '@driver go to the checkout page and fill in my address']) {
+      const spec = parseDriverPrompt(text)
+      expect(spec, text).not.toHaveProperty('deciderGoal')
+      // The phrases are still offered: framing is the only thing withheld.
+      expect(Object.keys(spec.values).length, text).toBeGreaterThan(0)
+    }
+  })
+
+  it('isSearchRequest: the search/shopping verbs, as whole words', () => {
+    for (const g of ['search mugs', 'find a hotel', 'look for socks', 'buy a mug', 'add it to my cart', 'order pizza', 'shop for shoes', 'get me a charger', 'please Add the mug'])
+      expect(isSearchRequest(g), g).toBe(true)
+    for (const g of ['click the login button', 'open my orders', 'go to the checkout page and fill in my address', 'show the add-on list', 'look at the page', 'target the box'])
+      expect(isSearchRequest(g), g).toBe(false)
   })
 
   it('a quoted value means no phrases at all', () => {
@@ -171,7 +193,6 @@ describe('driverSpecFor (a composed message: tab mentions are not the token)', (
     expect(driverSpecFor('@driver open @Driver Booster Pro downloads', ['@Driver Booster Pro'])).toEqual({
       goal: 'open downloads',
       values: { phrase: 'downloads' },
-      deciderGoal: 'search for "downloads", then open downloads',
     })
   })
   it('the model-facing copy is the text the goal came from, so the scripted run finds its turn', () => {

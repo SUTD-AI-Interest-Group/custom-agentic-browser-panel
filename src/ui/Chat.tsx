@@ -94,7 +94,7 @@ import { shouldTearDownPageControl, type ChainExitReason } from './chainLifecycl
 import { shouldAttemptNaming } from './chatNaming'
 import { recallableUserTexts, shouldIgnoreComposerKeydown } from './composerKeys'
 import { clearDraft, loadDraft, saveDraft } from './drafts'
-import { CONTINUE_WITH_CHAT_MODEL, driverContinueOffered, driverSendBlock, driverSpecFromTranscript, enqueueSpec } from './driverTurn'
+import { CONTINUE_WITH_CHAT_MODEL, driverContinueOffered, driverSendBlock, driverSpecFromTranscript, enqueueSpec, regenSource } from './driverTurn'
 import { useDismissOnOutside } from './hooks'
 import { createLatestRequest } from './latestRequest'
 import { hasUncompilableMath } from './mathRepairFilter'
@@ -4163,7 +4163,7 @@ export default function Chat({
     const retryNote = buildRetryNote(messagesRef.current.slice(cut))
     // Regenerating a driver turn runs the decision model again (its opener is the driver message) —
     // checked BEFORE the reply is torn out, so a blocked one leaves the transcript as it was.
-    const driver = driverSpecFromTranscript(messagesRef.current.slice(0, cut), target.opener ? latestUserText([target.opener]) : '')
+    const driver = driverSpecFromTranscript(messagesRef.current.slice(0, cut), latestUserText(regenSource(target.opener, historyRef.current, target.historyLen)))
     if (refuseDriver(driver)) return
     setMessages((m) => m.slice(0, cut))
     historyRef.current.length = target.historyLen
@@ -4417,8 +4417,9 @@ export default function Chat({
       <div className="composer-area">
         {!hidden && <><McpInteractions onUse={text=>setInput(current=>[current,text].filter(Boolean).join('\n\n'))} onOpenConversation={onOpenConversation} />
           {preparing && <p role="status">Preparing request: {preparing}…</p>}
-          {retryChain && !preparing && !streaming && <button onClick={() => {void runTurnChain(retryChain)}}>Retry request preparation</button>}
-          {retryPreparation && !preparing && !streaming && <button onClick={() => {void startFreshTurn(retryPreparation)}}>Retry request</button>}<McpUpdateInbox /></>}
+          {/* Retries are ways a @driver turn starts too: the same availability check as a send. */}
+          {retryChain && !preparing && !streaming && <button onClick={() => {if (!refuseDriver(retryChain.driver)) void runTurnChain(retryChain)}}>Retry request preparation</button>}
+          {retryPreparation && !preparing && !streaming && <button onClick={() => {if (!refuseDriver(retryPreparation.driver)) void startFreshTurn(retryPreparation)}}>Retry request</button>}<McpUpdateInbox /></>}
         <ContextPills tabs={contextTabs} />
         {selection && selection.text !== dismissedSelection && (
           <div className="selection-chip" title="Highlighted text shared as context">
@@ -4637,13 +4638,17 @@ export default function Chat({
                   <path d="M1.5 1.5l5 5M6.5 1.5l-5 5" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
                 </svg>
               </button>
-              <button
-                className="steer-strip__steer"
-                title="Inject this now to steer the running task"
-                onClick={steerNow}
-              >
-                Steer now
-              </button>
+              {/* A @driver message is a turn of its own for the decision model; injected as a steer it
+                  would become an ordinary message to the chat model — so it only waits its turn. */}
+              {!queued.driver && (
+                <button
+                  className="steer-strip__steer"
+                  title="Inject this now to steer the running task"
+                  onClick={steerNow}
+                >
+                  Steer now
+                </button>
+              )}
             </div>
           )}
           <ResearchDock tasks={dockTasks} onOpen={openDockTask} />

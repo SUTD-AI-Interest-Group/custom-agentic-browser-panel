@@ -173,6 +173,10 @@ describe('latestUserText', () => {
     expect(latestUserText([{ role: 'user', content }])).toBe(typed)
     expect(latestUserText([{ role: 'user', content: `${typed}\n\n--- attached file: notes.txt ---\nhello\n--- end of notes.txt ---` }])).toBe(typed)
     expect(latestUserText([{ role: 'user', content: `${typed}\n\n[The user attached the PDF "a.pdf" (3 pages).]` }])).toBe(typed)
+    // Every block the composer can append opens with one of the markers — a workbook included.
+    expect(latestUserText([{ role: 'user', content: `${typed}\n\n[workbook: q3.xlsx — 2 sheets]\n  Sales (10 rows × 3 cols)` }])).toBe(typed)
+    expect(latestUserText([{ role: 'user', content: `${typed}\n\n[The user attached the image "a.png", but this model cannot read images — say so rather than guessing its contents.]` }])).toBe(typed)
+    expect(latestUserText([{ role: 'user', content: `${typed}\n\n[attachment "x.bin" could not be processed: bad]` }])).toBe(typed)
     expect(latestUserText([{ role: 'user', content: `${typed}\n\n[The user highlighted this text on the current page and shared it as context:]\n"""\nx\n"""` }])).toBe(typed)
   })
 

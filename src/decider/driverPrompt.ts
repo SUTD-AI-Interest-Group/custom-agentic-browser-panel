@@ -124,7 +124,21 @@ export function parseDriverPrompt(text: string): DriverSpec {
   }
   if (count > 0) return { goal, values }
   const phrases = goalPhrases(goal)
-  return phrases.phrase ? { goal, values: phrases, deciderGoal: frameGoal(goal, phrases.phrase) } : { goal, values: phrases }
+  // Framed as a search only for a search/shopping request: "click the login button" or "open my
+  // orders" has nothing to search for, and telling the decider to search first would misdirect it.
+  return phrases.phrase && isSearchRequest(goal) ? { goal, values: phrases, deciderGoal: frameGoal(goal, phrases.phrase) } : { goal, values: phrases }
+}
+
+/** The verbs of a search or shopping request, as whole words (`orders` and `add-on` are not). */
+const SEARCH_VERB = /(?<![\w-])(?:search|find|look\s+for|buy|add|order|shop|get)(?![\w-])/i
+
+/**
+ * Is this goal a search/shopping request — the kind a search box serves? Only when one of its
+ * verbs is present (SEARCH_VERB). Deliberately not "mentions the cart": "go to the checkout page
+ * and fill in my address" names the checkout and has nothing to search for. Pure.
+ */
+export function isSearchRequest(goal: string): boolean {
+  return SEARCH_VERB.test(goal)
 }
 
 /**
