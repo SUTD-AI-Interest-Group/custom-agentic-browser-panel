@@ -1633,6 +1633,14 @@ describe('driver mode (FastSteps steps)', () => {
       for (const req of type.requests.slice(1)) expect(req.state).toMatchObject({ goal: 'add the speaker to the cart', task: 'add 2 of them' })
     })
 
+    it('the task is capped: a long pasted message cannot push the value question past the token cap', async () => {
+      const { engine, requests } = passesEngine('type into [0]', 0.9, [['request.query', 0.9]])
+      await within(driveHooks({ engine, userMessage: 'add 2 of them. ' + 'x'.repeat(5000) }).answer(nextMsg())!)
+      const task = (requests[1].state as { task?: string }).task ?? ''
+      expect(task.startsWith('add 2 of them.')).toBe(true)
+      expect(task.length).toBeLessThanOrEqual(600)
+    })
+
     it('assist is unchanged: its goal already is the user message, so it carries no `task`', async () => {
       const fill = fillEngine(ASSIST_PICKS)
       await fillHooks({ engine: fill.engine, mode: 'driver' }).mapForm({ tabId: 7, snap: snapOf(FILL_FORM), session: session(), values: VALUES })

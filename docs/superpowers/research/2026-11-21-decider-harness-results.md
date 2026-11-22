@@ -1,6 +1,7 @@
 # Decider harness: results
 
-**Date:** 2026-11-22 · **Branch:** `worktree-decider-harness` at `3b8f3fd` · **Spec:**
+**Date:** 2026-11-22 · **Branch:** `worktree-decider-harness`: §1–§13 at `3b8f3fd`, §14–§15 on
+`1e967d2`…`b240db5` (§14.1, §15.2, §15.7 give the build of each run) · **Spec:**
 `docs/superpowers/specs/2026-11-21-decider-harness-design.md` (§9 is the bar used here) ·
 **Machine:** M4 Max 64 GB, Chrome for Testing (Playwright build), onnxruntime-web WebGPU.
 

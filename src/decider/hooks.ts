@@ -279,6 +279,9 @@ function fillKey(q: FillQuestion, a: Answer, requestKeys: string[]): string {
 
 const fold = (s: string) => s.replace(/[‘’ʼ]/g, "'").replace(/\s+/g, ' ').trim().toLowerCase()
 
+/** At most this much of the user's message rides on a driver value question as its `task`. */
+const VALUE_TASK_CAP = 600
+
 /** `s` folded to its words: letters and digits, single-spaced. */
 const words = (s: string) => fold(s).replace(/[^\p{L}\p{N}]+/gu, ' ').trim()
 
@@ -663,8 +666,9 @@ export function createDeciderHooks(deps: DeciderHookDeps): DeciderPanelHooks {
       if (!field || field.kind !== (op === 'type' ? 'text' : 'select')) return { ms: 0 }
       // The user's overall request rides beside the sub-goal (`task`, state.ts's fillRequest): the
       // next-action question follows the session plan past a narrow sub-goal, and a value chosen
-      // from the sub-goal alone picked quantity "1" for "add 2 of them" (results §15.5).
-      const task = deps.currentGoal()
+      // from the sub-goal alone picked quantity "1" for "add 2 of them" (results §15.5). Capped, so
+      // a long pasted message cannot push this one-field question past the token cap.
+      const task = deps.currentGoal().slice(0, VALUE_TASK_CAP)
       const ask = async (lookup: Lookup): Promise<typeof last> => {
         const { request, questions } = fillRequest({ goal: step.goal, task, url: step.snap.url, title: step.snap.title, lookup, fields: [field] })
         const result = (await engine().decide(request)) as DecisionResult
@@ -721,8 +725,8 @@ export function createDeciderHooks(deps: DeciderHookDeps): DeciderPanelHooks {
 
   /**
    * One driver step, for both realms: nextActionRequest minus the excluded pairs → decide (queued,
-   * NOT dropIfBusy — FastSteps is waiting — and capped at DRIVER_MAX_TOKENS) → for a `type` at the
-   * top, its value → a `drive` record. `cancelled` is the caller giving up; checked after each
+   * NOT dropIfBusy — FastSteps is waiting — and capped at DRIVER_MAX_TOKENS) → for a `type` or a
+   * `select` at the top, its value (fieldValue) → a `drive` record. `cancelled` is the caller giving up; checked after each
    * decision, so an answer nobody will act on is neither returned nor recorded.
    */
   async function decideNext(n: number, step: NextStep, cancelled: () => boolean): Promise<DriverDecideOutcome> {
