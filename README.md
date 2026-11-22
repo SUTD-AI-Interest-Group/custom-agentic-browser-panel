@@ -87,7 +87,14 @@ is why no proxy server is needed.
 - **`@` mentions a tab.** A picker opens (filter as you type, arrow keys +
   Enter). Mentioned tabs are read at send time and appended inside `<tab>`
   blocks — an explicit share, so no permission card is involved. `@memory` asks
-  the agent to consult long-term memory before answering.
+  the agent to consult long-term memory before answering. `@driver` (offered once
+  the on-device decision model is imported and turned on in Settings → Experimental)
+  sends a quick page action straight to that model instead of the chat model: it
+  asks for page control, then takes the steps itself. It cannot write text, so
+  anything it should type goes in double quotes (`@driver search "wireless
+  headphones"`) or comes from your profile memories; every approval card still
+  applies. When it gets stuck it stops, says why, and offers **Continue with chat
+  model**.
 - **`/` invokes a skill** by name, with the same autocomplete behaviour.
 - **The camera button** starts an Arc/Dia-style region capture: the page tints,
   the cursor becomes a sniper that snaps to the component under it, click to

@@ -2370,6 +2370,27 @@ body {
   background: var(--surface);
 }
 
+/* "Continue with chat model" under a @driver turn that stopped short (Chat.tsx). */
+.driver-continue {
+  display: flex;
+  justify-content: flex-start;
+  margin: 2px 0 10px;
+}
+
+.driver-continue-btn {
+  padding: 4px 10px;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 12px;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.driver-continue-btn:hover {
+  background: var(--surface);
+}
+
 .selection-chip {
   display: flex;
   align-items: center;
@@ -4162,6 +4183,11 @@ body {
 
 .mention-item.memory .mention-title::before {
   content: '✦ ';
+  color: var(--text-muted);
+}
+
+.mention-item.driver .mention-title::before {
+  content: '➤ ';
   color: var(--text-muted);
 }
 

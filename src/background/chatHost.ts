@@ -5,6 +5,7 @@ import { dynamicTool, jsonSchema, type ToolSet } from 'ai'
 import type { JSONSchema7 } from '@ai-sdk/provider'
 import { runAgentTurn, type UIPart } from '../agent/agent'
 import { createModel } from '../agent/provider'
+import { createDriverScript } from '../agent/driverScript'
 import type { Trace } from '../agent/observability/types'
 import type { ProviderConfig } from '../data/settings'
 import { openSecret } from '../data/vault'
@@ -107,7 +108,10 @@ async function executeChat(conversationId: string, id: string) {
       span: () => ({ id: '', end() {} }), event() {}, end() {},
     }
     const result = await runAgentTurn({
-      model: createModel(config, job.modelId), system: job.system, history: job.history,
+      // A `@driver` run: the scripted model decides each step from the tool results in its prompt
+      // (RequestPageControl, then FastSteps) and never calls the network. Everything else — the
+      // tools, their cards, Stop, the parts, the save — is this same path.
+      model: job.driver ? createDriverScript(job.driver) : createModel(config, job.modelId), system: job.system, history: job.history,
       tools, abortSignal: controller.signal, imageQueue: images, activeNames,
       steerPending: () => job?.steerPending ?? false,
       parkPending: () => parked || (job?.parkPending ?? false),

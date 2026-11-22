@@ -32,3 +32,8 @@ test('never attempts once the retry budget is exhausted', () => {
   expect(shouldAttemptNaming({ ...base, tries: 3 })).toBe(false)
   expect(shouldAttemptNaming({ ...base, tries: 4 })).toBe(false)
 })
+
+test('skips a @driver turn (no chat-model call the user did not ask for), and names on the next ordinary one', () => {
+  expect(shouldAttemptNaming({ ...base, driverTurn: true })).toBe(false)
+  expect(shouldAttemptNaming({ ...base, turnSeq: 2, driverTurn: false })).toBe(true)
+})

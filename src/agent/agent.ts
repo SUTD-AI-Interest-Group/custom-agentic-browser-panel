@@ -183,6 +183,13 @@ export interface UIMessage {
    * user messages and when the endpoint reports no usage.
    */
   usage?: ModelUsage
+  /**
+   * A `@driver` turn: on the user bubble that started it, and on each assistant bubble the scripted
+   * decision-model run wrote (src/agent/driverScript.ts). Drives the "Continue with chat model"
+   * button and tells a re-entered chain (park resume, regenerate, recovery) to run the script again.
+   * A flag only — the spec is re-parsed from the user's own text (src/ui/driverTurn.ts).
+   */
+  driver?: boolean
 }
 
 /**

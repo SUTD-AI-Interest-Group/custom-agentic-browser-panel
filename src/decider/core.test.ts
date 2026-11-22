@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { parseManifest } from './manifest'
 import { packPass } from './pack'
 import { codeProbabilities, toAnswer } from './readout'
-import { assistsForms, DECIDER_MAX_TOKENS, DRIVER_MAX_TOKENS, normalizeDecider, tokenCap } from './config'
+import { assistsForms, DECIDER_MAX_TOKENS, DRIVER_MAX_TOKENS, normalizeDecider, tokenCap, withDriverOverride } from './config'
 import type { RenderedQuestion } from './prompt'
 
 const manifest = (): Record<string, any> => ({
@@ -98,5 +98,21 @@ describe('tokenCap', () => {
     expect(tokenCap(2000, 2500)).toBe(2000)
     expect(tokenCap(32768, 100_000)).toBe(DECIDER_MAX_TOKENS)
     for (const junk of [0, -5, 1.5, Number.NaN, Number.POSITIVE_INFINITY]) expect(tokenCap(32768, junk)).toBe(DECIDER_MAX_TOKENS)
+  })
+})
+
+describe('withDriverOverride (a @driver run)', () => {
+  it('reads driver for a driver run whatever on-mode the settings hold, keeping the threshold', () => {
+    expect(withDriverOverride({ mode: 'shadow' }, true)).toEqual({ mode: 'driver' })
+    expect(withDriverOverride({ mode: 'assist', actThreshold: 0.7 }, true)).toEqual({ mode: 'driver', actThreshold: 0.7 })
+    expect(withDriverOverride({ mode: 'driver' }, true)).toEqual({ mode: 'driver' })
+  })
+  it('Off, or no decider settings, still means off', () => {
+    expect(withDriverOverride({ mode: 'off' }, true)).toEqual({ mode: 'off' })
+    expect(withDriverOverride(undefined, true)).toBeUndefined()
+  })
+  it('an ordinary run is untouched (the same object)', () => {
+    const s = { mode: 'assist' as const }
+    expect(withDriverOverride(s, false)).toBe(s)
   })
 })

@@ -11,6 +11,12 @@ export interface NamingGuardState {
   /** Attempts fired so far. */
   tries: number
   maxTries: number
+  /**
+   * The turn that just finished was a `@driver` turn: the decision model ran it and no chat-model
+   * call was made, so the namer (a chat-model call the user did not ask for) waits for the next
+   * ordinary turn, which names the chat as usual.
+   */
+  driverTurn?: boolean
 }
 
 /**
@@ -27,5 +33,6 @@ export function shouldAttemptNaming(s: NamingGuardState): boolean {
   if (s.titled) return false
   if (s.inFlight) return false
   if (s.tries >= s.maxTries) return false
+  if (s.driverTurn) return false
   return true
 }

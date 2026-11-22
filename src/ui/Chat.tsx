@@ -17,6 +17,9 @@ import { summarizeSpan } from '../agent/summarizeSpan'
 import { sumUsage } from '../agent/usage'
 import { ensureVisionCapability } from '../agent/vision'
 import { createDeciderHooks, deciderRelayListener, latestUserText } from '../decider/hooks'
+import { MODEL_STATUS_KEY, withDriverOverride } from '../decider/config'
+import { DRIVER_TOKEN, driverUnavailableReason, isDriverMessage, parseDriverPrompt, stripDriverToken, type DriverSpec } from '../decider/driverPrompt'
+import { isReadyStatus, readModelReady } from '../decider/modelStatus'
 import {
   dehydrateHistory,
   hydrateHistory,
@@ -91,6 +94,7 @@ import { shouldTearDownPageControl, type ChainExitReason } from './chainLifecycl
 import { shouldAttemptNaming } from './chatNaming'
 import { recallableUserTexts, shouldIgnoreComposerKeydown } from './composerKeys'
 import { clearDraft, loadDraft, saveDraft } from './drafts'
+import { CONTINUE_WITH_CHAT_MODEL, driverContinueOffered, driverSpecFromTranscript } from './driverTurn'
 import { useDismissOnOutside } from './hooks'
 import { createLatestRequest } from './latestRequest'
 import { hasUncompilableMath } from './mathRepairFilter'
@@ -294,6 +298,12 @@ interface MessageSpec {
   activeSelection: string | null
   /** Other panes on screen (split view), auto-attached alongside the current tab. */
   companions: CurrentTabInfo[]
+  /**
+   * `@driver`: the message goes to the on-device decision model (a scripted run of
+   * RequestPageControl → FastSteps) instead of the chat model — when it starts a fresh turn. A
+   * steer carrying the token is an ordinary steer. Absent otherwise.
+   */
+  driver?: DriverSpec
 }
 
 /** A tab the user @mentioned in the composer; its content syncs on send. */
@@ -313,6 +323,7 @@ interface TabMention {
 type MentionCandidate =
   | { kind: 'tab'; tab: TabSummary }
   | { kind: 'memory' }
+  | { kind: 'driver' }
   | { kind: 'all' }
   | { kind: 'page' }
   | { kind: 'selection' }
@@ -777,6 +788,9 @@ export default function Chat({
   // re-names it; `titleTries` bounds the retries below.
   const titledRef = useRef(false)
   const titleTriesRef = useRef(0)
+  // The chain that just finished was a `@driver` chain from start to end (no steer handed it to the
+  // chat model): the namer skips it — see chatNaming.ts's `driverTurn`.
+  const lastChainDriverRef = useRef(false)
 
   const historyRef = useRef<ModelMessage[]>([])
   const messagesRef = useRef<UIMessage[]>([])
@@ -917,6 +931,43 @@ export default function Chat({
   const lastSendScreenRef = useRef<CurrentTabInfo[]>([])
 
   const selected = getSelectedProvider(settings)
+
+  // `@driver` needs the decision model imported: its status record (modelStatus.ts — a
+  // chrome.storage read, the same probe the worker uses), followed live so an import or a delete in
+  // Settings → Experimental shows in the @ menu at once.
+  const [deciderModelReady, setDeciderModelReady] = useState(false)
+  useEffect(() => {
+    let live = true
+    void readModelReady().then((r) => {
+      if (live) setDeciderModelReady(r)
+    })
+    const onChanged = (changes: Record<string, chrome.storage.StorageChange>, area: string) => {
+      if (area === 'local' && MODEL_STATUS_KEY in changes) setDeciderModelReady(isReadyStatus(changes[MODEL_STATUS_KEY].newValue))
+    }
+    try {
+      chrome.storage.onChanged.addListener(onChanged)
+    } catch {
+      /* no storage events here: the first read stands */
+    }
+    return () => {
+      live = false
+      try {
+        chrome.storage.onChanged.removeListener(onChanged)
+      } catch {
+        /* as above */
+      }
+    }
+  }, [])
+  // Why `@driver` cannot run right now (the composer's inline error), or null when it can: the
+  // decider on (any mode but Off — the token is a per-message opt-in to Driver), the model ready,
+  // and page control not set to Never.
+  const driverBlock = driverUnavailableReason({
+    mode: settings.decider?.mode,
+    modelReady: deciderModelReady,
+    requestPolicy: toolPolicy(settings, 'RequestPageControl'),
+    controlPolicy: toolPolicy(settings, 'ControlPage'),
+    fastStepsPolicy: toolPolicy(settings, 'FastSteps'),
+  })
 
   // The active model's token rates, resolved once per model change rather than
   // per message. resolveModelPrice builds a fresh object on every call, so
@@ -1409,6 +1460,7 @@ export default function Chat({
         inFlight: namingInFlightRef.current,
         tries: titleTriesRef.current,
         maxTries: MAX_TITLE_TRIES,
+        driverTurn: lastChainDriverRef.current,
       })
     )
       return
@@ -2098,6 +2150,8 @@ export default function Chat({
     const candidates: MentionCandidate[] = []
     // Offer the specials whenever the query is a prefix of their word (incl. empty).
     if ('memory'.startsWith(q)) candidates.push({ kind: 'memory' })
+    // Offered only when it could run: the decider on, its model imported, page control allowed.
+    if (driverBlock === null && 'driver'.startsWith(q)) candidates.push({ kind: 'driver' })
     if (settings.tabAccess === 'all-tabs' && 'all'.startsWith(q)) candidates.push({ kind: 'all' })
     // Discoverability trio (3c): surface the camera/selection-chip/current-tab
     // affordances from the @ menu too, for a user who never notices the
@@ -2246,11 +2300,13 @@ export default function Chat({
     const token =
       candidate.kind === 'memory'
         ? MEMORY_TOKEN
-        : candidate.kind === 'all'
-          ? ALL_TOKEN
-          : candidate.kind === 'page'
-            ? PAGE_TOKEN
-            : `@${candidate.tab.title.trim().slice(0, 48)}`
+        : candidate.kind === 'driver'
+          ? DRIVER_TOKEN
+          : candidate.kind === 'all'
+            ? ALL_TOKEN
+            : candidate.kind === 'page'
+              ? PAGE_TOKEN
+              : `@${candidate.tab.title.trim().slice(0, 48)}`
     const next = `${input.slice(0, mentionQuery.start)}${token} ${input.slice(caret)}`
     setInput(next)
     if (candidate.kind === 'tab') {
@@ -2302,6 +2358,8 @@ export default function Chat({
     activeSelection: string | null
     /** Other panes on screen (split view), auto-attached alongside the current tab. */
     companions?: CurrentTabInfo[]
+    /** A `@driver` turn: the model-facing copy drops the token (the bubble keeps what was typed). */
+    driver?: DriverSpec
   }, signal?: AbortSignal): Promise<{
     message: ModelMessage
     attachedSources: MessageSource[]
@@ -2335,7 +2393,10 @@ export default function Chat({
       } catch {}
     }
 
-    let modelText = text
+    // A driver turn's model-facing copy is the plain instruction, so a later chat-model turn (or
+    // "Continue with chat model") reads what was asked rather than a routing token. The decider's
+    // value question reads it too (hooks.ts currentGoal → latestUserText).
+    let modelText = o.driver ? stripDriverToken(text) : text
     let syncedTabs: TabContent[] = []
     if (tabIds.length > 0) {
       syncedTabs = await Promise.all(
@@ -2375,7 +2436,7 @@ export default function Chat({
         (companions?.length ?? 0) > 0
           ? `\n[The user had these open side by side in a split view when this message was sent.]`
           : ''
-      modelText = `${text}\n\n[Current content of the tab${syncedTabs.length > 1 ? 's' : ''} shared with you, synced at send time:]${split}\n${blocks.join('\n\n')}${omit}`
+      modelText = `${modelText}\n\n[Current content of the tab${syncedTabs.length > 1 ? 's' : ''} shared with you, synced at send time:]${split}\n${blocks.join('\n\n')}${omit}`
     }
     // What is on screen RIGHT NOW — identity only (title + url), never content,
     // so it costs a couple of lines and carries nothing the attach rules did not
@@ -2505,7 +2566,10 @@ export default function Chat({
       includeCurrentTab || includeDeicticTab
         ? companionTabs.filter((t) => canAttachPage(t.url) && !dismissedTabs.has(t.tabId))
         : []
-    return { text, attachments, activeMentions, useMemory, useAll, includeCurrentTab, includeDeicticTab, activeSelection, companions }
+    // @driver routes the message to the decision model. Not combined with a leading /skill: that
+    // message is an ordinary one (the skill's instructions are for the chat model).
+    const driver = isDriverMessage(text) && !/^\/[a-z0-9-]+(?:\s|$)/.test(text) ? parseDriverPrompt(text) : undefined
+    return { text, attachments, activeMentions, useMemory, useAll, includeCurrentTab, includeDeicticTab, activeSelection, companions, ...(driver ? { driver } : {}) }
   }
 
   /** Clear the composer and its transient popovers once a spec has been captured. */
@@ -2562,15 +2626,17 @@ export default function Chat({
     // transcript and in model history with no reply and nothing running.
     mcpStoppedRef.current = false
     if (streamingRef.current || preparationSignal.aborted) return
-    const { text } = spec
-    const slashMatch = text.match(/^\/([a-z0-9-]+)(?:\s|$)/)
+    const { text, driver } = spec
+    const slashMatch = driver ? null : text.match(/^\/([a-z0-9-]+)(?:\s|$)/)
     const invokedSkill = slashMatch ? await prepare('skill lookup', getSkill(slashMatch[1]), preparationSignal) : null
     const activeSkill =
       invokedSkill && invokedSkill.userInvocable && invokedSkill.enabled !== false ? invokedSkill : null
 
+    // A driver turn's bubble keeps what the user typed (token included) and is marked, so a
+    // re-entered chain (park resume, regenerate, recovery) knows to run the decision model again.
     setMessages((m) => [
       ...m,
-      { id: uid(), role: 'user', parts: [{ type: 'text', text }], attachments: attachmentUiMetas(spec.attachments) },
+      { id: uid(), role: 'user', parts: [{ type: 'text', text }], attachments: attachmentUiMetas(spec.attachments), ...(driver ? { driver: true } : {}) },
     ])
     // Sending is the user asking to see what comes next, so re-arm tail-following
     // even if they had scrolled up to re-read something while composing.
@@ -2610,6 +2676,7 @@ export default function Chat({
     const historyLen = historyRef.current.length
     historyRef.current.push(message)
     if (activeSkill) notes.push(`[invoked skill: ${activeSkill.name}]`)
+    if (driver) notes.push('[sent to the on-device decision model]')
     const journalUserText = [text, ...notes].filter(Boolean).join('\n')
     // @memory is the user's consent to recall, so skip the SearchMemory card for
     // this turn only (it reads local memory — no page or network access).
@@ -2627,6 +2694,7 @@ export default function Chat({
       journalUserText,
       droppableTail: true,
       regen: { historyLen, opener: message },
+      ...(driver ? { driver } : {}),
     })
 
   }
@@ -2836,7 +2904,8 @@ export default function Chat({
     ])
     // Same as a fresh send: the user just spoke, so follow the tail again.
     stickToBottomRef.current = true
-    const ready = buildUserTurn({ ...spec, includeCurrentTab: false })
+    // `driver: undefined`: a steer carrying @driver is an ordinary steer (driver is fresh-turn only).
+    const ready = buildUserTurn({ ...spec, includeCurrentTab: false, driver: undefined })
       .then(
         ({ message, attachedSources, notes }): QueuedSteer => ({
           message,
@@ -2866,8 +2935,12 @@ export default function Chat({
    * selection is what the user was looking at when they typed it).
    */
   function mergeQueuedSpec(a: MessageSpec, b: MessageSpec): MessageSpec {
+    const text = [a.text, b.text].filter(Boolean).join('\n\n')
     return {
-      text: [a.text, b.text].filter(Boolean).join('\n\n'),
+      text,
+      // Either half asked for the decision model: the merged message goes there, its goal and
+      // values re-parsed from the whole text.
+      ...(a.driver || b.driver ? { driver: parseDriverPrompt(text) } : {}),
       attachments: [...a.attachments, ...b.attachments],
       activeMentions: [...a.activeMentions, ...b.activeMentions],
       useMemory: a.useMemory || b.useMemory,
@@ -2914,6 +2987,16 @@ export default function Chat({
     }
     const spec = composeSpec()
     if (!spec) return
+    // @driver that cannot run is not sent at all: the text stays in the composer, with the
+    // reason in the composer's inline error.
+    if (spec.driver) {
+      const blocked = driverBlock ?? (spec.driver.goal ? null : 'Say what to do after @driver.')
+      if (blocked) {
+        setCaptureNeedsFileAccess(false)
+        setCaptureError(blocked)
+        return
+      }
+    }
     clearComposer(spec.activeSelection)
     if (streaming || streamingRef.current || preparationRef.current) setQueued((prev) => (prev ? mergeQueuedSpec(prev, spec) : spec))
     else void startFreshTurn(spec)
@@ -3026,6 +3109,9 @@ export default function Chat({
     /** Set only when this chain IS a regeneration: what the discarded attempt
      *  ran into, appended to the system prompt so the retry can correct for it. */
     retryNote?: string
+    /** A `@driver` chain: each cycle runs the scripted decision-model run (chatHost.ts) instead of
+     *  the chat model, until a steer hands the chain to the chat model. */
+    driver?: DriverSpec
   }) {
     // Re-entry guard, on a ref set synchronously below rather than the
     // render-old `streaming` state (see streamingRef's declaration), so it holds
@@ -3136,6 +3222,17 @@ export default function Chat({
     // pre-authorized tool (e.g. @memory → SearchMemory, via turnAllowed) and, if
     // a page-control session is already open, the control cluster.
     const activeNames = new Set<string>(turnAllowed.current)
+    // A `@driver` chain: the scripted run calls exactly these two, so both are loaded up front (as
+    // @memory loads SearchMemory) and neither call needs the repair hook. Loading is not
+    // permission: RequestPageControl still raises its "Control <host>" card, FastSteps its
+    // point-of-no-return cards. prepareStep intersects with the real ToolSet, so a FastSteps that
+    // is absent (model not ready, Mode Off, policy Never) is never offered.
+    // `driverRun` is chain-scoped and mutable: a steer hands the rest of the chain to the chat model.
+    let driverRun: DriverSpec | undefined = ctx.driver
+    if (driverRun) {
+      activeNames.add('RequestPageControl')
+      activeNames.add('FastSteps')
+    }
     const openSession = pageControl.session()
     if (openSession && openSession.active) {
       activeNames.add('RequestPageControl')
@@ -3149,7 +3246,12 @@ export default function Chat({
     // decides whether the image ALSO reaches the model (see planShotDelivery).
     // Probed once per provider+model and cached in chrome.storage.local, so this is
     // free after the first turn; a failed probe means "assume blind".
-    const visionCapable = await prepare('model capabilities', ensureVisionCapability(model.provider, model.modelId).catch(() => false), controller.signal)
+    //
+    // A driver chain does not probe up front: the scripted run reads no image, and on a fresh
+    // install the probe is a chat-model request the user did not ask for. It runs on the first
+    // cycle that needs it — the chat model's, after a steer (see cycleVision below).
+    const probeVision = () => ensureVisionCapability(model.provider, model.modelId).catch(() => false)
+    let visionCapable: boolean | undefined = driverRun ? undefined : await prepare('model capabilities', probeVision(), controller.signal)
     const mcpManager = getMcpManager()
     await prepare('MCP connections', mcpManager.refresh(settingsRef.current).then(() => mcpManager.ready(controller.signal)), controller.signal)
     setPreparing('')
@@ -3190,8 +3292,11 @@ export default function Chat({
     // describes rather than migrating down it.
     const traceTurnId = assistantId
     let mergedParts: UIPart[] = []
-    setMessages((m) => [...m, { id: assistantId, role: 'assistant', parts: [], sources: ctx.attachedSources, ...(ctx.journalUserText === '[MCP task completion]' ? { autoContinue: 1 } : {}) }])
+    setMessages((m) => [...m, { id: assistantId, role: 'assistant', parts: [], sources: ctx.attachedSources, ...(ctx.journalUserText === '[MCP task completion]' ? { autoContinue: 1 } : {}), ...(driverRun ? { driver: true } : {}) }])
     assistantIds.add(assistantId)
+    // The scripted run's bubbles: no chat-model math repair runs over them (no chat-model call the
+    // user did not ask for), and they carry the "Continue with chat model" mark.
+    const driverAssistantIds = new Set<string>(driverRun ? [assistantId] : [])
     // The undo point is complete only now that the chain's first bubble exists —
     // that bubble is where the transcript gets cut on a regenerate. Recorded up
     // front, not on success, so the failure path (which is what the user most
@@ -3223,7 +3328,10 @@ export default function Chat({
     // mid-chain settings change and a steer (spliced into historyRef) are seen
     // on the very next step.
     const decider = createDeciderHooks({
-      settings: () => settingsRef.current.decider,
+      // A driver chain reads Driver whatever on-mode the settings hold (Off stays off) — the same
+      // override the worker applies from the run's `driver` (toolHost.ts), so FastSteps is in both
+      // ToolSets or in neither. Read live: after a steer the chain is the chat model's again.
+      settings: () => withDriverOverride(settingsRef.current.decider, driverRun !== undefined),
       conversationId,
       currentGoal: () => latestUserText(historyRef.current),
       chatModel: () => {
@@ -3372,7 +3480,15 @@ export default function Chat({
         // endpoint that reports no usage at all).
         const contextLimit = resolveContextLimit(model.provider, model.modelId)
         const used = lastInputTokensRef.current ?? estimateHistoryTokens(historyRef.current)
-        if (used > contextLimit * COMPACT_AT_FRACTION) await compactHistory()
+        // Not for a driver cycle: the scripted run reads only its own tool results, and folding
+        // would spend a chat-model call the user did not ask for.
+        if (!driverRun && used > contextLimit * COMPACT_AT_FRACTION) await compactHistory()
+        // This cycle's run, fixed before it starts (a steer drained below changes the next one).
+        const cycleDriver = driverRun
+        // The scripted run reads no image, so no set-of-marks capture is spent on it (both realms
+        // read this same flag: the ToolSet below, and the worker's through the run's visionCapable).
+        if (!cycleDriver && visionCapable === undefined) visionCapable = await probeVision()
+        const cycleVision = cycleDriver ? false : (visionCapable ?? false)
         const base = MERGE_AUTO_CONTINUES ? mergedParts : []
         // MCP server tools join the ToolSet through createAgentTools's
         // extraTools (NOT spread in here) so the disclosure catalog sees them.
@@ -3386,7 +3502,7 @@ export default function Chat({
           requestApproval,
           imageQueue,
           conversationId,
-          visionCapable,
+          visionCapable: cycleVision,
         })
         const runCycle = () => runDurableChat({
           model: createModel(model.provider, model.modelId),
@@ -3398,7 +3514,7 @@ export default function Chat({
             granted,
             pageControl,
             model,
-            visionCapable,
+            cycleVision,
             imageQueue,
             (name) => toolPolicy(settingsRef.current, name),
             conversationId,
@@ -3463,7 +3579,8 @@ export default function Chat({
           conversationId, assistantId, provider: model.provider, modelId: model.modelId,
           messages: messagesRef.current, baseParts: base, tabId: boundTabId,
           completedMcpTask: mcpCompletionSaveRef.current?.id,
-          chainId: traceTurnId, requestApproval, visionCapable, allowedTools: () => [...sessionAllowed.current, ...turnAllowed.current],
+          chainId: traceTurnId, requestApproval, visionCapable: cycleVision, allowedTools: () => [...sessionAllowed.current, ...turnAllowed.current],
+          ...(cycleDriver ? { driver: cycleDriver } : {}),
         })
 
         // Reactive compaction backstop. The proactive check above only fires
@@ -3499,8 +3616,9 @@ export default function Chat({
         pendingSinceCycle = 0
         // Attribute this cycle's tokens to the bubble it streamed into. When
         // auto-continues merge into one bubble the cycles sum; when they don't,
-        // each new bubble carries its own.
-        if (result.usage) {
+        // each new bubble carries its own. A driver cycle reports zeros — no chat-model tokens were
+        // spent — and a "0 → 0" chip would read as a bug, so it carries none.
+        if (result.usage && !cycleDriver) {
           const id = assistantId
           const cycleUsage = result.usage
           setMessages((m) =>
@@ -3549,6 +3667,9 @@ export default function Chat({
           // next action.
           onScreenAtSend = lastSendScreenRef.current
           lastCheckpointRef.current = null
+          // A steer is something the scripted run cannot read: from here the chain is the chat
+          // model's, with the driver turn's tool calls and results already in its history.
+          driverRun = undefined
           assistantId = uid()
           mergedParts = []
           setMessages((m) => [
@@ -3587,8 +3708,10 @@ export default function Chat({
         if (!MERGE_AUTO_CONTINUES) {
           assistantId = uid()
           const cycle = autoContinuesRef.current
-          setMessages((m) => [...m, { id: assistantId, role: 'assistant', parts: [], autoContinue: cycle }])
+          const marked = driverRun !== undefined
+          setMessages((m) => [...m, { id: assistantId, role: 'assistant', parts: [], autoContinue: cycle, ...(marked ? { driver: true } : {}) }])
           assistantIds.add(assistantId)
+          if (marked) driverAssistantIds.add(assistantId)
         }
       }
 
@@ -3603,7 +3726,7 @@ export default function Chat({
       trace?.end({ output: assistantTexts.join('\n').trim() })
       // Silent LaTeX self-correction: after the turn settles, repair any math the
       // deterministic render layer could not compile. Fire-and-forget.
-      void repairAssistantMath([...assistantIds], model)
+      void repairAssistantMath([...assistantIds].filter((id) => !driverAssistantIds.has(id)), model)
     } catch (err) {
       // Drop any user message(s) left dangling by this failed cycle: the original
       // opener (guarded by droppableTail — continueTask's history legitimately
@@ -3668,6 +3791,9 @@ export default function Chat({
       streamingRef.current = false
       setStreaming(false)
       setTurnStartedAt(null)
+      // Read by the naming effect this bump triggers: a chain the scripted run ran start to end
+      // made no chat-model call, and the namer would be the first.
+      lastChainDriverRef.current = driverRun !== undefined
       setTurnSeq((n) => n + 1)
       // Write the local trace once for the whole chain, keyed to the bubble the
       // drawer hangs under. In the finally rather than the success path: a turn
@@ -3751,6 +3877,27 @@ export default function Chat({
     if (changed) setTurnSeq((n) => n + 1)
   }
 
+  /**
+   * "Continue with chat model" under a driver turn that stopped short: an ordinary fresh turn whose
+   * user text says so. The history already holds the driver turn's tool calls and results (its
+   * grant, every FastSteps run and why it stopped), so the chat model sees what happened. Never
+   * automatic — the user's click is the hand-off.
+   */
+  function continueWithChatModel() {
+    if (streamingRef.current || preparationRef.current || !selected) return
+    void startFreshTurn({
+      text: CONTINUE_WITH_CHAT_MODEL,
+      attachments: [],
+      activeMentions: [],
+      useMemory: false,
+      useAll: false,
+      includeCurrentTab: false,
+      includeDeicticTab: false,
+      activeSelection: null,
+      companions: [],
+    })
+  }
+
   // Resume a checkpointed task from the Continue card. The model's hand-off is
   // already in history, so a fresh chain (new step budget + auto-continue quota)
   // picks up where it left off — no new user message needed.
@@ -3798,6 +3945,9 @@ export default function Chat({
     episodeIdRef.current = record.episodeId
     autoContinuesRef.current = record.autoContinues
     turnAllowed.current = new Set(activeNames)
+    // An interrupted driver turn resumes as one — from its transcript's own mark, so the in-flight
+    // record carries nothing new.
+    const driver = driverSpecFromTranscript(record.messages)
     await runTurnChain({
       startedAt: Date.now(),
       attachedSources: ctx.attachedSources,
@@ -3807,6 +3957,7 @@ export default function Chat({
       // and must not be popped as a dangling tail if this attempt also fails.
       droppableTail: false,
       regen: { historyLen: historyRef.current.length, opener: null },
+      ...(driver ? { driver } : {}),
     })
   }
 
@@ -3887,6 +4038,10 @@ export default function Chat({
     // false in both closures.
     if (streamingRef.current) return
     setParkedReason(null)
+    // A parked driver turn resumes as one: handing it to the chat model now would be exactly the
+    // automatic hand-off @driver does not make. The scripted run sees the parked result and makes
+    // the same call again.
+    const driver = driverSpecFromTranscript(messagesRef.current)
     await runTurnChain({
       startedAt: Date.now(),
       attachedSources: [],
@@ -3894,6 +4049,7 @@ export default function Chat({
       journalUserText: '[resumed after returning to the tab]',
       droppableTail: false,
       regen: { historyLen: historyRef.current.length, opener: null },
+      ...(driver ? { driver } : {}),
     })
   }
 
@@ -3980,6 +4136,8 @@ export default function Chat({
     // Read the failures out of the bubbles before they are dropped — they are
     // the only record of what went wrong.
     const retryNote = buildRetryNote(messagesRef.current.slice(cut))
+    // Regenerating a driver turn runs the decision model again (its opener is the driver message).
+    const driver = driverSpecFromTranscript(messagesRef.current.slice(0, cut))
     setMessages((m) => m.slice(0, cut))
     historyRef.current.length = target.historyLen
     if (target.opener) historyRef.current.push(target.opener)
@@ -3998,6 +4156,7 @@ export default function Chat({
       droppableTail: target.droppableTail,
       regen: { historyLen: target.historyLen, opener: target.opener },
       retryNote,
+      ...(driver ? { driver } : {}),
     })
   }
 
@@ -4177,6 +4336,14 @@ export default function Chat({
             onAllow={() => void settleApproval(approval.id, true)}
             onAllowSession={() => void settleApproval(approval.id, true, true)}
           />
+        )}
+        {!streaming && !preparing && !approval && selected && driverContinueOffered(messages[messages.length - 1]) && (
+          // A driver turn that stopped short: the hand-off to the chat model is the user's click.
+          <div className="driver-continue">
+            <button type="button" className="driver-continue-btn" onClick={continueWithChatModel}>
+              Continue with chat model
+            </button>
+          </div>
         )}
         {continuation && !streaming && (
           <ContinuationCard
@@ -4365,6 +4532,11 @@ export default function Chat({
                   <>
                     <span className="mention-title">Memory</span>
                     <span className="mention-url">Have me recall from long-term memory</span>
+                  </>
+                ) : c.kind === 'driver' ? (
+                  <>
+                    <span className="mention-title">Driver</span>
+                    <span className="mention-url">Quick page action by the on-device decision model — put text to type in "quotes"</span>
                   </>
                 ) : c.kind === 'all' ? (
                   <>

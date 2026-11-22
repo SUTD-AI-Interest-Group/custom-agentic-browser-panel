@@ -17,6 +17,8 @@ export async function runDurableChat(options: Options, context: {
   completedMcpTask?: string
   conversationId: string; assistantId: string; provider: ProviderConfig; modelId: string
   messages: ChatRun['messages']; baseParts: ChatRun['baseParts']; tabId?: number
+  /** A `@driver` cycle: the offscreen host runs the scripted model, the worker builds Driver tools. */
+  driver?: ChatRun['driver']
 }): ReturnType<typeof runAgentTurn> {
   const id = crypto.randomUUID()
   const windowId = (await chrome.windows.getCurrent()).id
@@ -36,6 +38,7 @@ export async function runDurableChat(options: Options, context: {
       messages: context.messages, baseParts: context.baseParts, tools,
       images: options.imageQueue?.splice(0) ?? [], activeNames: options.activeNames ? [...options.activeNames] : undefined,
       agentState: options.agentState?.(), parts: [], state: 'queued', updatedAt: Date.now(), toolRequests: [], traceEnabled: !!options.sink, steps: [],
+      ...(context.driver ? { driver: context.driver } : {}),
     }
   })
   const abort = () => { void chrome.runtime.sendMessage({ type: 'chat.abort', conversationId: context.conversationId, id }).catch(() => {}) }

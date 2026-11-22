@@ -19,6 +19,8 @@ vi.mock('../tools/tools', () => ({ createAgentTools: (approve: (r: unknown) => P
     })
     return { observed: true }
   } },
+  // The decider's mode as this ToolSet was built — what decides FastSteps' presence in createAgentTools.
+  Mode: { execute: async () => ({ mode: rest[9]?.mode() }) },
   // Stands in for AutofillForm without fields: awaits the decider's assist plan.
   MapForm: { execute: async () => rest[9]?.mapForm({
     tabId: 7,
@@ -186,6 +188,31 @@ describe('background tool permissions', () => {
     await new Promise((r) => setTimeout(r, 20))
     expect(sent).toEqual([])
     expect(vi.mocked(chrome.scripting.executeScript)).not.toHaveBeenCalled()
+  })
+  it('a @driver run (job.driver) builds its ToolSet in Driver mode under Shadow/Assist settings — FastSteps present', async () => {
+    fixture.policy = 'always'
+    for (const mode of ['shadow', 'assist']) {
+      fixture.decider = { mode }
+      const run = job(); run.toolRequests[0].name = 'Mode'; run.driver = { goal: 'add the mug', values: {} }
+      await updateChatRun('chat', () => run); await poll(run); await finished()
+      expect((await getChatRun('chat'))?.toolRequests[0].output, mode).toEqual({ mode: 'driver' })
+      releaseChatTools('chat', run.id)
+      // The same settings without the token: the settings' own mode.
+      const plain = job(); plain.toolRequests[0].name = 'Mode'
+      await updateChatRun('chat', () => plain); await poll(plain); await finished()
+      expect((await getChatRun('chat'))?.toolRequests[0].output, mode).toEqual({ mode })
+      releaseChatTools('chat', plain.id)
+    }
+  })
+  it('a @driver run under Mode Off (or no decider settings, or no model) stays off — no FastSteps', async () => {
+    fixture.policy = 'always'
+    for (const [decider, model] of [[{ mode: 'off' }, READY], [undefined, READY], [{ mode: 'assist' }, undefined]] as const) {
+      fixture.decider = decider as { mode: string } | undefined; fixture.model = model
+      const run = job(); run.toolRequests[0].name = 'Mode'; run.driver = { goal: 'add the mug', values: {} }
+      await updateChatRun('chat', () => run); await poll(run); await finished()
+      expect((await getChatRun('chat'))?.toolRequests[0].output).toEqual({ mode: 'off' })
+      releaseChatTools('chat', run.id)
+    }
   })
   it('does not replay a call left executing by a lost worker', async () => {
     const run = job(); run.toolRequests[0].state = 'executing'

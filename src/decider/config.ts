@@ -34,6 +34,19 @@ export function normalizeDecider(raw: unknown): DeciderSettings | undefined {
   return out
 }
 
+/**
+ * The decider settings for one chat run. A `@driver` message is a per-message opt-in to Driver:
+ * for that run the mode reads `driver` whatever Shadow/Assist the settings say (Mode governs the
+ * automatic behaviour; the token is the user asking for it this once). Off — or no decider
+ * settings at all — still means off. Both realms apply this, the panel to the schemas the model
+ * sees and the service worker (toolHost.ts, from `ChatRun.driver`) to the tools that execute, so
+ * the two ToolSets agree. Pure.
+ */
+export function withDriverOverride(s: DeciderSettings | undefined, driver: boolean): DeciderSettings | undefined {
+  if (!driver || !s || s.mode === 'off') return s
+  return { ...s, mode: 'driver' }
+}
+
 /** Hard cap on a packed pass: at the model's 32768 the worker would allocate ~1.4 GB. */
 export const DECIDER_MAX_TOKENS = 8192
 

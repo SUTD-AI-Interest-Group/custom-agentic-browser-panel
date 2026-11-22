@@ -97,11 +97,19 @@ async function open(modelId: string, wasmUrl: string): Promise<{ boot: Boot; boo
     ort.env.wasm.wasmPaths = { wasm: wasmUrl }
     // Extension pages are not cross-origin isolated, so there is no SharedArrayBuffer to thread on.
     ort.env.wasm.numThreads = 1
+    // ORT's own logging, errors and up only. At its default (warning) every session create logged
+    // "Some nodes were not assigned to the preferred execution providers…" and "Rerunning with
+    // verbose output…" — expected for this graph (a few shape ops always run on the CPU) — and
+    // chrome://extensions lists every console warning from the worker as an extension error. A
+    // failure still throws from create()/run() and still logs at error level.
+    ort.env.logLevel = 'error'
     const wanted: 'webgpu' | 'wasm' = (await hasWebGpu()) ? 'webgpu' : 'wasm'
     const create = (ep: 'webgpu' | 'wasm') =>
       ort.InferenceSession.create(torsoUrl, {
         executionProviders: [ep],
         graphOptimizationLevel: 'all',
+        // 3 = error (0 verbose … 4 fatal): the session's own logger, beside env.logLevel above.
+        logSeverityLevel: 3,
         externalData: [{ path: 'torso.onnx.data', data: dataUrl }],
       })
     let backend = wanted

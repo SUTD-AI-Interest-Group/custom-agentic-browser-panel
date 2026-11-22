@@ -17,6 +17,7 @@ import type { ToolSet } from 'ai'
 import { unmountPresence } from '../platform/presence'
 import { forwardDeciderHooks } from '../decider/relay'
 import { readModelReady } from '../decider/modelStatus'
+import { withDriverOverride } from '../decider/config'
 
 const executing = new Map<string, AbortController>()
 const sessions = new Map<string, ControlSession>()
@@ -172,7 +173,10 @@ async function execute(job: ChatRun, requestId: string, signal: AbortSignal) {
       // readModelReady is a chrome.storage read, no OPFS). Its mode is settled BEFORE the ToolSet
       // is built, as the panel does for the schemas: FastSteps' presence and AutofillForm's schema
       // are decided from it, so a missing model is off here too.
-      const decider = forwardDeciderHooks({ conversationId: job.conversationId, settings: () => settings.decider, modelReady: readModelReady })
+      // A `@driver` run (job.driver) reads Driver whatever on-mode the settings hold — the panel
+      // applies the same override to the schemas it sent — and Off still means off.
+      const deciderSettings = withDriverOverride(settings.decider, job.driver !== undefined)
+      const decider = forwardDeciderHooks({ conversationId: job.conversationId, settings: () => deciderSettings, modelReady: readModelReady })
       await decider.resolveMode()
       runtime.tools = createAgentTools(approve, settings.tabAccess, await grantedCapabilities(), {
         session: () => sessions.get(chainId) ?? null,

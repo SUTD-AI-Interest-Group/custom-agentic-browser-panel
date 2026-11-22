@@ -6,6 +6,7 @@ import type { ModelMessage } from 'ai'
 import type { AgentSystemPrompt, AgentTurnResult, QueuedImage, UIMessage, UIPart } from '../agent/agent'
 import type { AgentStateFacts } from '../agent/agentState'
 import type { TraceStep } from './traces'
+import type { DriverSpec } from '../decider/driverPrompt'
 
 export interface ChatToolRequest {
   id: string
@@ -57,6 +58,13 @@ export interface ChatRun {
   cancelRequested?: boolean
   /** Offscreen generation outlived its owning panel and needs a user action. */
   needsPanel?: boolean
+  /**
+   * A `@driver` run: the offscreen host runs the scripted model (src/agent/driverScript.ts) instead
+   * of the chat model, and the worker's tool host builds this run's ToolSet in Driver mode (Mode Off
+   * still off — config.ts withDriverOverride). Only the parse of the user's own message, which this
+   * record's `history` already holds; it grants nothing.
+   */
+  driver?: DriverSpec
 }
 export const activeChatRun = (r: ChatRun | undefined | null): r is ChatRun & { state: 'queued' | 'running' } => !!r && (r.state === 'queued' || r.state === 'running')
 const transaction = durableDatabase('lychee-chat-runs', 'runs', 'conversationId')
