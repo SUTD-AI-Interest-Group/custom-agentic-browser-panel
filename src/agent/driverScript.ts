@@ -233,11 +233,14 @@ export function nextDriverAction(spec: DriverSpec, prompt: LanguageModelV3Prompt
   const fastText = () => finalTextFor(fast.filter((c) => !isParked(c.outcome)).map((c) => c.outcome))
   if (calls.length >= MAX_SCRIPT_CALLS) return { text: fast.length ? fastText() : 'Stopped: page control could not be started.' }
 
+  // What the decider is told (the framed goal when the values are goal phrases); the turn itself is
+  // still found by the user's own words (turnCalls, above).
+  const target = spec.deciderGoal ?? spec.goal
   const requestControl = (): DriverAction =>
-    has(RPC) ? { tool: RPC, input: { plan: spec.goal } } : { text: "Page control isn't available in this chat (Settings → Permissions)." }
+    has(RPC) ? { tool: RPC, input: { plan: target } } : { text: "Page control isn't available in this chat (Settings → Permissions)." }
   const fastSteps = (): DriverAction =>
     has(FAST)
-      ? { tool: FAST, input: { goal: spec.goal, values: { ...spec.values } } }
+      ? { tool: FAST, input: { goal: target, values: { ...spec.values } } }
       : { text: "Page control was granted, but the decision model isn't available — check Settings → Experimental." }
 
   const last = relevant[relevant.length - 1]

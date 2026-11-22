@@ -12,8 +12,16 @@
 
 /** What a driver turn hands FastSteps: the user's message as the goal, and its quoted values. */
 export interface DriverSpec {
+  /** The user's words, token removed — what the turn is matched by (driverScript.ts turnStart). */
   goal: string
   values: Record<string, string>
+  /**
+   * The goal as the DECIDER sees it, when it differs: only when the values are goal phrases (no
+   * quoted text) — `search for "<first phrase>", then <goal>` (frameGoal). The scripted run hands it
+   * to RequestPageControl as the plan and to FastSteps as the goal; the user bubble and the
+   * model-facing history keep the user's own words.
+   */
+  deciderGoal?: string
 }
 
 export const DRIVER_TOKEN = '@driver'
@@ -84,7 +92,18 @@ export function parseDriverPrompt(text: string): DriverSpec {
     values[key] = value.slice(0, MAX_DRIVER_VALUE_CHARS)
     count++
   }
-  return { goal, values: count > 0 ? values : goalPhrases(goal) }
+  if (count > 0) return { goal, values }
+  const phrases = goalPhrases(goal)
+  return phrases.phrase ? { goal, values: phrases, deciderGoal: frameGoal(goal, phrases.phrase) } : { goal, values: phrases }
+}
+
+/**
+ * A goal whose text to type came from its own words, framed as a plan the decider can follow: the
+ * search first, then the rest. Without it, the decider typed the phrase and then could not tell
+ * that Search was the step the goal needed (p 0.32 for "add the blue Aurora mug to my cart"). Pure.
+ */
+export function frameGoal(goal: string, phrase: string): string {
+  return `search for "${phrase}", then ${goal}`
 }
 
 /** The words a goal's phrases are split on ("of" is not one: "a pair of socks" is one thing). */

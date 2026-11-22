@@ -3,7 +3,7 @@ import { tool, type ModelMessage } from 'ai'
 import { z } from 'zod'
 import { runAgentTurn, type QueuedImage, type UIPart } from './agent'
 import { createDriverScript, elementLabel, finalTextFor, MAX_FAST_STEPS_RUNS, MAX_SCRIPT_CALLS, nextDriverAction } from './driverScript'
-import type { DriverSpec } from '../decider/driverPrompt'
+import { parseDriverPrompt, type DriverSpec } from '../decider/driverPrompt'
 
 // The scripted model behind `@driver`, driven through the REAL runAgentTurn (the same loop the
 // offscreen chat host runs) with fake tools, as agent.test.ts does with its mock models. Each test
@@ -194,6 +194,23 @@ describe('createDriverScript through runAgentTurn', () => {
     ]
     const { calls } = await drive(SPEC, {}, earlier)
     expect(calls.map((c) => c.name)).toEqual(['RequestPageControl', 'FastSteps'])
+  })
+
+  it('goal phrases in use: the decider is told the framed goal (plan and FastSteps goal), while the turn is still found by the user’s words', async () => {
+    const spec = parseDriverPrompt('@driver add the blue Aurora mug to my cart')
+    const history: ModelMessage[] = [
+      // An earlier turn the script must not read.
+      { role: 'user', content: 'add the mug' },
+      { role: 'assistant', content: [{ type: 'tool-call', toolCallId: 'e-1', toolName: 'FastSteps', input: { goal: 'add the mug' } }] },
+      { role: 'tool', content: [{ type: 'tool-result', toolCallId: 'e-1', toolName: 'FastSteps', output: { type: 'json', value: run({ status: 'stopped', reason: 'parked', parked: true }) } }] },
+      // The panel's model-facing copy: the user's words, not the framing.
+      { role: 'user', content: `${spec.goal}\n\n[Open on screen right now: "Store" (http://127.0.0.1/store/). This supersedes …]` },
+    ]
+    const { calls } = await drive(spec, {}, history)
+    expect(calls).toEqual([
+      { name: 'RequestPageControl', input: { plan: 'search for "blue Aurora mug", then add the blue Aurora mug to my cart' } },
+      { name: 'FastSteps', input: { goal: 'search for "blue Aurora mug", then add the blue Aurora mug to my cart', values: { phrase: 'blue Aurora mug' } } },
+    ])
   })
 
   it('a fresh driver turn after one that ended on a parked FastSteps starts over (page control first)', async () => {

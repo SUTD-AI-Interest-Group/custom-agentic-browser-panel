@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   driverUnavailableReason,
+  frameGoal,
   goalPhrases,
   MAX_DRIVER_PHRASES,
   isDriverMessage,
@@ -49,6 +50,26 @@ describe('parseDriverPrompt', () => {
 
   it('no quotes → the goal\'s candidate phrases instead (goalPhrases)', () => {
     expect(parseDriverPrompt('@driver add the blue Aurora mug to my cart').values).toEqual({ phrase: 'blue Aurora mug' })
+  })
+
+  it('goal phrases in use → the decider is told a plan: search for the FIRST phrase, then the user\'s goal (which stays as typed)', () => {
+    expect(parseDriverPrompt('@driver add the blue Aurora mug to my cart')).toEqual({
+      goal: 'add the blue Aurora mug to my cart',
+      values: { phrase: 'blue Aurora mug' },
+      deciderGoal: 'search for "blue Aurora mug", then add the blue Aurora mug to my cart',
+    })
+    const many = parseDriverPrompt('@driver search wireless headphones and add the cheapest under $100 to my cart')
+    expect(many.goal).toBe('search wireless headphones and add the cheapest under $100 to my cart')
+    expect(many.deciderGoal).toBe('search for "wireless headphones", then search wireless headphones and add the cheapest under $100 to my cart')
+  })
+
+  it('no framing with quoted values, nor when there is no phrase to search for', () => {
+    expect(parseDriverPrompt('@driver search "wireless headphones" and add the cheapest to my cart')).not.toHaveProperty('deciderGoal')
+    expect(parseDriverPrompt('@driver add it to the cart')).toEqual({ goal: 'add it to the cart', values: {} })
+  })
+
+  it('frameGoal', () => {
+    expect(frameGoal('add the mug to my cart', 'mug')).toBe('search for "mug", then add the mug to my cart')
   })
 
   it('a quoted value means no phrases at all', () => {
