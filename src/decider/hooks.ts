@@ -22,7 +22,8 @@
 // DRIVER (FastSteps) is the other awaited path, one request per step (`next` locally, `answer()`
 // for the worker's `decider.next`): nextActionRequest minus the excluded pairs → decide (queued,
 // capped at DRIVER_MAX_TOKENS so a dense page is handed back instead of decided slowly) → for a
-// `type` at the top, the single-field fill question over profile + values. Every decision writes a
+// `type`/`select` at the top, the single-field fill question — over the call's own values first,
+// and over profile + values only when those cannot answer (fieldValue). Every decision writes a
 // `drive` record (llm and agree null: nothing to compare with), key names only.
 //
 // Built ONCE per continuation chain, so `seq` numbers every step this chain's hooks were handed —
@@ -277,6 +278,22 @@ function fillKey(q: FillQuestion, a: Answer, requestKeys: string[]): string {
 }
 
 const fold = (s: string) => s.replace(/[‘’ʼ]/g, "'").replace(/\s+/g, ' ').trim().toLowerCase()
+
+/** `s` folded to its words: letters and digits, single-spaced. */
+const words = (s: string) => fold(s).replace(/[^\p{L}\p{N}]+/gu, ' ').trim()
+
+/**
+ * Does one of a select's option labels name one of the request's values — that text, or that text
+ * as whole words inside the label ("2" in "2 items", never in "12 items")? Driver mode asks a
+ * select over the values alone only then (fieldValue).
+ */
+function optionNamesValue(options: string[], values: Record<string, string>): boolean {
+  const named = Object.values(values).map(words).filter(Boolean)
+  return options.some((o) => {
+    const label = ` ${words(o)} `
+    return named.some((v) => label.includes(` ${v} `))
+  })
+}
 
 function lookupValue(lookup: Lookup, key: string): string | undefined {
   const [group, ...rest] = key.split('.')
@@ -616,10 +633,22 @@ export function createDeciderHooks(deps: DeciderHookDeps): DeciderPanelHooks {
 
   /**
    * The value for a `type` or `select` at the top: the single-field fill question (state.ts's
-   * formFields + fillRequest) — for a text field over profile + values, for a select over its own
-   * options (the worker read them) with profile + values as the context — and the chosen text when
-   * it clears the threshold. Never throws: no value is a hand-back ("needs value"), not a failure.
-   * `entry` is the record's view of it: a key NAME or an option's POSITION, never the text.
+   * formFields + fillRequest) — for a text field over lookup keys, for a select over its own options
+   * (the worker read them) with the lookup as the context — and the chosen text when it clears the
+   * threshold. Never throws: no value is a hand-back ("needs value"), not a failure. `entry` is the
+   * record's view of the answer used: a key NAME or an option's POSITION, never the text.
+   *
+   * VALUES FIRST, THE PROFILE LAZILY (Task 18). Structuring the profile is a chat-model call: on a
+   * local model it measured 13–26 s (median 19 s) inside the first `type` of every FastSteps call,
+   * although every one of those values came from `values` (results §14.6). So the question is
+   * asked over the request's own values first — a text field over `request.*` + `leave_empty`; a
+   * select only when one of its options names a request value (`optionNamesValue`), since a
+   * request with nothing to say about this select would leave the decider guessing a default where
+   * the profile might know (a country) — and a confident answer from the values returns without
+   * touching the profile. Only when the values could not answer (leave_empty, under the threshold,
+   * or no first pass) AND there are profile memories is the profile structured (profileLookup's
+   * cached promise — usually the grant's pre-warm) and the question asked again over the full lookup.
+   * Assist's mapForm is unchanged: a whole form wants the profile anyway.
    */
   async function fieldValue(
     step: NextStep,
@@ -627,31 +656,52 @@ export function createDeciderHooks(deps: DeciderHookDeps): DeciderPanelHooks {
     op: 'type' | 'select',
     cancelled: () => boolean,
   ): Promise<{ ms: number; value?: { key: string; text: string; p: number }; entry?: NonNullable<ShadowRecord['fill']>[number] }> {
+    let ms = 0
+    let last: { value?: { key: string; text: string; p: number }; entry?: NonNullable<ShadowRecord['fill']>[number] } = {}
     try {
       const field = el ? formFields([el], step.selectOptions)[0] : undefined
       if (!field || field.kind !== (op === 'type' ? 'text' : 'select')) return { ms: 0 }
+      // The user's overall request rides beside the sub-goal (`task`, state.ts's fillRequest): the
+      // next-action question follows the session plan past a narrow sub-goal, and a value chosen
+      // from the sub-goal alone picked quantity "1" for "add 2 of them" (results §15.5).
+      const task = deps.currentGoal()
+      const ask = async (lookup: Lookup): Promise<typeof last> => {
+        const { request, questions } = fillRequest({ goal: step.goal, task, url: step.snap.url, title: step.snap.title, lookup, fields: [field] })
+        const result = (await engine().decide(request)) as DecisionResult
+        ms += result.ms
+        const q = questions[0]
+        const a = result.answers[q.name]
+        if (!a) return {}
+        const key = fillKey(q, a, Object.keys(lookup.request))
+        const entry = { index: field.index, key, p: a.p, llmAgrees: null }
+        const text = op === 'select' ? a.top : a.top === 'leave_empty' ? undefined : lookupValue(lookup, a.top)
+        if (!(a.p >= resolver.threshold()) || text === undefined) return { entry }
+        return { entry, value: { key: op === 'select' ? key : a.top, text, p: a.p } }
+      }
+      const valuesOnly: Lookup = { profile: {}, request: step.values }
+      // 1. The request's own values.
+      const first = op === 'type' ? Object.keys(step.values).length > 0 : optionNamesValue(field.options ?? [], step.values)
+      if (first) {
+        last = await ask(valuesOnly)
+        if (last.value || cancelled()) return { ms, ...last }
+      }
+      // 2. The profile, only now — and the question again over everything.
       let lookup: Lookup
       try {
         lookup = await lookupFor(step.values)
-      } catch (err) {
-        // A text field has nothing to choose from without it; a select still has its options.
-        if (op === 'type') throw err
-        lookup = { profile: {}, request: step.values }
+      } catch {
+        lookup = valuesOnly // the profile could not be read: the values are all there is
       }
-      if (cancelled()) return { ms: 0 }
-      if (op === 'type' && Object.keys(lookup.profile).length === 0 && Object.keys(lookup.request).length === 0) return { ms: 0 }
-      const { request, questions } = fillRequest({ goal: step.goal, url: step.snap.url, title: step.snap.title, lookup, fields: [field] })
-      const result = (await engine().decide(request)) as DecisionResult
-      const q = questions[0]
-      const a = result.answers[q.name]
-      if (!a) return { ms: result.ms }
-      const key = fillKey(q, a, Object.keys(lookup.request))
-      const entry = { index: field.index, key, p: a.p, llmAgrees: null }
-      const text = op === 'select' ? a.top : a.top === 'leave_empty' ? undefined : lookupValue(lookup, a.top)
-      if (!(a.p >= resolver.threshold()) || text === undefined) return { ms: result.ms, entry }
-      return { ms: result.ms, entry, value: { key: op === 'select' ? key : a.top, text, p: a.p } }
+      if (cancelled()) return { ms, ...last }
+      if (Object.keys(lookup.profile).length === 0) {
+        // Nothing to add. Asked already (or, for a text field, nothing to ask over); a select that
+        // named no value is still asked over its options, as before there was a first pass.
+        if (first || op === 'type') return { ms, ...last }
+      }
+      last = await ask(lookup)
+      return { ms, ...last }
     } catch {
-      return { ms: 0 }
+      return { ms, ...last }
     }
   }
 
@@ -753,6 +803,7 @@ export function createDeciderHooks(deps: DeciderHookDeps): DeciderPanelHooks {
       // Assist and driver fill from the profile, whose structuring is one chat-model call (cached
       // per memory set). Made now, while the chat model reads the page, rather than inside the
       // first fill — where it measured ~16 s on a local model, against a driver step's 30 s budget.
+      // (A driver step waits on it only for a field its call's own values could not fill.)
       if (assistsForms(resolver.settingsMode())) void ready.then((r) => (r ? lookupFor({}) : undefined)).catch(() => {})
     } catch {
       /* additive only: a broken decider must never touch the grant */

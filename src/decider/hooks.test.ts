@@ -1236,11 +1236,21 @@ function driveEngine(top: string, p: number, fill?: [string, number], extra: Par
   return { engine, requests }
 }
 
-function driveHooks(o: { engine: ReturnType<typeof driveEngine>['engine']; mode?: DeciderSettings['mode']; ready?: boolean; steer?: () => boolean; threshold?: number }) {
+/** What `currentGoal` returns in the driver tests: the newest user message. */
+const USER_MESSAGE = 'the user message, which a driver step does NOT use as its goal'
+
+function driveHooks(o: {
+  engine: ReturnType<typeof driveEngine>['engine']
+  mode?: DeciderSettings['mode']
+  ready?: boolean
+  steer?: () => boolean
+  threshold?: number
+  userMessage?: string
+}) {
   return createDeciderHooks({
     settings: () => ({ mode: o.mode ?? 'driver', ...(o.threshold ? { actThreshold: o.threshold } : {}) }),
     conversationId: 'conv-1',
-    currentGoal: () => 'the user message, which a driver step does NOT use as its goal',
+    currentGoal: () => o.userMessage ?? USER_MESSAGE,
     chatModel: () => CHAT_MODEL,
     engine: o.engine,
     modelReady: async () => o.ready ?? true,
@@ -1287,14 +1297,15 @@ describe('driver mode (FastSteps steps)', () => {
     expect(options).toContain('done')
   })
 
-  it('a type at the top runs the single-field fill question over profile + values, and returns the confident value', async () => {
+  it('a type at the top runs the single-field fill question over the values first, and returns the confident value', async () => {
     const { engine, requests } = driveEngine('type into [0]', 0.9, ['request.query', 0.86])
     const reply = await driveHooks({ engine }).answer(nextMsg())
     expect(reply).toMatchObject({ requestId: 'req-1', ms: 160, value: { key: 'request.query', text: 'wireless headphones', p: 0.86 } })
     expect(requests).toHaveLength(2)
     expect(requests[1].opts).toBeUndefined() // the fill pass: queued, uncapped beyond the hard cap
-    expect((requests[1].req.state as { info: unknown }).info).toEqual({ profile: PROFILE, request: { query: 'wireless headphones' } })
+    expect((requests[1].req.state as { info: unknown }).info).toEqual({ profile: {}, request: { query: 'wireless headphones' } })
     expect(Object.keys(requests[1].req.questions)).toEqual(['f0'])
+    expect(profileLookup).not.toHaveBeenCalled()
     const [r] = await recordsAfter(1)
     // The record holds a request value by position, never its name or text.
     expect(r.fill).toEqual([{ index: 0, key: 'request.0', p: 0.86, llmAgrees: null }])
@@ -1442,6 +1453,202 @@ describe('driver mode (FastSteps steps)', () => {
     const fill = fillEngine(ASSIST_PICKS)
     const plan = await fillHooks({ engine: fill.engine, mode: 'driver' }).mapForm({ tabId: 7, snap: snapOf(FILL_FORM), session: session(), values: VALUES })
     expect(plan).toMatchObject({ fills: expect.arrayContaining([expect.objectContaining({ index: 0, key: 'profile.full_name' })]) })
+  })
+
+  // Task 18: on Gemma the first typed value waited 13–26 s for the profile structuring call even
+  // when the value was in `values` (results §14.6). The values are asked first; the profile is
+  // structured only when they cannot answer the field.
+  describe('values first, the profile only when the values cannot answer', () => {
+    /** Answers `next` with `top` at `p`, and the k-th fill question with fills[k] (the last repeats). */
+    function passesEngine(top: string, p: number, fills: [string, number][]) {
+      const requests: DecisionRequest[] = []
+      let k = 0
+      const engine = {
+        warm: vi.fn(async () => {}),
+        decide: vi.fn(async (req: DecisionRequest): Promise<DecisionResult | null> => {
+          requests.push(req)
+          const [name, q] = Object.entries(req.questions)[0]
+          const options = Object.keys((q as { criteria: Record<string, unknown> }).criteria)
+          const [t, tp] = name === 'next' ? [top, p] : fills[Math.min(k++, fills.length - 1)]
+          if (!options.includes(t)) throw new Error(`fixture: "${t}" is not an option of ${name} (${options.join(', ')})`)
+          const probs = options.map((o) => (o === t ? tp : (1 - tp) / (options.length - 1)))
+          return {
+            answers: { [name]: { kind: 'choice', options, probs, top: t, p: tp, confidence: 0.5 } },
+            ms: name === 'next' ? 120 : 40, tokens: 300, backend: 'webgpu', cold: false,
+          }
+        }),
+      }
+      return { engine, requests }
+    }
+    const infoOf = (req: DecisionRequest) => (req.state as { info: unknown }).info
+    const optionsOf = (req: DecisionRequest) => Object.keys((Object.values(req.questions)[0] as { criteria: Record<string, unknown> }).criteria)
+    const QTY = ['1', '2', '3']
+    /** A product page: the select at [4] is a quantity. */
+    const qtyMsg = (values: Record<string, string>) =>
+      nextMsg({
+        goal: 'add 2 Orbit speakers to the cart',
+        values,
+        snap: { url: 'https://example.com/p6', title: 'Orbit wireless speaker', elements: SHOP_ELEMENTS.map((e) => (e.index === 4 ? { ...e, name: 'Quantity' } : e)) },
+        selectOptions: { 4: QTY },
+      })
+
+    it('a type the values answer returns without reading or structuring the profile', async () => {
+      // Never settles: a value that waited on the structuring call would hang this reply.
+      vi.mocked(profileLookup).mockReturnValue(new Promise(() => {}))
+      const { engine, requests } = passesEngine('type into [0]', 0.9, [['request.query', 0.86]])
+      const reply = await within(driveHooks({ engine }).answer(nextMsg())!)
+      expect(reply).toMatchObject({ ms: 160, value: { key: 'request.query', text: 'wireless headphones', p: 0.86 } })
+      expect(profileLookup).not.toHaveBeenCalled()
+      expect(getProfileMemories).not.toHaveBeenCalled()
+      expect(requests).toHaveLength(2)
+      expect(infoOf(requests[1])).toEqual({ profile: {}, request: { query: 'wireless headphones' } })
+      expect(optionsOf(requests[1])).toEqual(['request.query', 'leave_empty'])
+      const [r] = await recordsAfter(1)
+      expect(r.fill).toEqual([{ index: 0, key: 'request.0', p: 0.86, llmAgrees: null }])
+    })
+
+    it.each([
+      ['leave_empty', ['leave_empty', 0.9] as [string, number]],
+      ['a request key under the threshold', ['request.query', 0.5] as [string, number]],
+    ])('a first pass answering %s structures the profile and asks again over the full lookup', async (_label, first) => {
+      const { engine, requests } = passesEngine('type into [0]', 0.9, [first, ['profile.email', 0.88]])
+      const reply = await within(driveHooks({ engine }).answer(nextMsg())!)
+      expect(reply).toMatchObject({ ms: 200, value: { key: 'profile.email', text: 'ada@example.com', p: 0.88 } })
+      expect(profileLookup).toHaveBeenCalledWith(CHAT_MODEL, MEMORIES)
+      expect(requests).toHaveLength(3)
+      expect(infoOf(requests[1])).toEqual({ profile: {}, request: { query: 'wireless headphones' } })
+      expect(infoOf(requests[2])).toEqual({ profile: PROFILE, request: { query: 'wireless headphones' } })
+      expect(optionsOf(requests[2])).toEqual(['profile.full_name', 'profile.email', 'profile.work_email', 'request.query', 'leave_empty'])
+      const [r] = await recordsAfter(1)
+      // The record is the answer that was used: the second pass's key, with the time of all three.
+      expect(r).toMatchObject({ ms: 200, fill: [{ index: 0, key: 'profile.email', p: 0.88, llmAgrees: null }] })
+    })
+
+    it('an unsure first pass with no profile memories is the answer: no value, no second question', async () => {
+      vi.mocked(getProfileMemories).mockResolvedValue([])
+      const { engine, requests } = passesEngine('type into [0]', 0.9, [['leave_empty', 0.9], ['request.query', 0.99]])
+      const reply = await within(driveHooks({ engine }).answer(nextMsg())!)
+      expect(reply).not.toHaveProperty('value')
+      expect(requests).toHaveLength(2)
+      expect(profileLookup).not.toHaveBeenCalled()
+    })
+
+    it('a profile that cannot be read after an unsure first pass leaves the field without a value', async () => {
+      vi.mocked(profileLookup).mockRejectedValue(new Error('HTTP 500'))
+      const { engine, requests } = passesEngine('type into [0]', 0.9, [['request.query', 0.5]])
+      const reply = await within(driveHooks({ engine }).answer(nextMsg())!)
+      expect(reply).toMatchObject({ ms: 160 })
+      expect(reply).not.toHaveProperty('value')
+      expect(requests).toHaveLength(2)
+    })
+
+    it('without values the only question is the full one: no pass over leave_empty alone', async () => {
+      const { engine, requests } = passesEngine('type into [0]', 0.9, [['profile.full_name', 0.9]])
+      const reply = await within(driveHooks({ engine }).answer(nextMsg({ values: {} }))!)
+      expect(reply).toMatchObject({ value: { key: 'profile.full_name', text: 'Ada Lovelace' } })
+      expect(requests).toHaveLength(2)
+      expect(infoOf(requests[1])).toEqual({ profile: PROFILE, request: {} })
+    })
+
+    it('without values and without profile memories no fill question is asked', async () => {
+      vi.mocked(getProfileMemories).mockResolvedValue([])
+      const { engine, requests } = passesEngine('type into [0]', 0.9, [['leave_empty', 0.99]])
+      expect(await within(driveHooks({ engine }).answer(nextMsg({ values: {} }))!)).not.toHaveProperty('value')
+      expect(requests).toHaveLength(1)
+    })
+
+    it('a cancel that lands while the profile is being read stops before the second question', async () => {
+      let lookedUp: (v: Record<string, string>) => void = () => {}
+      vi.mocked(profileLookup).mockReturnValue(new Promise((r) => (lookedUp = r)))
+      const { engine, requests } = passesEngine('type into [0]', 0.9, [['leave_empty', 0.9], ['profile.email', 0.9]])
+      const hooks = driveHooks({ engine })
+      const reply = hooks.answer(nextMsg())!
+      await vi.waitFor(() => expect(profileLookup).toHaveBeenCalledTimes(1))
+      hooks.relay({ type: 'decider.next.cancel', conversationId: 'conv-1', requestId: 'req-1' })
+      lookedUp({ ...PROFILE })
+      expect(await within(reply)).toEqual({ requestId: 'req-1', error: 'the request was cancelled' })
+      expect(requests).toHaveLength(2)
+    })
+
+    it('a select whose options include a request value is asked over the values first, without the profile', async () => {
+      vi.mocked(profileLookup).mockReturnValue(new Promise(() => {}))
+      const { engine, requests } = passesEngine('select in [4]', 0.9, [['2', 0.96]])
+      const reply = await within(driveHooks({ engine }).answer(qtyMsg({ query: 'Orbit wireless speaker', quantity: '2' }))!)
+      expect(reply).toMatchObject({ value: { key: 'option.1', text: '2', p: 0.96 } })
+      expect(profileLookup).not.toHaveBeenCalled()
+      expect(requests).toHaveLength(2)
+      expect(infoOf(requests[1])).toEqual({ profile: {}, request: { query: 'Orbit wireless speaker', quantity: '2' } })
+      expect(optionsOf(requests[1])).toEqual(QTY)
+    })
+
+    it('a request value matches an option as a whole word, not as part of one', async () => {
+      const LABELLED = ['1 item', '2 items', '12 items']
+      for (const [values, options, first] of [
+        [{ quantity: '2' }, LABELLED, true],
+        [{ quantity: ' 2 ITEMS ' }, LABELLED, true],
+        [{ quantity: '1' }, LABELLED, true],
+        [{ query: 'speaker 12' }, LABELLED, false],
+        [{ quantity: 'item 2' }, LABELLED, false],
+        [{ quantity: '2' }, ['10', '12', '20'], false],
+      ] as const) {
+        const { engine, requests } = passesEngine('select in [4]', 0.9, [[options[0], 0.9]])
+        await within(driveHooks({ engine }).answer(nextMsg({ values, selectOptions: { 4: options } }))!)
+        expect(infoOf(requests[1]), JSON.stringify([values, options])).toEqual(first ? { profile: {}, request: values } : { profile: PROFILE, request: values })
+      }
+    })
+
+    it('a select whose request-value pass is unsure asks again with the profile', async () => {
+      const { engine, requests } = passesEngine('select in [4]', 0.9, [['2', 0.5], ['2', 0.9]])
+      const reply = await within(driveHooks({ engine }).answer(qtyMsg({ quantity: '2' }))!)
+      expect(reply).toMatchObject({ value: { key: 'option.1', text: '2', p: 0.9 } })
+      expect(requests).toHaveLength(3)
+      expect(infoOf(requests[2])).toEqual({ profile: PROFILE, request: { quantity: '2' } })
+    })
+
+    it('a select that matches no request value is asked once, with the profile', async () => {
+      const { engine, requests } = passesEngine('select in [4]', 0.9, [['2', 0.9]])
+      const reply = await within(driveHooks({ engine }).answer(qtyMsg({ query: 'Orbit wireless speaker' }))!)
+      expect(reply).toMatchObject({ value: { key: 'option.1', text: '2' } })
+      expect(requests).toHaveLength(2)
+      expect(infoOf(requests[1])).toEqual({ profile: PROFILE, request: { query: 'Orbit wireless speaker' } })
+    })
+
+    // Task 18 root cause: the value question saw only the FastSteps sub-goal, so a decider that
+    // followed the plan past a narrow sub-goal chose quantity "1" for "add 2 of them" (§15.5).
+    it("the value question carries the user's overall request (`task`) beside the sub-goal — for a select and a type, every pass", async () => {
+      const select = passesEngine('select in [4]', 0.9, [['2', 0.9]])
+      await within(
+        driveHooks({ engine: select.engine, userMessage: 'add 2 of them' }).answer({ ...qtyMsg({ query: 'Orbit wireless speaker' }), goal: 'add the speaker to the cart' })!,
+      )
+      expect(select.requests).toHaveLength(2)
+      expect(select.requests[1].state).toMatchObject({ goal: 'add the speaker to the cart', task: 'add 2 of them' })
+      expect(Object.keys(select.requests[1].state)).toEqual(['goal', 'task', 'page', 'info'])
+      // The next-action question is unchanged: the sub-goal and the session plan, no `task`.
+      expect(select.requests[0].state).toMatchObject({ goal: 'add the speaker to the cart' })
+      expect(select.requests[0].state).not.toHaveProperty('task')
+
+      const type = passesEngine('type into [0]', 0.9, [['leave_empty', 0.9], ['profile.email', 0.9]])
+      await within(driveHooks({ engine: type.engine, userMessage: 'add 2 of them' }).answer(nextMsg({ goal: 'add the speaker to the cart' }))!)
+      expect(type.requests).toHaveLength(3)
+      for (const req of type.requests.slice(1)) expect(req.state).toMatchObject({ goal: 'add the speaker to the cart', task: 'add 2 of them' })
+    })
+
+    it('assist is unchanged: its goal already is the user message, so it carries no `task`', async () => {
+      const fill = fillEngine(ASSIST_PICKS)
+      await fillHooks({ engine: fill.engine, mode: 'driver' }).mapForm({ tabId: 7, snap: snapOf(FILL_FORM), session: session(), values: VALUES })
+      expect(Object.keys(fill.requests[0].state)).toEqual(['goal', 'page', 'info'])
+    })
+
+    it('a select that matches no request value, with no profile memories or an unreadable profile, is still asked over the values', async () => {
+      for (const setUp of [() => vi.mocked(getProfileMemories).mockResolvedValue([]), () => vi.mocked(profileLookup).mockRejectedValue(new Error('HTTP 500'))]) {
+        setUp()
+        const { engine, requests } = passesEngine('select in [4]', 0.9, [['2', 0.9]])
+        const reply = await within(driveHooks({ engine }).answer(qtyMsg({ query: 'Orbit wireless speaker' }))!)
+        expect(reply).toMatchObject({ value: { key: 'option.1', text: '2' } })
+        expect(requests).toHaveLength(2)
+        expect(infoOf(requests[1])).toEqual({ profile: {}, request: { query: 'Orbit wireless speaker' } })
+      }
+    })
   })
 
   describe('deciderRelayListener', () => {

@@ -78,6 +78,15 @@ describe('form fill', () => {
     expect(questions).toHaveLength(7)
     expect(Object.keys(request.state as object)).toEqual(['goal', 'page', 'info'])
   })
+  it("fillRequest carries the user's overall request as `task`, right after `goal` — only when it adds something", () => {
+    const base = { goal: 'add the speaker to the cart', url: 'u', title: 't', lookup, fields }
+    const state = fillRequest({ ...base, task: 'add 2 of them' }).request.state as Record<string, unknown>
+    expect(Object.keys(state)).toEqual(['goal', 'task', 'page', 'info'])
+    expect(state).toMatchObject({ goal: 'add the speaker to the cart', task: 'add 2 of them' })
+    for (const task of [undefined, '', '   ', ' add the speaker to the cart ']) {
+      expect(Object.keys(fillRequest({ ...base, task }).request.state as object), JSON.stringify(task)).toEqual(['goal', 'page', 'info'])
+    }
+  })
   it('skips selects with fewer than 2 options', () => {
     expect(formFields(CONTACT_FORM, { 6: ['Only'] }).some((f) => f.index === 6)).toBe(false)
     expect(formFields(CONTACT_FORM, {}).some((f) => f.index === 6)).toBe(false)

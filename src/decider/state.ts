@@ -124,8 +124,19 @@ export function formFields(elements: IndexedElement[], selectOptions: Record<num
   return out
 }
 
+/**
+ * The fill questions for `fields`, over `lookup`. The state's keys, in order: `goal`, then `task`
+ * only when given, then `page` and `info`.
+ * - `goal` is what these fields are being filled for: the user's message for Assist, the
+ *   FastSteps sub-goal for a driver step.
+ * - `task` is the user's overall request when `goal` is only a step of it (driver mode). A
+ *   sub-goal like "open its product page" says nothing about "add 2 of them", and a value chosen
+ *   from it alone picked quantity "1" (results §15.5). It is left out when it is empty or the same
+ *   as the goal, so Assist's state is exactly `goal`, `page`, `info`.
+ */
 export function fillRequest(f: {
   goal: string
+  task?: string
   url: string
   title: string
   lookup: Lookup
@@ -163,9 +174,10 @@ export function fillRequest(f: {
       questions.push({ name, field, options: ['true', 'false'] })
     }
   }
+  const task = f.task?.trim()
   return {
     request: {
-      state: { goal: f.goal, page: `${f.title} (${f.url})`, info: f.lookup },
+      state: { goal: f.goal, ...(task && task !== f.goal.trim() ? { task } : {}), page: `${f.title} (${f.url})`, info: f.lookup },
       questions: qs,
     },
     questions,

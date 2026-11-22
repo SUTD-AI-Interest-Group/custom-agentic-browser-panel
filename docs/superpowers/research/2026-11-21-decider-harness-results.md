@@ -14,6 +14,15 @@ Every number below comes from a run made for this report (commands in §1) or fr
 > actions in 37 executed steps. But it is not faster across the suite: with Gemma the median is
 > +0.7 s per task. The one exception is the local model on multi-step store flows: −6 s per task,
 > −2.5 chat steps, −13k tokens. §14.7 gives the causes and the fixes.
+>
+> **Update (Task 18): both §14.7 fixes were tried (§15).**
+> - **Values first: kept.** A `type` no longer waits for the profile. Gemma's first-type latency
+>   fell from 16.8 s to 0.9 s.
+> - **The search-submit card: tried and reverted.** It ended the Search hand-backs, but the extra
+>   reach produced 7 wrong steps in 61, all on shop-qty.
+> - **The cause is fixed:** the value question now also sees the user's request (`task`).
+>   shop-qty was re-checked in §15.7.
+> - **Driver mode is still not faster end to end.**
 
 ## Summary
 
@@ -957,3 +966,337 @@ At `fdfafdf`, on the Task 17 harness changes:
 - `tally.mjs` — the calls, hand-back kinds, latency, the Search decisions and overshoot;
 - `fstimeline.py` and `rawpairs.py` — per-call timelines;
 - `integ.py` — backend, cancels, sessions.
+
+## 15. Iteration: values-first + search-submit card (Task 18)
+
+**Question:** §14.7 named two bottlenecks. Does fixing them make driver mode faster end to end?
+- **The first typed value waited for the profile.**
+- **The Search submit handed back in the 0.4–0.6 band.**
+
+**Short answer: both fixes worked as designed, but driver mode is still not faster end to end.
+The second fix exposed a wrong-action path, so it was reverted.**
+
+**Outcome, after the controller's ruling (§15.7):**
+- **Kept:** values first.
+- **Reverted completely:** the search-submit card. The tentative band hands back every point of
+  no return again, and no predicate or DOM fact from it remains.
+- **New:** the root cause of the wrong actions is fixed. The value question now also carries the
+  user's request (`task`). shop-qty was re-checked.
+
+Items 1–4 below describe runs E and F. Both were made with the card in place.
+
+1. **Values first removed the wait from every `type`:**
+   - Gemma's first-type latency fell from **16.8 s to 0.9 s** (median).
+   - The wait reappeared at the one `select` whose value was not in `values`, Gemma's shop-qty
+     quantity, at **12–24 s**.
+2. **The search-submit card ended the Search hand-backs:**
+   - **Search submits handed back:** 2 → 0 with Gemma, 4 → 0 with Sonnet.
+   - **Search decisions acted on:** all 13. Six of them were in the tentative band and went
+     through the card.
+   - **The decider's share of page actions:** Gemma 29% → 60%, Sonnet 25% → 70%.
+3. **Running further reached a known gap, and produced wrong actions:**
+   - The decider overshoots a narrow sub-goal (§14.4).
+   - The single-field value question sees only the sub-goal.
+   - On shop-qty, the decider chose quantity "1" and added the item to the cart.
+   - **Wrong actions: 7 of 61 executed steps,** all in shop-qty. In §14 there were 0 of 37.
+     Every wrong Add to cart was carded.
+4. **End to end:**
+   - **Sonnet:** unchanged. Paired −1 s; +4 s where FastSteps ran.
+   - **Gemma:** the per-call gain is real, −10 s median per FastSteps call.
+   - **Gemma, task wall time:** not readable from this run. Its off arm was unusually slow (wall
+     p50 66 s against 56 s before), so the paired −32 s overstates the gain.
+
+### 15.1 The two changes
+
+**1. Values first, the profile lazily** (`fieldValue` in `src/decider/hooks.ts`):
+- **`type`:** the single-field question is asked first over `request.*` + `leave_empty`. A
+  request key at p ≥ threshold returns without reading the memories or structuring the profile.
+- **Only then the profile:** it is structured, from the cached or pre-warmed promise, and the
+  question is asked again over the full lookup. That happens only when the first pass answered
+  `leave_empty` or fell under the threshold, AND profile memories exist.
+- **No values:** the full question is the only one.
+- **`select`:** the first pass runs only when a request value names one of its options, as
+  whole words (`optionNamesValue`: "2" names "2 items", never "12 items").
+  - Otherwise it goes straight to the profile, so a country select is never guessed from priors.
+  - With no profile it is asked over the values, as before.
+- **Assist's `mapForm` is unchanged.**
+
+**2. A search submit in the tentative band raises its card. TRIED IN RUNS E AND F, THEN
+REVERTED (§15.7).** As built for those runs (`isSearchSubmitOnly` in `src/tools/pageControl.ts`,
+`isSearchSubmit` in `src/decider/driverLoop.ts`, wired in `FastSteps`):
+- **The step qualifies** when it is a point of no return *solely* because it submits a
+  same-origin GET form that reads as a search:
+  - the click submits a form;
+  - the submission is GET, to the session's origin (an opaque origin matches nothing);
+  - the form sits in or contains a search landmark (`role=search`, `<search>`) or a search box,
+    or the control or form is named like a search. That vocabulary is browsePolicy's, now
+    single-sourced in `committingVocabulary.ts` as `isSearchName`.
+  - With its submit-ness removed, `isPointOfNoReturn` says no. So a committing or sensitive
+    name, a cross-origin href, a blind control or the model's own `sensitive` flag still hands
+    back.
+- **Such a step gets the one-shot card** (`once: true`) and the stale-element re-check, exactly
+  as at the threshold. After the card, the live element must still qualify. A form that has
+  since become a POST, or points at another site, hands back as `page changed`.
+- **Unchanged:**
+  - every other tentative point of no return still hands back;
+  - below 0.4 still hands back;
+  - `done` still needs the threshold.
+- **The DOM facts are new:** `IndexedElement.submission` (`src/platform/domIndex.ts`).
+  - Fields: `{method, action, search}`, set only on a control that submits a form. They honour
+    `formmethod`/`formaction` and `form=`.
+  - It is not part of `serializeRegistry` or the relayed `DecisionElement`, so the decider's
+    input is byte-for-byte unchanged.
+
+**Tests** (the final numbers, after the revert, are in §15.7):
+- **Suite, with the card in place:** `npm test` 196 files, 2,725 passed, 1 skipped (2,688
+  before). Build clean, typecheck included. Harness tests pass. The import guards pass, and
+  `dist/background.js` contains no engine or OPFS code.
+- **Mutation checks.** Each mutation below fails at least one test. The predicate, DOM-fact,
+  loop-gate and wiring checks applied to the card's code, which is reverted:
+  - **The values-first ordering, 9 of 9:**
+    - profile-first;
+    - no early return;
+    - select always or never values-first;
+    - substring instead of whole word;
+    - never re-ask;
+    - no cancel check;
+    - type re-asks over an empty profile;
+    - a type pass without values.
+  - **The predicate, 10 of 11.** Origin; empty origin; opaque origin; method; search shape and
+    each of its three signals; "solely"; "is a point of no return at all". The 11th, dropping
+    the click-only guard, is an equivalent mutant: only a click's verdict depends on `type`.
+  - **The DOM fact, 9 of 9.**
+  - **The loop gate, 7 of 7.**
+  - **The FastSteps wiring.**
+
+### 15.2 What was run
+
+Both runs used the Task 18 working tree on `a17daa8`, uncommitted at the time. Each used a fresh
+profile and a fresh model import, and every decision ran on WebGPU.
+
+| Run | Command (`node scripts/decider-eval/run.mjs …`) | Output (`scripts/decider-eval/out/…`) | Compared with | Sonnet spend |
+|---|---|---|---|---|
+| **E** Gemma, store family | `--arms off,driver --tasks shop-cheapest,shop-qty,shop-mug,dense-catalog --reps 3` | `2026-11-21T23-47-53-589Z` (40 min) | C (§14.1), same command | $0 |
+| **F** Sonnet, store family | `--arms off,driver --tasks shop-cheapest,shop-qty,shop-mug,dense-catalog --reps 2 --provider anthropic --cap 10` | `2026-11-22T00-29-04-146Z` (12 min) | D (§14.1), same command | **$1.93** (cap $10, not reached) |
+
+**How the numbers were computed:**
+- **One scorer for every run.** All four runs (C, D, E, F) are scored by the current
+  `report.mjs`. The pooled tables come from §14's `pooled.mjs`.
+- **New scripts** (session scratchpad `t18/`):
+  - `iter.mjs` — statuses, Search decisions, first-type latency;
+  - `calls.mjs` — per-call duration;
+  - `share.mjs` — the decider's share of page actions;
+  - `row.mjs` — one row's calls;
+  - `structuring.py` — profile-structuring calls in LM Studio's server log.
+- **First-type latency:** from the request of a call's first decision, when that decision was an
+  executed `type`, to its next request. It contains the wait for the value, the type itself, and
+  the re-read.
+
+### 15.3 Before and after
+
+| | Gemma C (before) | Gemma E (after) | Sonnet D (before) | Sonnet F (after) |
+|---|---|---|---|---|
+| Success, off / driver | 9/12 / 10/12 | 8/12 / 9/12 | 8/8 / 8/8 | 8/8 / 8/8 |
+| Wall p50, off / driver | 56 / 49 s | 66 / 58 s | 35 / 36 s | 35 / 35 s |
+| Paired Δ wall (driver − off), median | −6 s (faster 8/12) | −32 s (faster 7/12) | 0 s (faster 5/8) | −1 s (faster 4/8) |
+| …where FastSteps ran | −6 s (4/6) | −43 s (5/8) | +3 s (2/5) | +4 s (2/6) |
+| Chat steps p50, off / driver | 10.5 / 7 | 11 / 8.5 | 9.5 / 10.5 | 9.5 / 7 |
+| Paired Δ chat steps | −3 | −4 | 0 | −1 |
+| FastSteps calls (rows) | 7 (6/12) | 9 (8/12) | 5 (5/8) | 6 (6/8) |
+| Executed steps per call, median | 3 | 4 | 1 | 4 |
+| FastSteps call duration, median | 31.9 s | 21.3 s | 3.4 s | 12.6 s |
+| Decider share of page actions | 29% | 60% | 25% | 70% |
+| `done` | 2 | 3 | 0 | 2 |
+| Hand-back: risky step, 0.4–0.6 | 2 (both Search) | 2 (both Add to cart) | 3 (all Search) | 2 (both Add to cart) |
+| Hand-back: `done` under 0.6 | 2 | 3 | 0 | 1 |
+| Hand-back: top p < 0.4 | 1 | 0 | 2 (one Search at 0.39) | 0 |
+| Other stops | — | 1 dense page | — | 1 max steps (Sonnet passed 4) |
+| Search after typing: acted / all | 4/6 | **7/7** (0.59, 0.51 carded) | 1/5 | **6/6** (0.45–0.48 carded) |
+| First-type latency, median | **16.8 s** (12.7–26.3, n 6) | **0.9 s** (0.8–1.5, n 7) | 1.3 s | 0.7 s |
+| Executed steps (wrong) | 18 (0) | 33 (**3**) | 8 (0) | 28 (**4**) |
+| Keyed decisions, top-1 right | 24/25 | 36/42 | 12/13 | 29/37 |
+
+§14 reported a median of 19 s for Gemma's first-type latency. That figure pooled runs A and C;
+pooled the same way, this metric gives 19.2 s.
+
+**Per task, where FastSteps changed:**
+- **Gemma shop-mug** (4-step calls): FastSteps calls took 37.1 and 31.9 s before, and 21.8, 18.6
+  and 18.9 s after.
+- **Gemma shop-qty** (5-step calls): 39.2 s before, 44.3 and 41.1 s after (§15.4).
+- **Sonnet shop-mug:** driver 28 s against off 34 s, done in one call both times.
+- **Sonnet shop-qty:** driver 46 s against off 36 s (§15.5).
+
+### 15.4 Values first: the type is fixed; the select took over the wait
+
+- **Every `type` came from the values without a profile read.**
+  - 13 of 13, in both runs: key `request.0` at p 0.99.
+  - The step after the type now follows 0.7–1.5 s later, where before it took 13–26 s.
+- **One `select` still waits.** In Gemma's shop-qty, the quantity select took 12.5, 19.4 and
+  24.3 s from its decision to the next one.
+  - LM Studio's server log ties each wait to the in-flight profile-structuring call, to the
+    second. The call ends at 07:59:00, 08:11:46 and 08:22:16; each wait ends at the same moment.
+  - The values were `{query}`, and no option names a value. Both chat models put the quantity
+    in the goal and the plan, never in `values`. So the select is a full-lookup question, by
+    design: the profile could be the source.
+- **Structuring the profile is slow on Gemma** (17–30 s in C, 19–68 s in E).
+  - Each call shows up as two requests in the same second: `generateObject`'s `json_object`
+    request, and the prompted-JSON fallback (`extract.ts`). Only one "Running chat completion"
+    line follows.
+  - **The pre-warm at the grant does not finish in time.** The decider reaches the product page
+    8–15 s into it.
+- **With Sonnet, structuring took 0.8–2.3 s in §14.6,** so no wait is visible.
+- **Net effect:**
+  - Calls without a select save the whole wait: shop-mug, −15 s per call.
+  - Calls with one only move the wait: shop-qty is unchanged.
+- **Follow-up options**, not implemented, since the ruling was explicit:
+  - let the sub-goal's own words name a select option ("add 2 of them" names "2"); or
+  - have the grant note ask for quantities in `values`.
+
+### 15.5 The search card (reverted): the hand-backs went away, and the decider reached a known gap
+
+- **All 13 Search decisions were right, and all 13 were acted on.** The 6 in the tentative band
+  each raised the one-shot card first.
+- **No search submit was handed back.** The only remaining risky-step hand-backs are Add to cart
+  at 0.51–0.54.
+- **The calls now run the flow.** Sonnet's calls went from 1 executed step to 4, and its chat
+  steps fell from 10.5 to 7.
+- **Running further exposed a gap.** All 7 wrong steps (Gemma shop-qty rep 1, Sonnet shop-qty
+  reps 1 and 2) come from one chain:
+  1. **The sub-goal is narrow.** Sonnet's was "Search for the Orbit wireless speaker and open
+     its product page"; Gemma's was "…and find the product". Before, the decider stopped at
+     Search; now it carries on. Its next-action request also carries the session plan: "…open
+     it, set quantity to 2 and add to cart". So, as in §14.4, it overshoots the sub-goal.
+  2. **It proposes `select [4]` and asks the value question.** That question is built from the
+     sub-goal alone (`fillRequest` gets `goal: step.goal`, no plan), so it chooses "1" (option 0,
+     p 0.99). "1" is already selected: the select is a no-op, and the key marks it right.
+  3. **It clicks Add to cart** at p 0.61–0.86, which is carded; the harness approves every card.
+     The cart now holds one where two were asked for. The key scores this click wrong ("select
+     quantity first"), along with the steps after it on `#added`.
+- **Both chat models then tried to recover:**
+  - Sonnet added one more, which happened to make two. The task passed.
+  - Gemma added two more, making three. The task failed.
+- **The cause is not a values-first regression.** The select's question had no request match,
+  so it went straight to the full lookup, the same question as before. And the Search click
+  itself was right every time.
+- **What the change did was remove the stop** that had kept the decider off the product page.
+- **The fix belongs to the value question, not the gate:**
+  - give the single-field question the session plan as well as the sub-goal; or
+  - hand back a `select` whose chosen option is the field's current value (a no-op the action
+    question did not mean).
+- **The sub-goal boundary itself remains open** (§14.7 item 4).
+
+### 15.6 Verdict on runs E and F (before the ruling)
+
+This was the recommendation handed to the controller. §15.7 records the ruling and its outcome.
+
+- **Keep values first.** It does exactly what was asked:
+  - No `type` waited on the profile; Gemma's first-type latency is 0.9 s.
+  - It costs one extra ~150 ms decision when the values cannot answer.
+  - What remains is the wait at a select the values do not name, which needs one of the
+    follow-ups in §15.4.
+- **Do not ship the search card as it stands.**
+  - **What works:** it converts right-but-unsure Search decisions into card-gated actions,
+    13/13 right. It roughly doubles the decider's share of the work.
+  - **What breaks:**
+    - The extra reach runs into the value-context gap. The wrong-action rate went from 0/37 to
+      7/61 (11%, Wilson 95% CI 6–22%).
+    - Each wrong step passed a card a person would plausibly approve: the card says "Click
+      'Add to cart'", not the quantity.
+    - Fix the value question (§15.5), re-run shop-qty, and then decide.
+- **End to end, driver mode is still not faster.**
+  - **Sonnet:** its own steps are about 2.5 s, and a FastSteps step with cards and settles is
+    about 3 s. Running further therefore cuts chat steps (−1 paired) and tokens (−3k paired),
+    but not time (−1 s paired, +4 s where FastSteps ran).
+  - **Gemma:** each FastSteps call is 10 s shorter. But the run's off arm was 10 s slower at the
+    median than C's, so the −32 s paired figure is mostly off-arm variance.
+  - **What the Gemma evidence does support:** shop-mug calls −15 s; shop-qty unchanged.
+- **The suite still has only 3 driver-shaped tasks (§14.7 item 3).** Their 12 Gemma and 8 Sonnet
+  pairs cannot resolve a gain of a few seconds.
+
+### 15.7 The ruling, the value-question fix, and the shop-qty re-check
+
+**The ruling:**
+1. **Keep values first** as described in §15.1.
+2. **Revert the search-submit card completely.**
+   - The tentative band hands back on every point of no return again.
+   - These are back to their pre-Task 18 content:
+     - `driverLoop.ts`, `pageControl.ts`, `browsePolicy.ts`, `committingVocabulary.ts`,
+       `domIndex.ts` (no `submission` fact) and `tools.ts`;
+     - their tests, which still include the two tests that a tentative point of no return hands
+       back with no card (`driverLoop.test.ts` and `tools.test.ts`).
+   - Nothing else had used the predicate, the DOM fact or `isSearchName`.
+3. **Fix the root cause** found in §15.5: the value question now carries the user's request.
+
+**The fix:**
+- **In the state:** `fillRequest` (`src/decider/state.ts`) takes an optional `task`. The state's
+  keys are then `goal`, `task`, `page`, `info`, in that order:
+  - `goal` stays what the fields are filled for: the FastSteps sub-goal.
+  - `task` is the user's overall request.
+  - `task` is left out when it is empty or the same as the goal. So Assist, whose goal already
+    is the user's message, still sends exactly `goal`, `page`, `info`.
+- **In the driver:** `fieldValue` (`src/decider/hooks.ts`) passes `task: deps.currentGoal()`, the
+  newest user message with the panel's appended context removed, on both of its passes. It does
+  so for a `type` and for a `select`.
+- **Unchanged:**
+  - the next-action question: the sub-goal and the session plan;
+  - the record, which still holds key names and option positions only;
+  - the relay: the panel already has the user's message.
+- **Unit tests:**
+  - With task "add 2 of them" and sub-goal "add the speaker to the cart", the select's request
+    carries both. So do both passes of a type.
+  - The next-action request carries no `task`.
+  - Assist's state keys are unchanged.
+  - `fillRequest` orders the keys as above, and leaves `task` out when it is blank or equal to the
+    goal.
+- **Mutation checks, 5 of 5.** Each fails at least one test:
+  - never a task;
+  - a task equal to the goal kept;
+  - task after `info`;
+  - a blank task kept;
+  - hooks passing no task.
+
+**Checks on the final tree:**
+- `npm test`: 196 files, **2,704 passed**, 1 skipped. That is 2,688 at `a17daa8`, plus 16 new
+  tests for values first and the task.
+- `npm run build`: clean, typecheck included.
+- `node --test scripts/decider-eval/`: 62/62.
+- The relay and SW import guards are green.
+- `dist/background.js`: no engine, OPFS or card code.
+
+**The shop-qty re-check** (run G):
+- **Command:** `node scripts/decider-eval/run.mjs --arms off,driver --tasks shop-qty --reps 3`
+- **Output:** `scripts/decider-eval/out/2026-11-22T00-50-02-928Z` (15 min). Gemma, fresh profile,
+  WebGPU.
+
+| | off | driver |
+|---|---|---|
+| Success | 2/3 | **3/3** |
+| Wall p50 | 143 s (one off run wandered 396 s, 40 steps) | 58 s |
+| Chat steps p50 | 13 | 7 |
+| FastSteps | — | 3 calls: 2 `done`, 1 hand-back at Search p 0.54 |
+| Executed steps (wrong) | — | 9 (**0**) |
+| Quantity chosen by the decider | — | "2" (option 1, p 0.97), the one time it reached the select |
+| First-type latency | — | 0.9–1.2 s |
+
+**Per run:**
+- **Rep 1:** sub-goal "…add 2 of them to the cart". The decider ran the whole flow, with every
+  step right:
+  - type, then Search (p 0.90);
+  - the product;
+  - `select` "2", which waited 13.2 s for the in-flight profile structuring (§15.4);
+  - Add to cart, carded; then `done`.
+- **Rep 2:** sub-goal "…find the product page". The decider stopped there, with `done` at p 0.73.
+  The task's key wanted the select next, so that stop decision counts as wrong, but it was not an
+  action, and it matched the sub-goal. Gemma then set the quantity and added the item with
+  ControlPage.
+- **Rep 3:** Search at p 0.54 is a point of no return in the tentative band, so it was handed
+  back, as before the card. Gemma finished the task.
+
+**Read with care:**
+- **The narrow-sub-goal-plus-select case behind the 7 wrong steps did not recur** in these three
+  runs. In rep 2 the decider stopped at the sub-goal's boundary instead of overshooting it, and
+  without the card none of the runs carried on past a tentative Search.
+- **What covers the fix there:** the unit tests show it is in the request. Whether "add 2 of them"
+  then moves the decider's answer from "1" to "2" in that case was not observed in a run.
+- **Three paired runs** are enough to confirm 0 wrong actions and the right quantity here. They
+  are not enough for a wall-time claim.
