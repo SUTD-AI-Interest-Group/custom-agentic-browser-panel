@@ -1286,6 +1286,19 @@ describe('driver mode (FastSteps steps)', () => {
     for (const needle of ['Cart', 'Search', 'Northwind', 'example.com', 'headphones', 'hunter2']) expect(stored, needle).not.toContain(needle)
   })
 
+  it('a @driver run’s step (maxTokens on the request) is decided under that cap instead — worker request and local step alike', async () => {
+    const a = driveEngine('click [2]', 0.83)
+    await within(driveHooks({ engine: a.engine }).answer(nextMsg({ maxTokens: 6000 }))!)
+    expect(a.requests[0].opts).toEqual({ maxTokens: 6000 })
+    const b = driveEngine('click [1]', 0.92)
+    await within(driveHooks({ engine: b.engine }).next({ tabId: 7, snap: snapOf(SHOP), session: session(), goal: 'search', values: {}, pageText: 'text', exclude: [], maxTokens: 6000 }))
+    expect(b.requests[0].opts).toEqual({ maxTokens: 6000 })
+    // Without it, the dense cap as before.
+    const c = driveEngine('click [1]', 0.92)
+    await within(driveHooks({ engine: c.engine }).next({ tabId: 7, snap: snapOf(SHOP), session: session(), goal: 'search', values: {}, pageText: 'text', exclude: [] }))
+    expect(c.requests[0].opts).toEqual({ maxTokens: 2500 })
+  })
+
   it('leaves the excluded pairs out of the options', async () => {
     const { engine, requests } = driveEngine('scroll down', 0.7)
     await driveHooks({ engine }).answer(nextMsg({ exclude: [{ op: 'click', index: 2 }, { op: 'type', index: 0 }] }))

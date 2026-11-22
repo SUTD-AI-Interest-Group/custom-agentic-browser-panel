@@ -47,7 +47,7 @@ import { createProposeResearchTool } from './research'
 import { buildCatalog, searchCatalog, partitionToolNames, type CatalogEntry } from './toolDiscovery'
 import type { DeciderHooks } from '../decider/hooks'
 import type { FillPlan } from '../decider/fillPlan'
-import { assistsForms, PAGE_TEXT_CAP, type DeciderMode } from '../decider/config'
+import { assistsForms, DRIVER_RUN_MAX_TOKENS, PAGE_TEXT_CAP, type DeciderMode } from '../decider/config'
 import { DRIVER_MAX_STEPS, runDriverLoop, type DriverResult } from '../decider/driverLoop'
 import { readViewportText } from '../platform/viewportText'
 import {
@@ -2053,6 +2053,10 @@ export function createAgentTools(
             }
           }
 
+          // A `@driver` run (the user sent the message to the decider — relay.ts driverRun): each
+          // decision may use the larger token cap, and an unsure point of no return is carded rather
+          // than handed back. Every other FastSteps call is exactly as before.
+          const driverRun = decider.driverRun === true
           let result: DriverResult
           try {
             result = await runDriverLoop({
@@ -2087,10 +2091,19 @@ export function createAgentTools(
                 return snapshotPage(tabId)
               },
               readPageText: () => readViewportText(tabId, PAGE_TEXT_CAP).then((t) => (typeof t === 'string' ? t : null), () => null),
-              decide: ({ snap, pageText, exclude }) => decider.next({ tabId, snap, session, goal, values: values ?? {}, pageText, exclude, signal: abortSignal }),
+              decide: ({ snap, pageText, exclude }) =>
+                decider.next({ tabId, snap, session, goal, values: values ?? {}, pageText, exclude, signal: abortSignal, ...(driverRun ? { maxTokens: DRIVER_RUN_MAX_TOKENS } : {}) }),
               isPointOfNoReturn: (spec, el) => isPointOfNoReturn(spec, el, session.origin),
-              approve: (spec, el) =>
-                requestApproval({ toolName: 'FastSteps', summary: pointOfNoReturnSummary(spec, el), reason: 'This step changes state or leaves the page.', once: true }),
+              approve: (spec, el, unsure) =>
+                requestApproval({
+                  toolName: 'FastSteps',
+                  summary: pointOfNoReturnSummary(spec, el),
+                  reason: unsure
+                    ? `The decision model is unsure about this step (p=${unsure.p.toFixed(2)}). It changes state or leaves the page.`
+                    : 'This step changes state or leaves the page.',
+                  once: true,
+                }),
+              ...(driverRun ? { cardTentative: true } : {}),
               hasElementChanged,
               act: async (spec, snap, { settle, approved }) => {
                 const r = await runControlStep({

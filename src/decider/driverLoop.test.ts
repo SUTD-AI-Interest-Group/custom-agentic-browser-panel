@@ -57,6 +57,8 @@ interface Script {
   maxSteps?: number
   threshold?: number
   aborted?: () => boolean
+  /** A `@driver` run. */
+  cardTentative?: boolean
 }
 
 function harness(s: Script) {
@@ -96,6 +98,7 @@ function harness(s: Script) {
       log.push(`act ${spec.action}${spec.index ?? ''}`)
       return s.act ? s.act(spec, acts.length - 1) : { ok: true, message: 'ok', registry: `after ${acts.length}` }
     }),
+    ...(s.cardTentative !== undefined ? { cardTentative: s.cardTentative } : {}),
   }
   return { deps, log, acts, decideCalls }
 }
@@ -336,6 +339,70 @@ describe('a point of no return', () => {
 // ---------------------------------------------------------------------------
 // Repeats, failures, no progress, the step cap (steps 6 and 10)
 // ---------------------------------------------------------------------------
+
+describe('a @driver run (cardTentative): an unsure point of no return is put to the user, not handed back', () => {
+  it('a tentative point of no return raises the one-shot card saying the model is unsure (with p), then re-checks and acts', async () => {
+    const h = harness({ cardTentative: true, decisions: [decision(opt('click', 1, 0.493)), decision(opt('done', undefined, 0.9))] })
+    expect(await runDriverLoop(h.deps)).toMatchObject({ status: 'done', steps: [{ op: 'click', index: 1, p: 0.49, ok: true }] })
+    expect(h.deps.approve).toHaveBeenCalledTimes(1)
+    expect(h.deps.approve).toHaveBeenCalledWith({ action: 'click', index: 1 }, SEARCH[1], { p: 0.49 })
+    // The same stale re-check as a confident card: re-read, guards, element unchanged — then act.
+    expect(h.log.slice(0, 7)).toEqual(['guard', 'snapshot', 'decide', 'approve', 'snapshot', 'guard', 'act click1'])
+    expect(h.deps.hasElementChanged).toHaveBeenCalledWith(SEARCH[1], SEARCH[1])
+    expect(h.acts[0]).toMatchObject({ settle: 'full', approved: true })
+  })
+
+  it('the user declining that card is a denial, and nothing acts', async () => {
+    const h = harness({ cardTentative: true, approve: false, decisions: [decision(opt('click', 1, 0.5))] })
+    expect(await runDriverLoop(h.deps)).toMatchObject({ status: 'blocked', reason: 'denied' })
+    expect(h.deps.act).not.toHaveBeenCalled()
+  })
+
+  it('an element that changed while that card was up is handed back, not clicked', async () => {
+    const h = harness({ cardTentative: true, decisions: [decision(opt('click', 1, 0.5))] })
+    let n = 0
+    h.deps.snapshot = vi.fn(async () => pageOf(`p${n}`, n++ === 0 ? SEARCH : SEARCH.map((e) => (e.index === 1 ? { ...e, name: 'Place order' } : e))))
+    expect(await runDriverLoop(h.deps)).toMatchObject({ status: 'handback', reason: 'page changed' })
+    expect(h.deps.approve).toHaveBeenCalledTimes(1)
+    expect(h.deps.act).not.toHaveBeenCalled()
+  })
+
+  it('a confident point of no return gets the ordinary card (no unsure note)', async () => {
+    const h = harness({ cardTentative: true, decisions: [decision(opt('click', 1, 0.9)), decision(opt('done', undefined, 0.9))] })
+    await runDriverLoop(h.deps)
+    expect(vi.mocked(h.deps.approve).mock.calls[0]).toEqual([{ action: 'click', index: 1 }, SEARCH[1]])
+  })
+
+  it('a step that became risky in the tentative band is carded as unsure too', async () => {
+    let classified = 0
+    const h = harness({ cardTentative: true, decisions: [decision(opt('click', 3, 0.5)), decision(opt('done', undefined, 0.9))], ponr: () => ++classified > 1 })
+    expect(await runDriverLoop(h.deps)).toMatchObject({ status: 'done' })
+    expect(h.deps.approve).toHaveBeenCalledWith({ action: 'click', index: 3 }, SEARCH[3], { p: 0.5 })
+    expect(h.acts[0]).toMatchObject({ spec: { action: 'click', index: 3 }, approved: true })
+  })
+
+  it('unchanged otherwise: below 0.4 hands back, a tentative done hands back, a tentative safe step acts without a card', async () => {
+    const low = harness({ cardTentative: true, decisions: [decision(opt('click', 1, 0.39))] })
+    expect(await runDriverLoop(low.deps)).toMatchObject({ status: 'handback', reason: 'unsure' })
+    expect(low.deps.approve).not.toHaveBeenCalled()
+    const done = harness({ cardTentative: true, decisions: [decision(opt('done', undefined, 0.59))] })
+    expect(await runDriverLoop(done.deps)).toMatchObject({ status: 'handback', reason: 'unsure' })
+    const safe = harness({ cardTentative: true, decisions: [decision(opt('click', 3, 0.45)), decision(opt('done', undefined, 0.95))] })
+    expect(await runDriverLoop(safe.deps)).toMatchObject({ status: 'done' })
+    expect(safe.deps.approve).not.toHaveBeenCalled()
+    const nan = harness({ cardTentative: true, decisions: [decision(opt('click', 1, Number.NaN))] })
+    expect(await runDriverLoop(nan.deps)).toMatchObject({ status: 'handback', reason: 'unsure' })
+    expect(nan.deps.approve).not.toHaveBeenCalled()
+  })
+
+  it('without it (the chat model’s FastSteps) the same tentative point of no return still hands back with no card', async () => {
+    for (const cardTentative of [undefined, false]) {
+      const h = harness({ cardTentative, decisions: [decision(opt('click', 1, 0.5))] })
+      expect(await runDriverLoop(h.deps)).toMatchObject({ status: 'handback', reason: 'unsure' })
+      expect(h.deps.approve).not.toHaveBeenCalled()
+    }
+  })
+})
 
 describe('loop rules', () => {
   it('a repeat on an unchanged page excludes that pair and asks once more', async () => {

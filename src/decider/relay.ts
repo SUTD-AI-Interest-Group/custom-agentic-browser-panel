@@ -37,7 +37,7 @@ import { readSelectOptions, type IndexedElement, type PageSnapshot } from '../pl
 import { readViewportText } from '../platform/viewportText'
 import type { ControlAction, ControlSession, ControlSpec } from '../tools/pageControl'
 import type { ControlJournalEntry } from '../tools/pageControlJournal'
-import { assistsForms, DEFAULT_ACT_THRESHOLD, PAGE_TEXT_CAP, PREVIOUS_ACTIONS_WINDOW, type DeciderMode, type DeciderSettings } from './config'
+import { assistsForms, DECIDER_MAX_TOKENS, DEFAULT_ACT_THRESHOLD, PAGE_TEXT_CAP, PREVIOUS_ACTIONS_WINDOW, type DeciderMode, type DeciderSettings } from './config'
 import type { DriverDecideOutcome, DriverOp, DriverOption, OpRef } from './driverLoop'
 import type { FillPlan } from './fillPlan'
 import type { DeciderHooks } from './hooks'
@@ -283,6 +283,11 @@ export interface NextRequest {
   previousActions: string[]
   /** Pairs this step must not choose: refused earlier, or a repeat of an action that changed nothing. */
   exclude: OpRef[]
+  /**
+   * The pass's token cap, when not DRIVER_MAX_TOKENS: a `@driver` run asks for DRIVER_RUN_MAX_TOKENS
+   * (config.ts). Absent on every chat-model FastSteps step, which keeps the dense-page cap.
+   */
+  maxTokens?: number
 }
 
 /** The panel's answer: the decision without its requestId, or why there is none. */
@@ -475,6 +480,8 @@ export function parseNextRequest(raw: unknown): NextRequest | null {
     if (!ref) return null
     exclude.push(ref)
   }
+  // A cap other than the default is a positive integer no larger than the engine's own hard cap.
+  if (raw.maxTokens !== undefined && !(Number.isInteger(raw.maxTokens) && (raw.maxTokens as number) > 0 && (raw.maxTokens as number) <= DECIDER_MAX_TOKENS)) return null
   const snap = parseFormSnap(raw.snap)
   const values = parseValues(raw.values)
   const selectOptions = parseSelectOptions(raw.selectOptions)
@@ -492,6 +499,7 @@ export function parseNextRequest(raw: unknown): NextRequest | null {
     selectOptions,
     previousActions: (raw.previousActions as string[]).slice(-PREVIOUS_ACTIONS_WINDOW),
     exclude,
+    ...(raw.maxTokens !== undefined ? { maxTokens: raw.maxTokens as number } : {}),
   }
 }
 
@@ -674,6 +682,11 @@ export function forwardDeciderHooks(deps: {
   /** Defaults to NEXT_TIMEOUT_MS. */
   nextTimeoutMs?: number
   modelReady?: () => Promise<boolean>
+  /**
+   * This run is a `@driver` run (toolHost.ts: `job.driver`): FastSteps reads `driverRun` and asks
+   * for the larger token cap and the card on an unsure point of no return. Absent for every other run.
+   */
+  driverRun?: boolean
 }): DeciderHooks {
   const resolver = deps.modelReady ? createModeResolver(deps.settings, deps.modelReady) : null
   /** The settings' mode, 'off' while (with a probe) the model is not proven ready. Never throws. */
@@ -687,6 +700,7 @@ export function forwardDeciderHooks(deps: {
     }
   }
   return {
+    ...(deps.driverRun === true ? { driverRun: true } : {}),
     mode: effective,
     resolveMode: () => (resolver ? resolver.resolveReady().then(effective, effective) : Promise.resolve(effective())),
     settingsMode: () => settingsModeOf(deps.settings),
@@ -796,6 +810,8 @@ export function forwardDeciderHooks(deps: {
           selectOptions,
           previousActions: previousActionsOf(i.session, i.snap),
           exclude: i.exclude.slice(0, MAX_EXCLUDE),
+          // A `@driver` run's larger cap (FastSteps asks for it); absent otherwise, as before.
+          ...(i.maxTokens !== undefined ? { maxTokens: i.maxTokens } : {}),
         }
         const msg = parseNextRequest(JSON.parse(JSON.stringify(built)))
         if (!msg) return { error: 'the page is too large to send to the decision model' }

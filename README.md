@@ -91,9 +91,11 @@ is why no proxy server is needed.
   the on-device decision model is imported and turned on in Settings → Experimental)
   sends a quick page action straight to that model instead of the chat model: it
   asks for page control, then takes the steps itself. It cannot write text, so
-  anything it should type goes in double quotes (`@driver search "wireless
-  headphones"`) or comes from your profile memories; every approval card still
-  applies. When it gets stuck it stops, says why, and offers **Continue with chat
+  anything it should type comes from your message — double-quoted text
+  (`@driver search "wireless headphones"`), or, when nothing is quoted, a phrase
+  from the message itself — or from your profile memories. Every approval card
+  still applies, and a risky step it is unsure about is put to you on its card
+  (with its confidence) rather than skipped. When it gets stuck it stops, says why, and offers **Continue with chat
   model**.
 - **`/` invokes a skill** by name, with the same autocomplete behaviour.
 - **The camera button** starts an Arc/Dia-style region capture: the page tints,

@@ -21,7 +21,7 @@
 //
 // DRIVER (FastSteps) is the other awaited path, one request per step (`next` locally, `answer()`
 // for the worker's `decider.next`): nextActionRequest minus the excluded pairs → decide (queued,
-// capped at DRIVER_MAX_TOKENS so a dense page is handed back instead of decided slowly) → for a
+// capped at DRIVER_MAX_TOKENS — a `@driver` run's DRIVER_RUN_MAX_TOKENS — so a dense page is handed back) → for a
 // `type`/`select` at the top, the single-field fill question — over the call's own values first,
 // and over profile + values only when those cannot answer (fieldValue). Every decision writes a
 // `drive` record (llm and agree null: nothing to compare with), key names only.
@@ -93,6 +93,12 @@ export interface DeciderHooks {
   resolveMode(): Promise<DeciderMode>
   /** The settings' mode alone, readiness not consulted. */
   settingsMode(): DeciderMode
+  /**
+   * A `@driver` run (only the worker's hooks for a `ChatRun.driver` run set it — relay.ts
+   * forwardDeciderHooks): FastSteps asks each decision for DRIVER_RUN_MAX_TOKENS and raises the
+   * one-shot card on an unsure point of no return instead of handing back. Absent = an ordinary run.
+   */
+  readonly driverRun?: boolean
   threshold(): number
   /** A page-control session was granted: warm the engine (never awaited; errors swallowed). */
   sessionGranted(): void
@@ -125,6 +131,8 @@ export interface DeciderHooks {
     pageText: string | null
     exclude: OpRef[]
     signal?: AbortSignal
+    /** The pass's token cap when not DRIVER_MAX_TOKENS (a `@driver` run's DRIVER_RUN_MAX_TOKENS). */
+    maxTokens?: number
   }): Promise<DriverDecideOutcome>
 }
 
@@ -725,7 +733,7 @@ export function createDeciderHooks(deps: DeciderHookDeps): DeciderPanelHooks {
 
   /**
    * One driver step, for both realms: nextActionRequest minus the excluded pairs → decide (queued,
-   * NOT dropIfBusy — FastSteps is waiting — and capped at DRIVER_MAX_TOKENS) → for a `type` or a
+   * NOT dropIfBusy — FastSteps is waiting — and capped at the step's maxTokens, else DRIVER_MAX_TOKENS) → for a `type` or a
    * `select` at the top, its value (fieldValue) → a `drive` record. `cancelled` is the caller giving up; checked after each
    * decision, so an answer nobody will act on is neither returned nor recorded.
    */
@@ -747,7 +755,7 @@ export function createDeciderHooks(deps: DeciderHookDeps): DeciderPanelHooks {
     const at = Date.now()
     let result: DecisionResult
     try {
-      result = (await engine().decide(request, { maxTokens: DRIVER_MAX_TOKENS })) as DecisionResult
+      result = (await engine().decide(request, { maxTokens: step.maxTokens ?? DRIVER_MAX_TOKENS })) as DecisionResult
     } catch (err) {
       if (cancelled()) return { error: CANCELLED }
       void putShadow(skippedOf(n, at, null, err, 'drive')).catch(() => {})
@@ -856,6 +864,7 @@ export function createDeciderHooks(deps: DeciderHookDeps): DeciderPanelHooks {
             selectOptions,
             previousActions,
             exclude: i.exclude,
+            ...(i.maxTokens !== undefined ? { maxTokens: i.maxTokens } : {}),
           }),
         )
         // Stop ends the wait at once; decideNext, still running, sees the abort and drops its answer.

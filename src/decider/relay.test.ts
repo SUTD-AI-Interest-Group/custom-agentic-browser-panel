@@ -14,7 +14,7 @@ import { readViewportText } from '../platform/viewportText'
 import { readSelectOptions, type IndexedElement, type PageSnapshot } from '../platform/domIndex'
 import type { ControlSession, ControlSpec } from '../tools/pageControl'
 import type { ControlJournalEntry } from '../tools/pageControlJournal'
-import { MODEL_ID, MODEL_STATUS_KEY, PREVIOUS_ACTIONS_WINDOW, type DeciderSettings } from './config'
+import { DECIDER_MAX_TOKENS, DRIVER_RUN_MAX_TOKENS, MODEL_ID, MODEL_STATUS_KEY, PREVIOUS_ACTIONS_WINDOW, type DeciderSettings } from './config'
 import { isReadyStatus, readModelReady } from './modelStatus'
 import type { FillPlan } from './fillPlan'
 import {
@@ -884,6 +884,19 @@ describe('forwardDeciderHooks.next (the service-worker side of driver mode)', ()
     expect(readSelectOptions).toHaveBeenCalledWith(7, [3]) // the worker reads what a select can choose
   })
 
+  it('a @driver run: the hooks say so, and a step’s token cap rides the request (absent otherwise)', async () => {
+    vi.mocked(readSelectOptions).mockResolvedValue({ 3: SORT })
+    const requestNext = answering((msg) => ({ requestId: msg.requestId, ...DECISION }))
+    const driver = forwardDeciderHooks({ conversationId: 'c', settings: () => ({ mode: 'driver' }), requestNext, driverRun: true })
+    expect(driver.driverRun).toBe(true)
+    await driver.next({ ...driveInput(), maxTokens: DRIVER_RUN_MAX_TOKENS })
+    expect(requestNext.mock.calls[0][0].maxTokens).toBe(DRIVER_RUN_MAX_TOKENS)
+    const plain = forwardDeciderHooks({ conversationId: 'c', settings: () => ({ mode: 'driver' }), requestNext })
+    expect(plain).not.toHaveProperty('driverRun')
+    await plain.next(driveInput())
+    expect(requestNext.mock.calls[1][0]).not.toHaveProperty('maxTokens')
+  })
+
   it('accepts a select value only when it is one of the options this worker read off that select', async () => {
     vi.mocked(readSelectOptions).mockResolvedValue({ 3: SORT })
     const choose = (text: string) =>
@@ -1021,8 +1034,18 @@ describe('parseNextRequest', () => {
     ['values that are not strings', { ...REQ, values: { query: 1 } }],
     ['select options that are not lists', { ...REQ, selectOptions: { 4: 'A' } }],
     ['no select options', { ...REQ, selectOptions: undefined }],
+    ['a token cap that is not an integer', { ...REQ, maxTokens: 2500.5 }],
+    ['a token cap of zero', { ...REQ, maxTokens: 0 }],
+    ['a token cap over the engine’s hard cap', { ...REQ, maxTokens: DECIDER_MAX_TOKENS + 1 }],
+    ['a token cap that is a string', { ...REQ, maxTokens: '6000' }],
   ])('rejects %s', (_label, raw) => {
     expect(parseNextRequest(raw)).toBeNull()
+  })
+
+  it('carries a @driver run’s token cap; a request without one has none', () => {
+    expect(parseNextRequest({ ...REQ, maxTokens: DRIVER_RUN_MAX_TOKENS })).toEqual({ ...REQ, maxTokens: DRIVER_RUN_MAX_TOKENS })
+    expect(parseNextRequest({ ...REQ, maxTokens: DECIDER_MAX_TOKENS })).toEqual({ ...REQ, maxTokens: DECIDER_MAX_TOKENS })
+    expect(parseNextRequest(REQ)).not.toHaveProperty('maxTokens')
   })
 
   it('a driver cancel is a relay message like assist’s', () => {

@@ -58,6 +58,13 @@ export const DECIDER_MAX_TOKENS = 8192
 export const DRIVER_MAX_TOKENS = 2500
 
 /**
+ * The same cap for a `@driver` run (the user sent the message to the decider, so there is no chat
+ * model to hand a dense page back to): 6000, still under DECIDER_MAX_TOKENS. FastSteps asks for it
+ * per decision (`decider.next({ maxTokens })`); a chat-model FastSteps keeps DRIVER_MAX_TOKENS.
+ */
+export const DRIVER_RUN_MAX_TOKENS = 6000
+
+/**
  * The longest pass the worker will run: the model's own limit, the hard cap above, and — when the
  * caller asks for less (driver mode's dense cap) — the caller's. A `maxTokens` that is not a
  * positive integer is ignored rather than trusted.

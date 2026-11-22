@@ -55,6 +55,7 @@ import type { IndexedElement, PageSnapshot } from '../platform/domIndex'
 import type { TabFacts } from './tabPolicy'
 import { createDeciderHooks, type DeciderHooks } from '../decider/hooks'
 import { forwardDeciderHooks } from '../decider/relay'
+import { DRIVER_RUN_MAX_TOKENS } from '../decider/config'
 import { asSchema } from 'ai'
 import type { FillPlan } from '../decider/fillPlan'
 import { profileLookup } from '../decider/profileLookup'
@@ -1163,6 +1164,8 @@ function buildDriverTools(opts: {
   activeNames?: Set<string>
   decider?: DeciderHooks
   resolveTab?: () => Promise<chrome.tabs.Tab>
+  /** A `@driver` run's hooks (relay.ts forwardDeciderHooks with driverRun). */
+  driverRun?: boolean
 }) {
   const pageControl: PageControlGate = {
     requestSession: async () => true,
@@ -1172,7 +1175,8 @@ function buildDriverTools(opts: {
     },
   }
   const mode = opts.mode ?? (() => 'driver')
-  const decider = opts.decider ?? stubHooks({ mode, settingsMode: mode, next: opts.next ?? scriptedNext({ error: 'unused' }) })
+  const decider =
+    opts.decider ?? stubHooks({ mode, settingsMode: mode, next: opts.next ?? scriptedNext({ error: 'unused' }), ...(opts.driverRun ? { driverRun: true } : {}) })
   return createAgentTools(
     opts.requestApproval ?? (async () => true),
     'all-tabs',
@@ -1392,6 +1396,43 @@ describe('FastSteps — the decider drives, every ControlPage guard intact', () 
     expect(result).toMatchObject({ status: 'handback', reason: 'unsure' })
     expect(requestApproval).not.toHaveBeenCalled()
     expect(runControlStep).not.toHaveBeenCalled()
+  })
+
+  it('the chat model’s FastSteps: the card reads as before, and no decision asks for a larger cap', async () => {
+    const requestApproval = vi.fn<ApprovalGate>(async () => true)
+    const next = scriptedNext(decided(top('click', 2, 0.9)), decided(top('done', undefined, 0.9)))
+    await within((buildDriverTools({ session: buildSession(), next, requestApproval }).FastSteps as any).execute({ goal: 'search' }, {} as any))
+    expect(requestApproval).toHaveBeenCalledWith({ toolName: 'FastSteps', summary: 'Click “Search”', reason: 'This step changes state or leaves the page.', once: true })
+    for (const [i] of vi.mocked(next).mock.calls as unknown as [Record<string, unknown>][]) expect(i).not.toHaveProperty('maxTokens')
+  })
+
+  it('a @driver run: a tentative point of no return raises the one-shot card saying the model is unsure (with p), then acts after the re-check', async () => {
+    const requestApproval = vi.fn<ApprovalGate>(async () => true)
+    const next = scriptedNext(decided(top('click', 2, 0.49)), decided(top('done', undefined, 0.9)))
+    const result: any = await within((buildDriverTools({ session: buildSession(), next, requestApproval, driverRun: true }).FastSteps as any).execute({ goal: 'search' }, {} as any))
+    expect(requestApproval).toHaveBeenCalledTimes(1)
+    expect(requestApproval).toHaveBeenCalledWith({
+      toolName: 'FastSteps',
+      summary: 'Click “Search”',
+      reason: 'The decision model is unsure about this step (p=0.49). It changes state or leaves the page.',
+      once: true,
+    })
+    expect(vi.mocked(runControlStep).mock.calls.map(([d]) => [d.spec, d.settle])).toEqual([[{ action: 'click', index: 2 }, 'full']])
+    expect(result.status).toBe('done')
+  })
+
+  it('a @driver run: declining that card blocks, and nothing is clicked', async () => {
+    const next = scriptedNext(decided(top('click', 2, 0.5)))
+    const result = await within((buildDriverTools({ session: buildSession(), next, requestApproval: async () => false, driverRun: true }).FastSteps as any).execute({ goal: 'search' }, {} as any))
+    expect(result).toMatchObject({ status: 'blocked', reason: 'denied' })
+    expect(runControlStep).not.toHaveBeenCalled()
+  })
+
+  it(`a @driver run asks every decision for DRIVER_RUN_MAX_TOKENS (${DRIVER_RUN_MAX_TOKENS})`, async () => {
+    const next = scriptedNext(decided(top('click', 1, 0.9)), decided(top('done', undefined, 0.9)))
+    await within((buildDriverTools({ session: buildSession(), next, driverRun: true }).FastSteps as any).execute({ goal: 'g' }, {} as any))
+    expect(next).toHaveBeenCalledTimes(2)
+    for (const [i] of vi.mocked(next).mock.calls as unknown as [Record<string, unknown>][]) expect(i.maxTokens).toBe(DRIVER_RUN_MAX_TOKENS)
   })
 
   it('Stop during a decision acts on nothing', async () => {

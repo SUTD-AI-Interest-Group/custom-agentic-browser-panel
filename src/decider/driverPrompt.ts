@@ -7,7 +7,8 @@
 // spans of the message become FastSteps' `values` (keyed by the word before each quote, so
 // `search "wireless headphones"` → `{ search: … }`, which the value question reads as
 // `request.search`), and the user's profile memories reach it through the existing cached profile
-// lookup. The token itself grants nothing — every approval card still stands.
+// lookup. A message that quotes nothing offers its own phrases instead (goalPhrases), each still
+// text the user wrote. The token itself grants nothing — every approval card still stands.
 
 /** What a driver turn hands FastSteps: the user's message as the goal, and its quoted values. */
 export interface DriverSpec {
@@ -61,7 +62,9 @@ function keyBefore(between: string): string {
  * non-empty quoted span, keyed by the word immediately before its opening quote — only the text
  * between the previous quote and this one counts, so a value never names the next — falling back
  * to `text`; a repeated key becomes `key_2`, `key_3`, …. Capped at MAX_DRIVER_VALUES values of
- * MAX_DRIVER_VALUE_CHARS each.
+ * MAX_DRIVER_VALUE_CHARS each. A message with NO quoted value offers its goal's candidate phrases
+ * instead (goalPhrases: `phrase`, `phrase_2`, …), so "add the blue Aurora mug to my cart" can still
+ * search for "blue Aurora mug" — the decider picks one of them for a field, or leaves it empty.
  */
 export function parseDriverPrompt(text: string): DriverSpec {
   const goal = text.replace(DRIVER_TOKEN_ALL, '$1').replace(/\s+/g, ' ').trim()
@@ -81,7 +84,51 @@ export function parseDriverPrompt(text: string): DriverSpec {
     values[key] = value.slice(0, MAX_DRIVER_VALUE_CHARS)
     count++
   }
-  return { goal, values }
+  return { goal, values: count > 0 ? values : goalPhrases(goal) }
+}
+
+/** The words a goal's phrases are split on ("of" is not one: "a pair of socks" is one thing). */
+const CONNECTORS = ['to', 'into', 'in', 'on', 'for', 'from', 'and', 'then', 'with', 'under', 'over', 'below', 'above', 'at', 'by']
+/** Leading imperative verbs, stripped from a phrase's start. */
+const VERBS = new Set(['add', 'buy', 'get', 'find', 'search', 'look', 'open', 'go', 'show', 'put', 'order', 'pick', 'choose', 'select', 'click', 'type', 'fill'])
+/** Leading determiners and possessives, stripped likewise. */
+const DETERMINERS = new Set(['the', 'a', 'an', 'my', 'some', 'this', 'that', 'these', 'those', 'me'])
+/** A phrase made only of these says nothing a field could take. */
+const STOPWORDS = new Set([...CONNECTORS, ...VERBS, ...DETERMINERS, 'of', 'it', 'them', 'one', 'ones', 'please', 'now', 'up', 'out', 'i', 'you', 'us'])
+/** A phrase naming the cart is where the goal ends, not something to type. */
+const CART_WORD = /^(carts?|checkouts?|baskets?)$/
+/** At most this many phrases are offered. */
+export const MAX_DRIVER_PHRASES = 4
+
+const SPLIT = new RegExp(`\\b(?:${CONNECTORS.join('|')})\\b|[,;!?]|\\.(?=\\s|$)`, 'i')
+const EDGES = /^[\s"“”'‘’()[\]{}:]+|[\s"“”'‘’()[\]{}:]+$/g
+const bare = (word: string) => word.toLowerCase().replace(/^[^a-z0-9$]+|[^a-z0-9]+$/g, '')
+
+/**
+ * Candidate phrases from a goal that quotes nothing — what a search box could take. The goal is
+ * split on connector words (CONNECTORS) and sentence punctuation; each chunk loses its leading
+ * imperative verbs and determiners; a chunk that is then empty, all stopwords, or names the
+ * cart/checkout/basket is dropped; the rest are deduped (case-insensitively) and capped at
+ * MAX_DRIVER_PHRASES, keyed `phrase`, `phrase_2`, …. Pure.
+ */
+export function goalPhrases(goal: string): Record<string, string> {
+  const out: Record<string, string> = {}
+  const seen = new Set<string>()
+  for (const chunk of goal.split(SPLIT)) {
+    const words = (chunk ?? '').replace(EDGES, '').split(/\s+/).filter(Boolean)
+    while (words.length && (VERBS.has(bare(words[0])) || DETERMINERS.has(bare(words[0])))) words.shift()
+    if (words.length === 0) continue
+    if (words.every((w) => !bare(w) || STOPWORDS.has(bare(w)))) continue
+    if (words.some((w) => CART_WORD.test(bare(w)))) continue
+    const phrase = words.join(' ').replace(EDGES, '').slice(0, MAX_DRIVER_VALUE_CHARS)
+    const k = phrase.toLowerCase()
+    if (!phrase || seen.has(k)) continue
+    seen.add(k)
+    const n = seen.size
+    out[n === 1 ? 'phrase' : `phrase_${n}`] = phrase
+    if (n >= MAX_DRIVER_PHRASES) break
+  }
+  return out
 }
 
 /** What decides whether `@driver` can run right now. */

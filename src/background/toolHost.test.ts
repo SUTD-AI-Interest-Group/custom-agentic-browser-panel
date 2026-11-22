@@ -20,7 +20,7 @@ vi.mock('../tools/tools', () => ({ createAgentTools: (approve: (r: unknown) => P
     return { observed: true }
   } },
   // The decider's mode as this ToolSet was built — what decides FastSteps' presence in createAgentTools.
-  Mode: { execute: async () => ({ mode: rest[9]?.mode() }) },
+  Mode: { execute: async () => ({ mode: rest[9]?.mode(), driverRun: rest[9]?.driverRun }) },
   // Stands in for AutofillForm without fields: awaits the decider's assist plan.
   MapForm: { execute: async () => rest[9]?.mapForm({
     tabId: 7,
@@ -195,12 +195,14 @@ describe('background tool permissions', () => {
       fixture.decider = { mode }
       const run = job(); run.toolRequests[0].name = 'Mode'; run.driver = { goal: 'add the mug', values: {} }
       await updateChatRun('chat', () => run); await poll(run); await finished()
-      expect((await getChatRun('chat'))?.toolRequests[0].output, mode).toEqual({ mode: 'driver' })
+      // …and its hooks say it is a @driver run: FastSteps' larger token cap and the unsure card.
+      expect((await getChatRun('chat'))?.toolRequests[0].output, mode).toStrictEqual({ mode: 'driver', driverRun: true })
       releaseChatTools('chat', run.id)
       // The same settings without the token: the settings' own mode.
       const plain = job(); plain.toolRequests[0].name = 'Mode'
       await updateChatRun('chat', () => plain); await poll(plain); await finished()
       expect((await getChatRun('chat'))?.toolRequests[0].output, mode).toEqual({ mode })
+      expect((await getChatRun('chat'))?.toolRequests[0].output, mode).not.toHaveProperty('driverRun', true)
       releaseChatTools('chat', plain.id)
     }
   })
@@ -210,7 +212,7 @@ describe('background tool permissions', () => {
       fixture.decider = decider as { mode: string } | undefined; fixture.model = model
       const run = job(); run.toolRequests[0].name = 'Mode'; run.driver = { goal: 'add the mug', values: {} }
       await updateChatRun('chat', () => run); await poll(run); await finished()
-      expect((await getChatRun('chat'))?.toolRequests[0].output).toEqual({ mode: 'off' })
+      expect((await getChatRun('chat'))?.toolRequests[0].output).toMatchObject({ mode: 'off' })
       releaseChatTools('chat', run.id)
     }
   })

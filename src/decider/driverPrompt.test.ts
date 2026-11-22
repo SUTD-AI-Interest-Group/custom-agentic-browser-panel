@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import {
   driverUnavailableReason,
+  goalPhrases,
+  MAX_DRIVER_PHRASES,
   isDriverMessage,
   MAX_DRIVER_VALUE_CHARS,
   MAX_DRIVER_VALUES,
@@ -45,8 +47,12 @@ describe('parseDriverPrompt', () => {
     expect(parseDriverPrompt('add it @driver please').goal).toBe('add it please')
   })
 
-  it('no quotes → no values', () => {
-    expect(parseDriverPrompt('@driver add the blue Aurora mug to my cart').values).toEqual({})
+  it('no quotes → the goal\'s candidate phrases instead (goalPhrases)', () => {
+    expect(parseDriverPrompt('@driver add the blue Aurora mug to my cart').values).toEqual({ phrase: 'blue Aurora mug' })
+  })
+
+  it('a quoted value means no phrases at all', () => {
+    expect(parseDriverPrompt('@driver search "wireless headphones" and add the cheapest to my cart').values).toEqual({ search: 'wireless headphones' })
   })
 
   it('keys a value by the word right before its opening quote, lowercased to [a-z0-9_]', () => {
@@ -90,8 +96,44 @@ describe('parseDriverPrompt', () => {
     expect(parseDriverPrompt(`@driver note "${long}"`).values.note).toHaveLength(MAX_DRIVER_VALUE_CHARS)
   })
 
-  it('an unclosed quote is not a value', () => {
-    expect(parseDriverPrompt('@driver search "wireless').values).toEqual({})
+  it('an unclosed quote is not a value (the text is offered as a phrase instead)', () => {
+    expect(parseDriverPrompt('@driver search "wireless').values).toEqual({ phrase: 'wireless' })
+  })
+})
+
+describe('goalPhrases (unquoted text, offered for a search box)', () => {
+  it('the thing to find, without verb, determiner or the cart', () => {
+    expect(goalPhrases('add the blue Aurora mug to my cart')).toEqual({ phrase: 'blue Aurora mug' })
+    expect(goalPhrases('add the Halo noise-cancelling wireless headphones to my cart')).toEqual({ phrase: 'Halo noise-cancelling wireless headphones' })
+  })
+  it('splits on connector words and keeps every chunk that names something, in order', () => {
+    const p = goalPhrases('search wireless headphones and add the cheapest under $100 to my cart')
+    expect(Object.values(p)).toContain('wireless headphones')
+    expect(p).toEqual({ phrase: 'wireless headphones', phrase_2: 'cheapest', phrase_3: '$100' })
+    expect(goalPhrases('find a hotel in Paris for 2 nights')).toEqual({ phrase: 'hotel', phrase_2: 'Paris', phrase_3: '2 nights' })
+  })
+  it('"of" is not a connector', () => {
+    expect(goalPhrases('order a pair of running socks')).toEqual({ phrase: 'pair of running socks' })
+  })
+  it('strips several leading verbs and determiners, case-insensitively, but not inside the phrase', () => {
+    expect(goalPhrases('Go find me THE Orbit speaker')).toEqual({ phrase: 'Orbit speaker' })
+    expect(goalPhrases('pick the one that you like')).toEqual({ phrase: 'one that you like' })
+  })
+  it('drops empty, stopword-only and cart/checkout/basket chunks', () => {
+    expect(goalPhrases('add it to the cart')).toEqual({})
+    expect(goalPhrases('go to checkout')).toEqual({})
+    expect(goalPhrases('put the mug in my shopping basket')).toEqual({ phrase: 'mug' })
+    expect(goalPhrases('click on it, then go')).toEqual({})
+  })
+  it('splits on sentence punctuation but not inside a price, and trims quotes and brackets', () => {
+    expect(goalPhrases('buy the $12.99 mug. then checkout')).toEqual({ phrase: '$12.99 mug' })
+    expect(goalPhrases('find (Aurora mug), and stop')).toEqual({ phrase: 'Aurora mug', phrase_2: 'stop' })
+  })
+  it('dedupes case-insensitively and caps the count', () => {
+    expect(goalPhrases('find mugs and MUGS with Mugs')).toEqual({ phrase: 'mugs' })
+    const p = goalPhrases('red and green and blue and white and black')
+    expect(Object.keys(p)).toHaveLength(MAX_DRIVER_PHRASES)
+    expect(p).toEqual({ phrase: 'red', phrase_2: 'green', phrase_3: 'blue', phrase_4: 'white' })
   })
 })
 

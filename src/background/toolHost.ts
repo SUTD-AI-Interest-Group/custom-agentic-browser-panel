@@ -176,7 +176,9 @@ async function execute(job: ChatRun, requestId: string, signal: AbortSignal) {
       // A `@driver` run (job.driver) reads Driver whatever on-mode the settings hold — the panel
       // applies the same override to the schemas it sent — and Off still means off.
       const deciderSettings = withDriverOverride(settings.decider, job.driver !== undefined)
-      const decider = forwardDeciderHooks({ conversationId: job.conversationId, settings: () => deciderSettings, modelReady: readModelReady })
+      // `driverRun` also tells FastSteps to use the larger token cap and to card an unsure point of
+      // no return (the user sent this message to the decider: there is no chat model to hand back to).
+      const decider = forwardDeciderHooks({ conversationId: job.conversationId, settings: () => deciderSettings, modelReady: readModelReady, driverRun: job.driver !== undefined })
       await decider.resolveMode()
       runtime.tools = createAgentTools(approve, settings.tabAccess, await grantedCapabilities(), {
         session: () => sessions.get(chainId) ?? null,

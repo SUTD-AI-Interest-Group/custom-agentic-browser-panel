@@ -17,7 +17,8 @@
 //  5. the banded gate October measured (a0df0e2^:src/system1/actLoop.ts): at or above the threshold
 //     a step acts; between 0.4 and the threshold it acts only if it is NOT a point of no return;
 //     below 0.4 it hands back. `done` always needs the full threshold — the chat model will act
-//     on that claim.
+//     on that claim. A `@driver` run (`cardTentative`) puts a tentative point of no return to the
+//     user on the one-shot card, which says the model is unsure, instead of handing it back.
 //  6. repeat exclusion (spec §3): an immediate repeat of the last action — the same (op, index) on
 //     the same page, at an element that has not changed — excludes the pair and asks once more:
 //     "not that one again" is a change to the options, not a hope about the model. (A target-less
@@ -144,8 +145,17 @@ export interface DriverDeps {
   readPageText(): Promise<string | null>
   decide(i: { snap: PageSnapshot; pageText: string | null; exclude: OpRef[] }): Promise<DriverDecideOutcome>
   isPointOfNoReturn(spec: ControlSpec, el: IndexedElement | undefined): boolean
-  /** The one-shot approval card. */
-  approve(spec: ControlSpec, el: IndexedElement | undefined): Promise<boolean>
+  /**
+   * The one-shot approval card. `unsure` is passed only for a `cardTentative` run's point of no
+   * return in the tentative band — the card must then say the model is unsure, with this p.
+   */
+  approve(spec: ControlSpec, el: IndexedElement | undefined, unsure?: { p: number }): Promise<boolean>
+  /**
+   * A `@driver` run (the user sent the message to the decider; no chat model to hand back to): a
+   * point of no return in the tentative band (DRIVER_TRY_THRESHOLD ≤ p < threshold) raises the
+   * one-shot card instead of handing back. Absent = the chat model's FastSteps, unchanged.
+   */
+  cardTentative?: boolean
   hasElementChanged(before: IndexedElement | undefined, after: IndexedElement | undefined): boolean
   act(spec: ControlSpec, snap: PageSnapshot, o: { settle: 'quick' | 'full'; approved: boolean }): Promise<DriverActOutcome>
 }
@@ -255,7 +265,7 @@ export async function runDriverLoop(deps: DriverDeps): Promise<DriverResult> {
       if (!(best.p >= DRIVER_TRY_THRESHOLD))
         return end({ status: 'handback', reason: 'unsure', message: `Unsure of the next step (p=${best.p.toFixed(2)}).` }, true)
       por = deps.isPointOfNoReturn(specOf(best), findEl(snap, best.index))
-      if (!(best.p >= deps.threshold) && por)
+      if (!(best.p >= deps.threshold) && por && !deps.cardTentative)
         return end({ status: 'handback', reason: 'unsure', message: `Not sure enough (p=${best.p.toFixed(2)}) for a risky step: ${target(best)}.` }, true)
       // (Re-classified on the live element right before acting — step 8.)
 
@@ -305,11 +315,14 @@ export async function runDriverLoop(deps: DriverDeps): Promise<DriverResult> {
     let carded = false
     for (;;) {
       if (por && !carded) {
-        if (!(top.p >= deps.threshold))
+        // Unsure of a risky step: hand back — or, on a `@driver` run, put it to the user on the
+        // same one-shot card, which says so. The stale re-check below runs either way.
+        const unsure = !(top.p >= deps.threshold)
+        if (unsure && !deps.cardTentative)
           return end({ status: 'handback', reason: 'unsure', message: `Not sure enough (p=${top.p.toFixed(2)}) for a risky step: ${target(top)}.` }, true)
         let approved: boolean
         try {
-          approved = await deps.approve(spec, el)
+          approved = await (unsure ? deps.approve(spec, el, { p: round(top.p) }) : deps.approve(spec, el))
         } catch (err) {
           if (deps.aborted()) return end(STOPPED)
           throw err
