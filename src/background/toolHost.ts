@@ -7,7 +7,7 @@ import { clearRegions } from '../platform/regionIndex'
 import { createAgentTools, type ApprovalRequest } from '../tools/tools'
 import type { ControlSession } from '../tools/pageControl'
 import { activeChatRun, chatRunChanges, getChatRun, updateChatRun, type ChatRun } from '../data/chatRuns'
-import { loadSettings, toolPolicy } from '../data/settings'
+import { createSettingsReader, toolPolicy } from '../data/settings'
 import { grantedCapabilities } from '../platform/permissions'
 import { splitPartnerOf } from '../platform/splitView'
 import { getMcpManager } from '../mcp/manager'
@@ -19,6 +19,9 @@ import { forwardDeciderHooks } from '../decider/relay'
 import { readModelReady } from '../decider/modelStatus'
 import { withDriverOverride } from '../decider/config'
 
+// Every tool call and approval check re-reads settings (a policy edit must apply at once); this
+// reader skips the vault decrypt while the stored record is unchanged.
+const loadSettings = createSettingsReader()
 const executing = new Map<string, AbortController>()
 const sessions = new Map<string, ControlSession>()
 const chains = new Map<string, string>()
@@ -74,6 +77,15 @@ export function installToolHost() {
         chains.delete(msg.conversationId)
       }
       reply({ ok: true })
+      return
+    }
+    // The panel's view of this conversation's page-control session. Under durable chat the session
+    // lives only here, where the tools execute, so the panel asks — to skip compaction while one is
+    // open, to load the control cluster on a new chain, and for the agent-state block.
+    if (msg?.type === 'chat.control.status' && sender.url === chrome.runtime.getURL('sidepanel.html')) {
+      const chain = chains.get(msg.conversationId)
+      const session = chain ? sessions.get(chain) : undefined
+      reply({ session: session?.active ? { plan: session.plan, actions: session.journal?.length ?? 0 } : null })
       return
     }
     if (msg?.type === 'chat.approval.decide' && sender.url === chrome.runtime.getURL('sidepanel.html')) {
@@ -184,8 +196,17 @@ async function execute(job: ChatRun, requestId: string, signal: AbortSignal) {
         session: () => sessions.get(chainId) ?? null,
         endSession: () => endSession(chainId, job.conversationId),
         requestSession: async ({ plan, host, origin, tabId }) => {
-          const yes = await approve({ toolName: 'RequestPageControl', summary: `Control ${host}`, reason: plan, once: true })
-          if (yes) sessions.set(chainId, { plan, origin, tabId, active: true })
+          // Close out an open session before offering a new one. Overwriting it in the map would
+          // orphan it: its undo journal never posted, its overlay and DOM stamps left on the old tab,
+          // and a FastSteps run on it no longer reachable by session().
+          endSession(chainId, job.conversationId)
+          const yes = await approve({ toolName: 'RequestPageControl', summary: `Control ${host}`, reason: plan, once: true, session: { plan, host } })
+          if (yes) {
+            // A concurrent RequestPageControl in the same step may have been granted while this card
+            // waited; end it too rather than overwrite it.
+            endSession(chainId, job.conversationId)
+            sessions.set(chainId, { plan, origin, tabId, active: true })
+          }
           return yes
         },
       }, provider ? { provider, modelId: job.modelId } : null, job.visionCapable ?? false, images,

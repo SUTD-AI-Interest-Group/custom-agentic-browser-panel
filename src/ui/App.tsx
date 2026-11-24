@@ -2,7 +2,7 @@ import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react'
 import { CHAT_OWNER } from '../agent/durableChat'
 import { seedBuiltinSkills } from '../data/builtinSkills'
 import { getChatRun } from '../data/chatRuns'
-import { listConversations, type ConversationSummary } from '../data/conversations'
+import { conversationChanges, listConversations, type ConversationSummary } from '../data/conversations'
 import type { ResearchTask } from '../data/researchTasks'
 import { loadSettings, saveSettings, type Settings } from '../data/settings'
 import { getMcpManager } from '../mcp/manager'
@@ -213,6 +213,10 @@ export default function App() {
     // the user has been away.
     void import('../agent/dream').then(({ dreamIfDue }) => dreamIfDue()).catch(() => {})
     refreshConversations()
+    // A write from anywhere — this panel, another window, the offscreen host finishing a closed
+    // panel's chat — re-reads the (summary-only) list, so neither the history menu nor the Library
+    // ever shows a stale title, count or order.
+    return conversationChanges.subscribe(() => refreshConversations())
   }, [refreshConversations])
 
   // Cross-window Settings sync. Chrome side panels are per-window, and each
@@ -725,6 +729,7 @@ export default function App() {
           onOpenConversation={openConversation}
           onOpenResearch={openResearch}
           onConversationsChanged={refreshConversations}
+          conversationsRevision={conversations}
           onClose={() => setSurface('chat')}
         />
       )}

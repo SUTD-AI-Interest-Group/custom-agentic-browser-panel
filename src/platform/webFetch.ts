@@ -1,4 +1,4 @@
-import { parseExtractionHtml, htmlElements, htmlText, htmlAttr, hasHtmlClass, closestHtml, nextHtmlSibling, findHtml } from './extractionHtml'
+import { parseExtractionHtml, htmlElements, htmlText, htmlAttr, hasHtmlClass, closestHtml, nextHtmlSibling, findHtml, loadExtractionParser } from './extractionHtml'
 
 /**
  * Tolerant JSON parse for model output that may be fenced or wrapped in prose.
@@ -205,7 +205,9 @@ export async function searchDuckDuckGo(
       // escalate on (rather than the generic one, which reads as a dead end).
       if (res.status === 202 || res.status === 429) { await sleep(400 * (attempt + 1)); continue }
       if (!res.ok) return { error: `search failed: HTTP ${res.status}` }
-      const results = parseDuckDuckGoLite(await res.text()).slice(0, Math.min(maxResults, 20))
+      const page = await res.text()
+      await loadExtractionParser()
+      const results = parseDuckDuckGoLite(page).slice(0, Math.min(maxResults, 20))
       return { results }
     } catch (err) {
       if (attempt === 2) return { error: `search error: ${err instanceof Error ? err.message : String(err)}` }
@@ -257,6 +259,7 @@ export async function fetchReadable(
     if (/application\/pdf/i.test(ct)) return { error: PDF_CONTENT }
     if (!/text\/html|text\/plain|application\/xhtml/i.test(ct)) return { error: `unsupported content-type: ${ct}` }
     const body = await readCapped(res, MAX_BYTES)
+    await loadExtractionParser()
     const { title, text } = extractReadableText(body)
     return { url: res.url, title, text }
   } catch (err) {

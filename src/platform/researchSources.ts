@@ -1,4 +1,4 @@
-import { parseExtractionHtml, htmlElements, htmlText, htmlAttr, closestHtml, findHtml } from './extractionHtml'
+import { parseExtractionHtml, htmlElements, htmlText, htmlAttr, closestHtml, findHtml, loadExtractionParser } from './extractionHtml'
 // Keyless, attribution-first extra modalities for the research agent: academic
 // search (OpenAlex), image search (Wikimedia Commons + Openverse), and harvesting
 // <img> assets from a page. Network helpers never throw — they return {error} or
@@ -241,6 +241,7 @@ export async function harvestImages(url: string, signal?: AbortSignal): Promise<
     const ct = res.headers.get('content-type') ?? ''
     if (!/text\/html|application\/xhtml/i.test(ct)) return { error: `not an HTML page: ${ct}` }
     const html = (await res.text()).slice(0, 2_000_000)
+    await loadExtractionParser()
     return { results: parseImgTags(html, res.url) }
   } catch (err) {
     return { error: `harvest error: ${err instanceof Error ? err.message : String(err)}` }

@@ -1,5 +1,5 @@
 // @vitest-environment node
-import { expect, test } from 'vitest'
+import { beforeAll, expect, test } from 'vitest'
 import {
   extractReadableText,
   parseDuckDuckGoHtml,
@@ -7,6 +7,10 @@ import {
 } from './webFetch'
 import { parseImgTags } from './researchSources'
 import { parseOpenGraph } from './linkPreview'
+import { loadExtractionParser } from './extractionHtml'
+
+// The parsers are synchronous once parse5 is loaded; production callers await this first.
+beforeAll(loadExtractionParser)
 
 test('all fetched-HTML extraction works without a browser DOM', () => {
   expect(typeof DOMParser).toBe('undefined')

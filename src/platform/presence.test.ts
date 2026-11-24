@@ -67,7 +67,7 @@ describe('unmountAllPresence — scoped sweep (d11 F8 / W2-A F7)', () => {
 
     // Its OWN session ending still tears it down precisely, on demand.
     calls.length = 0
-    await unmountPresence(511) // Chat.tsx's teardownSession, via pageControl's endSession
+    await unmountPresence(511) // toolHost.ts's endSession, when its chain is released
     expect(calls.some((c) => c.fn === 'injUnmount' && c.tabId === 511)).toBe(true)
   })
 

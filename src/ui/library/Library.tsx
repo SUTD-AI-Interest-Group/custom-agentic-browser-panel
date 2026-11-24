@@ -26,6 +26,7 @@ export default function Library({
   onOpenConversation,
   onOpenResearch,
   onConversationsChanged,
+  conversationsRevision,
   onClose,
 }: {
   onLoadRemoteSkill?: (text: string) => void
@@ -37,6 +38,8 @@ export default function Library({
   onOpenResearch: (task: ResearchTask) => void
   /** Called after a conversation is deleted so App refreshes its history menu. */
   onConversationsChanged: () => void
+  /** Changes whenever App's conversation list does; the Chats tab re-reads on it. */
+  conversationsRevision?: unknown
   onClose: () => void
 }) {
   return (
@@ -56,6 +59,7 @@ export default function Library({
           currentConversationId={currentConversationId}
           onOpen={onOpenConversation}
           onConversationsChanged={onConversationsChanged}
+          revision={conversationsRevision}
         />
       )}
       {tab === 'skills' && <><SkillsList /><RemoteSkills onLoad={onLoadRemoteSkill}/></>}

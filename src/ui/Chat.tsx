@@ -6,9 +6,9 @@ import { generateText } from 'ai'
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { TraceSink } from '../agent/agent'
 import { type Checkpoint, type MessageSource, type QueuedImage, type UIMessage, type UIPart } from '../agent/agent'
-import { applyCompaction, estimateHistoryTokens, planCompaction } from '../agent/compaction'
+import { applyCompaction, estimateHistoryTokens, planCompaction, rebaseAfterCompaction } from '../agent/compaction'
 import { CHAT_OWNER, runDurableChat } from '../agent/durableChat'
-import { repairMessageText, type Complete } from '../agent/mathRepair'
+import type { Complete } from '../agent/mathRepair'
 import { getObserver } from '../agent/observability'
 import { createModel, generateChatTitle } from '../agent/provider'
 import { frameResearch, type ResearchFramingResult } from '../agent/researchFraming'
@@ -28,7 +28,7 @@ import {
 } from '../data/attachmentRefs'
 import { getAttachment } from '../data/attachments'
 import { observeChanges } from '../data/changeSignal'
-import { activeChatRun, chatRunChanges, chatRunMessages, getChatRun, type ChatRun } from '../data/chatRuns'
+import { activeChatRun, chatRunChanges, chatRunMessages, getChatRun, updateChatRun, type ChatRun } from '../data/chatRuns'
 import { getConversation, getInFlight, renameConversation, saveConversation, sweepInFlight, type InFlightTurn, type RegenTarget } from '../data/conversations'
 import { listMcpTasks, mcpConfigHash, updateMcpTask } from '../data/mcpTasks'
 import { appendToEpisode, getMemoryContext } from '../data/memory'
@@ -60,18 +60,16 @@ import { getMcpManager, type McpPromptArgInfo } from '../mcp/manager'
 import { buildMcpTools } from '../mcp/tools'
 import { cancelRegionCapture, captureRegion, type CapturedImage } from '../platform/capture'
 import { COMPOSER_ACTION_MSG, drainComposerAction, type ComposerAction } from '../platform/composerActions'
-import { clearIndex } from '../platform/domIndex'
 import { clearAllHighlights } from '../platform/highlight'
 import { OFFICE_ACCEPT } from '../platform/officeText'
 import { PageAccessError } from '../platform/pageAccess'
 import { restoreValue } from '../platform/pageActions'
 import { loadPdf } from '../platform/pdf'
 import { grantedCapabilities, type BrowsingCapability } from '../platform/permissions'
-import { unmountAllPresence, unmountPresence } from '../platform/presence'
-import { clearRegions } from '../platform/regionIndex'
+import { unmountAllPresence } from '../platform/presence'
 import { isTabShowing, showingTabsIn, splitPartnerOf } from '../platform/splitView'
+import { latestReads, readScreen, type ScreenState, type TabInfo } from './screenState'
 import { getActiveTab, listOpenTabs, readTabContent, type TabContent, type TabSummary } from '../platform/tabs'
-import { type ControlSession } from '../tools/pageControl'
 import { revertableEntries, type ControlJournalEntry } from '../tools/pageControlJournal'
 import { createAgentTools, type ApprovalRequest, type PageControlGate } from '../tools/tools'
 import { ApprovalCard, ContextPills, ContinuationCard, ConversationUsageLine, FileKindIcon, MessageView, RecoveryCard, ResearchDock, ResearchSheet, type ContextTab } from './ChatViews'
@@ -97,7 +95,7 @@ import { clearDraft, loadDraft, saveDraft } from './drafts'
 import { CONTINUE_WITH_CHAT_MODEL, driverContinueOffered, driverSendBlock, driverSpecFromTranscript, enqueueSpec, regenSource } from './driverTurn'
 import { useDismissOnOutside } from './hooks'
 import { createLatestRequest } from './latestRequest'
-import { hasUncompilableMath } from './mathRepairFilter'
+import { normalizeMathDelimiters } from './mathDelimiters'
 import { recentContext } from './recentContext'
 import { buildRetryNote } from './regenerate'
 import { isNearBottom } from './scrollStick'
@@ -235,10 +233,6 @@ Capabilities to load when needed: HighlightContent (scroll to and mark the passa
  * silently replacing it (see requestApproval below).
  */
 interface PendingApproval extends ApprovalRequest {
-  /** Set only for a RequestPageControl session card — branches the rendered
-   *  card to the "Let the agent control host?" variant instead of an
-   *  ordinary tool-approval summary (see pageControl.requestSession below). */
-  session?: { plan: string; host: string }
   /** This request's identity in approvalQueueRef (ApprovalQueue.frontId),
    *  merged in at read time — never stored on the queue's own copy of the
    *  request. The button handlers close over it and carry it through to
@@ -254,12 +248,19 @@ interface PendingApproval extends ApprovalRequest {
  */
 type ApprovalReq = Omit<PendingApproval, 'id'>
 
-interface CurrentTabInfo {
-  tabId: number
-  title: string
-  url: string
-  favIconUrl?: string
+type CurrentTabInfo = TabInfo
+
+// The panel's ToolSet supplies only the schemas the model sees: every tool call executes in the
+// service worker, whose PageControlGate (src/background/toolHost.ts) owns the session, its
+// session card and its teardown. This gate exists to satisfy createAgentTools' signature and
+// is never reached; the panel reads the worker's session over `chat.control.status`
+// (readWorkerControl) wherever it needs one. Fails loudly rather than pretend a session opened.
+const SCHEMA_ONLY_PAGE_CONTROL: PageControlGate = {
+  requestSession: () => Promise.reject(new Error('Page control runs in the service worker (toolHost.ts), not the side panel.')),
+  session: () => null,
+  endSession: () => {},
 }
+
 
 /**
  * A steer the user injected while the agent was working, awaiting the running
@@ -599,6 +600,9 @@ function ToolsMenuBody({
 
 /** Close a popover on outside-click or Esc. Listens only while it is open. */
 
+/** Tools whose completion can open, advance or end a page-control session. */
+const PAGE_CONTROL_TOOLS = new Set(['RequestPageControl', 'ControlPage', 'AutofillForm', 'FastSteps'])
+
 export default function Chat({
   conversationId,
   settings,
@@ -849,8 +853,6 @@ export default function Chat({
   // describes the turn the user can still see the tail of. State, not a ref: the
   // button's presence is rendered from it.
   const [regenTarget, setRegenTarget] = useState<RegenTarget | null>(null)
-  // The open page-control session (RequestPageControl → ControlPage), if any.
-  const pageSessionRef = useRef<ControlSession | null>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
   // Whether the transcript should keep following new content (see scrollStick.ts).
   // Starts true — a freshly opened chat is at its own bottom — and flips with the
@@ -921,11 +923,24 @@ export default function Chat({
 
   // Live screen state for the agent-state block, in a ref so `prepareStep` can
   // read it synchronously on every step without a chrome.tabs round-trip.
-  const screenRef = useRef<{
-    onScreen: CurrentTabInfo[]
-    boundTab: CurrentTabInfo | null
-    boundOnScreen: boolean
-  }>({ onScreen: [], boundTab: null, boundOnScreen: true })
+  const screenRef = useRef<ScreenState>({ onScreen: [], boundTab: null, boundOnScreen: true })
+  const [screenReads] = useState(() => latestReads<ScreenState>((state) => { screenRef.current = state }))
+  const refreshScreen = () => screenReads.start(() => readScreen(boundTabId))
+
+  // The service worker's page-control session for this conversation. The tools execute in the
+  // worker (toolHost.ts) and the session lives only there, so compaction, the control-cluster
+  // seeding and the agent-state block ask it.
+  const workerControlRef = useRef<{ plan: string; actions: number } | null>(null)
+  async function readWorkerControl(): Promise<{ plan: string; actions: number } | null> {
+    const reply = (await chrome.runtime.sendMessage({ type: 'chat.control.status', conversationId }).catch(() => null)) as
+      | { session?: { plan?: unknown; actions?: unknown } | null }
+      | null
+      | undefined
+    const s = reply?.session
+    workerControlRef.current =
+      s && typeof s.plan === 'string' && typeof s.actions === 'number' ? { plan: s.plan, actions: s.actions } : null
+    return workerControlRef.current
+  }
 
   // What the most recent user message's "[Open on screen right now: …]" line
   // claimed — the baseline the agent-state block measures drift against. Written
@@ -1125,6 +1140,15 @@ export default function Chat({
       const run = await getChatRun(conversationId)
         if (!alive || !run || run.owner === CHAT_OWNER) return
         if (activeChatRun(run)) {
+          // The panel that started this run is gone (a reload, an extension update), so this one is
+          // now the watcher. Keep the run's liveness lease: the worker reads an expired one as "no
+          // panel is showing this" and raises OS notifications for a chat that is on screen. Renewed
+          // only near expiry, so the write's own change event does not trigger another write.
+          if (run.ownerUntil < Date.now() + 2500) {
+            void updateChatRun(conversationId, (old) =>
+              old?.id === run.id && old.owner !== CHAT_OWNER && activeChatRun(old) ? { ...old, ownerUntil: Date.now() + 7000 } : old,
+            ).catch(() => {})
+          }
           if (Date.now() - checkedAt > 5000) {
             checkedAt = Date.now()
             void chrome.runtime.sendMessage({ type: 'chat.inspect', conversationId }).catch(() => {})
@@ -1598,52 +1622,30 @@ export default function Chat({
   // what is on screen right now, and whether the tab this chat's page tools are
   // pinned to is among it.
   //
-  // Deliberately NOT gated on `hidden`, unlike the context-pill effect above.
-  // That guard exists so a background chat never DISPLAYS — or silently attaches
-  // — a page this conversation was never about. Neither risk applies here: this
-  // ref is never rendered and never attached, and it exists precisely to tell a
-  // RUNNING turn where its bound tab actually is. A hidden chat is the case that
-  // matters most, because "the user walked away mid-turn" is what hides it.
+  // Gated on "visible OR a turn is running" — not on `hidden` alone, unlike the
+  // context-pill effect above. That guard exists so a background chat never
+  // DISPLAYS — or silently attaches — a page this conversation was never about.
+  // Neither risk applies here: this ref is never rendered and never attached, and
+  // it exists precisely to tell a RUNNING turn where its bound tab actually is. A
+  // hidden running chat is the case that matters most, because "the user walked
+  // away mid-turn" is what hides it. A hidden IDLE chat has no reader at all
+  // (only prepareStep's agentState reads the ref), so it stops listening: the
+  // panel keeps several chats mounted, and each one re-querying the window on
+  // every tab switch bought nothing. A chain refreshes the ref itself before its
+  // first step (runTurnChain), so a turn that starts in a hidden chat never
+  // reports the screen as it was when that chat was last watching.
   //
   // Written to a ref rather than state on purpose: it changes on every tab
   // switch, and re-rendering the whole transcript for a fact only prepareStep
   // reads would be a needless render storm during a long turn.
+  const screenTracking = !hidden || streaming
   useEffect(() => {
-    let cancelled = false
-    const info = (t: chrome.tabs.Tab): CurrentTabInfo => ({
-      tabId: t.id as number,
-      title: t.title ?? '(untitled)',
-      url: t.url ?? '',
-      favIconUrl: t.favIconUrl,
-    })
-    const refresh = async () => {
-      const [focused] = await chrome.tabs.query({ active: true, lastFocusedWindow: true })
-      const showing =
-        focused?.windowId === undefined ? [] : await showingTabsIn(focused.windowId)
-      if (cancelled) return
-      const listed = showing.filter((t) => t.id !== undefined).map(info)
-      // showingTabsIn collapses to the active tab on Chrome < 140; fall back to
-      // the focused tab so a pre-split browser still reports one page rather than
-      // none, which would read as "nothing on screen".
-      const onScreen =
-        listed.length > 0 ? listed : focused?.id !== undefined ? [info(focused)] : []
-      const boundOnScreen =
-        boundTabId === undefined || onScreen.some((t) => t.tabId === boundTabId)
-      // Resolved only when the bound tab is NOT on screen — that is the only case
-      // the block reports, so the common path costs no extra tabs call at all.
-      let boundTab: CurrentTabInfo | null = null
-      if (boundTabId !== undefined && !boundOnScreen) {
-        const t = await chrome.tabs.get(boundTabId).catch(() => undefined)
-        if (cancelled) return
-        boundTab = t?.id !== undefined ? info(t) : null
-      }
-      screenRef.current = { onScreen, boundTab, boundOnScreen }
-    }
-    void refresh()
-    const on = () => void refresh()
+    if (!screenTracking) return
+    const on = () => void refreshScreen()
+    on()
     const onUpdated = (_id: number, ci: chrome.tabs.TabChangeInfo) => {
       const split = (ci as { splitViewId?: number }).splitViewId !== undefined
-      if (ci.title || ci.status === 'complete' || split) void refresh()
+      if (ci.title || ci.status === 'complete' || split) on()
     }
     chrome.tabs.onActivated.addListener(on)
     chrome.tabs.onUpdated.addListener(onUpdated)
@@ -1651,14 +1653,15 @@ export default function Chat({
     chrome.tabs.onDetached.addListener(on)
     chrome.tabs.onAttached.addListener(on)
     return () => {
-      cancelled = true
       chrome.tabs.onActivated.removeListener(on)
       chrome.tabs.onUpdated.removeListener(onUpdated)
       chrome.tabs.onRemoved.removeListener(on)
       chrome.tabs.onDetached.removeListener(on)
       chrome.tabs.onAttached.removeListener(on)
     }
-  }, [boundTabId])
+    // refreshScreen reads boundTabId, the only input that changes what it computes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [boundTabId, screenTracking])
 
   // Drive dock-bar expiry: while any terminal task is still within its linger
   // window, tick `now` once a second so the derived dock list re-filters and
@@ -1756,34 +1759,9 @@ export default function Chat({
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight })
   }, [approval])
 
-  // Tear down any open session: clear the ref, hide the session card, and
-  // strip the on-page index stamps. Shared by endSession and by the start of
-  // requestSession, which must close out a stale session before opening a
-  // new one (otherwise the old tab keeps its data-agent-idx stamps).
-  //
-  // BOTH registries have to be cleared, not just the interactive one:
-  // ReadPage(mode:'regions') deliberately skips its approval card while a
-  // session already owns the tab (tools.ts), so a session can stamp
-  // data-agent-region as well as data-agent-idx. Clearing only the latter left
-  // region stamps on the user's live page indefinitely after the agent was
-  // done with it.
-  function teardownSession() {
-    const s = pageSessionRef.current
-    pageSessionRef.current = null
-    if (s) {
-      // Surface what the session did, before the session object goes away.
-      // The card holds the entries (redacted) plus the raw undo state, which
-      // lives ONLY here in component memory and dies with the card — see
-      // pageControlJournal.ts's lifetime split. Nothing is written to disk.
-      if (s.journal && s.journal.length > 0) {
-        setControlJournal({ tabId: s.tabId, entries: s.journal, undoState: s.undoState ?? new Map() })
-      }
-      void clearIndex(s.tabId)
-      void clearRegions(s.tabId)
-      void unmountPresence(s.tabId)
-    }
-  }
-
+  // What a page-control session did, posted by the worker as its session ends (toolHost.ts's
+  // endSession). The card holds the redacted entries plus the raw undo state, which lives only in
+  // this component's memory and dies with the card — see pageControlJournal.ts's lifetime split.
   useEffect(() => {
     const receive = (msg: { type?: string; conversationId?: string; tabId?: number; entries?: ControlJournalEntry[]; undo?: [number, { value: string; kind: 'type' | 'select' }][] }) => {
       if (msg.type !== 'chat.control.journal' || msg.conversationId !== conversationId || msg.tabId === undefined || !msg.entries?.length) return
@@ -1792,34 +1770,6 @@ export default function Chat({
     chrome.runtime.onMessage.addListener(receive)
     return () => chrome.runtime.onMessage.removeListener(receive)
   }, [conversationId])
-
-  // Real page-control gate: RequestPageControl suspends on a session card
-  // (reusing the approval-card machinery, branched to the session variant via
-  // PendingApproval.session); ControlPage reads/mutates the ref-backed session
-  // directly. Goes through the same approvalQueueRef as requestApproval below
-  // — a RequestPageControl call is just another gated request that must queue
-  // behind whatever's already pending rather than clobber it.
-  const pageControl: PageControlGate = {
-    requestSession: ({ plan, host, origin, tabId }) => {
-      // Close out any previously-open session before offering a new one.
-      if (pageSessionRef.current) teardownSession()
-      const promise = approvalQueueRef.current.request({
-        toolName: 'RequestPageControl',
-        summary: `Control ${host}`,
-        reason: plan,
-        session: { plan, host },
-      })
-      // Reuse the approval card machinery, but branch the UI to a session
-      // card whenever this request is the one actually shown.
-      setApproval(frontApproval())
-      return promise.then((approved) => {
-        if (approved) pageSessionRef.current = { tabId, origin, plan, active: true }
-        return approved
-      })
-    },
-    session: () => pageSessionRef.current,
-    endSession: teardownSession,
-  }
 
   // MCP App cards can act after their turn is over (a button in the app, a
   // status poll). Tool calls route through the same policy + approval card as
@@ -3156,6 +3106,9 @@ export default function Chat({
     // long-forgotten bound tab.
     setParkedReason(null)
     setTurnStartedAt(ctx.startedAt)
+    // The agent-state block's screen facts: a hidden idle chat stops tracking the screen (see the
+    // screen-state effect), so read it now, alongside the preparation below rather than ahead of it.
+    void refreshScreen()
 
     // Re-plan every historical attachment against the provider active for THIS
     // chain. The mount-restore effect above only re-plans on conversation load,
@@ -3255,8 +3208,9 @@ export default function Chat({
       activeNames.add('RequestPageControl')
       activeNames.add('FastSteps')
     }
-    const openSession = pageControl.session()
-    if (openSession && openSession.active) {
+    // The worker's session, read once here for both seedings (this one and FastSteps' below).
+    const openSession = await readWorkerControl()
+    if (openSession) {
       activeNames.add('RequestPageControl')
       activeNames.add('ControlPage')
       activeNames.add('AutofillForm')
@@ -3280,7 +3234,15 @@ export default function Chat({
 
     // Patch one assistant bubble: its parts are `base` (prior cycles, in merge
     // mode) followed by this cycle's streamed parts.
+    // Re-read the worker's session whenever another page-control call finishes, so the agent-state
+    // block's plan/action count follows the session instead of freezing at chain start.
+    let controlCallsDone = 0
     const patch = (id: string, base: UIPart[]) => (parts: UIPart[]) => {
+      const done = parts.filter((p) => p.type === 'tool' && p.state === 'done' && PAGE_CONTROL_TOOLS.has(p.toolName)).length
+      if (done !== controlCallsDone) {
+        controlCallsDone = done
+        void readWorkerControl()
+      }
       setMessages((m) => m.map((msg) => (msg.id === id ? { ...msg, parts: [...base, ...parts] } : msg)))
       // Checkpoint alongside the stream, so an interrupted turn is recoverable
       // to within the debounce window rather than lost entirely. Reads
@@ -3376,7 +3338,7 @@ export default function Chat({
     // in Driver mode with the model ready, FastSteps is part of that cluster too, as the grant
     // would have made it. Only a name — prepareStep intersects activeNames with the real ToolSet,
     // so a FastSteps that policy removed is never offered.
-    if (openSession && openSession.active && decider.mode() === 'driver') activeNames.add('FastSteps')
+    if (openSession && decider.mode() === 'driver') activeNames.add('FastSteps')
     // Raised by a page tool that needs this chat's tab in front (see PageTarget
     // in tools.ts). Chain-scoped like imageQueue, but CLEARED at the top of each
     // cycle: a park ends one cycle, and the cycle that resumes when the user
@@ -3458,8 +3420,8 @@ export default function Chat({
      * generation, not reasoning work.
      */
     const compactHistory = async (): Promise<boolean> => {
-      const session = pageControl.session()
-      if (session && session.active) return false
+      // `[index]` addresses are meaningless without the registry output that produced them.
+      if (await readWorkerControl()) return false
       const plan = planCompaction(historyRef.current)
       if (!plan) return false
       const namer = getTitleProvider(settingsRef.current)
@@ -3468,6 +3430,13 @@ export default function Chat({
         : createModel(model.provider, model.modelId)
       const summary = await summarizeSpan(summarizer, plan.fold)
       historyRef.current = applyCompaction(plan, summary)
+      // Regenerate's undo point is an offset into the history that was just rewritten: rebase it,
+      // or drop it if this turn's own opener was folded (there is no pre-turn state left to return to).
+      setRegenTarget((t) => {
+        if (!t) return t
+        const historyLen = rebaseAfterCompaction(t.historyLen, plan)
+        return historyLen === null ? null : { ...t, historyLen }
+      })
       const folded = plan.fold.length
       // Cumulative across the conversation, not per chain: the model-facing
       // history keeps whatever earlier folds already removed, so the honest
@@ -3493,6 +3462,8 @@ export default function Chat({
     chrome.runtime.onMessage.addListener(deciderRelay)
 
     try {
+      // The first step's agent-state block must describe the screen now, not when this chat last watched it.
+      await screenReads.settled()
       while (true) {
         parked = null
         // Proactive compaction, before the request is built. The trigger is the
@@ -3534,7 +3505,7 @@ export default function Chat({
             requestApproval,
             settings.tabAccess,
             granted,
-            pageControl,
+            SCHEMA_ONLY_PAGE_CONTROL,
             model,
             cycleVision,
             imageQueue,
@@ -3573,17 +3544,13 @@ export default function Chat({
           // each model step, so a chrome.* call here would tax every step of
           // every turn.
           agentState: () => {
-            const session = pageControl.session()
             return {
               autoContinue: { used: autoContinuesRef.current, max: MAX_AUTO_CONTINUES },
               onScreen: screenRef.current.onScreen,
               onScreenAtSend,
               boundTab: screenRef.current.boundTab ?? undefined,
               boundTabOnScreen: screenRef.current.boundOnScreen,
-              control:
-                session && session.active
-                  ? { plan: session.plan, actions: session.journal?.length ?? 0 }
-                  : undefined,
+              control: workerControlRef.current ? { ...workerControlRef.current } : undefined,
               compactedTurns: compactedTurnsRef.current,
               checkpoint: lastCheckpointRef.current
                 ? { nextAction: lastCheckpointRef.current.nextAction }
@@ -3793,8 +3760,8 @@ export default function Chat({
       // survive so returning to the tab resumes mid-plan instead of re-asking
       // for control. Everything else in this finally runs unconditionally.
       if (shouldTearDownPageControl(exitReason)) {
+        // Ends the worker-side session (toolHost.ts's endSession: overlay, DOM stamps, journal card).
         void chrome.runtime.sendMessage({ type: 'chat.chain.release', conversationId, chainId: traceTurnId }).catch(() => {})
-        pageControl.endSession()
         // Tear down ambient presence on any tab the chain touched (navigate/
         // inspect mount the frame outside a session, so endSession alone won't
         // clear them). Passage highlights (highlight.ts) are deliberately NOT
@@ -3839,12 +3806,37 @@ export default function Chat({
       void observer.flush()
     }
     } catch (error) {
-      setMessages(m => [...m, {id: uid(), role:'assistant', parts:[{type:'text',text:freshTurnGatherErrorText(error)}]}])
-      setRetryChain(ctx)
+      // The preamble (memory, permissions, skills, MCP, attachments) failed or was stopped before
+      // any cycle ran, so nothing answered this chain's opener. Drop it from the model history as the
+      // cycle loop's own catch does — left behind, the next turn would send two consecutive user
+      // messages — and let Retry push it back (retryPreparedChain).
+      if (ctx.droppableTail && ctx.regen.opener && historyRef.current.length === ctx.regen.historyLen + 1) {
+        historyRef.current.pop()
+      }
+      // Stop is not an error: the cycle loop ends silently on abort, and so does this.
+      if (!controller.signal.aborted) {
+        setMessages(m => [...m, {id: uid(), role:'assistant', parts:[{type:'text',text:freshTurnGatherErrorText(error)}]}])
+        setRetryChain(ctx)
+      }
+      // Persist the user's message (and any error) — only the cycle loop's finally bumped this, so a
+      // failed or stopped preamble used to vanish on reload.
+      setTurnSeq((n) => n + 1)
     } finally {
       controller.abort(); abortRef.current = null; streamingRef.current = false
       setStreaming(false); setPreparing(''); setTurnStartedAt(null)
     }
+  }
+
+  /** Retry a chain whose preamble failed: restore the opener that failure dropped, then run it again. */
+  function retryPreparedChain(chain: Parameters<typeof runTurnChain>[0]) {
+    // runTurnChain's own guards, checked first: it returns silently on them, which would strand the
+    // restored opener in history with no turn to answer it.
+    if (streamingRef.current || preparationRef.current || !selected) return
+    if (refuseDriver(chain.driver)) return
+    if (chain.droppableTail && chain.regen.opener && historyRef.current.length === chain.regen.historyLen) {
+      historyRef.current.push(chain.regen.opener)
+    }
+    void runTurnChain(chain)
   }
 
   // For each assistant bubble this turn produced, validate its text and, if any
@@ -3858,6 +3850,19 @@ export default function Chat({
         prompt,
         abortSignal: AbortSignal.timeout(20_000),
       }).then((r) => r.text)
+
+    // Math validation needs KaTeX, which is a lazily loaded chunk; skip loading
+    // it at all for the (usual) turn whose reply has no math delimiters.
+    const hasMathText = ids.some((id) =>
+      messagesRef.current
+        .find((m) => m.id === id)
+        ?.parts.some((p) => p.type === 'text' && normalizeMathDelimiters(p.text).includes('$')),
+    )
+    if (!hasMathText) return
+    const [{ hasUncompilableMath }, { repairMessageText }] = await Promise.all([
+      import('./mathRepairFilter'),
+      import('../agent/mathRepair'),
+    ])
 
     let changed = false
     for (const id of ids) {
@@ -4156,6 +4161,9 @@ export default function Chat({
     // below tears the old reply out of the transcript and rewinds history
     // before the chain is asked to replace it.
     if (!target || streamingRef.current || !selected) return
+    // The undo point is an offset into historyRef; one past its end can only be stale, and
+    // `length = ` with it would pad the history with holes that break every later request.
+    if (target.historyLen > historyRef.current.length) return
     const cut = messagesRef.current.findIndex((m) => m.id === target.firstBubbleId)
     if (cut < 0) return
     // Read the failures out of the bubbles before they are dropped — they are
@@ -4418,7 +4426,7 @@ export default function Chat({
         {!hidden && <><McpInteractions onUse={text=>setInput(current=>[current,text].filter(Boolean).join('\n\n'))} onOpenConversation={onOpenConversation} />
           {preparing && <p role="status">Preparing request: {preparing}…</p>}
           {/* Retries are ways a @driver turn starts too: the same availability check as a send. */}
-          {retryChain && !preparing && !streaming && <button onClick={() => {if (!refuseDriver(retryChain.driver)) void runTurnChain(retryChain)}}>Retry request preparation</button>}
+          {retryChain && !preparing && !streaming && <button onClick={() => retryPreparedChain(retryChain)}>Retry request preparation</button>}
           {retryPreparation && !preparing && !streaming && <button onClick={() => {if (!refuseDriver(retryPreparation.driver)) void startFreshTurn(retryPreparation)}}>Retry request</button>}<McpUpdateInbox /></>}
         <ContextPills tabs={contextTabs} />
         {selection && selection.text !== dismissedSelection && (

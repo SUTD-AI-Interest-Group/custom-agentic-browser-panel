@@ -23,6 +23,9 @@ export interface StoredMcpTask {
   /** Stop suppresses future automatic continuation, not remote execution. */
   suppressed?: boolean
   lease?: { owner: string; until: number }
+  /** Consecutive failed polls, and when the current run of failures began; cleared on success. */
+  failures?: number
+  failingSince?: number
 }
 
 export const MCP_TASK_CHANGED = 'mcp-task.changed'
@@ -66,6 +69,9 @@ export async function getMcpTask(id: string): Promise<StoredMcpTask | undefined>
   })
 }
 
+/** Settled legacy task records kept before the oldest are evicted on insert. */
+export const MAX_STORED_MCP_TASKS = 200
+
 /** Read/modify/write in one IDB transaction: panel and worker cannot overwrite each other's fields. */
 export async function updateMcpTask(id: string, update: (old: StoredMcpTask | undefined) => StoredMcpTask | undefined, expectedEpoch?: number): Promise<StoredMcpTask | undefined> {
   const tx = await mcpTaskTransaction(['sdkTasks', 'meta'], 'readwrite')
@@ -88,6 +94,21 @@ export async function updateMcpTask(id: string, update: (old: StoredMcpTask | un
         if (mutated) {
           if (result) store.put(result)
           else store.delete(id)
+        }
+        // A new record: keep the store bounded like the modern task store (src/mcp/tasks.ts), but
+        // only ever by evicting settled records — a pending task is never dropped to make room.
+        if (mutated && result && !req.result) {
+          const rows = store.getAll()
+          rows.onsuccess = () => {
+            const records = rows.result as StoredMcpTask[]
+            const excess = records.length - MAX_STORED_MCP_TASKS
+            if (excess <= 0) return
+            records
+              .filter((r) => r.id !== id && r.ready && (r.delivered || r.suppressed))
+              .sort((a, b) => a.createdAt - b.createdAt)
+              .slice(0, excess)
+              .forEach((r) => store.delete(r.id))
+          }
         }
       } catch (error) { failure = error; tx.abort() }
     }

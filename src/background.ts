@@ -53,6 +53,12 @@ import { searchInTab } from './platform/researchSearch'
 import { JANITOR_ALARM, runJanitorTick, sweepOrphanWindows, teardownNow } from './platform/researchTab'
 import { installWebMcpBadge } from './platform/webmcpBadge'
 import { removeLegacySystem1 } from './data/legacyCleanup'
+import * as mcpClientModule from '@modelcontextprotocol/sdk/client/index.js'
+import { provideMcpClientModule } from './mcp/manager'
+
+// A service worker cannot `import()` (it is disallowed in ServiceWorkerGlobalScope), so the MCP
+// manager's on-demand load of the SDK client is satisfied statically here, before any connection.
+provideMcpClientModule(mcpClientModule)
 
 installStudio()
 installMcpTaskMonitor()
@@ -70,6 +76,12 @@ const DREAM_ALARM = 'dream'
 // finalizes any task past its 24h cap. 1-minute period — Chrome's practical floor —
 // so recovery after a restart or eviction is prompt.
 const RESEARCH_WATCHDOG_ALARM = 'research-watchdog'
+/** Whether a stored `researchTasks` map (as a storage change carries it) holds an active task. */
+function anyActiveTask(map: unknown): boolean {
+  if (!map || typeof map !== 'object') return false
+  return Object.values(map as Record<string, { status?: unknown } | null>).some((t) => isActiveStatus(t?.status as Parameters<typeof isActiveStatus>[0]))
+}
+
 function scheduleWatchdog(): void {
   void listTasks().then(tasks => syncTaskAlarm(RESEARCH_WATCHDOG_ALARM, tasks.some(t => isActiveStatus(t.status)))).catch(console.error)
 }
@@ -121,7 +133,10 @@ chrome.runtime.onStartup.addListener(() => {
 // takes effect without waiting for the next browser restart. Settings live under
 // one 'settings' key; only reschedule when the derived period actually changes.
 chrome.storage.onChanged.addListener((changes, area) => {
-  if (area === 'local' && changes.researchTasks) scheduleWatchdog()
+  // Every research progress write rewrites this whole key. The change already carries both maps,
+  // so re-sync the watchdog only when "is any task active" actually flipped — not by re-reading
+  // and re-parsing the store on every step of a running task.
+  if (area === 'local' && changes.researchTasks && anyActiveTask(changes.researchTasks.oldValue) !== anyActiveTask(changes.researchTasks.newValue)) scheduleWatchdog()
   if (area !== 'local' || !changes.settings) return
   void (async () => {
     const period = dreamAlarmPeriodMinutes(await loadSettings())

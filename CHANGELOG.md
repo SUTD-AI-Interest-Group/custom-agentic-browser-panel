@@ -19,6 +19,18 @@ for that history.
 
 ## [Unreleased]
 
+### Performance pass and fixes — 24 November 2026
+
+- Load KaTeX, the HTML parser and the MCP SDK client on demand. Startup code falls from 2,237 to 1,649 kB in the side panel, 1,557 to 1,397 kB in the service worker and 1,021 to 860 kB in the offscreen host. Code the service worker runs stays static, since it cannot load code on demand; a test pins every lazy load it can reach.
+- Restore the animated Lychee loader that had become a spinner.
+- The panel reads the service worker's page-control session again: compaction pauses during page control, a new chain preloads the control tools, the agent-state block reports the session, and the "Let the agent control <host>?" card is back.
+- Regenerate after a compaction returns to the right turn; a failed chain leaves no orphaned message, and Retry replays the original request.
+- A second `RequestPageControl` in one step is refused while the first card waits, and a new grant closes the previous session so its undo journal still reaches the panel.
+- An unreachable MCP task backs off from 1 to 15 minutes and is settled after a day; stored settled tasks are capped at 200.
+- WebMCP tools registered without an output schema load on Chrome 159, which reports unset fields as `null`.
+- The Library and history list refresh when another window or the background host changes a conversation.
+- Less background work: attachment pruning reads index keys only, the tool host skips re-decrypting unchanged settings, hidden idle chats stop tracking tab switches, and page-text reads are about 30% faster.
+
 ### Optimisation integration — 11 November 2026
 
 - Merge the optimisation and background-cleanup work with the newer MCP and user-journey updates on `main`; retain both histories and the existing store-submission record.

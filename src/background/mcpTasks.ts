@@ -1,7 +1,7 @@
 // Each alarm performs bounded MCP requests, then disconnects. No long-lived
 // stream or model generation is entrusted to the MV3 worker's lifetime.
-import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { syncTaskAlarm } from './taskAlarm'
+import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
 import { SSEClientTransport } from '@modelcontextprotocol/sdk/client/sse.js'
 import { CfWorkerJsonSchemaValidator } from '@modelcontextprotocol/sdk/validation/cfworker'
@@ -14,6 +14,13 @@ import { listMcpTasks, updateMcpTask, mcpConfigHash, terminalTask, type StoredMc
 export const MCP_TASK_ALARM = 'mcp-tasks'
 const OPTIONS = { timeout: 15_000 }
 let polling: Promise<void> | undefined
+
+/** Delay before re-polling a task after `failures` consecutive failed polls. */
+export function mcpTaskRetryDelay(failures: number): number {
+  return Math.min(60_000 * 2 ** Math.max(0, failures - 1), 15 * 60_000)
+}
+/** How long a task may fail to poll without a break before it is settled as an error. */
+export const MCP_TASK_GIVE_UP_MS = 24 * 60 * 60_000
 
 export function pollMcpTasks(): Promise<void> {
   return polling ??= poll().finally(() => { polling = undefined })
@@ -50,7 +57,7 @@ async function poll() {
         await client.connect(new SSEClientTransport(new URL(String(entry.url)), options), OPTIONS)
       }
       const task = await client.experimental.tasks.getTask(record.task.taskId, OPTIONS)
-      let patch: Partial<StoredMcpTask> = { task, error: undefined, nextPollAt: Date.now() + Math.max(1000, task.pollInterval ?? 5000) }
+      let patch: Partial<StoredMcpTask> = { task, error: undefined, failures: undefined, failingSince: undefined, nextPollAt: Date.now() + Math.max(1000, task.pollInterval ?? 5000) }
       if (task.status === 'completed') {
         const result = await client.experimental.tasks.getTaskResult(task.taskId, CallToolResultSchema, OPTIONS)
         patch = { ...patch, result, ready: true }
@@ -65,10 +72,19 @@ async function poll() {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       const expiresAt = record.task.ttl === null ? Infinity : Date.parse(record.task.createdAt) + record.task.ttl
-      await updateMcpTask(record.id, (old) => old && ({
-        ...old, error: message, nextPollAt: Date.now() + 60_000,
-        ...(Date.now() > expiresAt ? { ready: true, error: `Task result expired or became unavailable: ${message}` } : {}),
-      }))
+      await updateMcpTask(record.id, (old) => {
+        if (!old) return old
+        const now = Date.now()
+        // Back off (1, 2, 4, 8, then every 15 minutes) and give up after a day of unbroken failure.
+        // A `ttl: null` task never expires, and a persisted session that can no longer connect is
+        // never replaced by a new one, so without a bound such a task was polled every minute forever.
+        const failures = (old.failures ?? 0) + 1
+        const failingSince = old.failingSince ?? now
+        const next = { ...old, error: message, failures, failingSince, nextPollAt: now + mcpTaskRetryDelay(failures) }
+        if (now > expiresAt) return { ...next, ready: true, error: `Task result expired or became unavailable: ${message}` }
+        if (now - failingSince > MCP_TASK_GIVE_UP_MS) return { ...next, ready: true, error: `Lost contact with the MCP server for over a day: ${message}` }
+        return next
+      })
     } finally {
       await client.close().catch(() => {})
     }

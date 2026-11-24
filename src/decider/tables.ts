@@ -40,13 +40,26 @@ export class TableReader {
     this.valuesPerRow = blocks * blockSize
   }
 
-  /** Writes the dequantized rows for `ids` back to back into `out`. */
+  /**
+   * Writes the dequantized rows for `ids` back to back into `out`. Token sequences repeat ids
+   * heavily (common words, punctuation, the fixed instruction tokens every request re-emits), so
+   * each distinct id is read and dequantized once per call and later occurrences copy the row
+   * already written to `out`.
+   */
   rows(ids: number[], out: Float32Array): void {
     const n = this.buf.length
+    const w = this.valuesPerRow
+    const first = new Map<number, number>()
     ids.forEach((id, i) => {
+      const seen = first.get(id)
+      if (seen !== undefined) {
+        out.copyWithin(i * w, seen * w, (seen + 1) * w)
+        return
+      }
       const got = this.file.read(this.buf, { at: id * n })
       if (got !== n) throw new Error(`table: short read for row ${id} (${got}/${n})`)
-      dequantRow(this.buf, out, i * this.valuesPerRow, this.blocks, this.blockSize)
+      dequantRow(this.buf, out, i * w, this.blocks, this.blockSize)
+      first.set(id, i)
     })
   }
 }

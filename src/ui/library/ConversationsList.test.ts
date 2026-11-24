@@ -37,3 +37,12 @@ it('lets a failed initial read be retried instead of presenting an empty library
   await act(async () => host.querySelector<HTMLButtonElement>('button')!.click())
   expect(host.querySelector('.library-row')?.textContent).toContain('A conversation')
 })
+
+it('re-reads the list when the store changes elsewhere (a new revision), not only after its own writes', async () => {
+  await act(async () => root.render(createElement(ConversationsList, { currentConversationId: '', onOpen: vi.fn(), onConversationsChanged: vi.fn(), revision: 1 })))
+  expect(listConversations).toHaveBeenCalledTimes(1)
+  vi.mocked(listConversations).mockResolvedValue([{ id: 'chat', title: 'Renamed elsewhere', updatedAt: Date.now(), messageCount: 4 }] as any)
+  await act(async () => root.render(createElement(ConversationsList, { currentConversationId: '', onOpen: vi.fn(), onConversationsChanged: vi.fn(), revision: 2 })))
+  expect(listConversations).toHaveBeenCalledTimes(2)
+  expect(host.querySelector('.library-row')?.textContent).toContain('Renamed elsewhere')
+})

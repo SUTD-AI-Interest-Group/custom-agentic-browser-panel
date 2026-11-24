@@ -112,3 +112,46 @@ describe('pruneAttachments', () => {
     spy.mockRestore()
   })
 })
+
+describe('pruning and per-chat deletion read index keys, never records', () => {
+  beforeEach(async () => {
+    await _resetDbForTests()
+  })
+
+  it('never loads a stored file to decide what to evict or delete', async () => {
+    const day = 24 * 60 * 60 * 1000
+    await _putAttachmentForTests(attachment({ id: 'old', bytes: 10, createdAt: Date.now() - 40 * day }))
+    await _putAttachmentForTests(attachment({ id: 'big', bytes: 101 * 1024 * 1024, createdAt: Date.now() - 2 }))
+    await _putAttachmentForTests(attachment({ id: 'keep', bytes: 10, createdAt: Date.now() - 1, conversationId: 'other' }))
+    const getAll = vi.spyOn(IDBObjectStore.prototype, 'getAll')
+    const get = vi.spyOn(IDBObjectStore.prototype, 'get')
+    const openCursor = vi.spyOn(IDBIndex.prototype, 'openCursor')
+    try {
+      expect(await pruneAttachments()).toEqual({ deleted: 2 })
+      await deleteAttachmentsForConversation('other')
+      expect(getAll).not.toHaveBeenCalled()
+      expect(get).not.toHaveBeenCalled()
+      expect(openCursor).not.toHaveBeenCalled()
+    } finally {
+      getAll.mockRestore(); get.mockRestore(); openCursor.mockRestore()
+    }
+    expect(await getAttachment('keep')).toBeNull()
+  })
+
+  it('upgrades a v1 database in place: existing files are indexed and still pruned', async () => {
+    await new Promise<void>((resolve, reject) => {
+      const req = indexedDB.open('lychee-attachments', 1)
+      req.onupgradeneeded = () => {
+        const store = req.result.createObjectStore('attachments', { keyPath: 'id' })
+        store.createIndex('createdAt', 'createdAt')
+        store.put(attachment({ id: 'stale', bytes: 10, createdAt: Date.now() - 40 * 24 * 60 * 60 * 1000 }))
+        store.put(attachment({ id: 'fresh', bytes: 10, createdAt: Date.now() }))
+      }
+      req.onsuccess = () => { req.result.close(); resolve() }
+      req.onerror = () => reject(req.error)
+    })
+    expect(await pruneAttachments()).toEqual({ deleted: 1 })
+    expect(await getAttachment('stale')).toBeNull()
+    expect(await getAttachment('fresh')).not.toBeNull()
+  })
+})

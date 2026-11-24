@@ -1,8 +1,20 @@
-import { parse, type DefaultTreeAdapterMap } from 'parse5'
+import type { DefaultTreeAdapterMap } from 'parse5'
 
 export type HtmlNode = DefaultTreeAdapterMap['node']
 export type HtmlElement = DefaultTreeAdapterMap['element']
-export const parseExtractionHtml = (html: string) => parse(html)
+
+// parse5 (~160 kB with `entities`) loads on first use rather than at startup: this module is in the
+// static graph of the panel, the service worker and the offscreen host, and most sessions never
+// parse a fetched page. The parsers built on it stay synchronous and pure; their async callers
+// `await loadExtractionParser()` first.
+let parse: typeof import('parse5')['parse'] | undefined
+export async function loadExtractionParser(): Promise<void> {
+  parse ??= (await import('parse5')).parse
+}
+export const parseExtractionHtml = (html: string) => {
+  if (!parse) throw new Error('HTML parser not loaded: await loadExtractionParser() before parsing.')
+  return parse(html)
+}
 export const isHtmlElement = (node: HtmlNode): node is HtmlElement =>
   'tagName' in node
 export const htmlAttr = (node: HtmlElement, name: string) =>

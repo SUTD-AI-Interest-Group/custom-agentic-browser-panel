@@ -1,5 +1,9 @@
-import { test, expect } from 'vitest'
+import { beforeAll, test, expect } from 'vitest'
 import { parseOpenGraph } from './linkPreview'
+import { loadExtractionParser } from './extractionHtml'
+
+// The parsers are synchronous once parse5 is loaded; production callers await this first.
+beforeAll(loadExtractionParser)
 
 // parseOpenGraph is pure (no network), so these exercise the SSRF gap
 // directly: a hostile page's own HTML declares an og:image pointing at an

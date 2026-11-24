@@ -1,7 +1,7 @@
 import 'fake-indexeddb/auto'
 import { webcrypto } from 'node:crypto'
 import { beforeEach, expect, it, vi } from 'vitest'
-import { claimMcpCompletion, deleteMcpTasks, getMcpTask, listMcpTasks, mcpConfigHash, updateMcpTask, type StoredMcpTask } from './mcpTasks'
+import { claimMcpCompletion, deleteMcpTasks, getMcpTask, listMcpTasks, MAX_STORED_MCP_TASKS, mcpConfigHash, updateMcpTask, type StoredMcpTask } from './mcpTasks'
 
 export function record(id = 'one'): StoredMcpTask {
   return { id, conversationId: 'chat', server: 'srv', tool: 'job', configHash: 'hash', args: {}, createdAt: Date.now(), nextPollAt: 0,
@@ -69,4 +69,23 @@ it('continues a queued completion after reconnecting the database', async () => 
   expect(claimed?.result).toEqual(saved.result)
   await updateMcpTask(saved.id, old => ({ ...old!, delivered: true, lease: undefined }))
   expect(await claimMcpCompletion(saved.id, 'another-panel')).toBeUndefined()
+})
+
+it('keeps the store bounded on insert by evicting the oldest settled records, never a pending one', async () => {
+  const base = Date.now() - 1_000_000
+  // A full store: one pending task (oldest of all) and the rest settled and delivered.
+  await updateMcpTask('pending', () => ({ ...record('pending'), createdAt: base - 1, ready: false }))
+  for (let i = 0; i < MAX_STORED_MCP_TASKS - 1; i++) {
+    await updateMcpTask(`done-${i}`, () => ({ ...record(`done-${i}`), createdAt: base + i, delivered: true }))
+  }
+  expect(await listMcpTasks()).toHaveLength(MAX_STORED_MCP_TASKS)
+  await updateMcpTask('new', () => ({ ...record('new'), ready: false }))
+  const ids = (await listMcpTasks()).map((r) => r.id)
+  expect(ids).toHaveLength(MAX_STORED_MCP_TASKS)
+  expect(ids).toContain('pending')
+  expect(ids).toContain('new')
+  expect(ids).not.toContain('done-0')
+  // Updating an existing record never evicts anything.
+  await updateMcpTask('new', (old) => old && { ...old, error: 'x' })
+  expect(await listMcpTasks()).toHaveLength(MAX_STORED_MCP_TASKS)
 })

@@ -88,6 +88,8 @@ const FAST_STEPS_DESCRIPTION =
  * the decider is changing under it — and the decider on a page ControlPage is changing.
  */
 const DRIVING_ERROR = 'A FastSteps run is still taking steps on this page; wait for its result, then continue.'
+const CONTROL_REQUEST_PENDING =
+  'Another RequestPageControl is already waiting for the user. Wait for its result; request control of a different page only after it.'
 
 /** How long FastSteps waits for a tab that is still loading before it reads the page. */
 const LOADING_WAIT_MS = 8000
@@ -230,6 +232,12 @@ export interface ApprovalRequest {
    * the Chrome dialog denies the whole call.
    */
   needsPermissions?: string[]
+  /**
+   * Set only by a PageControlGate's requestSession: renders the card as the session variant
+   * ("Let the agent control <host>?" with the plan) instead of an ordinary tool summary. Plain
+   * data, so it survives the worker → ChatRun → panel hop the request takes under durable chat.
+   */
+  session?: { plan: string; host: string }
 }
 
 export type ApprovalGate = (request: ApprovalRequest) => Promise<boolean>
@@ -364,6 +372,11 @@ export function createAgentTools(
    */
   decider?: DeciderHooks,
 ): ToolSet {
+  // One control request at a time per ToolSet. The AI SDK runs every call of a model step
+  // concurrently, and a chain holds one session: a second RequestPageControl granted while the
+  // first card waited would replace that session, while both calls had already told the model
+  // they started.
+  let requestingControl = false
   const resolveTab: (pane?: PaneTarget) => Promise<chrome.tabs.Tab | undefined> =
     pageTarget?.resolveTab ??
     (async (pane) => {
@@ -1557,6 +1570,9 @@ export function createAgentTools(
         // Before the consent card, not after: a control session the user cannot
         // watch is precisely what the presence overlay exists to prevent.
         if (!(await isForeground(tab))) return parkFor(tab, 'take control of this page')
+        // A new grant ends the open session; never pull it out from under a FastSteps run that is
+        // still acting on it (the same lock ControlPage and AutofillForm honour).
+        if (pageControl.session()?.driving) return { error: DRIVING_ERROR }
         const host = (() => {
           try {
             return new URL(tab.url ?? '').host
@@ -1571,7 +1587,14 @@ export function createAgentTools(
             return ''
           }
         })()
-        const granted = await pageControl.requestSession({ plan, host, origin, tabId: tab.id })
+        if (requestingControl) return { error: CONTROL_REQUEST_PENDING }
+        requestingControl = true
+        let granted: boolean
+        try {
+          granted = await pageControl.requestSession({ plan, host, origin, tabId: tab.id })
+        } finally {
+          requestingControl = false
+        }
         if (!granted) return DENIED
         // Let the decision model start loading while the model reads the page —
         // never awaited, and guarded so not even a synchronous throw reaches the grant.

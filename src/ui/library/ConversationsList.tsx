@@ -30,10 +30,14 @@ export default function ConversationsList({
   currentConversationId,
   onOpen,
   onConversationsChanged,
+  revision,
 }: {
   currentConversationId: string
   onOpen: (id: string) => void
   onConversationsChanged: () => void
+  /** Changes whenever the conversation store does (App passes its live list): re-read on it, so
+   *  a chat renamed or finished elsewhere while this tab is open does not show a stale row. */
+  revision?: unknown
 }) {
   const [items, setItems] = useState<ConversationSummary[]>([])
   const [query, setQuery] = useState('')
@@ -52,7 +56,7 @@ export default function ConversationsList({
       .then(setItems)
       .catch(reportError)
   }, [])
-  useEffect(refresh, [refresh])
+  useEffect(refresh, [refresh, revision])
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase()

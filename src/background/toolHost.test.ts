@@ -2,12 +2,18 @@ import 'fake-indexeddb/auto'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { getChatRun, listChatRuns, removeChatRuns, updateChatRun, type ChatRun } from '../data/chatRuns'
 const fixture = vi.hoisted(() => ({ policy: 'ask', mutations: 0, disconnect: vi.fn(), decider: undefined as { mode: string } | undefined, send: (() => {}) as (msg: unknown) => unknown, model: undefined as unknown }))
-vi.mock('../data/settings', () => ({
-  loadSettings: async () => ({ providers: [], tabAccess: 'all-tabs', toolPolicies: { Execute: fixture.policy }, decider: fixture.decider }),
-  toolPolicy: () => fixture.policy,
-}))
+vi.mock('../data/settings', () => {
+  const loadSettings = async () => ({ providers: [], tabAccess: 'all-tabs', toolPolicies: { Execute: fixture.policy }, decider: fixture.decider })
+  return { loadSettings, createSettingsReader: () => loadSettings, toolPolicy: () => fixture.policy }
+})
 vi.mock('../tools/tools', () => ({ createAgentTools: (approve: (r: unknown) => Promise<boolean>, _access: unknown, _capabilities: unknown, control: any, ...rest: any[]) => ({
   Control: { execute: async () => ({ allowed: await control.requestSession({ plan: 'Fixture', host: 'example.com', origin: 'https://example.com', tabId: 7 }) }) },
+  // Stands in for a ControlPage step that records something undoable on the open session.
+  Journal: { execute: async () => {
+    const session = control.session()
+    session.journal = [{ step: 1, action: 'type', index: 0, summary: 'Typed into "Name"' }]
+    return { journaled: true }
+  } },
   // Stands in for ControlPage: hands its step to the decider argument (createAgentTools' last).
   Observe: { execute: async () => {
     rest[9]?.observeStep({
@@ -103,6 +109,59 @@ describe('background tool permissions', () => {
     expect(fixture.disconnect).not.toHaveBeenCalled()
     await message({ type: 'chat.tools.release', conversationId: 'chat', id: run.id, chainId: run.id })
     expect(fixture.disconnect).toHaveBeenCalledTimes(1)
+  })
+  it('a second RequestPageControl ends the open session first, so its undo journal reaches the panel', async () => {
+    const sent: Array<{ type?: string }> = []
+    fixture.send = (msg) => { sent.push(msg as { type?: string }); return Promise.resolve() }
+    const run = job()
+    run.toolRequests = [
+      { id: 'c1', name: 'Control', input: {}, state: 'requested' },
+      { id: 'j', name: 'Journal', input: {}, state: 'requested' },
+      { id: 'c2', name: 'Control', input: {}, state: 'requested' },
+    ]
+    await updateChatRun('chat', () => run)
+    const pollId = (requestId: string) => message({ type: 'chat.tool.poll', conversationId: 'chat', id: run.id, requestId })
+    const done = (id: string) => until(async () => (await getChatRun('chat'))?.toolRequests.find(r => r.id === id)?.state === 'done')
+    const allowNth = async (n: number) => {
+      await until(async () => ((await getChatRun('chat'))?.approvals?.length ?? 0) >= n)
+      const approval = (await getChatRun('chat'))!.approvals![n - 1]
+      await message({ type: 'chat.approval.decide', conversationId: 'chat', id: run.id, approvalId: approval.id, decision: true }, 'sidepanel.html')
+    }
+    await pollId('c1'); await allowNth(1); await done('c1')
+    await pollId('j'); await done('j')
+    expect(sent.filter(m => m.type === 'chat.control.journal')).toHaveLength(0)
+    await pollId('c2')
+    // Posted before the new card is even answered: the old session is closed out, not overwritten.
+    await until(async () => sent.some(m => m.type === 'chat.control.journal'))
+    expect(sent.find(m => m.type === 'chat.control.journal')).toMatchObject({ conversationId: 'chat', tabId: 7 })
+    await allowNth(2); await done('c2')
+    expect(sent.filter(m => m.type === 'chat.control.journal')).toHaveLength(1)
+  })
+  it('tells the panel about the session it holds — the panel never holds one under durable chat', async () => {
+    fixture.send = () => Promise.resolve()
+    const run = job()
+    run.toolRequests = [
+      { id: 'c1', name: 'Control', input: {}, state: 'requested' },
+      { id: 'j', name: 'Journal', input: {}, state: 'requested' },
+    ]
+    await updateChatRun('chat', () => run)
+    const status = () => message({ type: 'chat.control.status', conversationId: 'chat' }, 'sidepanel.html')
+    expect(await status()).toEqual({ session: null })
+    await message({ type: 'chat.tool.poll', conversationId: 'chat', id: run.id, requestId: 'c1' })
+    await until(async () => !!(await getChatRun('chat'))?.approvals?.length)
+    const approval = (await getChatRun('chat'))!.approvals![0]
+    // The panel renders this as the session card ("Let the agent control example.com?"), one-shot.
+    expect(approval.request).toMatchObject({ toolName: 'RequestPageControl', once: true, session: { plan: 'Fixture', host: 'example.com' } })
+    await message({ type: 'chat.approval.decide', conversationId: 'chat', id: run.id, approvalId: approval.id, decision: true }, 'sidepanel.html')
+    await until(async () => (await getChatRun('chat'))?.toolRequests[0].state === 'done')
+    expect(await status()).toEqual({ session: { plan: 'Fixture', actions: 0 } })
+    await message({ type: 'chat.tool.poll', conversationId: 'chat', id: run.id, requestId: 'j' })
+    await until(async () => (await getChatRun('chat'))?.toolRequests[1].state === 'done')
+    expect(await status()).toEqual({ session: { plan: 'Fixture', actions: 1 } })
+    // Only the panel may ask.
+    expect(await Promise.race([message({ type: 'chat.control.status', conversationId: 'chat' }, 'offscreen.html'), new Promise(r => setTimeout(() => r('no reply'), 50))])).toBe('no reply')
+    await message({ type: 'chat.chain.release', conversationId: 'chat', chainId: run.id }, 'sidepanel.html')
+    expect(await status()).toEqual({ session: null })
   })
   it('executes an existing chat grant exactly once even with duplicate polls', async () => {
     const run = job(); run.allowedTools = ['Execute']

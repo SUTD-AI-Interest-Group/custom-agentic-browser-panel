@@ -4,6 +4,7 @@ import {
   _resetDbForTests,
   clearConversations,
   clearInFlight,
+  conversationChanges,
   comparePinnedThenRecent,
   conversationsUsage,
   deleteConversation,
@@ -434,4 +435,25 @@ it('persists MCP completion receipts with the transcript and keeps them on later
   await saveConversation({ id: 'mcp-receipt', messages: [], history: [], completedMcpTask: 'event-1' })
   await saveConversation({ id: 'mcp-receipt', messages: [], history: [] })
   expect((await getConversation('mcp-receipt'))?.completedMcpTasks).toEqual(['event-1'])
+})
+
+describe('conversationChanges', () => {
+  beforeEach(async () => {
+    await _resetDbForTests()
+  })
+
+  it('publishes after every committed write, so a list held elsewhere can re-read', async () => {
+    const seen: string[] = []
+    const stop = conversationChanges.subscribe((key) => seen.push(key))
+    try {
+      await saveConversation({ id: 'c1', messages: [], history: [] })
+      await renameConversation('c1', 'Named')
+      await togglePin('c1')
+      await deleteConversation('c1')
+      await clearConversations()
+    } finally {
+      stop()
+    }
+    expect(seen).toEqual(['c1', 'c1', 'c1', 'c1', '*'])
+  })
 })

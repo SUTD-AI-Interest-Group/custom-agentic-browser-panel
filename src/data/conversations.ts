@@ -18,6 +18,15 @@ import { deleteMcpTasks } from './mcpTasks'
 import type { ModelMessage } from 'ai'
 import type { MessageSource, UIMessage } from '../agent/agent'
 import { estimateBytes, type StoreUsage } from './usage'
+import { createChangeSignal } from './changeSignal'
+
+/**
+ * Published (with the conversation id, or `*` for a clear) after every committed write to the
+ * conversation list — from any context: this panel, another window's, or the offscreen host that
+ * saves a chat finished while the panel was closed. Lists subscribe to it instead of each
+ * re-reading only after their own writes, which left them stale whenever someone else wrote.
+ */
+export const conversationChanges = createChangeSignal('lychee-conversations')
 
 /**
  * Everything needed to re-run the most recent turn from scratch, behind the
@@ -318,7 +327,10 @@ function mutate(
           tx.objectStore(SUMMARY_STORE).put(toSummaryRow(next))
           if (alsoClearInFlight) tx.objectStore(INFLIGHT_STORE).delete(id)
         }
-        tx.oncomplete = () => resolve()
+        tx.oncomplete = () => {
+          conversationChanges.publish(id)
+          resolve()
+        }
         tx.onerror = () => reject(tx.error)
         tx.onabort = () => reject(tx.error)
       }),
@@ -389,7 +401,10 @@ export async function deleteConversation(id: string): Promise<void> {
     // A checkpoint outliving its conversation would be unreachable but not
     // harmless: nothing would ever clear it, and it holds a whole transcript.
     tx.objectStore(INFLIGHT_STORE).delete(id)
-    tx.oncomplete = () => resolve()
+    tx.oncomplete = () => {
+      conversationChanges.publish(id)
+      resolve()
+    }
     tx.onerror = () => reject(tx.error)
     tx.onabort = () => reject(tx.error)
   })
@@ -409,7 +424,10 @@ export async function clearConversations(): Promise<void> {
     tx.objectStore(STORE).clear()
     tx.objectStore(SUMMARY_STORE).clear()
     tx.objectStore(INFLIGHT_STORE).clear()
-    tx.oncomplete = () => resolve()
+    tx.oncomplete = () => {
+      conversationChanges.publish('*')
+      resolve()
+    }
     tx.onerror = () => reject(tx.error)
     tx.onabort = () => reject(tx.error)
   })

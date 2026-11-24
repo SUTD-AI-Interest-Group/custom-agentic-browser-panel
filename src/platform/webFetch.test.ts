@@ -1,5 +1,9 @@
-import { test, expect, vi, afterEach } from 'vitest'
+import { beforeAll, test, expect, vi, afterEach } from 'vitest'
 import { parseJsonLoose, isFetchableUrl, parseDuckDuckGoLite, parseDuckDuckGoHtml, resolveDdgHref, extractReadableText, fetchReadable, PDF_CONTENT } from './webFetch'
+import { loadExtractionParser } from './extractionHtml'
+
+// The parsers are synchronous once parse5 is loaded; production callers await this first.
+beforeAll(loadExtractionParser)
 
 test('parses fenced json', () => {
   expect(parseJsonLoose('```json\n{"a":1}\n```')).toEqual({ a: 1 })

@@ -120,16 +120,191 @@ export function FileKindIcon({ kind }: { kind: 'pdf' | 'text' | 'document' }) {
   )
 }
 
+// Whimsical waiting-state words, two registers blended (dry-witty + gen-z) so
+// the indicator reads differently turn to turn. Random-per-mount starting word;
+// index is `% length`, so ordering doesn't matter.
+const THINKING_WORDS = [
+  'Thinking', 'Pondering', 'Percolating', 'Noodling', 'Cerebrating',
+  'Ruminating', 'Marinating', 'Conjuring', 'Mulling', 'Puzzling', 'Brewing',
+  'Simmering', 'Wrangling', 'Untangling', 'Musing', 'Cogitating', 'Scheming',
+  'Reticulating splines', 'Computing', 'Contemplating', 'Incubating',
+  'Concocting', 'Hatching', 'Churning', 'Crunching', 'Formulating',
+  'Deliberating', 'Stewing', 'Tinkering', 'Whirring', 'Spitballing',
+  'Ideating', 'Plotting', 'Daydreaming', 'Head-scratching',
+  'Cooking', 'Locking in', 'Big braining', 'Galaxy braining', 'Manifesting',
+  'Vibing', 'Sussing it out', 'Understanding the assignment', 'Lowkey grinding',
+  'Deadass thinking', 'Cracked mode engaged', 'Cooking up something',
+  'In my thinking era', 'Brain going brrr', 'Spinning up the neurons',
+  'Doing the thing', 'Locking in fr', 'No thoughts just cooking',
+  "Chef's kiss incoming", 'Working on the glow-up',
+  // Turning it over
+  'Turning it over', 'Rotating the mental image', 'Zooming out', 'Zooming back in',
+  'Squinting at it', 'Reading it twice', 'Pulling on that thread',
+  'Following the thread', 'Untying the knot', 'Getting my ducks in a row',
+  'Triangulating', 'Extrapolating', 'Rummaging', 'Consulting the archives',
+  // Visibly busy
+  'Sharpening pencils', 'Pacing about', 'Staring into the middle distance',
+  'Counting on fingers', 'Doing sums', 'Rubber-ducking it', 'Yak-shaving',
+  'Arguing with myself', 'Second-guessing', 'Third-guessing',
+  'Going down a rabbit hole', 'Rolling for insight', '67676767676767',
+  // Self-aware
+  'Overthinking (as a treat)', 'Buffering… emotionally', 'Having a moment',
+  'Thinking thoughts', 'Consulting my one brain cell', 'Making it make sense',
+  'Mind palace loading', 'Running it back', 'Peak brain activity',
+  'Absolutely locked in', 'One sec, cooking', 'Almost got it',
+  'Doing a little dance about it', 'Giving it the old college try',
+]
+
+// Shown in the gap right after a tool result, while the model reads what came
+// back and decides its next move.
+const DIGESTING_WORDS = [
+  'Reviewing', 'Digesting', 'Parsing', 'Absorbing', 'Interpreting',
+  'Synthesizing', 'Processing', 'Distilling', 'Piecing it together',
+  'Making sense of it', 'Cross-referencing', 'Sifting', 'Connecting the dots',
+  'Untangling the results', 'Weighing it up', 'Sorting it out',
+  'Reading the receipts', 'Peeping the results', 'Reading the room',
+  'Doing the math', 'Vibe-checking the output', 'Catching up on the tea',
+  'Fact-checking the vibes', 'Putting the pieces together fr',
+  'Decoding the lore',
+  'Skimming the good bits', 'Highlighting things', 'Taking notes', 'Filing it away',
+  'Separating signal from noise', 'Boiling it down', 'Chewing it over',
+  'Double-checking', 'Squaring the numbers', 'Lining it up', 'Comparing notes',
+  'Auditing the findings', 'Reconciling it', 'Triaging', 'Getting the gist',
+  'Reading between the lines', 'Checking the fine print', 'Seeing what sticks',
+  'Cross-examining the results', 'Assembling the takeaway',
+  'Wrapping my head around it', 'Tidying the findings', 'Rereading the tricky part',
+  'Marking my own homework', 'Sorting the wheat from the chaff',
+  'Speed-running the summary', 'Vibe-sorting the data', 'Plating it up',
+]
+
+// The mascot's exercise repertoire. Each name matches an `.anim-<name>`
+// keyframe set in styles.css; loopAnim is that exercise's reference keyframe —
+// the one animation every part of the move is timed against. One completed
+// iteration of it means one full performance of the move (one flip, one jack,
+// one whole pirouette sequence), which is when the loader swaps exercises.
+const LYCHEE_MOVES = [
+  { name: 'run', loopAnim: 'lyfig-run-bob' },
+  { name: 'jumprope', loopAnim: 'lyfig-jumprope-hop' },
+  { name: 'star', loopAnim: 'lyfig-star-hop' },
+  { name: 'backflip', loopAnim: 'lyfig-backflip-arc' },
+  { name: 'cartwheel', loopAnim: 'lyfig-cartwheel-turn' },
+  { name: 'think', loopAnim: 'lyfig-think-arm' },
+  { name: 'spin', loopAnim: 'lyfig-spin-turn' },
+] as const
+
+type LycheeMove = (typeof LYCHEE_MOVES)[number]
+
+/** A random exercise, never the one just performed. */
+function pickMove(except?: string): LycheeMove {
+  const pool = except ? LYCHEE_MOVES.filter(m => m.name !== except) : LYCHEE_MOVES
+  return pool[Math.floor(Math.random() * pool.length)]
+}
+
 /**
- * The tool checkboxes + "Open full permissions" footer. Shared by the wide
- * layout's tools popover and the narrow layout's "…" menu, so the two can never
- * drift apart.
+ * The waiting mascot — a lychee stick figure that exercises while the model
+ * works, cycling randomly between moves (see LYCHEE_MOVES). Geometry only; all
+ * motion lives in styles.css as per-exercise `.anim-*` keyframes, which also
+ * handle prefers-reduced-motion. Structure notes, both load-bearing:
+ * - Draw order: rope and legs render *behind* the body so their joints tuck
+ *   under the fruit; arms render *in front* so the thinking pose can reach
+ *   across it.
+ * - The nested `lyfig-move` (translate) > `lyfig-turn` (rotate/flip) groups
+ *   split the transforms — one element cannot carry both without the rotate
+ *   dragging the translate with it.
+ * Limb joint coordinates are duplicated as transform-origins in styles.css;
+ * keep the two in sync.
  */
-function ThinkingIndicator({ variant }: { startedAt: number; variant: 'thinking' | 'digesting' }) {
-  return <div className="thinking-indicator" role="status">
-    <span className="working-spinner" aria-hidden="true" />
-    {variant === 'digesting' ? 'Reading results…' : 'Thinking…'}
-  </div>
+function LycheeLoader() {
+  const [move, setMove] = useState<LycheeMove>(() => pickMove())
+
+  return (
+    <svg
+      className={`thinking-lychee anim-${move.name}`}
+      viewBox="0 0 24 32"
+      aria-hidden="true"
+      focusable="false"
+      // Animation events bubble, so the root hears every part's iterations;
+      // filtering to the move's reference keyframe swaps exercises the moment
+      // one full loop lands — each move plays once, cut exactly on its seam
+      // (no timer to drift against the CSS clock). Under reduced motion no
+      // iterations fire and the figure just stands still, which is the point.
+      onAnimationIteration={(e) => {
+        if (e.animationName === move.loopAnim) setMove(pickMove(move.name))
+      }}
+    >
+      <ellipse className="lyfig-shadow" cx="12" cy="29.5" rx="6" ry="1.5" fill="var(--text)" />
+      <g className="lyfig-move">
+        <g className="lyfig-turn">
+          <path className="lyfig-rope lyfig-rope-over" d="M4.4 18.5 Q12 -15.5 19.6 18.5" />
+          <path className="lyfig-rope lyfig-rope-under" d="M4.4 18.5 Q12 40.5 19.6 18.5" />
+          <line className="lyfig-limb lyfig-leg-l" x1="9.8" y1="19.3" x2="9.3" y2="27" />
+          <line className="lyfig-limb lyfig-leg-r" x1="14.2" y1="19.3" x2="14.7" y2="27" />
+          <g className="lyfig-core">
+            <path
+              d="M12 7.8 Q12.1 6.2 12.9 5.3"
+              stroke="var(--lychee-shade)"
+              strokeWidth="1.2"
+              strokeLinecap="round"
+              fill="none"
+            />
+            <path
+              className="lyfig-leaf"
+              d="M12.9 5.5 C14.7 3.4 17.7 3.3 18.7 3.9 C18.1 6 15.6 7.4 13.2 6.7 Z"
+              fill="var(--lychee-leaf)"
+            />
+            <circle cx="12" cy="13.5" r="6.5" fill="var(--lychee)" />
+            {/* Three scales, a nod to the faceted shell — any more turns to mush at this size. */}
+            <circle cx="9.6" cy="12" r="1" fill="var(--lychee-shade)" opacity="0.45" />
+            <circle cx="13.8" cy="11.3" r="1" fill="var(--lychee-shade)" opacity="0.45" />
+            <circle cx="11.7" cy="15.4" r="1" fill="var(--lychee-shade)" opacity="0.45" />
+          </g>
+          <line className="lyfig-limb lyfig-arm-l" x1="6.6" y1="15" x2="5.2" y2="19.6" />
+          <line className="lyfig-limb lyfig-arm-r" x1="17.4" y1="15" x2="18.8" y2="19.6" />
+        </g>
+      </g>
+    </svg>
+  )
+}
+
+/**
+ * Whimsical waiting-state indicator: an exercising lychee, a rotating word,
+ * and a whole-turn elapsed timer. Rendered by MessageView while the turn is streaming
+ * but nothing is visibly appearing. `startedAt` is the turn start (ms) so the
+ * timer stays continuous across tool steps; `variant` picks the word pool. A
+ * fresh random offset per mount makes successive gaps in one turn read
+ * differently.
+ */
+function ThinkingIndicator({
+  startedAt,
+  variant,
+}: {
+  startedAt: number
+  variant: 'thinking' | 'digesting'
+}) {
+  const [now, setNow] = useState(() => Date.now())
+  const [baseOffset] = useState(() => Math.floor(Math.random() * 1000))
+
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 1000)
+    return () => clearInterval(id)
+  }, [])
+
+  const elapsed = Math.max(0, Math.floor((now - startedAt) / 1000))
+  const pool = variant === 'digesting' ? DIGESTING_WORDS : THINKING_WORDS
+  // Rotate roughly every 3s; continuous elapsed keeps it moving across steps.
+  const word = pool[(baseOffset + Math.floor(elapsed / 3)) % pool.length]
+
+  return (
+    <div className="thinking-indicator" role="status" aria-label="Assistant is working">
+      <LycheeLoader />
+      <span aria-hidden="true">{word}…</span>
+      {elapsed >= 1 && (
+        <span className="thinking-elapsed" aria-hidden="true">
+          {elapsed}s
+        </span>
+      )}
+    </div>
+  )
 }
 
 /**

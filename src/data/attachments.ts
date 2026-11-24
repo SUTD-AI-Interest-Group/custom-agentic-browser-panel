@@ -43,7 +43,8 @@ export interface StoredAttachment {
 }
 
 const DB_NAME = 'lychee-attachments'
-const DB_VERSION = 1
+// v2 added the `bytes` and `conversationId` indexes (see openDb).
+const DB_VERSION = 2
 const STORE = 'attachments'
 
 const MAX_TOTAL_BYTES = 100 * 1024 * 1024
@@ -57,10 +58,15 @@ function openDb(): Promise<IDBDatabase> {
       const req = indexedDB.open(DB_NAME, DB_VERSION)
       req.onupgradeneeded = () => {
         const db = req.result
-        if (!db.objectStoreNames.contains(STORE)) {
-          const store = db.createObjectStore(STORE, { keyPath: 'id' })
-          store.createIndex('createdAt', 'createdAt')
-        }
+        const store = db.objectStoreNames.contains(STORE)
+          ? req.transaction!.objectStore(STORE)
+          : db.createObjectStore(STORE, { keyPath: 'id' })
+        // Pruning and per-chat deletion walk these indexes' KEYS (createdAt, bytes,
+        // conversationId) and never load a record — each one carries a whole file as base64,
+        // up to the 100MB cap in total. IndexedDB builds a new index over existing records.
+        if (!store.indexNames.contains('createdAt')) store.createIndex('createdAt', 'createdAt')
+        if (!store.indexNames.contains('bytes')) store.createIndex('bytes', 'bytes')
+        if (!store.indexNames.contains('conversationId')) store.createIndex('conversationId', 'conversationId')
       }
       req.onsuccess = () => {
         req.result.onversionchange = () => {
@@ -122,6 +128,32 @@ function batchTransaction(mode: IDBTransactionMode, ids: string[], fn: (s: IDBOb
   )
 }
 
+/**
+ * `primaryKey → index key` for every record in each named index, read with key cursors in one
+ * transaction, so no record value (and none of its base64 payload) is deserialized.
+ */
+function indexKeys(names: string[], range?: IDBKeyRange): Promise<Array<Map<string, IDBValidKey>>> {
+  return openDb().then(
+    (db) =>
+      new Promise((resolve, reject) => {
+        const tx = db.transaction(STORE, 'readonly')
+        const maps = names.map(() => new Map<string, IDBValidKey>())
+        names.forEach((name, i) => {
+          const req = tx.objectStore(STORE).index(name).openKeyCursor(range)
+          req.onsuccess = () => {
+            const cursor = req.result
+            if (!cursor) return
+            maps[i].set(cursor.primaryKey as string, cursor.key)
+            cursor.continue()
+          }
+        })
+        tx.oncomplete = () => resolve(maps)
+        tx.onerror = () => reject(tx.error)
+        tx.onabort = () => reject(tx.error ?? new Error('transaction aborted'))
+      }),
+  )
+}
+
 /** A data URL's payload is base64: 4 chars per 3 bytes. Close enough to prune on. */
 export function approxBytes(dataUrl: string): number {
   const comma = dataUrl.indexOf(',')
@@ -159,9 +191,8 @@ export async function getAttachment(id: string): Promise<StoredAttachment | null
 
 /** Drop every attachment belonging to a conversation — called when the chat is deleted. */
 export async function deleteAttachmentsForConversation(conversationId: string): Promise<void> {
-  const all = await requestOf<StoredAttachment[]>('readonly', (s) => s.getAll())
-  const doomed = all.filter((a) => a.conversationId === conversationId)
-  await batchTransaction('readwrite', doomed.map((a) => a.id), (s, id) => s.delete(id))
+  const [owned] = await indexKeys(['conversationId'], IDBKeyRange.only(conversationId))
+  await batchTransaction('readwrite', [...owned.keys()], (s, id) => s.delete(id))
 }
 
 /**
@@ -169,17 +200,18 @@ export async function deleteAttachmentsForConversation(conversationId: string): 
  * save, so the store is bounded without the user ever having to think about it.
  */
 export async function pruneAttachments(): Promise<{ deleted: number }> {
-  const all = await requestOf<StoredAttachment[]>('readonly', (s) => s.getAll())
+  // Index keys only: the eviction math needs three scalars per record, never the file itself.
+  const [created, sizes] = await indexKeys(['createdAt', 'bytes'])
   const cutoff = Date.now() - MAX_AGE_MS
-  const doomed = new Set(all.filter((a) => a.createdAt < cutoff).map((a) => a.id))
+  const doomed = new Set([...created].filter(([, at]) => (at as number) < cutoff).map(([id]) => id))
 
-  const survivors = all
-    .filter((a) => !doomed.has(a.id))
-    .sort((a, b) => b.createdAt - a.createdAt) // newest first
+  const survivors = [...created]
+    .filter(([id]) => !doomed.has(id))
+    .sort((a, b) => (b[1] as number) - (a[1] as number)) // newest first
   let running = 0
-  for (const a of survivors) {
-    running += a.bytes
-    if (running > MAX_TOTAL_BYTES) doomed.add(a.id)
+  for (const [id] of survivors) {
+    running += (sizes.get(id) as number | undefined) ?? 0
+    if (running > MAX_TOTAL_BYTES) doomed.add(id)
   }
 
   await batchTransaction('readwrite', [...doomed], (s, id) => s.delete(id))

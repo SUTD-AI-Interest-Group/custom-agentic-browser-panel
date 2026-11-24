@@ -125,22 +125,26 @@ export async function inspectWebMcp(call?: {
       try {
         if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) throw new Error('Descriptor must be an object')
         const native = candidate as NativeTool
+        // Chrome (measured on 159) reports an optional field the page never set as `null` — a tool
+        // registered without an outputSchema or annotations comes back with both null, and an empty
+        // title. Treating null as "present but invalid" silently dropped every such tool.
+        const given = (value: unknown) => value !== undefined && value !== null
         if (typeof native.name !== 'string' || !native.name.trim() || native.name.length > 256) throw new Error('Invalid tool name')
         if (native.description !== undefined && (typeof native.description !== 'string' || native.description.length > 2000)) throw new Error('Invalid or oversized description')
-        const tool: WebMcpTool = { name: native.name, description: native.description as string ?? '', inputSchema: schema(native.inputSchema === undefined ? { type: 'object', properties: {} } : native.inputSchema) }
+        const tool: WebMcpTool = { name: native.name, description: native.description as string ?? '', inputSchema: schema(given(native.inputSchema) ? native.inputSchema : { type: 'object', properties: {} }) }
         for (const key of ['title', 'origin'] as const) {
-          if (native[key] !== undefined) {
+          if (given(native[key]) && native[key] !== '') {
             if (typeof native[key] !== 'string' || native[key].length > 2048) throw new Error(`Invalid ${key}`)
             tool[key] = native[key]
           }
         }
-        if (native.outputSchema !== undefined) tool.outputSchema = schema(native.outputSchema)
-        if (native.annotations !== undefined) {
+        if (given(native.outputSchema)) tool.outputSchema = schema(native.outputSchema)
+        if (given(native.annotations)) {
           if (!native.annotations || typeof native.annotations !== 'object' || Array.isArray(native.annotations)) throw new Error('Invalid annotations')
           tool.annotations = {}
           const annotations = native.annotations as Record<string, unknown>
           for (const key of ['readOnlyHint', 'untrustedContentHint', 'consequentialHint', 'debugging'] as const) {
-            if (annotations[key] !== undefined) {
+            if (given(annotations[key])) {
               if (typeof annotations[key] !== 'boolean') throw new Error(`Invalid ${key}`)
               tool.annotations[key] = annotations[key]
             }

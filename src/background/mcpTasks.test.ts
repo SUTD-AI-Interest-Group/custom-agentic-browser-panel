@@ -2,7 +2,7 @@ import 'fake-indexeddb/auto'
 import { webcrypto } from 'node:crypto'
 import { beforeEach, expect, it, vi } from 'vitest'
 import { deleteMcpTasks, getMcpTask, mcpConfigHash, updateMcpTask, type StoredMcpTask } from '../data/mcpTasks'
-import { pollMcpTasks } from './mcpTasks'
+import { MCP_TASK_GIVE_UP_MS, mcpTaskRetryDelay, pollMcpTasks } from './mcpTasks'
 const state = vi.hoisted(() => ({ settings: {} as any, status: vi.fn(), result: vi.fn(), connect: vi.fn(), close: vi.fn(), transport: vi.fn() }))
 vi.mock('../data/settings', () => ({ loadSettings: async () => state.settings }))
 vi.mock('../mcp/auth', () => ({ ChromeOAuthProvider: class {} }))
@@ -44,6 +44,30 @@ it('retries transient failures without creating another tool call', async () => 
   await pollMcpTasks()
   expect(await getMcpTask('one')).toMatchObject({ error: 'offline' })
   expect((await getMcpTask('one'))!.ready).not.toBe(true)
+})
+it('backs off a failing task and settles it after a day of unbroken failure, even with no ttl', async () => {
+  state.status.mockRejectedValue(new Error('session gone'))
+  await pollMcpTasks()
+  const first = (await getMcpTask('one'))!
+  expect(first).toMatchObject({ failures: 1, error: 'session gone' })
+  expect(first.ready).not.toBe(true)
+  expect(first.nextPollAt - Date.now()).toBeGreaterThan(55_000)
+  expect([1, 2, 3, 4, 5, 9].map(mcpTaskRetryDelay)).toEqual([60_000, 120_000, 240_000, 480_000, 900_000, 900_000])
+  // Still failing a day after the first failure: settled with an error, so the monitor stops.
+  await updateMcpTask('one', (old) => old && { ...old, nextPollAt: 0, failingSince: Date.now() - MCP_TASK_GIVE_UP_MS - 1 })
+  await pollMcpTasks()
+  expect(await getMcpTask('one')).toMatchObject({ ready: true, error: expect.stringContaining('Lost contact') })
+})
+it('a successful poll clears the failure streak', async () => {
+  state.status.mockRejectedValueOnce(new Error('offline'))
+  await pollMcpTasks()
+  expect((await getMcpTask('one'))!.failures).toBe(1)
+  await updateMcpTask('one', (old) => old && { ...old, nextPollAt: 0 })
+  state.status.mockResolvedValue({ ...record.task, status: 'working' })
+  await pollMcpTasks()
+  const after = (await getMcpTask('one'))!
+  expect(after.failures).toBeUndefined()
+  expect(after.failingSince).toBeUndefined()
 })
 it('does not contact a disabled or replaced server', async () => {
   state.settings.mcp.serverState = { srv: { enabled: false } }

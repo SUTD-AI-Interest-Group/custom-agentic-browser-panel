@@ -1,4 +1,4 @@
-import { test, expect, afterEach, vi } from 'vitest'
+import { beforeAll, test, expect, afterEach, vi } from 'vitest'
 import {
   reconstructAbstract,
   parseOpenAlexWork,
@@ -7,6 +7,10 @@ import {
   parseImgTags,
   harvestImages,
 } from './researchSources'
+import { loadExtractionParser } from './extractionHtml'
+
+// The parsers are synchronous once parse5 is loaded; production callers await this first.
+beforeAll(loadExtractionParser)
 
 test('reconstructAbstract rebuilds plain text from the inverted index', () => {
   expect(reconstructAbstract({ The: [0], quick: [1], brown: [2], fox: [3, 5], jumps: [4] })).toBe(

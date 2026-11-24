@@ -33,3 +33,16 @@ it('throws on a short read', () => {
   const fake: ReadAt = { read: () => 1 }
   expect(() => new TableReader(fake, 1, 2).rows([0], new Float32Array(2))).toThrow(/short read/)
 })
+
+it('reads each distinct row once per call, copying repeats', () => {
+  const r0 = block(1, [1, 2]), r1 = block(2, [3, 4])
+  const file = new Uint8Array([...r0, ...r1])
+  const at: number[] = []
+  const fake: ReadAt = {
+    read(buf, opts) { at.push(opts.at); buf.set(file.subarray(opts.at, opts.at + buf.length)); return buf.length },
+  }
+  const out = new Float32Array(10)
+  new TableReader(fake, 1, 2).rows([1, 0, 1, 1, 0], out)
+  expect([...out]).toEqual([6, 8, 1, 2, 6, 8, 6, 8, 1, 2])
+  expect(at).toEqual([6, 0])
+})

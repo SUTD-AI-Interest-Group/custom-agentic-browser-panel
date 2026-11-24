@@ -138,6 +138,9 @@ export function planCompaction(
  * `keep` is spliced in by reference and never rewritten, which is what lets
  * `lychee-attachment:<id>` sentinels in the tail survive compaction untouched.
  */
+/** How many messages `applyCompaction` puts in front of `plan.keep`: the summary pair. */
+const SUMMARY_PAIR = 2
+
 export function applyCompaction(plan: CompactionPlan, summary: string): ModelMessage[] {
   return [
     {
@@ -147,6 +150,17 @@ export function applyCompaction(plan: CompactionPlan, summary: string): ModelMes
     { role: 'assistant', content: 'Understood — continuing from that summary.' },
     ...plan.keep,
   ]
+}
+
+/**
+ * Where an offset into the history lands after `applyCompaction(plan, …)`, or null when it pointed
+ * into the folded span — that position no longer exists. Anything holding an offset across a fold
+ * (regenerate's undo point) must be rebased through this: assigning a stale, larger offset to
+ * `history.length` pads the array with holes, and a smaller one cuts at a meaningless point.
+ */
+export function rebaseAfterCompaction(offset: number, plan: Pick<CompactionPlan, 'foldIndex'>): number | null {
+  if (offset < plan.foldIndex) return null
+  return offset - plan.foldIndex + SUMMARY_PAIR
 }
 
 /**

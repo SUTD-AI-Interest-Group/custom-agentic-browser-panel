@@ -38,6 +38,12 @@ describe('discovery and descriptor identity', () => {
     expect(webMcpDiagnostic(unsupported)).toContain('chrome://flags/#enable-webmcp-testing')
     expect(webMcpDiagnostic(empty)).toContain('no registered actions')
   })
+  it('keeps a tool whose unset optional fields Chrome reports as null (Chrome 159 shape)', async () => {
+    api({ getTools: async () => [{ ...action, title: '', outputSchema: null, annotations: null }] })
+    const snapshot = await discover()
+    expect(snapshot.diagnostics ?? []).toEqual([])
+    expect(snapshot.tools).toEqual([{ ...action, handle: expect.any(String) }])
+  })
   it('preserves metadata without serializing Window, and hides debugging tools', async () => {
     const metadata = { title: 'Find tea', origin: 'https://example.com', outputSchema: { type: 'object' }, annotations: { readOnlyHint: true, consequentialHint: false, untrustedContentHint: true } }
     api({ getTools: async () => [{ ...action, ...metadata, window }, { ...action, name: 'debug', annotations: { debugging: true } }] })

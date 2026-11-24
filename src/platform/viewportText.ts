@@ -24,6 +24,12 @@ function injViewportText(cap: number): string {
     return document.body
   }
   const walker = document.createTreeWalker(document.body ?? document.documentElement, NodeFilter.SHOW_TEXT)
+  // Geometry first, style second: on a long page most text nodes are off screen, and one reused
+  // Range's rect (layout is computed once and then cached, since nothing here mutates the DOM)
+  // rejects them far more cheaply than a getComputedStyle per node. Same result as checking style
+  // first — text under a display:none box has an empty rect — with visibility still checked for
+  // everything that survives.
+  const range = document.createRange()
   let n: Node | null
   while ((n = walker.nextNode()) && len < cap) {
     const t = (n.nodeValue ?? '').replace(/\s+/g, ' ').trim()
@@ -32,13 +38,12 @@ function injViewportText(cap: number): string {
     if (!p) continue
     const tag = p.tagName
     if (tag === 'SCRIPT' || tag === 'STYLE' || tag === 'NOSCRIPT' || tag === 'TEMPLATE') continue
-    const cs = getComputedStyle(p)
-    if (cs.display === 'none' || cs.visibility === 'hidden') continue
-    const range = document.createRange()
     range.selectNodeContents(n)
     const r = range.getBoundingClientRect()
     if (r.width === 0 || r.height === 0) continue
     if (r.bottom < 0 || r.top > vh || r.right < 0 || r.left > vw) continue
+    const cs = getComputedStyle(p)
+    if (cs.display === 'none' || cs.visibility === 'hidden') continue
     const b = blockOf(p)
     if (parts.length) parts.push(b === lastBlock ? ' ' : SEP)
     lastBlock = b

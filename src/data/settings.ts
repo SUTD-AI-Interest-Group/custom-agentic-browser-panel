@@ -423,6 +423,31 @@ export function migrateResearchToolPolicy(
 }
 
 export async function loadSettings(): Promise<Settings> {
+  return (await loadSettingsDetailed()).settings
+}
+
+/**
+ * A `loadSettings` for hot paths that call it repeatedly (the service worker's tool host reads it on
+ * every tool call and every approval check). It still reads storage on every call — so a policy edit
+ * is seen on the very next one — but reuses the last opened Settings while the stored record is
+ * byte-for-byte unchanged, skipping the vault decrypt of every secret. A load that met a transient
+ * vault outage (secrets passed through still sealed) is never reused.
+ */
+export function createSettingsReader(): () => Promise<Settings> {
+  let cached: { raw: string; settings: Settings } | undefined
+  return async () => {
+    const data = await chrome.storage.local.get(STORAGE_KEY)
+    const raw = JSON.stringify(data[STORAGE_KEY] ?? null)
+    if (cached && cached.raw === raw) return structuredClone(cached.settings)
+    const { settings, reusable } = await loadSettingsDetailed()
+    // Keyed to the raw value read BEFORE loading: if storage changed in between, the next call sees
+    // a different raw value and reloads, so a stale entry can never be served.
+    cached = reusable ? { raw, settings: structuredClone(settings) } : undefined
+    return settings
+  }
+}
+
+async function loadSettingsDetailed(): Promise<{ settings: Settings; reusable: boolean }> {
   const data = await chrome.storage.local.get(STORAGE_KEY)
   const stored = data[STORAGE_KEY] as Partial<Settings> | undefined
   const settings = { ...EMPTY, ...stored }
@@ -450,7 +475,7 @@ export async function loadSettings(): Promise<Settings> {
   const { settings: opened, hadPlaintext, hadUnavailable } = await openSettings(settings)
   if (hadUnavailable) warnVaultUnavailable()
   if (hadPlaintext) await migrateSecretsToSealed(stored, opened)
-  return opened
+  return { settings: opened, reusable: !hadUnavailable && !hadPlaintext }
 }
 
 let warnedVaultUnavailable = false

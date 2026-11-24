@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { ModelMessage } from 'ai'
-import { applyCompaction, estimateHistoryTokens, planCompaction } from './compaction'
+import { applyCompaction, estimateHistoryTokens, planCompaction, rebaseAfterCompaction } from './compaction'
 
 const user = (text: string): ModelMessage => ({ role: 'user', content: text })
 const assistant = (text: string): ModelMessage => ({ role: 'assistant', content: text })
@@ -199,5 +199,30 @@ describe('estimateHistoryTokens', () => {
       value: { text: 'x'.repeat(4000) },
     }
     expect(estimateHistoryTokens([big])).toBeGreaterThan(500)
+  })
+})
+
+describe('rebaseAfterCompaction', () => {
+  // Regenerate remembers `historyLen` (the history length before its turn's opener) and later does
+  // `history.length = historyLen`. A fold mid-chain must not leave that offset stale.
+  const history: ModelMessage[] = []
+  for (let i = 0; i < 6; i++) history.push(user(`q${i}`), toolCall(`c${i}`, 'ReadPage'), toolResult(`c${i}`, 'ReadPage'), assistant(`a${i}`))
+
+  it('maps every surviving offset to the same position in the compacted history', () => {
+    const plan = planCompaction(history, { keepRecentUserTurns: 2 })!
+    const compacted = applyCompaction(plan, 'summary')
+    for (let offset = plan.foldIndex; offset <= history.length; offset++) {
+      const rebased = rebaseAfterCompaction(offset, plan)!
+      expect(compacted.slice(rebased)).toEqual(history.slice(offset))
+      // Truncating there never pads the array with holes.
+      expect(rebased).toBeLessThanOrEqual(compacted.length)
+    }
+  })
+
+  it('reports an offset inside the folded span as gone', () => {
+    const plan = planCompaction(history, { keepRecentUserTurns: 2 })!
+    expect(plan.foldIndex).toBeGreaterThan(0)
+    expect(rebaseAfterCompaction(0, plan)).toBeNull()
+    expect(rebaseAfterCompaction(plan.foldIndex - 1, plan)).toBeNull()
   })
 })

@@ -1,4 +1,4 @@
-import { parseExtractionHtml, htmlText, htmlAttr, findHtml } from './extractionHtml'
+import { parseExtractionHtml, htmlText, htmlAttr, findHtml, loadExtractionParser } from './extractionHtml'
 // Client-side link previews for standalone links. host_permissions:["<all_urls>"]
 // exempts these cross-origin reads from CORS, so no backend/proxy is needed.
 // The OG parser is pure (testable without network); getLinkPreview adds a memory
@@ -134,7 +134,9 @@ async function fetchPreview(url: string): Promise<LinkPreview | null> {
   try {
     const res = await fetch(url, { signal: AbortSignal.timeout(TIMEOUT_MS), redirect: 'follow' })
     if (res.ok && (res.headers.get('content-type') ?? '').includes('text/html')) {
-      data = parseOpenGraph(await res.text(), res.url || url)
+      const html = await res.text()
+      await loadExtractionParser()
+      data = parseOpenGraph(html, res.url || url)
     }
   } catch {
     data = null

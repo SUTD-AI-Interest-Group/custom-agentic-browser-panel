@@ -24,7 +24,7 @@ try {
   )
   await build({
     stdin: {
-      contents: `export { extractReadableText, parseDuckDuckGoLite, parseDuckDuckGoHtml } from './src/platform/webFetch'; export { parseImgTags } from './src/platform/researchSources'; export { parseOpenGraph } from './src/platform/linkPreview';`,
+      contents: `export { loadExtractionParser } from './src/platform/extractionHtml'; export { extractReadableText, parseDuckDuckGoLite, parseDuckDuckGoHtml } from './src/platform/webFetch'; export { parseImgTags } from './src/platform/researchSources'; export { parseOpenGraph } from './src/platform/linkPreview';`,
       resolveDir: process.cwd(),
     },
     bundle: true,
@@ -56,6 +56,8 @@ try {
   await page.goto(`chrome-extension://${id}/extraction-probe.html`)
   const result = await page.evaluate(async (origin) => {
     const api = await import('./extraction-probe.js')
+    // parse5 loads on demand; production callers await this before parsing, as here.
+    await api.loadExtractionParser()
     const html = `<html><head><title>Safe &amp; readable</title><meta property="og:title" content="Preview title"><meta property="og:description" content="Preview description"><meta http-equiv="refresh" content="0;url=${origin}/refresh"><link rel="stylesheet" href="${origin}/style"></head><body onload="globalThis.executed = true"><script>globalThis.executed = true</script><main onclick="globalThis.executed = true"><h1>Readable heading</h1><p>First paragraph.</p><p>Second paragraph.</p><img src="${origin}/image" onerror="globalThis.executed = true" width="600" height="400" alt="Research image"><iframe src="${origin}/frame" onload="globalThis.executed = true"></iframe><svg onload="globalThis.executed = true"></svg></main></body></html>`
     const lite = `<table><tr><td><a class="result-link" onclick="globalThis.executed=true" href="https://example.com/result">Result</a></td></tr><tr><td class="result-snippet">Snippet.</td></tr></table>`
     const full = `<div class="result"><a class="result__a" onfocus="globalThis.executed=true" href="https://example.com/result">Result</a><span class="result__snippet">Snippet.</span></div>`

@@ -10,7 +10,7 @@
 // on demand. The pure config/policy logic lives in src/mcp/config.ts.
 
 import { getMcpTask, listMcpTasks, updateMcpTask, mcpTaskKey, mcpConfigHash, terminalTask as terminalLegacyTask } from '../data/mcpTasks'
-import { Client } from '@modelcontextprotocol/sdk/client/index.js'
+import type { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StreamableHTTPClientTransport, StreamableHTTPError } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
 import { SSEClientTransport } from '@modelcontextprotocol/sdk/client/sse.js'
 import { auth, UnauthorizedError } from '@modelcontextprotocol/sdk/client/auth.js'
@@ -146,7 +146,27 @@ interface PersistedCatalog {
  * validator interprets schemas without code generation, built for exactly
  * these eval-banned runtimes.
  */
-function newClient(): Client {
+// The SDK's Client module statically pulls in Ajv (~130 kB with its formats and URI parser) even
+// though every Client here uses the CfWorker validator, so pages load it on the first connection.
+// A service worker cannot: `import()` is disallowed in ServiceWorkerGlobalScope, so the worker's
+// entry (background.ts) imports the module statically and hands it in through
+// `provideMcpClientModule` before any connection is made. A failed page load is retried.
+type ClientModule = typeof import('@modelcontextprotocol/sdk/client/index.js')
+let clientModule: Promise<ClientModule> | undefined
+export function provideMcpClientModule(module: ClientModule): void {
+  clientModule = Promise.resolve(module)
+}
+async function newClient(): Promise<Client> {
+  const swScope = (globalThis as { ServiceWorkerGlobalScope?: abstract new () => unknown }).ServiceWorkerGlobalScope
+  if (!clientModule && swScope && globalThis instanceof swScope) {
+    // Fail loudly rather than with the browser's opaque TypeError from a disallowed import().
+    throw new Error('MCP client module was not provided to this service worker (see provideMcpClientModule).')
+  }
+  clientModule ??= import('@modelcontextprotocol/sdk/client/index.js').catch((err) => {
+    clientModule = undefined
+    throw err
+  })
+  const { Client } = await clientModule
   return new Client(
     { name: 'lychee-ai', version: '0.5.0' },
     { capabilities: {
@@ -331,7 +351,7 @@ export class McpManager {
     const authProvider = new ChromeOAuthProvider(name, url.toString(), { clientMetadataUrl: slot.entry.oauthClientMetadataUrl })
 
     const attempt = async (kind: 'http' | 'sse') => {
-      const client = newClient()
+      const client = await newClient()
       const transport =
         kind === 'http'
           ? new StreamableHTTPClientTransport(url, { requestInit, authProvider, fetch: authProvider.fetch })
@@ -813,7 +833,7 @@ export class McpManager {
     if (record.sessionId) {
       // A new SDK Client with an existing session intentionally skips initialize
       // and has no catalog capabilities. Use it only for the persisted task.
-      taskClient = newClient()
+      taskClient = await newClient()
       const url = new URL(String(entry.url))
       const transport = new StreamableHTTPClientTransport(url, {
         sessionId: record.sessionId, requestInit: entry.headers ? { headers: entry.headers } : undefined,

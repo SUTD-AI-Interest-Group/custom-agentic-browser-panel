@@ -575,6 +575,44 @@ describe('RequestPageControl — tells the decider a session was granted', () =>
     const result = await within((requestTools(true, stubHooks({ sessionGranted: throws })).RequestPageControl as any).execute({ plan: 'p' }, {} as any))
     expect(result).toMatchObject({ started: true })
   })
+
+  it('refuses a second request in the same step while the first card is still waiting', async () => {
+    stubTabsQuery(FG_TAB, FG_TAB)
+    let answer!: (yes: boolean) => void
+    const requestSession = vi.fn(() => new Promise<boolean>((resolve) => { answer = resolve }))
+    const pageControl: PageControlGate = { requestSession, session: () => null, endSession: () => {} }
+    const tools = createAgentTools(
+      async () => true, 'all-tabs', new Set(), pageControl, null, false, [], () => 'always', 'conv-1', new Set(),
+      undefined, undefined, { resolveTab: async () => FG_TAB, park: () => {} }, stubHooks({}),
+    )
+    const first = (tools.RequestPageControl as any).execute({ plan: 'one' }, {} as any)
+    await vi.waitFor(() => expect(requestSession).toHaveBeenCalledTimes(1))
+    const second = await within((tools.RequestPageControl as any).execute({ plan: 'two' }, {} as any))
+    expect(second).toMatchObject({ error: expect.stringContaining('already waiting for the user') })
+    expect(requestSession).toHaveBeenCalledTimes(1)
+    answer(true)
+    expect(await within(first)).toMatchObject({ started: true })
+    // Once settled, a later request is asked normally.
+    stubTabsQuery(FG_TAB)
+    const third = (tools.RequestPageControl as any).execute({ plan: 'three' }, {} as any)
+    await vi.waitFor(() => expect(requestSession).toHaveBeenCalledTimes(2))
+    answer(false)
+    await within(third)
+  })
+
+  it('refuses while a FastSteps run is driving the open session, without asking for a new one', async () => {
+    stubTabsQuery(FG_TAB)
+    const requestSession = vi.fn(async () => true)
+    const driving = { tabId: 1, origin: 'https://example.com', plan: 'p', active: true, driving: true }
+    const pageControl: PageControlGate = { requestSession, session: () => driving, endSession: () => {} }
+    const tools = createAgentTools(
+      async () => true, 'all-tabs', new Set(), pageControl, null, false, [], () => 'always', 'conv-1', new Set(),
+      undefined, undefined, { resolveTab: async () => FG_TAB, park: () => {} }, stubHooks({}),
+    )
+    const result = await within((tools.RequestPageControl as any).execute({ plan: 'p' }, {} as any))
+    expect(result).toMatchObject({ error: expect.stringContaining('FastSteps run is still taking steps') })
+    expect(requestSession).not.toHaveBeenCalled()
+  })
 })
 
 // ---------------------------------------------------------------------------
