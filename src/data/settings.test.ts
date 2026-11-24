@@ -74,6 +74,22 @@ describe('artifact tools', () => {
   })
 })
 
+describe('code, screenshot and tab tools', () => {
+  const tools = ['RunCode', 'GetScreenshot', 'GetElementScreenshot', 'GroupTabs', 'CloseTabs']
+
+  it('keep asking by default, as they did before they were listed', () => {
+    for (const name of tools) expect(toolPolicy(base(), name), name).toBe('ask')
+  })
+
+  it('can now be changed by the user, one tool or a whole group at a time', () => {
+    expect(toolPolicy(base({ toolPolicies: { RunCode: 'always' } }), 'RunCode')).toBe('always')
+    expect(toolPolicy(setGroupPolicy(base(), 'code', 'never'), 'RunCode')).toBe('never')
+    const tabs = setGroupPolicy(base(), 'navigation', 'never')
+    expect(toolPolicy(tabs, 'GroupTabs')).toBe('never')
+    expect(toolPolicy(tabs, 'CloseTabs')).toBe('never')
+  })
+})
+
 describe('setGroupPolicy', () => {
   it('sets every tool in the group and leaves other groups alone', () => {
     const next = setGroupPolicy(base(), 'reading', 'never')

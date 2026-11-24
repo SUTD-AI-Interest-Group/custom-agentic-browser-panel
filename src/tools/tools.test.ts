@@ -1730,3 +1730,16 @@ describe('the system prompt names every tool there is', () => {
     expect(missing).toEqual([])
   })
 })
+
+describe('Settings → Permissions lists every tool there is', () => {
+  // A tool absent from TOOL_CATALOG still runs (as Ask) but the user can never change it: seven
+  // built-in tools (RunCode, the artifact and screenshot tools, GroupTabs, CloseTabs) were missing.
+  // The disclosure meta-tools are exempt — they load tools, and each loaded tool gates on its own.
+  it('TOOL_CATALOG has an entry for each tool createAgentTools builds, including the conditional ones', async () => {
+    const { TOOL_CATALOG } = await import('../data/settings')
+    const listed = new Set(TOOL_CATALOG.map((t) => t.name))
+    const conditional = ['FastSteps', 'QueryBrowserData', 'ListMcpResources', 'ReadMcpResource', 'ListMcpSkills', 'ReadMcpSkill', 'ReadMcpSkillFile', 'ListMcpTasks', 'GetMcpTask', 'CancelMcpTask']
+    const missing = [...Object.keys(buildTools()), ...conditional].filter((name) => !['ToolSearch', 'GetTool'].includes(name) && !listed.has(name))
+    expect(missing).toEqual([])
+  })
+})

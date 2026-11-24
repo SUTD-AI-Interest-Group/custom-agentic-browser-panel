@@ -109,7 +109,7 @@ export type TabAccess = 'active-tab' | 'all-tabs'
 export type ToolPolicy = 'never' | 'ask' | 'always'
 
 /** UI grouping for the tool-permission matrix, in display order. */
-export type ToolGroup = 'reading' | 'control' | 'navigation' | 'artifacts' | 'memory' | 'insights' | 'skills' | 'mcp'
+export type ToolGroup = 'reading' | 'control' | 'navigation' | 'artifacts' | 'code' | 'memory' | 'insights' | 'skills' | 'mcp'
 
 export interface ToolCatalogEntry {
   /** The tool's key in `createAgentTools` — the id policies are stored under. */
@@ -124,7 +124,9 @@ export interface ToolCatalogEntry {
 /**
  * The single source of truth for which agent tools exist and how they group in
  * the permission matrix. Kept here (not in tools.ts) so both the UI and the
- * default-policy map derive from one list.
+ * default-policy map derive from one list. A tool missing here still runs (as
+ * Ask) but can never be changed by the user; src/tools/tools.test.ts fails when
+ * a tool createAgentTools builds is not listed.
  */
 export const TOOL_CATALOG: ToolCatalogEntry[] = [
   { name: 'CreatePageWatch', group: 'reading', label: 'Watch a page on a schedule (confirm every time)' },
@@ -134,6 +136,8 @@ export const TOOL_CATALOG: ToolCatalogEntry[] = [
   { name: 'RunWebMcp', group: 'mcp', label: 'Run a page WebMCP action (confirm every time)' },
   { name: 'ReadPage', group: 'reading', label: 'Read the current tab (text / DOM / elements)' },
   { name: 'ReadPdf', group: 'reading', label: 'Read / search the open PDF' },
+  { name: 'GetScreenshot', group: 'reading', label: 'Take a screenshot of the page' },
+  { name: 'GetElementScreenshot', group: 'reading', label: 'Take a screenshot of one part of the page' },
   { name: 'HighlightContent', group: 'reading', label: 'Highlight a passage on the page' },
   { name: 'ReadTabs', group: 'reading', label: 'List / read other open tabs (text / DOM)' },
   { name: 'ExtractData', group: 'reading', label: 'Extract structured data from this page' },
@@ -145,11 +149,15 @@ export const TOOL_CATALOG: ToolCatalogEntry[] = [
   // ControlPage is set to Never (createAgentTools); listed so it can be set to Never on its own.
   { name: 'FastSteps', group: 'control', label: 'Take quick page steps with the on-device model (Driver mode)' },
   { name: 'NavigateTab', group: 'navigation', label: 'Switch / open / navigate tabs' },
+  { name: 'GroupTabs', group: 'navigation', label: 'Organize tabs into tab groups' },
+  // once: true in createAgentTools — a card names every tab, whatever this is set to (only Never removes it).
+  { name: 'CloseTabs', group: 'navigation', label: 'Close tabs (confirm every time)' },
   // Shipped as Always: the agent is steered to show answers as artifacts, and a card before every
   // visual would make that a chore. The HTML runs in the sealed, network-less sandbox (src/exec/),
   // and the user can still set either back to Ask or Never in Settings → Permissions.
   { name: 'CreateArtifact', group: 'artifacts', label: 'Create an interactive artifact (chart, diagram, mini-app)', defaultPolicy: 'always' },
   { name: 'UpdateArtifact', group: 'artifacts', label: 'Revise an artifact it created', defaultPolicy: 'always' },
+  { name: 'RunCode', group: 'code', label: 'Run JavaScript in the sealed sandbox' },
   { name: 'SaveMemory', group: 'memory', label: 'Save a long-term memory' },
   { name: 'SearchMemory', group: 'memory', label: 'Search long-term memory' },
   { name: 'QueryBrowserData', group: 'insights', label: 'Browser data (history, bookmarks, top sites, downloads)' },
@@ -176,6 +184,7 @@ export const GROUP_ORDER: ToolGroup[] = [
   'control',
   'navigation',
   'artifacts',
+  'code',
   'memory',
   'insights',
   'skills',
@@ -188,6 +197,7 @@ export const GROUP_LABELS: Record<ToolGroup, string> = {
   control: 'Page control',
   navigation: 'Navigation',
   artifacts: 'Artifacts',
+  code: 'Code sandbox',
   memory: 'Long-term memory',
   insights: 'Browsing insights',
   skills: 'Skills',
