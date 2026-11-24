@@ -30,6 +30,7 @@ for that history.
 - WebMCP tools registered without an output schema load on Chrome 159, which reports unset fields as `null`.
 - The Library and history list refresh when another window or the background host changes a conversation.
 - Less background work: attachment pruning reads index keys only, the tool host skips re-decrypting unchanged settings, hidden idle chats stop tracking tab switches, and page-text reads are about 30% faster.
+- A streaming reply no longer rewrites the whole conversation on every update. Each durable chat run is split into a record written once (history, transcript, tool schemas) and a small live record. On a 23-turn chat, storage written while a reply streams falls from 2.3 MB/s to 7.5 KB/s and storage read from 7.6 MB/s to 25 KB/s, at any conversation length. A tool's result is dropped from the live record once taken (a six-page-read turn: 742 KB per update down to 152 KB). Existing runs are split in place on update.
 
 ### Optimisation integration — 11 November 2026
 

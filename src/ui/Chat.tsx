@@ -28,7 +28,7 @@ import {
 } from '../data/attachmentRefs'
 import { getAttachment } from '../data/attachments'
 import { observeChanges } from '../data/changeSignal'
-import { activeChatRun, chatRunChanges, chatRunMessages, getChatRun, updateChatRun, type ChatRun } from '../data/chatRuns'
+import { activeChatRun, chatRunChanges, chatRunMessages, createChatRunReader, getChatRun, getChatRunLive, updateChatRun, type ChatRunLive } from '../data/chatRuns'
 import { getConversation, getInFlight, renameConversation, saveConversation, sweepInFlight, type InFlightTurn, type RegenTarget } from '../data/conversations'
 import { listMcpTasks, mcpConfigHash, updateMcpTask } from '../data/mcpTasks'
 import { appendToEpisode, getMemoryContext } from '../data/memory'
@@ -660,7 +660,7 @@ export default function Chat({
   const [messages, setMessages] = useState<UIMessage[]>([])
   const [input, setInput] = useState('')
   useEffect(() => {if(pendingDraft){setInput(current=>[current,pendingDraft].filter(Boolean).join('\n\n'));onDraftHandled?.()}}, [pendingDraft,onDraftHandled])
-  const [backgroundRun, setBackgroundRun] = useState<ChatRun | null>(null)
+  const [backgroundRun, setBackgroundRun] = useState<ChatRunLive | null>(null)
   const [generating, setStreaming] = useState(false)
   const [preparing, setPreparing] = useState('')
   const preparationRef = useRef<AbortController | null>(null)
@@ -1135,9 +1135,13 @@ export default function Chat({
     if (!restored) return
     let alive = true, checkedAt = 0, lastParts = '', seen: string | undefined
     const pendingApprovals = new Set<string>()
+    // The transcript needs the run's spec (its messages); read once per run, not on every change.
+    const readRun = createChatRunReader()
     const check = async () => {
       if (!alive) return
-      const run = await getChatRun(conversationId)
+      // Woken by every change — several a second while a reply streams, this panel's own runs
+      // included, which it leaves at once — so it reads the small live half first.
+      const run = await getChatRunLive(conversationId)
         if (!alive || !run || run.owner === CHAT_OWNER) return
         if (activeChatRun(run)) {
           // The panel that started this run is gone (a reload, an extension update), so this one is
@@ -1164,18 +1168,26 @@ export default function Chat({
           setBackgroundRun(old => old?.id === run.id ? old : run)
           setRecovery(null)
           const signature = `${run.id}:${run.partsVersion ?? 0}`
-          if (signature !== lastParts) { lastParts = signature; setMessages(chatRunMessages(run)) }
+          if (signature !== lastParts) {
+            const full = await readRun(conversationId)
+            if (!alive) return
+            if (full?.id === run.id) { lastParts = signature; setMessages(chatRunMessages(full)) }
+          }
           return 5000
         } else if (seen !== run.id) {
+          // Everything below decides from ONE snapshot of the finished run (its spec holds the bubble id).
+          // Replaced in the meantime: not marked seen, since the change that replaced it runs this again.
+          const full = await readRun(conversationId)
+          if (!alive || !full || full.id !== run.id) return
           const saved = await getConversation(conversationId)
           const history = saved ? await hydrateHistory(saved.history, attachmentResolver()) : []
           if (!alive) return
           if (saved) { setMessages(saved.messages); historyRef.current = history }
           setBackgroundRun(null)
           setRecovery(null)
-          if (saved?.messages.at(-1)?.id === run.assistantId && run.result && run.result.stop.reason !== 'completed') setContinuation({ checkpoint: run.result.stop.checkpoint ?? null, needsPanel: run.needsPanel })
+          if (saved?.messages.at(-1)?.id === full.assistantId && full.result && full.result.stop.reason !== 'completed') setContinuation({ checkpoint: full.result.stop.checkpoint ?? null, needsPanel: full.needsPanel })
           onConversationsChanged()
-          seen = run.id
+          seen = full.id
         }
     }
     const stop = observeChanges(chatRunChanges, conversationId, check)

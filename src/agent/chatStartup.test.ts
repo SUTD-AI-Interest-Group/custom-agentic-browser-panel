@@ -1,12 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { startChatRun } from './chatStartup'
-import { getChatRun } from '../data/chatRuns'
-vi.mock('../data/chatRuns', () => ({ getChatRun: vi.fn() }))
+import { getChatRunLive } from '../data/chatRuns'
+vi.mock('../data/chatRuns', () => ({ getChatRunLive: vi.fn() }))
 const send = vi.fn()
 beforeEach(() => {
   vi.useFakeTimers(); vi.clearAllMocks()
   vi.stubGlobal('chrome', { runtime: { sendMessage: send } })
-  vi.mocked(getChatRun).mockResolvedValue({ id: 'run', state: 'queued' } as never)
+  vi.mocked(getChatRunLive).mockResolvedValue({ id: 'run', state: 'queued' } as never)
 })
 afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals() })
 describe('chat startup acknowledgement', () => {
@@ -17,7 +17,7 @@ describe('chat startup acknowledgement', () => {
   })
   it('recovers a lost reply when the host already started without redispatch', async () => {
     send.mockResolvedValue(undefined)
-    vi.mocked(getChatRun).mockResolvedValue({ id: 'run', state: 'running' } as never)
+    vi.mocked(getChatRunLive).mockResolvedValue({ id: 'run', state: 'running' } as never)
     await startChatRun('chat', 'run')
     expect(send).toHaveBeenCalledTimes(1)
   })
@@ -42,7 +42,7 @@ describe('chat startup acknowledgement', () => {
   })
   it('does not overwrite a completed or failed run when its reply is lost', async () => {
     send.mockResolvedValue(undefined)
-    vi.mocked(getChatRun).mockResolvedValue({ id: 'run', state: 'error' } as never)
+    vi.mocked(getChatRunLive).mockResolvedValue({ id: 'run', state: 'error' } as never)
     await startChatRun('chat', 'run')
     expect(send).toHaveBeenCalledTimes(1)
   })

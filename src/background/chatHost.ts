@@ -9,7 +9,7 @@ import { createDriverScript } from '../agent/driverScript'
 import type { Trace } from '../agent/observability/types'
 import type { ProviderConfig } from '../data/settings'
 import { openSecret } from '../data/vault'
-import { chatRunChanges, chatRunMessages, getChatRun, updateChatRun, type ChatRun } from '../data/chatRuns'
+import { chatRunChanges, chatRunMessages, consumeToolRequest, getChatRun, getChatRunLive, updateChatRun, type ChatRun, type ChatRunLive } from '../data/chatRuns'
 import { saveConversation } from '../data/conversations'
 import { dehydrateHistory } from '../data/attachmentRefs'
 import { saveTrace } from '../data/traces'
@@ -35,13 +35,15 @@ async function executeChat(conversationId: string, id: string) {
   if (running.has(id)) return
   const controller = new AbortController()
   running.set(id, controller)
+  // The whole run, read once at start; the poll below refreshes only its live half (the spec — history,
+  // transcript, tool schemas — never changes after the run is created).
   let job: ChatRun | undefined
   let keepSession = false
   let flushTimer: ReturnType<typeof setTimeout> | undefined
   let latestParts: UIPart[] = []
   let writes = Promise.resolve()
   let polling: ReturnType<typeof setInterval> | undefined
-  const update = (change: (old: ChatRun) => ChatRun) => updateChatRun(conversationId, (old) => old?.id === id ? change(old) : old)
+  const update = (change: (old: ChatRunLive) => ChatRunLive) => updateChatRun(conversationId, (old) => old.id === id ? change(old) : old)
   const flush = () => {
     const parts = latestParts
     writes = writes.then(async () => { await update((old) => ({ ...old, parts, updatedAt: Date.now() })) })
@@ -65,9 +67,9 @@ async function executeChat(conversationId: string, id: string) {
         lastToolHealthCheck = Date.now()
         send({ type: 'chat.tools.status', id, conversationId })
       }
-      void getChatRun(conversationId).then(async (current) => {
+      void getChatRunLive(conversationId).then(async (current) => {
         if (!current || current.id !== id || current.cancelRequested) { controller.abort(); return }
-        job = current
+        if (job) job = { ...job, ...current }
         if (Date.now() - current.updatedAt >= 2000) await update((old) => ({ ...old, updatedAt: Date.now() }))
       }).catch(() => controller.abort()).finally(() => { refreshing = false })
     }, 1000)
@@ -86,13 +88,16 @@ async function executeChat(conversationId: string, id: string) {
             await chrome.runtime.sendMessage({ type: 'chat.tool.poll', conversationId, id, requestId: toolCallId })
           }
           controller.signal.throwIfAborted()
-          const current = await getChatRun(conversationId)
+          const current = await getChatRunLive(conversationId)
           if (!current || current.id !== id) throw new Error('Conversation was removed.')
           const request = current.toolRequests.find((r) => r.id === toolCallId)
           if (request?.state === 'done') {
             images.push(...request.images ?? [])
             if (activeNames) for (const name of request.activeNames ?? []) activeNames.add(name)
             if (request.parked) parked = true
+            // Taken: drop the record's copy of this result (it lives on in the reply parts), so the
+            // rest of the turn's flushes stop rewriting every tool output twice.
+            void update((old) => consumeToolRequest(old, toolCallId)).catch(() => {})
             if (request.error) throw new Error(request.error)
             return request.output
           }
@@ -127,8 +132,9 @@ async function executeChat(conversationId: string, id: string) {
     if (flushTimer) clearTimeout(flushTimer)
     latestParts = result.parts
     await flush()
-    const done = await update((old) => ({ ...old, result, activeNames: activeNames ? [...activeNames] : undefined, updatedAt: Date.now() }))
-    if (!done || done.id !== id) return
+    const live = await update((old) => ({ ...old, result, activeNames: activeNames ? [...activeNames] : undefined, updatedAt: Date.now() }))
+    if (!live || live.id !== id) return
+    const done: ChatRun = { ...job, ...live }
     let messages = chatRunMessages(done)
     if (done.steps.length) {
       const saved = await saveTrace({ id: done.assistantId, conversationId, createdAt: Date.now(), label: 'Background chat', steps: done.steps }).then(() => true, () => false)
@@ -144,7 +150,9 @@ async function executeChat(conversationId: string, id: string) {
     const errorText = error instanceof Error ? error.message : String(error)
     const failed = await update((old) => ({ ...old, parts: latestParts, error: controller.signal.aborted ? undefined : errorText, providerSealed: undefined, updatedAt: Date.now() }))
     if (failed?.id === id) {
-      await saveConversation({ id: conversationId, messages: chatRunMessages(failed), history: dehydrateHistory(failed.history) }).catch(() => {})
+      // The whole run, once: the failure may have come before `job` was read.
+      const full = await getChatRun(conversationId).catch(() => undefined)
+      if (full?.id === id) await saveConversation({ id: conversationId, messages: chatRunMessages(full), history: dehydrateHistory(full.history) }).catch(() => {})
       await update((old) => ({ ...old, state: controller.signal.aborted ? 'cancelled' : 'error' }))
       send({ type: 'chat.settled', conversationId, id })
     }

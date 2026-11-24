@@ -1,4 +1,4 @@
-import { getChatRun } from '../data/chatRuns'
+import { getChatRunLive } from '../data/chatRuns'
 
 /** Only retry delivery of the same run ID, never create a second model run.
  * Some Chromium contexts can disappear during message delivery. The durable
@@ -16,7 +16,7 @@ export async function startChatRun(conversationId: string, id: string): Promise<
     // Acknowledgement can be lost even though the host accepted the run. Do
     // not mark that live run failed or issue a fresh inference request.
     for (let check = 0; check < 10; check++) {
-      const run = await getChatRun(conversationId)
+      const run = await getChatRunLive(conversationId)
       if (!run || run.id !== id) throw new Error('The chat run was removed or replaced during startup.')
       if (run.state !== 'queued') return
       await new Promise(resolve => setTimeout(resolve, 100))

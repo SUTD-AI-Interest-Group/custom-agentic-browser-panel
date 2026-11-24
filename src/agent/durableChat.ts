@@ -7,7 +7,7 @@ import { asSchema } from 'ai'
 import type { runAgentTurn } from './agent'
 import type { ProviderConfig } from '../data/settings'
 import { sealSecret } from '../data/vault'
-import { activeChatRun, chatRunChanges, getChatRun, updateChatRun, type ChatRun } from '../data/chatRuns'
+import { chatRunChanges, createChatRun, getChatRunLive, updateChatRun, type ChatRun } from '../data/chatRuns'
 
 export const CHAT_OWNER = crypto.randomUUID()
 type Options = Parameters<typeof runAgentTurn>[0]
@@ -28,18 +28,16 @@ export async function runDurableChat(options: Options, context: {
   })))
   const providerSealed = await sealSecret(JSON.stringify(context.provider))
   options.abortSignal.throwIfAborted()
-  await updateChatRun(context.conversationId, (old) => {
-    if (activeChatRun(old)) throw new Error('This conversation is already generating in the background.')
-    return {
-      id, chainId: context.chainId, conversationId: context.conversationId, owner: CHAT_OWNER, ownerUntil: Date.now() + 5000,
-      completedMcpTask: context.completedMcpTask, windowId, tabId: context.tabId, assistantId: context.assistantId, providerSealed,
-      providerId: context.provider.id, visionCapable: context.visionCapable, allowedTools: context.allowedTools(), approvals: [],
-      modelId: context.modelId, system: options.system, history: options.history,
-      messages: context.messages, baseParts: context.baseParts, tools,
-      images: options.imageQueue?.splice(0) ?? [], activeNames: options.activeNames ? [...options.activeNames] : undefined,
-      agentState: options.agentState?.(), parts: [], state: 'queued', updatedAt: Date.now(), toolRequests: [], traceEnabled: !!options.sink, steps: [],
-      ...(context.driver ? { driver: context.driver } : {}),
-    }
+  // Refuses (atomically) while this conversation already has a run in flight.
+  await createChatRun({
+    id, chainId: context.chainId, conversationId: context.conversationId, owner: CHAT_OWNER, ownerUntil: Date.now() + 5000,
+    completedMcpTask: context.completedMcpTask, windowId, tabId: context.tabId, assistantId: context.assistantId, providerSealed,
+    providerId: context.provider.id, visionCapable: context.visionCapable, allowedTools: context.allowedTools(), approvals: [],
+    modelId: context.modelId, system: options.system, history: options.history,
+    messages: context.messages, baseParts: context.baseParts, tools,
+    images: options.imageQueue?.splice(0) ?? [], activeNames: options.activeNames ? [...options.activeNames] : undefined,
+    agentState: options.agentState?.(), parts: [], state: 'queued', updatedAt: Date.now(), toolRequests: [], traceEnabled: !!options.sink, steps: [],
+    ...(context.driver ? { driver: context.driver } : {}),
   })
   const abort = () => { void chrome.runtime.sendMessage({ type: 'chat.abort', conversationId: context.conversationId, id }).catch(() => {}) }
   const detach = () => { void updateChatRun(context.conversationId, (old) => old?.id === id ? { ...old, ownerUntil: 0 } : old).catch(() => {}) }
@@ -59,7 +57,8 @@ export async function runDurableChat(options: Options, context: {
     await startChatRun(context.conversationId, id)
     if (options.abortSignal.aborted) abort()
     while (true) {
-      const run = await getChatRun(context.conversationId)
+      // Read on every change (several a second while the reply streams): the live half only.
+      const run = await getChatRunLive(context.conversationId)
       if (!run || run.id !== id) throw new Error('Background chat was removed or replaced.')
       const signature = run.partsVersion ?? 0
       if (signature !== lastParts) { lastParts = signature; options.onUpdate(run.parts) }

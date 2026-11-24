@@ -37,7 +37,7 @@ export function matchesWatch(watch: Pick<PageWatch, 'condition' | 'text' | 'base
     case 'disabled': return !observed.enabled
   }
 }
-const transaction = durableDatabase('lychee-page-watches', 'watches', 'id')
+const transaction = durableDatabase('lychee-page-watches', { watches: 'id' })
 export async function listPageWatches(): Promise<PageWatch[]> {
   const tx = await transaction()
   return new Promise((resolve, reject) => {

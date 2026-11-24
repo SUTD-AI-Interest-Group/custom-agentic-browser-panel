@@ -6,7 +6,7 @@ import { installPageWatchMonitor } from './background/pageWatches'
 import { installToolHost, releaseChatTools, releaseDetachedSessions } from './background/toolHost'
 import { saveConversation } from './data/conversations'
 import { dehydrateHistory } from './data/attachmentRefs'
-import { chatRunMessages, activeChatRun, getChatRun, updateChatRun } from './data/chatRuns'
+import { chatRunMessages, activeChatRun, getChatRun, getChatRunLive, updateChatRun } from './data/chatRuns'
 // MV3 service worker. Chat inference lives in the offscreen host; this worker
 // hosts work that must outlive the panel — today that is the "dreaming"
 // memory-consolidation cycle, which runs on an hourly alarm and only fires
@@ -666,8 +666,9 @@ chrome.runtime.onMessage.addListener((msg: ResearchMsg | DreamMsg, _sender, send
 chrome.runtime.onMessage.addListener((msg, sender, respond) => {
   if (sender.id !== chrome.runtime.id || !['chat.start', 'chat.abort', 'chat.settled', 'chat.inspect'].includes(msg?.type)) return
   void (async () => {
-    const run = await getChatRun(msg.conversationId)
     if (msg.type === 'chat.inspect') {
+      // Sent about once a second by a watching panel: the live half is all it needs.
+      const run = await getChatRunLive(msg.conversationId)
       // A browser restart/reload destroys the offscreen host. Preserve the last
       // streamed text and mark interruption; never silently replay model/tool calls.
       const stale = activeChatRun(run) && Date.now() - run.updatedAt > 5000
@@ -675,16 +676,19 @@ chrome.runtime.onMessage.addListener((msg, sender, respond) => {
         ? await chrome.runtime.sendMessage({ type: 'chat.hasRun', id: run.id }).then(reply => reply?.active === true, () => false)
         : !stale
       if (stale && !hosted) {
-        const failed = await updateChatRun(run.conversationId, old => old?.id === run.id && activeChatRun(old)
+        const failed = await updateChatRun(run.conversationId, old => old.id === run.id && activeChatRun(old)
           ? { ...old, providerSealed: undefined, error: 'Generation was interrupted because its background host closed. Send a message to continue.', updatedAt: Date.now() } : old)
-        if (failed?.id === run.id) {
-          await saveConversation({ id: failed.conversationId, messages: chatRunMessages(failed), history: dehydrateHistory(failed.history) })
-          await updateChatRun(run.conversationId, old => old?.id === run.id ? { ...old, state: 'error' } : old)
+        const full = failed?.id === run.id ? await getChatRun(run.conversationId) : undefined
+        if (full?.id === run.id) {
+          await saveConversation({ id: full.conversationId, messages: chatRunMessages(full), history: dehydrateHistory(full.history) })
+          await updateChatRun(run.conversationId, old => old.id === run.id ? { ...old, state: 'error' } : old)
           releaseChatTools(run.conversationId, run.id)
         }
       }
       return { ok: true }
     }
+    // Once per run: start, Stop, and the settle notification (which needs the run's window and tab).
+    const run = await getChatRun(msg.conversationId)
     if (!run || run.id !== msg.id) return { error: 'Chat run is unavailable.' }
     if (msg.type === 'chat.start') {
       return await withOffscreen(() => chrome.runtime.sendMessage({ type: 'chat.execute', conversationId: run.conversationId, id: run.id }))

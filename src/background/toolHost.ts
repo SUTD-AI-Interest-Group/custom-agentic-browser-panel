@@ -6,7 +6,7 @@ import { clearRegions } from '../platform/regionIndex'
 // polls this host while a call is pending; approvals live in IDB, not a panel.
 import { createAgentTools, type ApprovalRequest } from '../tools/tools'
 import type { ControlSession } from '../tools/pageControl'
-import { activeChatRun, chatRunChanges, getChatRun, updateChatRun, type ChatRun } from '../data/chatRuns'
+import { activeChatRun, chatRunChanges, createChatRunReader, getChatRun, getChatRunLive, updateChatRun, type ChatRun, type ChatRunLive } from '../data/chatRuns'
 import { createSettingsReader, toolPolicy } from '../data/settings'
 import { grantedCapabilities } from '../platform/permissions'
 import { splitPartnerOf } from '../platform/splitView'
@@ -111,8 +111,11 @@ export function installToolHost() {
     }
   })
 }
+// The offscreen host polls about once a second per pending tool call; the run's spec (history,
+// schemas) is read once per run, not on every poll.
+const readRun = createChatRunReader()
 async function poll(conversationId: string, id: string, requestId: string) {
-  const job = await getChatRun(conversationId)
+  const job = await readRun(conversationId)
   if (!job || job.id !== id) return
   const key = `${id}:${requestId}`, request = job.toolRequests.find(r => r.id === requestId)
   if (!activeChatRun(job) || job.cancelRequested) { executing.get(key)?.abort(); return }
@@ -130,7 +133,7 @@ async function poll(conversationId: string, id: string, requestId: string) {
   }).catch(console.error)
 }
 async function execute(job: ChatRun, requestId: string, signal: AbortSignal) {
-  const update = (fn: (old: ChatRun) => ChatRun) => updateChatRun(job.conversationId, old => old?.id === job.id ? fn(old) : old)
+  const update = (fn: (old: ChatRunLive) => ChatRunLive) => updateChatRun(job.conversationId, old => old.id === job.id ? fn(old) : old)
   const request = job.toolRequests.find(r => r.id === requestId)!
   const chainId = job.chainId ?? job.id
   const previous = chains.get(job.conversationId)
@@ -148,7 +151,7 @@ async function execute(job: ChatRun, requestId: string, signal: AbortSignal) {
       const runtime = { key, tools: {} as ToolSet, images, names, parked: false }
       const approve = async (request: ApprovalRequest): Promise<boolean> => {
         signal.throwIfAborted()
-        const current = await getChatRun(job.conversationId)
+        const current = await getChatRunLive(job.conversationId)
         if (!current || current.id !== job.id || current.cancelRequested || !activeChatRun(current)) throw new DOMException('Stopped', 'AbortError')
         const policy = toolPolicy(await loadSettings(), request.toolName)
         if (policy === 'never') return false
@@ -160,7 +163,7 @@ async function execute(job: ChatRun, requestId: string, signal: AbortSignal) {
         try {
         while (true) {
           signal.throwIfAborted()
-          const live = await getChatRun(job.conversationId)
+          const live = await getChatRunLive(job.conversationId)
           if (!live || live.id !== job.id || live.cancelRequested || !activeChatRun(live)) throw new DOMException('Stopped', 'AbortError')
           if (!notified && live.ownerUntil < Date.now()) {
             notified = true
@@ -224,7 +227,7 @@ async function execute(job: ChatRun, requestId: string, signal: AbortSignal) {
     const tool = state.tools[request.name]
     if (!tool?.execute) throw new Error(`Tool ${request.name} is disabled or unavailable.`)
     signal.throwIfAborted()
-    const current = await getChatRun(job.conversationId)
+    const current = await getChatRunLive(job.conversationId)
     if (!current || current.id !== job.id || current.cancelRequested || !activeChatRun(current)) throw new DOMException('Stopped', 'AbortError')
     output = await tool.execute(request.input as never, { context: undefined, toolCallId: requestId, messages: job.history, abortSignal: signal })
   } catch (e) { error = e instanceof Error ? e.message : String(e) }

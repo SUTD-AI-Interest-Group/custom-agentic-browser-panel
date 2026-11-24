@@ -1,6 +1,11 @@
 import 'fake-indexeddb/auto'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { getChatRun, listChatRuns, removeChatRuns, updateChatRun, type ChatRun } from '../data/chatRuns'
+import { consumeToolRequest, createChatRun, getChatRun, listChatRuns, removeChatRuns, updateChatRun, type ChatRun } from '../data/chatRuns'
+/** Makes `run` the conversation's run, replacing whatever was there (a test's earlier run may still be "running"). */
+async function storeRun(run: ChatRun) {
+  await removeChatRuns('chat')
+  await createChatRun(run)
+}
 const fixture = vi.hoisted(() => ({ policy: 'ask', mutations: 0, disconnect: vi.fn(), decider: undefined as { mode: string } | undefined, send: (() => {}) as (msg: unknown) => unknown, model: undefined as unknown }))
 vi.mock('../data/settings', () => {
   const loadSettings = async () => ({ providers: [], tabAccess: 'all-tabs', toolPolicies: { Execute: fixture.policy }, decider: fixture.decider })
@@ -87,7 +92,7 @@ const finished = () => until(async () => (await getChatRun('chat'))?.toolRequest
 describe('background tool permissions', () => {
   it('releases a parked session when its panel closes, while preserving a live run', async () => {
     const run = job(); run.windowId = 9; run.toolRequests[0].name = 'Control'
-    await updateChatRun('chat', () => run); await poll(run)
+    await storeRun(run); await poll(run)
     await until(async () => !!(await getChatRun('chat'))?.approvals?.length)
     const approval = (await getChatRun('chat'))!.approvals![0]
     await message({ type: 'chat.approval.decide', conversationId: 'chat', id: run.id, approvalId: approval.id, decision: true }, 'sidepanel.html')
@@ -104,7 +109,7 @@ describe('background tool permissions', () => {
   })
   it('disconnects background MCP clients after releasing the last tool runtime', async () => {
     const run = job(); run.allowedTools = ['Execute']
-    await updateChatRun('chat', () => run)
+    await storeRun(run)
     await poll(run); await finished()
     expect(fixture.disconnect).not.toHaveBeenCalled()
     await message({ type: 'chat.tools.release', conversationId: 'chat', id: run.id, chainId: run.id })
@@ -119,7 +124,7 @@ describe('background tool permissions', () => {
       { id: 'j', name: 'Journal', input: {}, state: 'requested' },
       { id: 'c2', name: 'Control', input: {}, state: 'requested' },
     ]
-    await updateChatRun('chat', () => run)
+    await storeRun(run)
     const pollId = (requestId: string) => message({ type: 'chat.tool.poll', conversationId: 'chat', id: run.id, requestId })
     const done = (id: string) => until(async () => (await getChatRun('chat'))?.toolRequests.find(r => r.id === id)?.state === 'done')
     const allowNth = async (n: number) => {
@@ -144,7 +149,7 @@ describe('background tool permissions', () => {
       { id: 'c1', name: 'Control', input: {}, state: 'requested' },
       { id: 'j', name: 'Journal', input: {}, state: 'requested' },
     ]
-    await updateChatRun('chat', () => run)
+    await storeRun(run)
     const status = () => message({ type: 'chat.control.status', conversationId: 'chat' }, 'sidepanel.html')
     expect(await status()).toEqual({ session: null })
     await message({ type: 'chat.tool.poll', conversationId: 'chat', id: run.id, requestId: 'c1' })
@@ -165,13 +170,25 @@ describe('background tool permissions', () => {
   })
   it('executes an existing chat grant exactly once even with duplicate polls', async () => {
     const run = job(); run.allowedTools = ['Execute']
-    await updateChatRun('chat', () => run)
+    await storeRun(run)
     await Promise.all([poll(run), poll(run), poll(run)]); await finished()
     expect(fixture.mutations).toBe(1)
     expect((await getChatRun('chat'))?.approvals).toHaveLength(0)
   })
+  it('never re-runs a request whose result the offscreen host has already taken', async () => {
+    const run = job(); run.allowedTools = ['Execute']
+    await storeRun(run)
+    await poll(run); await finished()
+    expect(fixture.mutations).toBe(1)
+    // The host takes the result and drops its copy; a late or duplicate poll arrives afterwards.
+    await updateChatRun('chat', old => consumeToolRequest(old, 'call'))
+    expect((await getChatRun('chat'))?.toolRequests[0]).toEqual({ id: 'call', name: 'Execute', state: 'done' })
+    await poll(run); await poll(run)
+    expect(fixture.mutations).toBe(1)
+    expect((await getChatRun('chat'))?.toolRequests[0]).toEqual({ id: 'call', name: 'Execute', state: 'done' })
+  })
   it('persists a pending approval and resumes the same call after a new panel answers', async () => {
-    const run = job(); await updateChatRun('chat', () => run); await poll(run)
+    const run = job(); await storeRun(run); await poll(run)
     await until(async () => !!(await getChatRun('chat'))?.approvals?.length)
     expect(fixture.mutations).toBe(0)
     const approval = (await getChatRun('chat'))!.approvals![0]
@@ -180,7 +197,7 @@ describe('background tool permissions', () => {
   })
   it('requires approval for once-only actions even under Always and honours denial', async () => {
     fixture.policy = 'always'
-    const run = job(true); await updateChatRun('chat', () => run); await poll(run)
+    const run = job(true); await storeRun(run); await poll(run)
     await until(async () => !!(await getChatRun('chat'))?.approvals?.length)
     expect(fixture.mutations).toBe(0)
     const approval = (await getChatRun('chat'))!.approvals![0]
@@ -189,7 +206,7 @@ describe('background tool permissions', () => {
   })
   it('Never overrides a stored chat grant', async () => {
     fixture.policy = 'never'; const run = job(); run.allowedTools = ['Execute']
-    await updateChatRun('chat', () => run); await poll(run); await finished()
+    await storeRun(run); await poll(run); await finished()
     expect(fixture.mutations).toBe(0)
   })
   it('forwards a page step to the panel decider for this conversation, without the typed value', async () => {
@@ -197,7 +214,7 @@ describe('background tool permissions', () => {
     const sent: any[] = []
     fixture.send = (msg) => { sent.push(msg); return Promise.resolve() }
     const run = job(); run.toolRequests[0].name = 'Observe'
-    await updateChatRun('chat', () => run); await poll(run); await finished()
+    await storeRun(run); await poll(run); await finished()
     expect((await getChatRun('chat'))?.toolRequests[0].output).toEqual({ observed: true })
     await until(async () => sent.length > 0)
     expect(sent).toHaveLength(1)
@@ -213,7 +230,7 @@ describe('background tool permissions', () => {
     const sent: any[] = []
     fixture.send = (msg: any) => { sent.push(msg); return Promise.resolve({ requestId: msg.requestId, plan }) }
     const run = job(); run.toolRequests[0].name = 'MapForm'
-    await updateChatRun('chat', () => run); await poll(run); await finished()
+    await storeRun(run); await poll(run); await finished()
     expect((await getChatRun('chat'))?.toolRequests[0].output).toEqual(plan)
     expect(sent).toHaveLength(1)
     expect(sent[0]).toMatchObject({ type: 'decider.mapForm', conversationId: 'chat', tabId: 7, values: { message: 'hi' }, requestId: expect.any(String) })
@@ -222,7 +239,7 @@ describe('background tool permissions', () => {
     fixture.policy = 'always'; fixture.decider = { mode: 'shadow' }
     fixture.send = () => Promise.reject(new Error('Could not establish connection. Receiving end does not exist.'))
     const run = job(); run.toolRequests[0].name = 'Observe'
-    await updateChatRun('chat', () => run); await poll(run); await finished()
+    await storeRun(run); await poll(run); await finished()
     expect((await getChatRun('chat'))?.toolRequests[0]).toMatchObject({ output: { observed: true }, error: undefined })
 
     releaseChatTools('chat', run.id)
@@ -230,7 +247,7 @@ describe('background tool permissions', () => {
     const sent: unknown[] = []
     fixture.send = (msg) => { sent.push(msg) }
     const off = job(); off.toolRequests[0].name = 'Observe'
-    await updateChatRun('chat', () => off); await poll(off); await finished()
+    await storeRun(off); await poll(off); await finished()
     expect(sent).toEqual([])
   })
   it('with the model missing, the decider is off in the worker: no page read, nothing sent, no assist request', async () => {
@@ -239,10 +256,10 @@ describe('background tool permissions', () => {
     fixture.send = (msg) => { sent.push(msg); return Promise.resolve() }
     fixture.decider = { mode: 'driver' }
     const observe = job(); observe.toolRequests[0].name = 'Observe'
-    await updateChatRun('chat', () => observe); await poll(observe); await finished()
+    await storeRun(observe); await poll(observe); await finished()
     releaseChatTools('chat', observe.id)
     const map = job(); map.toolRequests[0].name = 'MapForm'
-    await updateChatRun('chat', () => map); await poll(map); await finished()
+    await storeRun(map); await poll(map); await finished()
     expect((await getChatRun('chat'))?.toolRequests[0].output).toEqual({ error: 'the decision model is not in Assist mode' })
     await new Promise((r) => setTimeout(r, 20))
     expect(sent).toEqual([])
@@ -253,13 +270,13 @@ describe('background tool permissions', () => {
     for (const mode of ['shadow', 'assist']) {
       fixture.decider = { mode }
       const run = job(); run.toolRequests[0].name = 'Mode'; run.driver = { goal: 'add the mug', values: {} }
-      await updateChatRun('chat', () => run); await poll(run); await finished()
+      await storeRun(run); await poll(run); await finished()
       // …and its hooks say it is a @driver run: FastSteps' larger token cap and the unsure card.
       expect((await getChatRun('chat'))?.toolRequests[0].output, mode).toStrictEqual({ mode: 'driver', driverRun: true })
       releaseChatTools('chat', run.id)
       // The same settings without the token: the settings' own mode.
       const plain = job(); plain.toolRequests[0].name = 'Mode'
-      await updateChatRun('chat', () => plain); await poll(plain); await finished()
+      await storeRun(plain); await poll(plain); await finished()
       expect((await getChatRun('chat'))?.toolRequests[0].output, mode).toEqual({ mode })
       expect((await getChatRun('chat'))?.toolRequests[0].output, mode).not.toHaveProperty('driverRun', true)
       releaseChatTools('chat', plain.id)
@@ -270,14 +287,14 @@ describe('background tool permissions', () => {
     for (const [decider, model] of [[{ mode: 'off' }, READY], [undefined, READY], [{ mode: 'assist' }, undefined]] as const) {
       fixture.decider = decider as { mode: string } | undefined; fixture.model = model
       const run = job(); run.toolRequests[0].name = 'Mode'; run.driver = { goal: 'add the mug', values: {} }
-      await updateChatRun('chat', () => run); await poll(run); await finished()
+      await storeRun(run); await poll(run); await finished()
       expect((await getChatRun('chat'))?.toolRequests[0].output).toMatchObject({ mode: 'off' })
       releaseChatTools('chat', run.id)
     }
   })
   it('does not replay a call left executing by a lost worker', async () => {
     const run = job(); run.toolRequests[0].state = 'executing'
-    await updateChatRun('chat', () => run); await poll(run); await finished()
+    await storeRun(run); await poll(run); await finished()
     expect(fixture.mutations).toBe(0)
     expect((await getChatRun('chat'))?.toolRequests[0].error).toContain('outcome is unknown')
   })

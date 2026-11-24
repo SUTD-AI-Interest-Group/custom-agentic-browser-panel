@@ -1,7 +1,7 @@
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react'
 import { CHAT_OWNER } from '../agent/durableChat'
 import { seedBuiltinSkills } from '../data/builtinSkills'
-import { getChatRun } from '../data/chatRuns'
+import { getChatRunLive } from '../data/chatRuns'
 import { conversationChanges, listConversations, type ConversationSummary } from '../data/conversations'
 import type { ResearchTask } from '../data/researchTasks'
 import { loadSettings, saveSettings, type Settings } from '../data/settings'
@@ -379,7 +379,7 @@ export default function App() {
     // would race on its transcript row.
     void saveRunningChats(Object.keys(next).filter((k) => next[k] === 'running'))
     if (before === 'running' && status === 'idle') void (async () => {
-      const run = await getChatRun(id)
+      const run = await getChatRunLive(id)
       // The worker notifies for runs whose original panel has disappeared.
       if (run && run.owner !== CHAT_OWNER) return
       // A tab activation can precede showChatForTab's async split-view lookup.
