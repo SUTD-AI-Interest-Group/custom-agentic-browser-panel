@@ -1,4 +1,4 @@
-import { TOOL_CONTEXT_GUIDANCE, VISUAL_RESPONSE_GUIDANCE } from '../data/promptGuidance'
+import { TOOL_GUIDANCE, VISUAL_RESPONSE_GUIDANCE, withoutRetiredGuidance } from '../data/promptGuidance'
 
 // Pure assembly of the per-chain system prompt from its constituent notes —
 // no Chrome, no React, no AI SDK. Extracted from runTurnChain (Chat.tsx) so
@@ -18,25 +18,27 @@ import { TOOL_CONTEXT_GUIDANCE, VISUAL_RESPONSE_GUIDANCE } from '../data/promptG
 // exists for callers that want the flat legacy string.
 //
 //   STABLE  (near-identical across turns, often across whole conversations —
-//            settings.systemPrompt and the skills catalog change only when
-//            the user edits settings or installs/removes a skill):
-//              systemPrompt, toolDisclosureNote, accessNote,
-//              browsingInsightsNote, mathFormattingNote, skillsCatalog
+//            settings.systemPrompt, the connected MCP servers and the skills
+//            catalog change only when the user edits settings, connects a
+//            server or installs/removes a skill):
+//              systemPrompt, TOOL_GUIDANCE, visual preference, mcpServersNote,
+//              accessNote, browsingInsightsNote, mathFormattingNote, skillsCatalog
 //   VOLATILE (recomputed and generally different every turn):
 //              memoryContext, activeSkills, retryNote
 //
-// Built-in tool/context guidance and the opt-in visual preference also live
-// in the stable prefix, including when the editable prompt is customized.
-// Each supplied note carries its own leading blank line (`\n\n`), except
-// memoryContext, which is wrapped here. Built-in guidance is added once to
-// the stable prefix; changing the visual preference invalidates that prefix.
+// The built-in tool guidance (TOOL_GUIDANCE) and the opt-in visual preference
+// live in the stable prefix whatever the editable prompt says; guidance an
+// older default left inside a stored prompt is cut out first, so the two can
+// never disagree. Each supplied note carries its own leading blank line
+// (`\n\n`), except memoryContext, which is wrapped here. Changing the visual
+// preference invalidates the stable prefix.
 export interface SystemPromptParts {
   /** The user's own, editable system prompt (settings.systemPrompt). */
   systemPrompt: string
   /** Opt-in visual presentation preference, applied to this turn. */
   visualResponse2?: boolean
-  /** Progressive-disclosure protocol note (TOOL_DISCLOSURE_NOTE). */
-  toolDisclosureNote: string
+  /** The connected MCP servers and their tools (mcpServersNote), or ''. */
+  mcpServersNote: string
   /** Set when tabAccess is restricted to the active tab; '' otherwise. */
   accessNote: string
   /** QueryBrowserData sources note for this turn. */
@@ -72,10 +74,10 @@ export interface SplitSystemPrompt {
  */
 export function splitSystemPrompt(parts: SystemPromptParts): SplitSystemPrompt {
   const stable =
-    parts.systemPrompt +
-    (parts.systemPrompt.includes(TOOL_CONTEXT_GUIDANCE) ? '' : `\n\n${TOOL_CONTEXT_GUIDANCE}`) +
+    withoutRetiredGuidance(parts.systemPrompt) +
+    TOOL_GUIDANCE +
     (parts.visualResponse2 === true ? VISUAL_RESPONSE_GUIDANCE : '') +
-    parts.toolDisclosureNote +
+    parts.mcpServersNote +
     parts.accessNote +
     parts.browsingInsightsNote +
     parts.mathFormattingNote +

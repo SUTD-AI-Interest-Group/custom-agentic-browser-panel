@@ -101,6 +101,7 @@ import { buildRetryNote } from './regenerate'
 import { isNearBottom } from './scrollStick'
 import { buildSteerFallback, freshTurnGatherErrorText } from './steerFallback'
 import { splitSystemPrompt } from './systemPrompt'
+import { mcpServersNote } from '../data/promptGuidance'
 import type { ChatStatus } from './tabChats'
 import {
   discardInFlight,
@@ -195,36 +196,6 @@ function browsingInsightsNote(granted: Set<BrowsingCapability>): string {
 // for the JS string; the model sees single-backslash LaTeX.
 const MATH_FORMATTING_NOTE =
   '\n\nWhen your answer includes mathematical notation, write it in LaTeX: `$…$` for inline math and `$$…$$` on their own lines for display math (these render in the panel). Prefer LaTeX commands over Unicode symbols (e.g. `\\alpha`, `\\leq`, `\\times`). Escape a literal dollar sign as `\\$`.'
-
-// Progressive tool disclosure. Appended to every system prompt as machinery
-// (independent of the user's editable settings.systemPrompt) so the protocol
-// reaches every install — including ones whose stored prompt predates it. Only
-// ReadPage + the ToolSearch/GetTool meta-tools are active by default; everything
-// else is loaded on demand (see src/tools/toolDiscovery.ts).
-//
-// Framed affirmatively — "you ARE an agent that can act; tools just load on
-// demand" — with an explicit rule against declining a browser action before
-// checking ToolSearch. Without it the small *visible* tool list reads to the
-// model as "I can't", so it answers a "do X" request in plain text instead of
-// loading the capability it needs (the observed failure this rewrite targets).
-//
-// The closing "capabilities to load" paragraph is the model's de-facto
-// inventory: a family missing from it gets refused from priors without a
-// ToolSearch call (observed with RunCode/CreateArtifact). When adding a tool
-// family to createAgentTools, add it here too.
-const TOOL_DISCLOSURE_NOTE = `
-
-You are an agent that can act in the user's browser — not just a chat box. You can read and control web pages, open and switch tabs, fill forms, run JavaScript in a sandbox, build interactive web artifacts the user views right in the chat, save and search long-term memory, query browsing history, run background web research, and use skills. Most of these tools load on demand, so your visible tool list starts small — that is not a limit on what you can do.
-
-DiscoverWebMcp is always loaded when permitted. When the user asks to connect to, discover, or use WebMCP on a page, call DiscoverWebMcp FIRST. Reading page text or elements does not connect WebMCP. Report its diagnostic accurately: unavailable browser API and zero registered tools are different states. Never claim WebMCP is connected based on the page title or DOM. If actions exist, list them and load RunWebMcp with GetTool to perform the requested action. If discovery fails, explain the blocker instead of offering unrelated page exploration.
-
-ReadPage is always loaded: read the current tab with mode "text" (visible text), "dom" (HTML structure), or "elements" (numbered interactive elements, used before controlling a page). For anything beyond the current tab, call ToolSearch to find the capability (optionally with a query), then GetTool to load the tools you need — once loaded they stay available for the rest of this turn. Loading a tool does not run it, and it still asks the user for permission when it runs.
-
-Whenever the user asks you to do something in the browser, load the tool and do it. Do NOT reply that you can't — that you can't open a tab, control a page, remember something, look something up, run code, or build and show an interactive page, chart, or app — before calling ToolSearch to check: the capability almost certainly exists and is merely unloaded. Only if ToolSearch does not list it should you say it is unavailable.
-
-Ground your answers on the page. When your answer comes from a specific passage, clause, figure, or section of the page or PDF the user is viewing ("what are the terms…", "which part mentions…", "where does it say…"), load HighlightContent and mark that spot as part of answering — it scrolls their tab to the passage and highlights it so they can see where your answer came from. Do this proactively, without being asked to "show" it; highlight each key passage of a multi-part answer.
-
-Capabilities to load when needed: HighlightContent (scroll to and mark the passage/figure your answer came from), ReadTabs (other open tabs — mode "gist" skims every tab with a one-line summary and flags duplicates, which is how you answer "what do I have open", "which tab had…", or start any tidy-up), GroupTabs (file tabs into named Chrome tab groups), CloseTabs (close tabs, or reopen the batch you last closed), RequestPageControl/ControlPage/AutofillForm (control a page — click, type, fill), NavigateTab (switch/open/load a tab), ExtractData (structured JSON from the page), RunCode (execute JavaScript in a sealed sandbox — compute, verify, transform data), CreateArtifact/UpdateArtifact (build a self-contained interactive HTML page, visualization, or mini-app rendered as a live card in the chat — the way to SHOW the user something you made), SaveMemory/SearchMemory (long-term memory), QueryBrowserData (history/bookmarks/top sites/downloads — only enabled sources), ListAllSkills/ReadSkill/SaveSkill (skills), ProposeResearch (propose background web research to the user — it does not start it). ListMcpSkills/ReadMcpSkill/ReadMcpSkillFile discover and load server-hosted skills with explicit approval and integrity verification; use these rather than treating an arbitrary resource as an activated skill. MCP task handles represent work already started: tell the user it is running, let the task panel track it, and use GetMcpTask only when results are requested; never repeat the original tool to resume it. Clarification cards are for the user to answer directly. Tools whose names start with mcp_ come from MCP servers the user connected (ListMcpResources/ReadMcpResource read those servers' resources) — list them with ToolSearch like any other capability. If the message is purely conversational and needs no browser action, just answer.`
 
 /**
  * A pending approval as shown in the card. No longer carries its own
@@ -3181,27 +3152,6 @@ export default function Chat({
     const activeSkills = ctx.activeSkill
       ? `\n\n## Active skill: ${ctx.activeSkill.name}\nThe user invoked this skill. Follow these instructions for this task:\n\n${ctx.activeSkill.body}`
       : ''
-    // Split into a stable prefix (systemPrompt..skillsCatalog) and a volatile
-    // suffix (memoryContext, activeSkills, retryNote) — runAgentTurn's
-    // AgentSystemPrompt carries both through to provider.ts's Anthropic-only
-    // withCacheControl middleware, which marks ONLY the stable half as a
-    // cache breakpoint. See systemPrompt.ts's module doc for why a plain
-    // reorder into one string (the pre-split version of this code) doesn't
-    // actually buy anything — Anthropic's cache has no partial credit inside
-    // a marked block, so the split is what makes it pay off.
-    const system = splitSystemPrompt({
-      systemPrompt: settings.systemPrompt,
-      visualResponse2: settings.visualResponse2,
-      toolDisclosureNote: TOOL_DISCLOSURE_NOTE,
-      accessNote,
-      browsingInsightsNote: browsingInsightsNote(granted),
-      mathFormattingNote: MATH_FORMATTING_NOTE,
-      skillsCatalog,
-      memoryContext,
-      activeSkills,
-      retryNote: ctx.retryNote ?? '',
-    })
-
     // Progressive disclosure: the tools the model may call beyond the always-on
     // core (ToolSearch, GetTool, ReadPage). Built once for the chain and shared
     // across auto-continue cycles, so tools the model loads via GetTool stay
@@ -3243,6 +3193,32 @@ export default function Chat({
     const mcpManager = getMcpManager()
     await prepare('MCP connections', mcpManager.refresh(settingsRef.current).then(() => mcpManager.ready(controller.signal)), controller.signal)
     setPreparing('')
+
+    // Split into a stable prefix (systemPrompt..skillsCatalog) and a volatile
+    // suffix (memoryContext, activeSkills, retryNote) — runAgentTurn's
+    // AgentSystemPrompt carries both through to provider.ts's Anthropic-only
+    // withCacheControl middleware, which marks ONLY the stable half as a
+    // cache breakpoint. See systemPrompt.ts's module doc for why a plain
+    // reorder into one string (the pre-split version of this code) doesn't
+    // actually buy anything — Anthropic's cache has no partial credit inside
+    // a marked block, so the split is what makes it pay off.
+    //
+    // Built once MCP servers have connected, so the prompt can name them and their tools. The
+    // ToolSet here is only read for names and descriptions — each cycle builds its own to run.
+    const system = splitSystemPrompt({
+      systemPrompt: settings.systemPrompt,
+      visualResponse2: settings.visualResponse2,
+      mcpServersNote: mcpServersNote(
+        buildMcpTools({ manager: mcpManager, settings: settingsRef.current, requestApproval, imageQueue: [], conversationId, visionCapable: false }),
+      ),
+      accessNote,
+      browsingInsightsNote: browsingInsightsNote(granted),
+      mathFormattingNote: MATH_FORMATTING_NOTE,
+      skillsCatalog,
+      memoryContext,
+      activeSkills,
+      retryNote: ctx.retryNote ?? '',
+    })
 
     // Patch one assistant bubble: its parts are `base` (prior cycles, in merge
     // mode) followed by this cycle's streamed parts.

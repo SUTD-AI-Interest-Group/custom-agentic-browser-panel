@@ -1717,3 +1717,16 @@ describe('FastSteps — origin fencing through the real tool', () => {
     expect(requestApproval).toHaveBeenCalledTimes(1)
   })
 })
+
+describe('the system prompt names every tool there is', () => {
+  // The prompt's inventory is the model's list of what exists: a tool missing from it gets refused
+  // from priors without a ToolSearch call. So every tool createAgentTools builds must be named in it,
+  // including the ones it builds only when enabled (Driver mode, a granted browsing-data source, a
+  // connected MCP server, a modern server's skills and tasks).
+  it('TOOL_GUIDANCE names each tool, as a whole word', async () => {
+    const { TOOL_GUIDANCE } = await import('../data/promptGuidance')
+    const conditional = ['FastSteps', 'QueryBrowserData', 'ListMcpResources', 'ReadMcpResource', 'ListMcpSkills', 'ReadMcpSkill', 'ReadMcpSkillFile', 'ListMcpTasks', 'GetMcpTask', 'CancelMcpTask']
+    const missing = [...Object.keys(buildTools()), ...conditional].filter((name) => !new RegExp(`\\b${name}\\b`).test(TOOL_GUIDANCE))
+    expect(missing).toEqual([])
+  })
+})

@@ -2,7 +2,7 @@
 // A "provider" is any OpenAI-compatible endpoint (OpenAI, OpenRouter, Groq,
 // Ollama, Anthropic's /v1 compat layer, LM Studio, vLLM, ...).
 
-import { TOOL_CONTEXT_GUIDANCE } from './promptGuidance'
+import { RETIRED_TOOL_CONTEXT_GUIDANCE } from './promptGuidance'
 import type { ModelPrice } from '../agent/pricing'
 import type { McpSettings } from '../mcp/config'
 import { clearAuth } from '../mcp/auth'
@@ -109,7 +109,7 @@ export type TabAccess = 'active-tab' | 'all-tabs'
 export type ToolPolicy = 'never' | 'ask' | 'always'
 
 /** UI grouping for the tool-permission matrix, in display order. */
-export type ToolGroup = 'reading' | 'control' | 'navigation' | 'memory' | 'insights' | 'skills' | 'mcp'
+export type ToolGroup = 'reading' | 'control' | 'navigation' | 'artifacts' | 'memory' | 'insights' | 'skills' | 'mcp'
 
 export interface ToolCatalogEntry {
   /** The tool's key in `createAgentTools` — the id policies are stored under. */
@@ -145,6 +145,11 @@ export const TOOL_CATALOG: ToolCatalogEntry[] = [
   // ControlPage is set to Never (createAgentTools); listed so it can be set to Never on its own.
   { name: 'FastSteps', group: 'control', label: 'Take quick page steps with the on-device model (Driver mode)' },
   { name: 'NavigateTab', group: 'navigation', label: 'Switch / open / navigate tabs' },
+  // Shipped as Always: the agent is steered to show answers as artifacts, and a card before every
+  // visual would make that a chore. The HTML runs in the sealed, network-less sandbox (src/exec/),
+  // and the user can still set either back to Ask or Never in Settings → Permissions.
+  { name: 'CreateArtifact', group: 'artifacts', label: 'Create an interactive artifact (chart, diagram, mini-app)', defaultPolicy: 'always' },
+  { name: 'UpdateArtifact', group: 'artifacts', label: 'Revise an artifact it created', defaultPolicy: 'always' },
   { name: 'SaveMemory', group: 'memory', label: 'Save a long-term memory' },
   { name: 'SearchMemory', group: 'memory', label: 'Search long-term memory' },
   { name: 'QueryBrowserData', group: 'insights', label: 'Browser data (history, bookmarks, top sites, downloads)' },
@@ -170,6 +175,7 @@ export const GROUP_ORDER: ToolGroup[] = [
   'reading',
   'control',
   'navigation',
+  'artifacts',
   'memory',
   'insights',
   'skills',
@@ -181,6 +187,7 @@ export const GROUP_LABELS: Record<ToolGroup, string> = {
   reading: 'Page reading',
   control: 'Page control',
   navigation: 'Navigation',
+  artifacts: 'Artifacts',
   memory: 'Long-term memory',
   insights: 'Browsing insights',
   skills: 'Skills',
@@ -359,9 +366,9 @@ The user can @mention tabs in their message; when they do, the tab's content arr
 
 You also have a long-term memory stored locally in the browser. The most relevant memories appear in a "Long-term memory" section of this prompt when any exist; while you sleep, a consolidation process ("dreaming") distills each day's conversations into new memories.
 
-${TOOL_CONTEXT_GUIDANCE}
-
 Be concise and direct.`
+// How to use tools is not part of this editable prompt: it is product machinery (TOOL_GUIDANCE,
+// src/data/promptGuidance.ts) appended to every prompt, so it can change with the tools.
 
 /**
  * Previous defaults that shipped as `systemPrompt`, frozen
@@ -391,6 +398,18 @@ You cannot see any webpage by default — use your tools (they are described to 
 The user can @mention tabs in their message; when they do, the tab's content arrives inside <tab> blocks appended to their message — treat it as up-to-date page content they chose to share (no tool call needed for it). They may also type @memory to ask you to consult your long-term memory before answering.
 
 You also have a long-term memory stored locally in the browser. The most relevant memories appear in a "Long-term memory" section of this prompt when any exist; while you sleep, a consolidation process ("dreaming") distills each day's conversations into new memories.
+
+Be concise and direct.`,
+  // 2026-11-11 to 2026-11-24: the default carried the tool/context guidance inline.
+  `You are Lychee, a helpful AI agent living in the user's browser side panel.
+
+You cannot see any webpage by default — use your tools (they are described to you separately) to read a page the user refers to, and never fabricate page content: if you were denied access or could not read a page, say so and answer from general knowledge.
+
+The user can @mention tabs in their message; when they do, the tab's content arrives inside <tab> blocks appended to their message — treat it as up-to-date page content they chose to share (no tool call needed for it). They may also type @memory to ask you to consult your long-term memory before answering.
+
+You also have a long-term memory stored locally in the browser. The most relevant memories appear in a "Long-term memory" section of this prompt when any exist; while you sleep, a consolidation process ("dreaming") distills each day's conversations into new memories.
+
+${RETIRED_TOOL_CONTEXT_GUIDANCE[0]}
 
 Be concise and direct.`,
 ]

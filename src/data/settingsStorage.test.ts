@@ -2,7 +2,7 @@ import 'fake-indexeddb/auto'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { resetVault } from './vault'
 import { isSealed } from './vaultFormat'
-import { TOOL_CONTEXT_GUIDANCE } from './promptGuidance'
+import { RETIRED_TOOL_CONTEXT_GUIDANCE } from './promptGuidance'
 import { DEFAULT_SYSTEM_PROMPT, defaultSettings, loadSettings, saveSettings, type Settings } from './settings'
 
 // Minimal chrome.storage.local stub backed by a plain object — the repo's
@@ -161,9 +161,16 @@ describe('response preference settings', () => {
 
   it('upgrades the previous unedited Lychee default', async () => {
     const store = stubChromeStorage()
-    const previousDefault = DEFAULT_SYSTEM_PROMPT.replace(`${TOOL_CONTEXT_GUIDANCE}\n\n`, '')
+    // 2026-11-11's default carried the tool guidance inline, just above the sign-off.
+    const previousDefault = DEFAULT_SYSTEM_PROMPT.replace('\n\nBe concise and direct.', `\n\n${RETIRED_TOOL_CONTEXT_GUIDANCE[0]}\n\nBe concise and direct.`)
+    expect(previousDefault).not.toBe(DEFAULT_SYSTEM_PROMPT)
     store.settings = { ...defaultSettings(), systemPrompt: previousDefault }
     expect((await loadSettings()).systemPrompt).toBe(DEFAULT_SYSTEM_PROMPT)
+  })
+
+  it('keeps tool guidance out of the editable default: it is appended at assembly instead', () => {
+    expect(DEFAULT_SYSTEM_PROMPT).not.toContain('DiscoverWebMcp')
+    expect(DEFAULT_SYSTEM_PROMPT).not.toContain('ToolSearch')
   })
 })
 

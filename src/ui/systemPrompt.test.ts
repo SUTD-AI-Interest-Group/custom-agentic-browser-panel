@@ -1,11 +1,11 @@
-import { TOOL_CONTEXT_GUIDANCE, VISUAL_RESPONSE_GUIDANCE } from '../data/promptGuidance'
+import { RETIRED_TOOL_CONTEXT_GUIDANCE, TOOL_GUIDANCE, VISUAL_RESPONSE_GUIDANCE } from '../data/promptGuidance'
 import { DEFAULT_SYSTEM_PROMPT } from '../data/settings'
 import { describe, it, expect } from 'vitest'
 import { assembleSystemPrompt, splitSystemPrompt, type SystemPromptParts } from './systemPrompt'
 
 const parts = (overrides: Partial<SystemPromptParts> = {}): SystemPromptParts => ({
   systemPrompt: 'BASE',
-  toolDisclosureNote: '\n\nDISCLOSURE',
+  mcpServersNote: '\n\nMCP_SERVERS',
   accessNote: '\n\nACCESS',
   browsingInsightsNote: '\n\nBROWSING',
   mathFormattingNote: '\n\nMATH',
@@ -25,7 +25,8 @@ describe('assembleSystemPrompt: ordering', () => {
     const out = assembleSystemPrompt(parts())
     const order = [
       'BASE',
-      'DISCLOSURE',
+      '## How you work',
+      'MCP_SERVERS',
       'ACCESS',
       'BROWSING',
       'MATH',
@@ -47,7 +48,7 @@ describe('assembleSystemPrompt: ordering', () => {
     // part while moving it — every part's own text must still be present
     // exactly once.
     const out = assembleSystemPrompt(parts())
-    for (const marker of ['BASE', 'DISCLOSURE', 'ACCESS', 'BROWSING', 'MATH', 'SKILLS_CATALOG', 'MEMORY', 'ACTIVE_SKILL', 'RETRY']) {
+    for (const marker of ['BASE', 'MCP_SERVERS', 'ACCESS', 'BROWSING', 'MATH', 'SKILLS_CATALOG', 'MEMORY', 'ACTIVE_SKILL', 'RETRY']) {
       expect(out.split(marker).length - 1).toBe(1)
     }
   })
@@ -63,7 +64,7 @@ describe('assembleSystemPrompt: empty parts', () => {
   it('keeps built-in context guidance when every optional part is empty', () => {
     const out = assembleSystemPrompt(
       parts({
-        toolDisclosureNote: '',
+        mcpServersNote: '',
         accessNote: '',
         browsingInsightsNote: '',
         mathFormattingNote: '',
@@ -73,7 +74,7 @@ describe('assembleSystemPrompt: empty parts', () => {
         retryNote: '',
       }),
     )
-    expect(out).toBe(`BASE\n\n${TOOL_CONTEXT_GUIDANCE}`)
+    expect(out).toBe(`BASE${TOOL_GUIDANCE}`)
   })
 })
 
@@ -97,7 +98,7 @@ describe('splitSystemPrompt', () => {
 
   it('stable contains only the stable parts; volatile contains only the volatile parts', () => {
     const { stable, volatile } = splitSystemPrompt(parts())
-    for (const marker of ['BASE', 'DISCLOSURE', 'ACCESS', 'BROWSING', 'MATH', 'SKILLS_CATALOG']) {
+    for (const marker of ['BASE', 'MCP_SERVERS', 'ACCESS', 'BROWSING', 'MATH', 'SKILLS_CATALOG']) {
       expect(stable).toContain(marker)
       expect(volatile).not.toContain(marker)
     }
@@ -131,12 +132,23 @@ describe('splitSystemPrompt', () => {
 
 
 describe('built-in response preferences', () => {
-  it('includes tool/context guidance once for both default and custom prompts', () => {
+  it('includes the built-in tool guidance once for both default and custom prompts', () => {
     for (const systemPrompt of [DEFAULT_SYSTEM_PROMPT, 'My custom prompt']) {
       const { stable } = splitSystemPrompt(parts({ systemPrompt }))
       expect(stable.startsWith(systemPrompt)).toBe(true)
-      expect(stable.split(TOOL_CONTEXT_GUIDANCE)).toHaveLength(2)
+      expect(stable.split(TOOL_GUIDANCE)).toHaveLength(2)
     }
+  })
+
+  it('cuts the retired guidance out of a stored prompt, keeping the user’s own words around it', () => {
+    const retired = RETIRED_TOOL_CONTEXT_GUIDANCE[0]
+    // A prompt someone edited after onboarding with the 2026-11-11 default: their lines, the old guidance, their sign-off.
+    const edited = `You are my research assistant.\n\n${retired}\n\nAlways answer in British English.`
+    const { stable } = splitSystemPrompt(parts({ systemPrompt: edited }))
+    expect(stable).not.toContain(retired.slice(0, 60))
+    expect(stable).not.toContain('call DiscoverWebMcp early')
+    expect(stable.startsWith('You are my research assistant.\n\nAlways answer in British English.')).toBe(true)
+    expect(stable.split(TOOL_GUIDANCE)).toHaveLength(2)
   })
 
   it('opts in to visual guidance and removes it when switched off', () => {

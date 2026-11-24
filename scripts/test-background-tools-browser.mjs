@@ -68,7 +68,7 @@ try {
   await panel.goto(`chrome-extension://${id}/sidepanel.html`)
   await panel.evaluate(async origin => chrome.storage.local.set({ settings: {
     providers: [{ id: 'fixture', name: 'Local fixture', kind: 'custom', baseURL: `${origin}/v1`, apiKey: 'fixture', models: ['fixture'] }],
-    selected: { providerId: 'fixture', modelId: 'fixture' }, onboarded: true, tabAccess: 'all-tabs', toolPolicies: { RunCode: 'always', ReadTabs: 'always', GetScreenshot: 'always' }, systemPrompt: 'Answer the user.',
+    selected: { providerId: 'fixture', modelId: 'fixture' }, onboarded: true, tabAccess: 'all-tabs', toolPolicies: { RunCode: 'always', ReadTabs: 'always', GetScreenshot: 'always', CreateArtifact: 'ask' }, systemPrompt: 'Answer the user.',
   } }), origin)
   await one.bringToFront(); await panel.reload(); await one.bringToFront()
   const visible = panel.locator('.view-host:not(.is-hidden)')

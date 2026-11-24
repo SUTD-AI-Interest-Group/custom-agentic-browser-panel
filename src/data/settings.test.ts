@@ -59,6 +59,21 @@ describe('groupPolicy', () => {
   })
 })
 
+describe('artifact tools', () => {
+  it('ship as Always, so showing a visual needs no card by default', () => {
+    expect(toolPolicy(base(), 'CreateArtifact')).toBe('always')
+    expect(toolPolicy(base(), 'UpdateArtifact')).toBe('always')
+    expect(groupPolicy(base(), 'artifacts')).toBe('always')
+  })
+
+  it('stay the user’s to change: an explicit Ask or Never wins over the default', () => {
+    expect(toolPolicy(base({ toolPolicies: { CreateArtifact: 'ask' } }), 'CreateArtifact')).toBe('ask')
+    const never = setGroupPolicy(base(), 'artifacts', 'never')
+    expect(toolPolicy(never, 'CreateArtifact')).toBe('never')
+    expect(toolPolicy(never, 'UpdateArtifact')).toBe('never')
+  })
+})
+
 describe('setGroupPolicy', () => {
   it('sets every tool in the group and leaves other groups alone', () => {
     const next = setGroupPolicy(base(), 'reading', 'never')
