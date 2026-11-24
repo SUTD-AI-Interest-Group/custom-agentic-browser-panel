@@ -15,30 +15,14 @@ pretending the usual three-beat ritual ([Home](Home)) happened, because it didn'
 
 ---
 
-## ChatGPT plan (unreleased)
+## ChatGPT plan (removed)
 
-This section describes the local-companion implementation committed in the
-November optimisation branch, now integrated with the newer `main` updates. See
-[November 2026 Update](November-2026-Update) for its integration status.
-
-ChatGPT plan is a separate provider from OpenAI API-key billing. It appears in
-onboarding and Settings → Providers and uses the account's live model catalog.
-The composer labels plan usage and links to ChatGPT's usage settings. Beneath
-Continue with ChatGPT, a privacy-label modal explains the data sent to OpenAI,
-what the app receives, local storage, and optional tracing/MCP destinations.
-
-This implementation handles the `127.0.0.1` sign-in callback and credential
-storage in the local companion in `companion/chatgpt/`. Users
-must install it for their extension ID on macOS or Linux. Tokens stay in
-owner-only local files; the extension communicates over native messaging and
-never receives the bearer or refresh token. Requests use the public Responses
-API, force `store: false` and `stream: true`, and require `response.completed`.
-Titles and other nonstreaming SDK callers are adapted through the same stream.
-
-See the [companion guide](https://github.com/SUTD-AI-Interest-Group/custom-agentic-browser-panel/blob/9180e33bb35e1cf688a8861443307aacbe6e7b8d/companion/chatgpt/README.md)
-for setup, uninstall, data flow and live acceptance checks. Windows is not supported by the current installer.
-Automated tests and mocked UI checks do not verify real account eligibility,
-consent, token renewal or consumption of ChatGPT plan usage.
+A ChatGPT-plan provider, backed by a local native-messaging companion, was
+integrated in the November optimisation branch (see
+[November 2026 Update](November-2026-Update)). It was removed on 24 November
+2026 before reaching a store release, together with the companion and the
+optional `nativeMessaging` permission. OpenAI remains available through the
+OpenAI API-key provider.
 
 ## The naive patch, then the dispatcher — 43 minutes apart
 

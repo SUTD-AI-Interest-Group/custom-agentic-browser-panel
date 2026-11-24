@@ -1,4 +1,3 @@
-import ChatGPTProvider from './settings/ChatGPTProvider'
 import { useEffect, useRef, useState } from 'react'
 import { fetchModelList } from '../platform/modelList'
 import { testModel, type TestResult } from '../agent/provider'
@@ -96,7 +95,6 @@ export default function Onboarding({
     setModels([]); setDiscovering(false); setDiscoveryError('')
   }
   useEffect(() => () => { discoverySequence.current++; discoveryController.current?.abort() }, [])
-  const [chatGPT, setChatGPT] = useState<ProviderConfig>(() => ({ id: crypto.randomUUID(), name: 'ChatGPT plan', kind: 'chatgpt', baseURL: 'https://api.openai.com/v1', apiKey: '', models: [] }))
   const [step, setStep] = useState<Step>('endpoint')
   const [draft, setDraft] = useState<OnboardingDraft>({ presetName: null, name: '', baseURL: '', apiKey: '', modelId: '' })
   const { presetName, name, baseURL, apiKey, modelId } = draft
@@ -114,8 +112,7 @@ export default function Onboarding({
   function clearTest() { pending.current?.abort(); pending.current = null; setTest({ status: 'idle' }) }
 
   const preset = PRESETS.find((p) => p.name === presetName)
-  const isChatGPT = presetName === 'ChatGPT plan'
-  const endpointValid = isChatGPT ? chatGPT.models.includes(modelId) :
+  const endpointValid =
     baseURL.trim().length > 0 && modelId.trim().length > 0 && hasValidEndpointScheme(baseURL)
 
   function pickPreset(p: (typeof PRESETS)[number]) {
@@ -125,7 +122,6 @@ export default function Onboarding({
   }
 
   function draftProvider(): ProviderConfig {
-    if (isChatGPT) return { ...chatGPT, models: [modelId, ...chatGPT.models.filter(id => id !== modelId)] }
     return {
       id: crypto.randomUUID(),
       name: name.trim() || 'My provider',
@@ -171,9 +167,6 @@ export default function Onboarding({
         <>
           <h1>Connect a model</h1>
           <div className="preset-row">
-            <button className={`btn small ${isChatGPT ? 'primary' : 'ghost'}`} onClick={() => {
-              clearDiscovery(); clearTest(); setDraft({ presetName: 'ChatGPT plan', name: 'ChatGPT plan', baseURL: 'https://api.openai.com/v1', apiKey: '', modelId: chatGPT.models[0] || '' })
-            }}>ChatGPT plan</button>
             {PRESETS.map((p) => (
               <button
                 key={p.name}
@@ -185,16 +178,6 @@ export default function Onboarding({
             ))}
           </div>
 
-          {isChatGPT && <div className="provider-card onboard-form">
-            <ChatGPTProvider provider={chatGPT} onChange={patch => {
-              setChatGPT(current => ({ ...current, ...patch }))
-              if (patch.models) patchDraft({ modelId: patch.models[0] || '' })
-              clearTest()
-            }} />
-            {chatGPT.models.length > 0 && <label>Model<select value={modelId} onChange={event => patchDraft({ modelId: event.target.value })}>
-              {chatGPT.models.map(id => <option key={id} value={id}>{chatGPT.modelNames?.[id] || id}</option>)}
-            </select></label>}
-          </div>}
           {preset && (
             <div className="provider-card onboard-form">
               {preset.name === 'Custom' && (
@@ -232,7 +215,6 @@ export default function Onboarding({
             </div>
           )}
 
-          {!isChatGPT && <>
           <datalist id="onboarding-models">{models.map(id=><option key={id} value={id}/>)}</datalist>
           <button disabled={!hasValidEndpointScheme(baseURL)||discovering} onClick={()=>{
             const sequence=++discoverySequence.current;setDiscovering(true);setDiscoveryError('')
@@ -241,7 +223,6 @@ export default function Onboarding({
           }}>{discovering?'Discovering…':'Discover models'}</button>
           {discoveryError&&<p role="alert">{discoveryError}</p>}
           <p className="hint">Model discovery contacts the configured endpoint using its key. Chats send your messages and attached page or file content to that endpoint. The connection test sends only a synthetic message, without your tabs or files.</p>
-          </>}
           <div className="onboard-footer">
             <span />
             <button
@@ -261,7 +242,6 @@ export default function Onboarding({
       {step === 'test' && (
         <>
           <h1>Test connection</h1>
-          {isChatGPT && <p className="hint">This test uses your ChatGPT plan or credits.</p>}
           <dl className="connection-summary"><dt>Model</dt><dd>{modelId.trim()}</dd><dt>Endpoint</dt><dd>{baseURL.trim()}</dd></dl>
           <button className="btn primary" disabled={testing} onClick={() => void runTest()}>
             {testing ? 'Testing…' : result ? 'Test again' : 'Run test'}

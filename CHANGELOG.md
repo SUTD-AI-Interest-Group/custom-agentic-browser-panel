@@ -28,10 +28,6 @@ for that history.
 
 ### Added
 
-- ChatGPT plan as a separate provider in onboarding and Settings, with account-specific model discovery, a composer usage indicator, sign-out, and Manage usage links.
-- A privacy-label modal directly beneath Continue with ChatGPT explaining OpenAI-bound context, account/usage linkage, Lychee access, local credential storage, and optional tracing/MCP destinations. It also distinguishes the current local connection from proposed Supabase hosting, disclosing the additional backend data access and the hosted storage/retention details that remain unimplemented.
-- A macOS/Linux native messaging companion for OpenAI's loopback OAuth flow, protected local token storage, serialized refresh, and nonstored streaming Responses requests. Requires per-user installation; see [companion setup](companion/chatgpt/README.md). Windows and live eligible-account verification remain outstanding.
-
 - Consolidate implementation, PR status and verification records in the [development handoff](docs/development-handoff.md); refresh MCP setup and feature boundaries.
 
 - Bound chat preparation with stage labels, Stop, visible errors and Retry; skip automatic attachment of restricted browser pages.
@@ -46,6 +42,10 @@ for that history.
 - Discover and load skills over MCP with explicit approval, same-server file access and size/SHA-256/frontmatter verification.
 - Keep the MCP flows browser-native; the submitted 0.5.0 archive remains unchanged and excludes ChatGPT-provider work.
 - See [implementation boundaries and verification](docs/mcp-interactive-tasks-skills.md).
+
+### Removed
+
+- The ChatGPT-plan provider and its macOS/Linux native-messaging companion (`companion/chatgpt/`), which never shipped in a store release. The optional `nativeMessaging` permission is dropped with it, and a development install that had configured the provider has it removed on load, along with any chat, naming or dreaming model that pointed at it.
 
 ## [0.5.0] — 2026-10-14 — *Submitted for Chrome Web Store review*
 

@@ -11,15 +11,12 @@ import { profileFor } from '../../data/providerProfiles'
 import { fetchModelList } from '../../platform/modelList'
 import { resolveModelRefresh } from './modelRefresh'
 import { Section, Select } from './primitives'
-import ChatGPTProvider from './ChatGPTProvider'
-import { companionCall, type ChatGPTSession } from '../../platform/chatgpt'
 import { SealedChip } from './SealedChip'
 
 // Common endpoints, offered as one-click starting points, each tagged with the
 // `kind` that selects its capability profile. Anything not listed still works via
 // "Custom" (the generic OpenAI-compatible profile).
 const PRESETS: Array<Pick<ProviderConfig, 'name' | 'baseURL' | 'kind'> & { models: string[] }> = [
-  { name: 'ChatGPT plan', baseURL: 'https://api.openai.com/v1', kind: 'chatgpt', models: [] },
   { name: 'OpenAI', baseURL: 'https://api.openai.com/v1', kind: 'openai', models: ['gpt-4o-mini'] },
   { name: 'Anthropic', baseURL: 'https://api.anthropic.com/v1', kind: 'anthropic', models: ['claude-sonnet-5'] },
   { name: 'OpenRouter', baseURL: 'https://openrouter.ai/api/v1', kind: 'openrouter', models: [] },
@@ -149,7 +146,6 @@ export default function ProvidersTab({
   const [open, setOpen] = useState<Set<string>>(new Set())
   // "Refresh models" state: the provider id currently loading, plus the last
   // result/error line per provider id.
-  const [removeNotice, setRemoveNotice] = useState('')
   const [refreshingId, setRefreshingId] = useState<string | null>(null)
   const [refreshMsg, setRefreshMsg] = useState<Record<string, string>>({})
   // Always the latest `draft` prop, for refreshModels's async completion to
@@ -276,19 +272,7 @@ export default function ProvidersTab({
     }
   }
 
-  async function removeProvider(id: string) {
-    setRemoveNotice('')
-    const provider = draftRef.current.providers.find(p => p.id === id)
-    if (provider?.kind === 'chatgpt') {
-      try {
-        const result = await companionCall<ChatGPTSession>('signOut', id)
-        if (!result.revoked) {
-          setRemoveNotice('Provider removed and local tokens cleared. Remote revocation was not confirmed; disconnect Lychee in ChatGPT settings.')
-        }
-      } catch {
-        setRemoveNotice('Provider removed from Lychee. The companion could not confirm sign-out, so its local tokens may remain. Disconnect Lychee in ChatGPT settings and see companion setup for local credential removal.')
-      }
-    }
+  function removeProvider(id: string) {
     const draft = draftRef.current
     commit({
       ...draft,
@@ -307,7 +291,6 @@ export default function ProvidersTab({
         title="Providers"
         action={<SealedChip scope="providers" />}
       >
-        {removeNotice && <p className="hint" role="status">{removeNotice}{' '}<a href="https://chatgpt.com/settings/usage" target="_blank" rel="noreferrer">Manage app access</a></p>}
         {draft.providers.length === 0 && (
           <p className="hint">No providers</p>
         )}
@@ -330,7 +313,7 @@ export default function ProvidersTab({
                 <span className="provider-name">{p.name || 'Unnamed provider'}</span>
                 {active && <span className="provider-active" aria-label="Selected provider">✓</span>}
                 <span className="provider-meta">
-                  {p.kind === 'chatgpt' ? 'ChatGPT plan' : hostLabel(p.baseURL)} · {p.models.length}{' '}
+                  {hostLabel(p.baseURL)} · {p.models.length}{' '}
                   {p.models.length === 1 ? 'model' : 'models'}
                 </span>
               </button>
@@ -362,14 +345,6 @@ export default function ProvidersTab({
                       </svg>
                     </button>
                   </div>
-                  {p.kind === 'chatgpt' ? <>
-                    <ChatGPTProvider provider={p} onChange={(patch) => {
-                      const current = draftRef.current
-                      if (!current.providers.some(q => q.id === p.id)) return
-                      commit({ ...current, providers: current.providers.map(q => q.id === p.id ? { ...q, ...patch } : q) })
-                    }} />
-                    {refreshMsg[p.id] && <p className="hint" role="status">{refreshMsg[p.id]}</p>}
-                  </> : <>
                   <label>
                     Base URL
                     <input
@@ -411,8 +386,6 @@ export default function ProvidersTab({
                       {refreshMsg[p.id] && <span className="hint">{refreshMsg[p.id]}</span>}
                     </div>
                   </div>
-                  </>}
-                  {p.kind !== 'chatgpt' && <>
                   <ModelRates
                     provider={p}
                     onChange={(modelId, field, raw) => updateModelPrice(p.id, modelId, field, raw)}
@@ -437,7 +410,6 @@ export default function ProvidersTab({
                     <option value="medium">medium</option>
                     <option value="high">high</option>
                   </Select>
-                  </>}
                 </div>
               )}
             </div>

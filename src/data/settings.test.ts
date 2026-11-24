@@ -3,6 +3,7 @@ import {
   DEFAULT_DREAM_INTERVAL_MS,
   DEFAULT_SYSTEM_PROMPT,
   defaultSettings,
+  dropUnsupportedProviders,
   getDreamProvider,
   groupPolicy,
   inferKind,
@@ -262,4 +263,29 @@ test('an existing ProposeResearch policy wins over the legacy key', () => {
 test('is a no-op when the legacy key is absent', () => {
   expect(migrateResearchToolPolicy({ ReadPage: 'ask' })).toEqual({ ReadPage: 'ask' })
   expect(migrateResearchToolPolicy(undefined)).toBeUndefined()
+})
+
+describe('dropUnsupportedProviders', () => {
+  const kept: ProviderConfig = { id: 'lm', kind: 'lmstudio', name: 'LM Studio', baseURL: 'http://localhost:1234/v1', apiKey: 'x', models: ['m'] }
+  // A ChatGPT-plan provider saved by a development build before it was removed.
+  const removed = { id: 'gpt', kind: 'chatgpt', name: 'ChatGPT plan', baseURL: 'https://api.openai.com/v1', apiKey: '', models: ['g'] } as unknown as ProviderConfig
+
+  it('drops a removed provider and every pick that pointed at it', () => {
+    const out = dropUnsupportedProviders(base({
+      providers: [kept, removed],
+      selected: { providerId: 'gpt', modelId: 'g' },
+      titleModel: { providerId: 'gpt', modelId: 'g' },
+      dreamModel: { providerId: 'lm', modelId: 'm' },
+    }))
+    expect(out.providers.map((p) => p.id)).toEqual(['lm'])
+    expect(out.selected).toBeNull()
+    expect(out.titleModel).toBeNull()
+    expect(out.dreamModel).toEqual({ providerId: 'lm', modelId: 'm' })
+  })
+
+  it('leaves supported providers, and ones saved before kind existed, untouched', () => {
+    const legacy = { id: 'old', name: 'Old', baseURL: 'https://api.openai.com/v1', apiKey: 'k', models: [] } as ProviderConfig
+    const s = base({ providers: [kept, legacy], selected: { providerId: 'lm', modelId: 'm' } })
+    expect(dropUnsupportedProviders(s)).toBe(s)
+  })
 })

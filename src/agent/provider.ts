@@ -1,5 +1,4 @@
 import { createOpenAICompatible } from '@ai-sdk/openai-compatible'
-import { chatGPTFetch } from '../platform/chatgpt'
 import { createOpenAI } from '@ai-sdk/openai'
 import { createAnthropic } from '@ai-sdk/anthropic'
 import {
@@ -198,17 +197,6 @@ export function createModel(config: ProviderConfig, modelId: string): LanguageMo
   const effort = resolveReasoningEffort(config, modelId)
   const reasoning = isReasoningModel(config, modelId)
   const apiKey = config.apiKey || undefined
-
-  if (providerKind(config) === 'chatgpt') {
-    const model = createOpenAI({
-      baseURL: 'https://api.openai.com/v1',
-      apiKey: 'native-companion', // SDK placeholder; the companion supplies real auth.
-      fetch: chatGPTFetch(config.id),
-    }).responses(modelId)
-    return withReasoningOptions(model, 'openai', {
-      ...(reasoning ? profile.reasoningOptions!(effort) : {}), store: false,
-    })
-  }
 
   if (profile.adapter === 'openai') {
     const model = createOpenAI({ baseURL: config.baseURL, apiKey }).responses(modelId)

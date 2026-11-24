@@ -4,7 +4,6 @@
 // profile (src/data/providerProfiles.ts), so this file only has to normalise the
 // several response shapes the various providers return.
 
-import { companionCall, type ChatGPTModel } from './chatgpt'
 import { profileFor } from '../data/providerProfiles'
 import { providerKind, type ProviderConfig, type ProviderKind } from '../data/settings'
 
@@ -59,11 +58,6 @@ export function parseModelList(kind: ProviderKind, json: unknown): FetchedModel[
  */
 export async function fetchModelList(provider: ProviderConfig, signal?: AbortSignal): Promise<FetchedModel[]> {
   const kind = providerKind(provider)
-  if (kind === 'chatgpt') {
-    const models = await companionCall<ChatGPTModel[]>('models', provider.id, { signal })
-    if (models.length === 0) throw new Error('No models available for this ChatGPT account.')
-    return models
-  }
   const endpoint = profileFor(kind).modelsEndpoint
   if (!endpoint) throw new Error('This provider does not support listing models.')
 

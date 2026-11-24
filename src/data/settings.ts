@@ -19,7 +19,6 @@ import { isSealed } from './vaultFormat'
  */
 export type ProviderKind =
   | 'openai'
-  | 'chatgpt'
   | 'anthropic'
   | 'openrouter'
   | 'groq'
@@ -82,8 +81,6 @@ export interface ProviderConfig {
   kind?: ProviderKind
   /** Model ids offered by this provider, one per entry. */
   models: string[]
-  /** Account catalog labels for ChatGPT model slugs; no credentials. */
-  modelNames?: Record<string, string>
   /**
    * Default reasoning effort for this provider's models — a per-model override in
    * `modelConfigs` beats it (resolution: `resolveReasoningEffort`). Unset preserves
@@ -445,6 +442,7 @@ export async function loadSettings(): Promise<Settings> {
   // base URL, so the capability-profile layer and model picker have a key to work
   // from. Use sites also fall back via `providerKind`, so this only persists it.
   settings.providers = settings.providers.map((p) => (p.kind ? p : { ...p, kind: inferKind(p.baseURL) }))
+  Object.assign(settings, dropUnsupportedProviders(settings))
   settings.toolPolicies = migrateResearchToolPolicy(settings.toolPolicies)
   // Secrets are sealed at rest (see src/data/vault.ts). Open them here so every
   // consumer of Settings sees plaintext; a pre-vault install is migrated in
@@ -526,6 +524,38 @@ export function inferKind(baseURL: string): ProviderKind {
   if (u.includes(':11434')) return 'ollama'
   if (u.includes(':1234')) return 'lmstudio'
   return 'custom'
+}
+
+const KNOWN_KINDS: ReadonlySet<string> = new Set<ProviderKind>([
+  'openai', 'anthropic', 'openrouter', 'groq', 'ollama', 'lmstudio', 'custom',
+])
+
+/** Whether a stored `kind` still names a supported provider. */
+export function isKnownKind(kind: unknown): kind is ProviderKind {
+  return typeof kind === 'string' && KNOWN_KINDS.has(kind)
+}
+
+/**
+ * Migration: drop stored providers whose `kind` is no longer supported — the
+ * ChatGPT-plan provider (`'chatgpt'`, development builds only) was removed — and
+ * clear any chat/namer/dreamer pick that pointed at one. Such a provider has no
+ * capability profile, so letting it reach `profileFor` would crash the picker
+ * and every model build. A provider with no `kind` yet is kept: it predates the
+ * field and is inferred from its base URL.
+ */
+export function dropUnsupportedProviders(settings: Settings): Settings {
+  const removed = new Set(
+    settings.providers.filter((p) => p.kind !== undefined && !isKnownKind(p.kind)).map((p) => p.id),
+  )
+  if (removed.size === 0) return settings
+  const stale = (pick: SelectedModel | null | undefined) => !!pick && removed.has(pick.providerId)
+  return {
+    ...settings,
+    providers: settings.providers.filter((p) => !removed.has(p.id)),
+    selected: stale(settings.selected) ? null : settings.selected,
+    ...(stale(settings.titleModel) ? { titleModel: null } : {}),
+    ...(stale(settings.dreamModel) ? { dreamModel: null } : {}),
+  }
 }
 
 /** A provider's kind, falling back to inference for configs that predate the field. */
